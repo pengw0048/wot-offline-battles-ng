@@ -278,8 +278,8 @@ StockDeferredBuffers::~StockDeferredBuffers()
 
 bool StockDeferredBuffers::initialise()
 {
-    createManagedObjects();createUnmanagedObjects();
-    return ready();
+    // Pipeline init precedes createDevice; device callbacks create resources and ready() gates frames.
+    return true;
 }
 
 bool StockDeferredBuffers::ready() const

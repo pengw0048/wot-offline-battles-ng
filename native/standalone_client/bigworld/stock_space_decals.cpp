@@ -8,6 +8,7 @@
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/string_table.hpp"
 #include "moo/draw_context.hpp"
+#include "moo/effect_manager.hpp"
 #include "moo/effect_material.hpp"
 #include "moo/effect_visual_context.hpp"
 #include "moo/format_name_map.hpp"
@@ -475,14 +476,16 @@ bool DecalRenderer::initialise()
         }
     }
     if (channels[0].empty() || channels[1].empty()) return decalFailure("The two original decal atlas families are unavailable");
-    createManagedObjects();
-    active = material && plane && cube;
-    return active;
+    // Renderer::init runs before createDevice; createAllManaged later activates this owner.
+    return true;
 }
 
 void DecalRenderer::createManagedObjects()
 {
+    active = false;
     material = NULL; plane = NULL; cube = NULL;
+    if (!Moo::EffectManager::pInstance() || !Moo::VisualManager::instance())
+    { decalFailure("The native effect/visual managers do not exist yet"); return; }
     if (!Moo::createEffect(material, "shaders/std_effects/wg_deferred_decal.fx"))
     { decalFailure("Cannot create the original deferred decal effect"); return; }
     plane = Moo::VisualManager::instance()->get("system/models/fx_unit_plane_05.visual");
@@ -491,11 +494,14 @@ void DecalRenderer::createManagedObjects()
     {
         plane = NULL; cube = NULL;
         decalFailure("The original decal plane/cube geometry is unavailable");
+        return;
     }
+    active = true;
 }
 
 void DecalRenderer::deleteManagedObjects()
 {
+    active = false;
     deleteUnmanagedObjects();
     material = NULL; plane = NULL; cube = NULL;
 }
@@ -848,7 +854,7 @@ bool drawStockDeferredDecalPackets(const std::vector<StockDeferredDecalPacket>& 
 
 bool initialiseStockSpaceDecals()
 {
-    if (renderer && renderer->active) return true;
+    if (renderer) return true;
     auto next = std::make_shared<DecalRenderer>();
     next->selection = selectedQuality;
     if (!next->initialise()) return false;

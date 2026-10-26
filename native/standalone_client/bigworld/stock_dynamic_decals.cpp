@@ -331,7 +331,7 @@ bool DynamicDecalRenderer::draw()
 
 bool initialiseStockDynamicDecals()
 {
-    if (Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING) return true;
+    // Only the deferred DecalsManager::init calls this, before Renderer is inited.
     if (renderer) return true;
     auto next = std::make_shared<DynamicDecalRenderer>();
     if (!next->load()) return false;

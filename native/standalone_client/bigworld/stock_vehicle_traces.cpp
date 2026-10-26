@@ -565,16 +565,16 @@ bool initialiseStockVehicleTracesSetting()
 }
 bool initialiseStockVehicleTraceRenderer()
 {
-    if(Renderer::instance().pipelineType()==IRendererPipeline::TYPE_FORWARD_SHADING)return true;
+    // Only DeferredPipeline::init calls this, before Renderer is inited and before
+    // createDevice. createAllManaged creates the resources that draw() checks.
     if(!traceRenderer)
     {
         traceRenderer.reset(new TraceRenderer);
-        traceRenderer->createManagedObjects();
         const auto quality=Moo::GraphicsSetting::getFromLabel("DECALS_QUALITY");
         if(quality && quality->activeOption()>=0)
             traceRenderer->setQuality(static_cast<unsigned>(quality->activeOption()));
     }
-    return traceRenderer->ready();
+    return true;
 }
 void finaliseStockVehicleTraceRenderer(){traceRenderer.reset();}
 void tickStockVehicleTraceRenderer(float elapsed){if(traceRenderer)traceRenderer->tick(elapsed);}

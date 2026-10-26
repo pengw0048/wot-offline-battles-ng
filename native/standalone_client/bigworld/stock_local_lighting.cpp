@@ -409,12 +409,8 @@ StockLocalLighting::StockLocalLighting() : state_(new State) {}
 StockLocalLighting::~StockLocalLighting() { deleteUnmanagedObjects(); deleteManagedObjects(); }
 bool StockLocalLighting::initialise()
 {
-    createManagedObjects();
-    createUnmanagedObjects();
-    return state_->omniMaterial && state_->spotMaterial && state_->blurMaterial &&
-        state_->sphere && state_->sphere->isOK() && state_->cone && state_->cone->isOK() &&
-        state_->instances.valid() && (!state_->shadows || (state_->cube && state_->cubeDepth &&
-            state_->spotTargets[0] && state_->spotTargets[1] && state_->spotTargets[2] && state_->spotScratch));
+    // Pipeline init precedes createDevice; LightsManager's device callbacks create resources and prepare() gates them.
+    return true;
 }
 void StockLocalLighting::tick()
 {
