@@ -217,6 +217,15 @@ class OriginalTankGraphOracle:
         put(chassis + 0x64, force)
         return tank, chassis, engine
 
+    def vertical_force(self, tank):
+        """Run f84e80's tail 0xf8554c..0xf8558c: chassis +0x64 from settings."""
+        from unicorn.x86_const import UC_X86_REG_EDI, UC_X86_REG_EBP, UC_X86_REG_ESP
+        frame = self.oracle.allocate(0x400) + 0x200
+        self.uc.reg_write(UC_X86_REG_EDI, tank)
+        self.uc.reg_write(UC_X86_REG_EBP, frame)
+        self.uc.reg_write(UC_X86_REG_ESP, frame - 0x100)
+        self.uc.emu_start(0xf8554c, 0xf85591)
+
     def body(self, sections, name, address, mass_address=None):
         words = self.words
         sections[name + '.mass'] = words(address, 2)
@@ -258,8 +267,21 @@ class OriginalTankGraphOracle:
     def box(self, sections, name, address):
         sections[name] = self.words(address, 0x11c // 4)
 
+    def bytes_at(self, address, count):
+        return list(bytearray(self.uc.mem_read(address, count)))
+
     def state(self, tank, chassis, engine):
         words, sections = self.words, {}
+        sections['identity.components'] = [words(item, 1)[0] - tank
+                                           for item in self.vector(tank + 0x654, 4)]
+        sections['identity.tank'] = words(tank + 0xa30, 48) + words(chassis + 0x50, 4) + \
+            words(chassis + 0x13c, 3) + words(tank + 0x6a8, 3) + words(tank + 0x700, 3) + \
+            words(tank + 0x720, 3) + words(engine + 0x314, 6) + self.bytes_at(tank + 0x1a8, 1)
+        sections['identity.input'] = words(tank + 8, 2) + self.bytes_at(tank + 0x14, 13) + \
+            words(tank + 0x24, 1)
+        for index, wheel in enumerate(self.vector(chassis + 0xa4, 0x4b4)):
+            sections['wheel%u.identity' % index] = self.bytes_at(wheel + 0x10, 1) + \
+                words(wheel + 0x428, 2) + words(wheel + 0x430, 33)
         self.body(sections, 'hull', tank + 0x1c8)
         self.body(sections, 'engine', engine + 4)
         sections['chassis.force'] = words(chassis + 0x64, 1)
@@ -283,8 +305,8 @@ class OriginalTankGraphOracle:
     def run(self, case, calls):
         self.prepare()
         self.calls = calls
-        force = case['sections'][0]['chassis.force'][0]
-        tank, chassis, engine = self.build(case['config'], force, case['seed'])
+        tank, chassis, engine = self.build(case['config'], 0, case['seed'])
+        self.vertical_force(tank)
         self.oracle.call(0xf8b8a0, ecx=tank)
         before = self.state(tank, chassis, engine)
         pose = self.oracle.allocate(64)

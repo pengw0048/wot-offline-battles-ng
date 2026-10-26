@@ -198,8 +198,40 @@ void dump_box(std::ostream& out, const std::string& name, const wot::VehicleConv
     out << '\n';
 }
 
+void handles(std::ostream& out, const wot::VehicleConstraintHandle* begin, std::size_t count) {
+    for (std::size_t i = 0; i != count; ++i)
+        out << ' ' << begin[i].context << ' ' << std::uint32_t(begin[i].row) << ' ' << begin[i].generation;
+}
+
+void dump_identities(std::ostream& out, const wot::VehicleTank& tank) {
+    // Native offsets of the registered components, in registration order.
+    static const unsigned offsets[] = {0x688, 0x6b4, 0x70c, 0x660};
+    out << "identity.components";
+    for (auto component : tank.components) out << ' ' << offsets[unsigned(component)];
+    out << "\nidentity.tank";
+    handles(out, tank.handles.data(), tank.handles.size());
+    for (auto row : tank.chassis.rows) out << ' ' << std::uint32_t(row);
+    handles(out, &tank.chassis.handle, 1);
+    handles(out, &tank.anchor.handle, 1);
+    handles(out, &tank.gimlet.handle, 1);
+    handles(out, &tank.rail.handle, 1);
+    handles(out, tank.engine.handles.data(), tank.engine.handles.size());
+    out << ' ' << unsigned(tank.turret_collision) << "\nidentity.input " << bits(tank.input.rotation_time)
+        << ' ' << tank.input.signals;
+    for (bool flag : tank.input.flags) out << ' ' << unsigned(flag);
+    out << ' ' << tank.input.value_24 << '\n';
+    for (std::size_t i = 0; i != tank.chassis.wheels.size(); ++i) {
+        const auto& wheel = tank.chassis.wheels[i];
+        out << "wheel" << i << ".identity " << unsigned(wheel.enabled);
+        for (auto row : wheel.rows) out << ' ' << std::uint32_t(row);
+        handles(out, wheel.handles.data(), wheel.handles.size());
+        out << '\n';
+    }
+}
+
 void dump_tank(std::ostream& out, const wot::VehiclePhysics& physics) {
     const wot::VehicleTank& tank = *physics.tank();
+    dump_identities(out, tank);
     dump_body(out, "hull", tank.hull, physics.rigid_body());
     dump_body(out, "engine", tank.engine.inertia, tank.engine.body);
     out << "chassis.force " << bits(tank.chassis.vertical_force) << '\n';
