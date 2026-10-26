@@ -146,6 +146,12 @@ class StockVehicleWaterSensorTest(unittest.TestCase):
         for header in FAKE_HEADERS:
             (path / 'include' / header).parent.mkdir(parents=True, exist_ok=True)
             (path / 'include' / header).write_text('#pragma once\n')
+        visual = (ROOT / 'bigworld/stock_vehicle_visuals.cpp').read_text()
+        # Exercise the shared production owner rather than recreating its
+        # cache-copy rules in a fixture that could always succeed.
+        owner = visual[visual.index('class StockFloatLink :'):visual.index('class StockTranslationLink')]
+        sample = visual[visual.index('bool isStockFloatLink('):visual.index('bool sampleStockTranslationLink(')]
+        (path / 'include/stock_float_link_owner.inc').write_text(owner + sample)
         flags = [f for f in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
                  if f != '-DNDEBUG']
         libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
@@ -273,6 +279,31 @@ class StockVehicleWaterSensorTest(unittest.TestCase):
             actual = [words[n:n + 4] for n in range(0, len(words), 4)]
             self.assertEqual(actual, [[oracle.bits(e[0]), oracle.bits(e[1]), e[2], e[3]] for e in expected], case)
         print('Original 013efb40 partial sort matched the kernel for %d cases' % len(cases))
+
+    def test_original_float_link_copy_cache_and_unsafe_null_boundary(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original instruction oracle')
+        try:
+            import stock_vehicle_water_sensor_oracle as oracle
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for original instructions')
+        original = oracle.OriginalFloatLink(Path(client) / 'WorldOfTanks.exe')
+        for cached in (0, 0x80000000, 0x40c00000, 0xc0c00000, 0x7fc01234):
+            copied, owner = original.clone(cached)
+            self.assertEqual(copied, cached)
+            self.assertEqual(owner, original.owner)
+        original.clone(0x40c00000)  # independent cached6 in the cloned function
+        self.assertEqual(original.sample(original.source, 8.), 0x41000000)
+        self.assertEqual(original.sample(original.allocation, None), 0x40c00000)
+        self.assertEqual(original.errors, 1)
+        self.assertEqual(original.sample(original.source, None), 0x41000000)
+        self.assertEqual(original.errors, 1)
+        # NULL follows the producer's fatal/failed call boundary, not the
+        # valid-object conversion-failure path that returns the cached float.
+        self.assertIsNone(original.sample(original.source, 'NULL'))
+        self.assertEqual(original.fault, 4)
+        print('Original float-link value copy/cache/NULL boundary instructions matched')
 
 
 if __name__ == '__main__':

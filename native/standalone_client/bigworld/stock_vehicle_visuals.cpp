@@ -17,6 +17,8 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <memory>
+#include <utility>
 #include <vector>
 
 BW_BEGIN_NAMESPACE
@@ -78,18 +80,54 @@ class StockFloatLink : public PyObjectPlus
     Py_Header( StockFloatLink, PyObjectPlus )
 public:
     explicit StockFloatLink( std::function<float()> reader ) :
-        PyObjectPlus( &s_type_ ), reader_( reader ) {}
-    float sample() const { return reader_(); }
+        PyObjectPlus( &s_type_ ), reader_( std::make_shared<StockFloatLinkReader>(
+            [reader]( float & value ) { value = reader(); return true; } ) ) {}
+    explicit StockFloatLink( StockFloatLinkReader reader ) :
+        PyObjectPlus( &s_type_ ), reader_( std::make_shared<StockFloatLinkReader>( std::move(reader) ) ) {}
+    bool sample( float & value ) const
+    {
+        // A Python producer can replace/destroy the wrapper while it runs.
+        std::shared_ptr<StockFloatLinkReader> pin = reader_;
+        return pin && *pin && (*pin)( value );
+    }
+    StockFloatLinkReader copy() const { return reader_ ? *reader_ : StockFloatLinkReader(); }
     PY_METHOD_DECLARE( pyCall )
 private:
-    std::function<float()> reader_;
+    std::shared_ptr<StockFloatLinkReader> reader_;
 };
-PyObject * StockFloatLink::pyCall( PyObject * ) { return Script::getData( this->sample() ); }
-PY_TYPEOBJECT_WITH_CALL( StockFloatLink )
+PyObject * StockFloatLink::pyCall( PyObject * )
+{
+    float value;
+    if (!this->sample(value))
+    {
+        if (!PyErr_Occurred())
+            PyErr_SetString( PyExc_TypeError, "PyDataLink<float> is empty or has no valid sample" );
+        return NULL;
+    }
+    // A failed conversion can retain a previous successful value. Report its
+    // error before returning that value instead of leaking an exception state.
+    if (PyErr_Occurred()) PyErr_PrintEx(0);
+    return Script::getData( value );
+}
+PY_TYPEOBJECT_SPECIALISE_CALL( StockFloatLink, &StockFloatLink::_pyCall )
+PY_GENERAL_TYPEOBJECT_WITH_BASE_WITH_NAME( StockFloatLink, &Super::s_type_,
+    "DataLinks::PyDataLink<float>" )
 PY_BEGIN_METHODS( StockFloatLink )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( StockFloatLink )
 PY_END_ATTRIBUTES()
+
+PyObject * makeStockFloatLink( StockFloatLinkReader reader )
+{
+    return new StockFloatLink( std::move(reader) );
+}
+bool copyStockFloatLink( PyObject * link, StockFloatLinkReader & reader )
+{
+    if (!link || !StockFloatLink::Check(link)) return false;
+    PyObjectPtr pin = link;
+    reader = static_cast<StockFloatLink *>(link)->copy();
+    return true;
+}
 
 class StockTranslationLink : public PyObjectPlus
 {
@@ -130,8 +168,9 @@ bool sampleStockFloatLink( PyObject * link, float & value )
 {
     if (!link || !StockFloatLink::Check( link ))
         return false;
-    value = static_cast<StockFloatLink *>( link )->sample();
-    return true;
+    const bool sampled = static_cast<StockFloatLink *>( link )->sample(value);
+    if (PyErr_Occurred()) PyErr_PrintEx(0);
+    return sampled;
 }
 bool sampleStockTranslationLink( PyObject * link, Vector3 & value )
 {

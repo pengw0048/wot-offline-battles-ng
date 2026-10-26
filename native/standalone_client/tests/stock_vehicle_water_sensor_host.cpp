@@ -62,30 +62,10 @@ PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES(HostNode)
 PY_END_ATTRIBUTES()
 
-// Stand-ins for stock_vehicle_visuals' native PyDataLink<float/bool/LodState>.
-class HostFloatLink : public PyObjectPlus {
-    Py_Header(HostFloatLink, PyObjectPlus)
-public:
-    HostFloatLink(PyObject * o, const char * n) : PyObjectPlus(&s_type_), owner(o), name(n) {}
-    bool sample(float & v) const {
-        ++reads;
-        PyObject * r = PyObject_GetAttrString(owner.get(), name.c_str());
-        if (!r) { PyErr_Clear(); return false; }
-        const bool ok = Script::setData(r, v, name.c_str()) == 0; Py_DECREF(r);
-        if (!ok) PyErr_Clear();
-        return ok;
-    }
-    PY_METHOD_DECLARE(pyCall)
-    PyObjectPtr owner; std::string name;
-    mutable int reads = 0;
-};
-PyObject * HostFloatLink::pyCall(PyObject *) { float v = 0.f; return sample(v) ? PyFloat_FromDouble(v) : NULL; }
-PY_TYPEOBJECT_SPECIALISE_CALL(HostFloatLink, &HostFloatLink::_pyCall)
-PY_TYPEOBJECT(HostFloatLink)
-PY_BEGIN_METHODS(HostFloatLink)
-PY_END_METHODS()
-PY_BEGIN_ATTRIBUTES(HostFloatLink)
-PY_END_ATTRIBUTES()
+// The actual production float-link owner/make/copy/sample code is compiled
+// from its source slice; only the native filter-field producer is a fixture.
+#include "stock_float_link_owner.inc"
+static int nativeFloatReads = 0;
 
 class HostBoolLink : public PyObjectPlus {
     Py_Header(HostBoolLink, PyObjectPlus)
@@ -114,10 +94,6 @@ PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES(HostLodLink)
 PY_END_ATTRIBUTES()
 
-bool isStockFloatLink(PyObject * link) { return HostFloatLink::Check(link); }
-bool sampleStockFloatLink(PyObject * link, float & value) {
-    return HostFloatLink::Check(link) && static_cast<HostFloatLink *>(link)->sample(value);
-}
 bool sampleStockLodLink(PyObject * link, uint32 & priority, float & distance) {
     if (!HostLodLink::Check(link)) return false;
     HostLodLink * lod = static_cast<HostLodLink *>(link);
@@ -141,7 +117,15 @@ PyObject * drain(std::vector<std::string> & v) {
 PyObject * createFloatLink(PyObject *, PyObject * args) {
     PyObject * owner; const char * name = "";
     if (!PyArg_ParseTuple(args, "O|s:createFloatLink", &owner, &name)) return NULL;
-    return new HostFloatLink(owner, name);
+    PyObjectPtr pin=owner;
+    const std::string field=name;
+    return makeStockFloatLink([pin,field](float &value) {
+        ++nativeFloatReads;
+        PyObject * result=PyObject_GetAttrString(pin.get(),field.c_str());
+        if (!result) return false;
+        const bool valid=Script::setData(result,value,field.c_str())==0;
+        Py_DECREF(result);return valid;
+    });
 }
 // The proposed stock_vehicle_visuals branch: native bool properties only.
 PyObject * createBoolLink(PyObject *, PyObject * args) {
@@ -257,8 +241,8 @@ PyObject * setHistory(PyObject *, PyObject * args) {
     Py_RETURN_NONE;
 }
 PyObject * linkReads(PyObject *, PyObject * args) {
-    PyObject * object; if (!PyArg_ParseTuple(args, "O", &object) || !HostFloatLink::Check(object)) return NULL;
-    return PyInt_FromLong(static_cast<HostFloatLink *>(object)->reads);
+    PyObject * object; if (!PyArg_ParseTuple(args, "O", &object) || !isStockFloatLink(object)) return NULL;
+    return PyInt_FromLong(nativeFloatReads);
 }
 PyObject * scheduled(PyObject *, PyObject *) { return PyInt_FromSize_t(schedule.size()); }
 

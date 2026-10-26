@@ -104,6 +104,40 @@ void fireEvent( const PyObjectPtr & callback, PyObject * args )
     Py_XDECREF( result );
 }
 
+// 759140/7584a0 clone the callable/cache by value while retaining the Python
+// producer. Keep a running target alive even if its owner replaces the link.
+struct PythonSpeedReader
+{
+    struct Value
+    {
+        explicit Value( PyObject * object ) : producer(object) {}
+        PyObjectPtr producer;
+        float cached = 0.f;
+        bool sampled = false;
+    };
+    explicit PythonSpeedReader( PyObject * object ) : value(std::make_shared<Value>(object)) {}
+    PythonSpeedReader( const PythonSpeedReader & other ) :
+        value(std::make_shared<Value>(*other.value)) {}
+    bool operator()( float & result ) const
+    {
+        std::shared_ptr<Value> pin = value;
+        PyObject * object = PyObject_CallObject(pin->producer.get(), NULL);
+        // The original NULL path reaches a converter with no NULL guard.
+        // Contain that path; never treat an absent result as a cached float.
+        if (!object) return false;
+        float converted;
+        const bool valid = Script::setData(object, converted, "") == 0;
+        if (valid) { pin->cached = converted; pin->sampled = true; }
+        Py_DECREF(object);
+        // The original first cache is uninitialised. Expose no fabricated
+        // physical value until this particular callable has succeeded.
+        if (!pin->sampled) return false;
+        result = pin->cached;
+        return true;
+    }
+    std::shared_ptr<Value> value;
+};
+
 struct SensorState : public StockComponentState
 {
     explicit SensorState( const wot::StockWaterSensorConfig & value ) : config( value ) {}
@@ -139,7 +173,7 @@ struct SensorState : public StockComponentState
         // 00794a40 releases the event and link functions in this order.
         onUnderWaterSwitch = NULL;
         onWaterSplash = NULL;
-        speedLink = NULL;
+        speedLink.reset();
         plane = NULL;
         lodLink = NULL;
     }
@@ -155,19 +189,11 @@ struct SensorState : public StockComponentState
     enum SpeedSample { SPEED_READY, SPEED_MISSING, SPEED_FAILED };
     SpeedSample sampleSpeed( float & value )
     {
-        PyObjectPtr link = speedLink;
-        if (!link)
-            return SPEED_MISSING;
-        if (isStockFloatLink( link.get() ))
-            return sampleStockFloatLink( link.get(), value ) ? SPEED_READY : SPEED_MISSING;
-        // LinkFromPython<float>: a Python producer failure is local to this sample.
-        PyObject * result = PyObject_CallObject( link.get(), NULL );
-        const bool converted = result && Script::setData( result, value, "speedLink" ) == 0;
-        Py_XDECREF( result );
-        if (converted)
-            return SPEED_READY;
-        PyErr_PrintEx( 0 );
-        return SPEED_FAILED;
+        std::shared_ptr<StockFloatLinkReader> link = speedLink;
+        if (!link || !*link) return SPEED_MISSING;
+        const bool sampled = (*link)(value);
+        if (PyErr_Occurred()) PyErr_PrintEx(0);
+        return sampled ? SPEED_READY : SPEED_FAILED;
     }
     void update( uint64 epoch );
 
@@ -177,7 +203,7 @@ struct SensorState : public StockComponentState
     uint32 maxPriority = NO_PRIORITY_LIMIT;
     PyObjectPtr lodLink;
     MatrixProviderPtr plane;
-    PyObjectPtr speedLink;
+    std::shared_ptr<StockFloatLinkReader> speedLink;
     PyObjectPtr onWaterSplash;
     PyObjectPtr onUnderWaterSwitch;
     bool active = false;
@@ -316,19 +342,25 @@ public:
         std::shared_ptr<SensorState> value = this->state();
         if (!value)
             return NULL;
-        return Script::getData( value->speedLink );
+        return makeStockFloatLink(value->speedLink ? *value->speedLink : StockFloatLinkReader());
     }
     int pySet_speedLink( PyObject * object )
     {
         std::shared_ptr<SensorState> value = this->state();
         if (!value)
             return -1;
-        if (!object || (object != Py_None && !isStockFloatLink( object ) && !PyCallable_Check( object )))
+        StockFloatLinkReader reader;
+        if (object == Py_None) {}
+        else if (object && copyStockFloatLink(object, reader)) {}
+        else if (object && PyCallable_Check(object)) reader = PythonSpeedReader(object);
+        else
         {
             PyErr_Format( PyExc_TypeError, "%s must be set to a PyDataLink or callable", "speedLink" );
             return -1;
         }
-        value->speedLink = object == Py_None ? NULL : object;
+        std::shared_ptr<StockFloatLinkReader> replacement;
+        if (reader) replacement = std::make_shared<StockFloatLinkReader>(std::move(reader));
+        value->speedLink = replacement;
         return 0;
     }
     PyObject * pyGet_sensorPlaneLink()

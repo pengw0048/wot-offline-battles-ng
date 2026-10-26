@@ -108,7 +108,13 @@ assert type(sensor).__name__ == 'PyWaterSensor' and sensor.isOwning is True
 assert (sensor.isInWater, sensor.isUnderWater, sensor.isSplash, sensor.waterHeight) == (False, False, False, 0.)
 assert type(sensor.onWaterSplash).__name__ == 'PyNativeEventWrapper'
 assert type(sensor.onUnderWaterSwitch).__name__ == 'PyNativeEventWrapper'
-assert sensor.speedLink is None
+empty_speed = sensor.speedLink
+assert type(empty_speed).__name__ == 'DataLinks::PyDataLink<float>'
+assert empty_speed is not sensor.speedLink
+expect(TypeError, empty_speed)
+sensor.speedLink = empty_speed
+assert type(sensor.speedLink).__name__ == 'DataLinks::PyDataLink<float>'
+expect(TypeError, sensor.speedLink)
 plane = sensor.sensorPlaneLink
 assert type(plane).__name__ == 'DataLinks::PyDataLink<Matrix>'
 expect(TypeError, plane)
@@ -183,7 +189,7 @@ else:
 print('exact model_assembler.assembleWaterSensor bytecode: %s' % (assemble is not None))
 assert sensor.onWaterSplash == recorder.onWaterSplash
 assert sensor.onUnderWaterSwitch == recorder.onUnderWaterSwitch
-assert type(sensor.speedLink).__name__ == 'HostFloatLink' and sensor.speedLink() == 5.
+assert type(sensor.speedLink).__name__ == 'DataLinks::PyDataLink<float>' and sensor.speedLink() == 5.
 assert sensor.sensorPlaneLink()[12:15] == (10., 2., 5.)
 underwater_link = DataLinks.createBoolLink(sensor, 'isUnderWater')
 in_water_link = DataLinks.createBoolLink(sensor, 'isInWater')
@@ -450,3 +456,109 @@ if appearance_code:
                        ((1., 2., 3.), 'waterCollisionLight', (0., 1., 0.))]
     print('exact CompoundAppearance water consumers: True')
 print('WaterSensor consumer checks passed')
+
+# Getter/std::function copies own their cached float but retain the same producer.
+def check_speed_link_copies():
+    import weakref
+
+    class Producer(object):
+        mode = 'value'
+        value = 6.
+        calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            if self.mode == 'raise':
+                raise RuntimeError('speed producer failed')
+            if self.mode == 'invalid':
+                return None
+            return self.value
+
+    producer = Producer()
+    weak = weakref.ref(producer)
+    holder = Vehicular.WaterSensor(config)
+    holder.speedLink = producer
+    first, second = holder.speedLink, holder.speedLink
+    assert first is not second and first is not producer
+    assert type(first).__name__ == 'DataLinks::PyDataLink<float>'
+    assert first() == 6.
+    producer.value = 8.
+    assert second() == 8.
+    producer.mode = 'invalid'
+    assert first() == 6. and second() == 8.
+    # Calling a getter did not mutate the sensor's independent original cache.
+    expect(TypeError, holder.speedLink)
+    holder.speedLink = first
+    clone = holder.speedLink
+    assert clone is not first and clone() == 6.
+    producer.mode = 'value'
+    producer.value = 9.
+    assert first() == 9.
+    producer.mode = 'invalid'
+    assert holder.speedLink() == 6. and clone() == 6. and first() == 9.
+    producer.mode = 'raise'
+    expect(RuntimeError, first, 'speed producer failed')
+    producer.mode = 'invalid'
+    assert first() == 9.
+    producer.mode = 'value'
+    producer.value = -0.
+    assert __import__('math').copysign(1., first()) == -1.
+    producer.mode = 'invalid'
+    assert __import__('math').copysign(1., first()) == -1.
+    # Detached copies survive replacement and component destruction.
+    holder.speedLink = None
+    holder.destroy()
+    assert clone() == 6.
+    del producer, holder, first, second, clone
+    gc.collect()
+    assert weak() is None
+
+
+check_speed_link_copies()
+
+# A valid object with failed float conversion reuses a previously sampled cache.
+# A Python exception remains a contained fatal/NULL original path instead.
+def check_cached_speed_events():
+    holder = Vehicular.WaterSensor(config)
+    holder.sensorPlaneLink = root
+    events = []
+    holder.onWaterSplash = lambda point, heavy: events.append((point, heavy))
+    mode = [6.]
+    holder.speedLink = lambda: mode[0]
+    holder.activate()
+    Host.setWaters([.3])
+    tick()
+    assert len(events) == 1
+    Host.setWaters([-1.])
+    tick()
+    mode[0] = None
+    Host.setWaters([.3])
+    tick()
+    assert len(events) == 2
+    holder.destroy()
+
+
+check_cached_speed_events()
+
+# Retain a running function across synchronous owner destruction/replacement.
+def check_speed_producer_retirement():
+    holder = Vehicular.WaterSensor(config)
+    holder.sensorPlaneLink = root
+    events = []
+    holder.onWaterSplash = lambda *args: events.append(args)
+
+    def retire():
+        holder.speedLink = None
+        holder.destroy()
+        return 6.
+
+    holder.speedLink = retire
+    holder.activate()
+    Host.setWaters([.3])
+    tick()
+    assert events == [] and Host.scheduled() == 0
+    expect(ValueError, lambda: holder.isInWater, 'WaterSensor has been destroyed')
+
+
+check_speed_producer_retirement()
+print('Production FloatLink copy/cache/typed empty/retirement checks passed')

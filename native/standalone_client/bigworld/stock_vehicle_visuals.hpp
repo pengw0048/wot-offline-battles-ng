@@ -2,6 +2,7 @@
 
 #include "cstdmf/bw_namespace.hpp"
 #include "pyscript/script_math.hpp"
+#include <functional>
 
 BW_BEGIN_NAMESPACE
 extern int StockVehicleVisuals_token;
@@ -18,5 +19,10 @@ bool sampleStockBoolLink( PyObject * link, bool & value );
 bool sampleStockFloatLink( PyObject * link, float & value );
 bool sampleStockLodLink( PyObject * link, uint32 & priority, float & distance );
 bool isStockFloatLink( PyObject * link );
+// Copying a DataLink clones its callable value, including its cached sample.
+// A false sample is a contained producer failure, never an invented float.
+typedef std::function<bool(float &)> StockFloatLinkReader;
+PyObject * makeStockFloatLink( StockFloatLinkReader reader );
+bool copyStockFloatLink( PyObject * link, StockFloatLinkReader & reader );
 bool sampleStockTranslationLink( PyObject * link, Vector3 & value );
 BW_END_NAMESPACE

@@ -273,3 +273,82 @@ def updater_cases(seed=1513, count=4000):
         elapsed = generator.choice((0., .125, .25, f32(generator.uniform(0., .3)), float('nan')))
         cases.append((entries, elapsed, generator.randrange(1, 20), generator.choice((3, 3, 1, 2, 5))))
     return cases
+
+class OriginalFloatLink:
+    """Original float-functor cloning and valid-object conversion instructions.
+
+    Allocation and the Python producer/error-writer boundaries are supplied;
+    759140->7583f0, 759320 and its actual 68fba0 converter execute unchanged.
+    A supplied NULL models the already-reviewed producer failure boundary and
+    proves its unsafe dereference, not a complete original-client crash.
+    """
+    def __init__(self, executable):
+        self.original = OriginalWaterSensor(executable)
+        self.u = self.original.u
+        self.source = HEAP + 0x10000
+        self.owner = HEAP + 0x11000
+        self.number = HEAP + 0x12000
+        self.allocation = HEAP + 0x13000
+        self.result = HEAP + 0x14000
+        self.return_stub = STUBS + 0x800
+        self.errors = 0
+        self.return_object = 0
+        self.fault = None
+        self.u.mem_write(self.return_stub, b'\xd9\x1d' + struct.pack('<I', self.result)
+                         + b'\xe9' + struct.pack('<i', SENTINEL-(self.return_stub+11)))
+        self.u.mem_write(self.owner, struct.pack('<II', 100, 0))
+
+        def allocate():
+            assert self.original._arg(1) == 0x24
+            self.original._return(self.allocation)
+        def producer(): self.original._return(self.return_object)
+        def error():
+            self.errors += 1
+            self.original._return(0)
+        handlers = {0x13d7fe9: allocate, 0x75ae40: producer, 0xfc3720: error}
+        self.original.handlers.update(handlers)
+        for address in handlers:
+            self.u.hook_add(unicorn.UC_HOOK_CODE, self.original._hook, begin=address, end=address)
+        def invalid(unused_u, unused_access, address, unused_size, unused_value, unused_data):
+            self.fault = address
+            return False
+        self.u.hook_add(unicorn.UC_HOOK_MEM_INVALID, invalid)
+
+    def setup(self, entry, this, args=(), result=False):
+        u = self.u
+        sp = STACK + 0x80000
+        u.mem_write(sp, struct.pack('<'+'I'*(len(args)+1),
+                                   self.return_stub if result else SENTINEL, *args))
+        u.reg_write(UC_X86_REG_ESP, sp)
+        u.reg_write(UC_X86_REG_ECX, this)
+        u.reg_write(UC_X86_REG_FPCW, 0x27f)
+        u.reg_write(UC_X86_REG_MXCSR, 0x1f80)
+        u.emu_start(entry, SENTINEL+1, count=100000)
+
+    def clone(self, cached):
+        self.u.mem_write(self.source, struct.pack('<III', 0x14d670c, cached, self.owner)
+                         + bytes(16) + struct.pack('<II', 0, 15))
+        count = struct.unpack('<I', self.u.mem_read(self.owner, 4))[0]
+        self.setup(0x759140, self.source, (0,))
+        copied = self.u.reg_read(UC_X86_REG_EAX)
+        assert copied == self.allocation
+        result = struct.unpack('<II', self.u.mem_read(copied+4, 8))
+        assert struct.unpack('<I', self.u.mem_read(self.owner, 4))[0] == count+1
+        return result
+
+    def sample(self, address, value):
+        if value is None:
+            self.return_object = 0x1a5c798  # Actual original Py_None object.
+        elif value == 'NULL':
+            self.return_object = 0
+        else:
+            self.u.mem_write(self.number, struct.pack('<IId', 100, 0x1a64370, value))
+            self.return_object = self.number
+        self.errors = 0
+        self.fault = None
+        try:
+            self.setup(0x759320, address, result=True)
+        except unicorn.UcError:
+            if self.fault != 4: raise
+            return None
+        return struct.unpack('<I', self.u.mem_read(self.result, 4))[0]
