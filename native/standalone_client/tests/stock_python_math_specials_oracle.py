@@ -1,6 +1,7 @@
 """Execute the pinned #1513 math/cmath Python methods on bit-exact inputs.
 
-Each case enters the original PyCFunction and runs its wrapper, helper and
+Each case enters the original PyCFunction (or, for abs, the original builtin
+through PyComplex_Type's nb_absolute slot) and runs its wrapper, helper and
 special-value tables unchanged. Only Python object boundaries (argument
 unpacking, float/complex construction, exceptions) and exact CRT
 classification imports are supplied. A case that reaches any other CRT import
@@ -25,9 +26,16 @@ MATH1 = ['acos', 'acosh', 'asin', 'asinh', 'atan', 'atanh', 'ceil', 'cos', 'cosh
          'lgamma', 'log', 'log10', 'log1p', 'radians', 'sin', 'sinh', 'sqrt',
          'tan', 'tanh']
 MATH2 = ['atan2', 'copysign', 'fmod', 'hypot', 'pow']
+# Moduli also see subnormal, DBL_MAX and both quiet NaN signs.
+MODULI = PAIR + [1, 0x8000000000000001, 0x7fefffffffffffff, 0xffefffffffffffff,
+                 0x7ff8000000000000]
 CMATH = ['acos', 'acosh', 'asin', 'asinh', 'atan', 'atanh', 'cos', 'cosh', 'exp',
          'log', 'log10', 'phase', 'polar', 'sin', 'sinh', 'sqrt', 'tan', 'tanh']
 VALUE_ERROR, OVERFLOW_ERROR = 0x1a5dafc, 0x1a5d9fc
+COMPLEX_TYPE, BUILTIN_ABS = 0x1a702f0, 0x1a78000
+TABLES = ['acos', 'acosh', 'asinh', 'atanh', 'cosh', 'exp', 'log', 'sinh', 'sqrt',
+          'tanh', 'rect']
+ERANGE = 34
 
 
 def cases():
@@ -38,7 +46,14 @@ def cases():
     for name in MATH2:
         out += [('math', name, 'f2', (y, x)) for y in PAIR for x in PAIR]
     for name in CMATH:
-        out += [('cmath', name, 'c1', (r, i)) for r in PAIR for i in PAIR]
+        values = MODULI if name == 'polar' else PAIR
+        out += [('cmath', name, 'c1', (r, i)) for r in values for i in values]
+    out += [('__builtin__', 'abs', 'c1', (r, i)) for r in MODULI for i in MODULI]
+    # c_abs leaves errno untouched for NaN parts; consumers then read it.
+    for module, name in (('__builtin__', 'abs'), ('cmath', 'polar')):
+        out += [(module, name, 'c1r', words) for words in (
+            (0x7ff8000000000123, 0x3ff0000000000000), (0, 0xfff8000000000000),
+            (INF, 0x7ff8000000000000), (0x3ff0000000000000, 0x4004000000000000), (0, 0))]
     out += [('cmath', 'rect', 'f2', (r, p)) for r in PAIR for p in PAIR]
     # Windows-only: integer exponents and the float(text) parser path.
     out += [('math', 'ldexp', 'fi', (x, n)) for x in (0x3ff8000000000000, 0xbff8000000000000,
@@ -54,6 +69,30 @@ def case_line(case):
     tokens = ['%016x' % words[0]] + [str(w) if not isinstance(w, int) or kind == 'fi'
                                      else '%016x' % w for w in words[1:]]
     return ' '.join((cid, module, name, kind) + tuple(tokens))
+
+
+def source_table_words(source):
+    """Evaluate the INIT_SPECIAL_VALUES entries of a cmathmodule.c text."""
+    env = {'P': math.pi, 'P14': 0.25*math.pi, 'P12': 0.5*math.pi, 'P34': 0.75*math.pi,
+           'INF': math.inf, 'U': -9.5426319407711027e33}
+    tables = re.findall(r'INIT_SPECIAL_VALUES\((\w+)_special_values, \{(.*?)\}\)', source, re.S)
+    if [name for name, unused in tables] != TABLES:
+        raise ValueError('The cmath special-value tables changed')
+    words = [0xfff8000000000000 if token.strip() == 'N' else bits(float(eval(token, {}, env)))
+             for unused, body in tables
+             for pair in re.findall(r'C\(([^,()]+),([^,()]+)\)', body) for token in pair]
+    if len(words) != len(TABLES)*98:
+        raise ValueError('The cmath special-value tables changed')
+    return words
+
+
+def parse_tables(text):
+    """Map table name to its 98 words from a Windows probe table dump."""
+    result = {}
+    for line in text.splitlines():
+        name, words = line.split(' ', 1)
+        result[name] = [int(word, 16) for word in words.split()]
+    return result
 
 
 def parse_outcomes(text):
@@ -87,7 +126,7 @@ class HostDependent(Exception):
 class OriginalPythonMathOracle:
     SIGN_ONLY = {'cos', 'sin'}
 
-    def __init__(self, executable, cmath_source=None):
+    def __init__(self, executable):
         import pefile
         from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
         from unicorn import x86_const as reg
@@ -135,33 +174,15 @@ class OriginalPythonMathOracle:
         self.methods = {'math': self._table(0x1a9bc08), 'cmath': self._table(0x1a8e438)}
         self.sign_only, self.result, self.module = False, None, 'cmath'
         self._call(0x106fa20, [])  # Original initcmath populates its 7x7 tables.
-        self.merged_zeros = []
-        if cmath_source is not None:
-            self._restore_source_zeros(cmath_source)
+        if self._cstr(self.word(BUILTIN_ABS)) != 'abs' or self.word(BUILTIN_ABS+8) != 8:
+            raise ValueError('The pinned builtin abs method changed')
+        if self._cstr(self.word(COMPLEX_TYPE+12)) != 'complex':
+            raise ValueError('The pinned complex type changed')
 
-    def _restore_source_zeros(self, source):
-        """Give retail tables the public source's zero signs, nothing else.
-
-        The #1513 compiler shared one 16-byte constant for entries differing
-        only in a zero sign. That artifact is separate from HUGE_VAL/Py_NAN.
-        """
-        env = {'P': math.pi, 'P14': 0.25*math.pi, 'P12': 0.5*math.pi,
-               'P34': 0.75*math.pi, 'INF': math.inf, 'U': -9.5426319407711027e33}
-        tables = re.findall(r'INIT_SPECIAL_VALUES\((\w+), \{(.*?)\}\)', source, re.S)
-        entries = [(name, token.strip()) for name, body in tables
-                   for pair in re.findall(r'C\(([^,]+),([^)]+)\)', body) for token in pair]
-        if len(tables) != 11 or len(entries) != 11*49*2:
-            raise ValueError('The pinned cmath special-value tables changed')
-        for index, (name, token) in enumerate(entries):
-            address = 0x214ecb0 + 8*index
-            retail = self.qword(address)
-            source = 0xfff8000000000000 if token == 'N' else bits(float(eval(token, {}, env)))
-            if retail == source:
-                continue
-            if retail & ~(1 << 63) or source & ~(1 << 63):
-                raise ValueError('Retail %s differs from source beyond a zero sign' % name)
-            self.merged_zeros.append((name, index//2 % 49, index % 2))
-            self.u.mem_write(address, struct.pack('<Q', source))
+    def table_words(self):
+        """Return the 11 tables written by the original initcmath, in order."""
+        return {name: [self.qword(0x214ecb0 + 8*(98*i + k)) for k in range(98)]
+                for i, name in enumerate(TABLES)}
 
     def word(self, address):
         return struct.unpack('<I', self.u.mem_read(address, 4))[0]
@@ -293,7 +314,7 @@ class OriginalPythonMathOracle:
         if kind == 'fs':
             kind, words = 'f1', words[:1]
         self.sign_only, self.result, self.module = False, None, module
-        self.u.mem_write(self.errno, bytes(4))
+        self.u.mem_write(self.errno, struct.pack('<I', ERANGE if kind == 'c1r' else 0))
         self.arguments = words
         self.objects = {}
         for i, word in enumerate(words):
@@ -303,11 +324,16 @@ class OriginalPythonMathOracle:
             self.objects[obj] = word
         self.u.mem_write(0x20002000, bytes(256))
         # The argument tuple header; cmath.log reads its size directly.
-        size = 1 if kind == 'c1' else len(words)
+        size = 1 if kind in ('c1', 'c1r') else len(words)
         self.u.mem_write(0x20004000, struct.pack('<III', 1000, 0x20002000, size))
-        function, flags = self.methods[module][name]
-        args = 0x20001000 if flags == 8 else 0x20004000  # METH_O or METH_VARARGS
-        self._call(function, [0, args])
+        if module == '__builtin__':
+            # A real PyComplexObject layout: dispatch reads ob_type, then cval.
+            self.u.mem_write(0x20007000, struct.pack('<IIQQ', 1000, COMPLEX_TYPE, *words))
+            self._call(self.word(BUILTIN_ABS+4), [0, 0x20007000])
+        else:
+            function, flags = self.methods[module][name]
+            args = 0x20001000 if flags == 8 else 0x20004000  # METH_O or METH_VARARGS
+            self._call(function, [0, args])
         if self.result is None:
             raise RuntimeError('Original method returned without a result boundary')
         if self.sign_only and self.result[0] != 'E':
