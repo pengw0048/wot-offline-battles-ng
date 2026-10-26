@@ -13,8 +13,9 @@ def replace_once(text, before, after):
 
 def patch(root):
     root = Path(root)
-    paths = [root / 'client/script_bigworld.cpp', root / 'lib/moo/render_context.cpp']
-    script, render = [path.read_text() for path in paths]
+    paths = [root / 'client/script_bigworld.cpp', root / 'lib/moo/render_context.cpp',
+             root / 'client/bw_winmain.cpp']
+    script, render, window = [path.read_text() for path in paths]
     if '#include "stock_display_modes.hpp"' not in script:
         script = replace_once(script, '#include "pch.hpp"',
                               '#include "pch.hpp"\n#include "stock_display_modes.hpp"')
@@ -46,8 +47,21 @@ PY_AUTO_MODULE_FUNCTION( RETDATA, changeVideoMode, ARG( int, ARG( int, END ) ), 
         '        presentParameters_.BackBufferHeight = mode.Height;',
         '        presentParameters_.BackBufferHeight = mode.Height;\n'
         '        presentParameters_.FullScreen_RefreshRateInHz = mode.RefreshRate;')
-    # Validate all anchors before writing either translation unit.
-    for path, contents in zip(paths, (script, render)):
+    render = replace_once(render, 'namespace Moo\n{',
+        'bool stockDisplayDeviceLost() { return s_lost; }\n\nnamespace Moo\n{')
+    render = replace_once(render,
+        '            hr = device_->Present( NULL, NULL, NULL, NULL );',
+        '            hr = device_->Present( NULL, NULL, NULL, NULL );\n'
+        '            // #1513 publishes device loss immediately after Present.\n'
+        '            if (hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET)\n'
+        '                s_lost = true;')
+    window = replace_once(window, '#include "bw_winmain.hpp"',
+                          '#include "bw_winmain.hpp"\n#include "stock_display_modes.hpp"')
+    window = replace_once(window, '\tstatic bool s_inSizeMove = false;',
+        '\tstockDisplayWindowMessage( msg, wParam, lParam );\n\n'
+        '\tstatic bool s_inSizeMove = false;')
+    # Validate every anchor before mutating any production translation unit.
+    for path, contents in zip(paths, (script, render, window)):
         if path.read_text() != contents:
             path.write_text(contents)
 

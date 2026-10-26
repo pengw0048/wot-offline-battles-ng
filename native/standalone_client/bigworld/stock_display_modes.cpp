@@ -2,6 +2,7 @@
 #include "pch.hpp"
 #include "stock_display_modes.hpp"
 #include "moo/render_context.hpp"
+#include <wtsapi32.h>
 #endif
 
 #include <string>
@@ -26,6 +27,9 @@ struct DisplayState
     int fixedHeight = 0;
 };
 DisplayState displayState;
+// WindowController starts visible and unlocked before receiving native events.
+bool windowPresentationActive = true;
+bool windowSessionLocked = false;
 
 int windowMode()
 {
@@ -172,6 +176,43 @@ void stockRememberDisplayWindow()
     for (int & selected : displayState.selected) selected = Moo::rc().deviceIndex();
     rememberNormalWindow();
 }
+
+void stockDisplayWindowMessage( UINT message, WPARAM wParam, LPARAM lParam )
+{
+    // #1513 b0cff0 -> b0bfe0/b0be90: WM_SIZE and WM_ACTIVATE share
+    // active/minimized state; the session-lock bit has a separate owner.
+    switch (message)
+    {
+    case WM_CREATE:
+        windowPresentationActive = true;
+        windowSessionLocked = false;
+        break;
+    case WM_SIZE:
+    {
+        const bool minimized = wParam == SIZE_MINIMIZED || lParam == 0;
+        windowPresentationActive = !minimized &&
+            (Moo::rc().windowed() || wParam != SIZE_MAXHIDE);
+        break;
+    }
+    case WM_ACTIVATE:
+        windowPresentationActive = !HIWORD(wParam) &&
+            (Moo::rc().windowed() || LOWORD(wParam) != WA_INACTIVE);
+        break;
+    case WM_WTSSESSION_CHANGE:
+        if (wParam == WTS_SESSION_LOCK) windowSessionLocked = true;
+        else if (wParam == WTS_SESSION_UNLOCK) windowSessionLocked = false;
+        break;
+    }
+}
+
+static PyObject * py_isWindowVisible( PyObject * args )
+{
+    if (!PyArg_ParseTuple( args, ":isWindowVisible" )) return NULL;
+    // 650b80 reads RenderSystem's device-loss state before WindowController.
+    return PyBool_FromLong( !stockDisplayDeviceLost() &&
+        windowPresentationActive && !windowSessionLocked );
+}
+PY_MODULE_FUNCTION( isWindowVisible, BigWorld )
 
 static PyObject * py_listVideoModesAllMonitors( PyObject * args )
 {

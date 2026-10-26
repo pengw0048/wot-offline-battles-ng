@@ -32,6 +32,11 @@ HOST = r'''
 #define PY_MODULE_ATTRIBUTE(...)
 #define FAILED(x) ((x)<0)
 using HWND=void*;using HMONITOR=void*;using LONG=int;using DWORD=unsigned;using UINT=unsigned;
+using WPARAM=unsigned;using LPARAM=int;
+const unsigned WM_CREATE=1,WM_SIZE=5,WM_ACTIVATE=6,WM_WTSSESSION_CHANGE=0x2b1;
+const unsigned SIZE_MINIMIZED=1,SIZE_MAXHIDE=4,WA_INACTIVE=0,WTS_SESSION_LOCK=7,WTS_SESSION_UNLOCK=8;
+unsigned LOWORD(unsigned value){return value&0xffff;}unsigned HIWORD(unsigned value){return value>>16;}
+bool deviceLost=false;bool stockDisplayDeviceLost(){return deviceLost;}
 const int FALSE=0,GWL_STYLE=0,GWL_EXSTYLE=1,WS_CAPTION=1,WS_OVERLAPPEDWINDOW=3,WS_POPUP=4;
 const int WS_EX_WINDOWEDGE=8,WS_EX_CLIENTEDGE=16,SWP_NOZORDER=1,SWP_NOACTIVATE=2,SWP_FRAMECHANGED=4;
 const int MONITOR_DEFAULTTONEAREST=2,MONITORINFOF_PRIMARY=1,CP_UTF8=65001;
@@ -93,7 +98,7 @@ RenderContext& rc(){static RenderContext value;return value;}
 #include "@PRODUCTION@"
 PyObject* modeIndex(PyObject*,PyObject*){return PyInt_FromLong(activeMode);}
 #define METHOD(name) {#name,[](PyObject*,PyObject* args)->PyObject*{return py_##name(args);},METH_VARARGS,NULL}
-PyMethodDef methods[]={METHOD(listVideoModesAllMonitors),METHOD(listBorderlessResolutionsAllMonitors),
+PyMethodDef methods[]={METHOD(isWindowVisible),METHOD(listVideoModesAllMonitors),METHOD(listBorderlessResolutionsAllMonitors),
 METHOD(wg_getMaxWindowedResolution),METHOD(wg_getMaxBorderlessResolution),METHOD(getWindowMode),
 METHOD(getActiveMonitorIndex),METHOD(getExclusiveFullscreenMonitorIndex),METHOD(wg_getCurrentResolution),
 METHOD(wg_getMonitorNames),METHOD(getBorderlessParameters),METHOD(setBorderlessFixedSize),METHOD(setActiveMonitorIndex),
@@ -127,6 +132,39 @@ int main(){
         "for f,args in ((B.getActiveMonitorIndex,(9,)),(B.setActiveMonitorIndex,(99,0)),(B.setBorderlessFixedSize,(0,1)),(B.wg_getCurrentResolution,(3,))):\n"
         " try: f(*args);assert False\n"
         " except ValueError: pass\n");
+    // The sound preference consumer needs a bool across window/session events.
+    run("assert B.isWindowVisible() is True\n"
+        "try: B.isWindowVisible(1);assert False\n"
+        "except TypeError: pass\n");
+    for(bool nativeWindowed:{false,true}){
+        windowed=nativeWindowed;
+        stockDisplayWindowMessage(WM_CREATE,0,0);
+        stockDisplayWindowMessage(WM_ACTIVATE,WA_INACTIVE,0);
+        run(nativeWindowed?"assert B.isWindowVisible() is True":"assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_ACTIVATE,1,0);
+        run("assert B.isWindowVisible() is True");
+        stockDisplayWindowMessage(WM_ACTIVATE,0x10001,0);
+        run("assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_SIZE,0,0x10001);
+        run("assert B.isWindowVisible() is True");
+        stockDisplayWindowMessage(WM_SIZE,SIZE_MINIMIZED,0x10001);
+        run("assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_SIZE,0,0);
+        run("assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_SIZE,SIZE_MAXHIDE,0x10001);
+        run(nativeWindowed?"assert B.isWindowVisible() is True":"assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_SIZE,0,0x10001);
+        stockDisplayWindowMessage(WM_WTSSESSION_CHANGE,WTS_SESSION_LOCK,0);
+        stockDisplayWindowMessage(WM_ACTIVATE,1,0);
+        run("assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_WTSSESSION_CHANGE,99,0);
+        run("assert B.isWindowVisible() is False");
+        stockDisplayWindowMessage(WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+        run("assert B.isWindowVisible() is True");
+        deviceLost=true;run("assert B.isWindowVisible() is False");
+        deviceLost=false;run("assert B.isWindowVisible() is True");
+    }
+    windowed=true;
     // -1 must still apply the requested enum; it is not the public bool API.
     assert(stockChangeVideoMode(-1,BORDERLESS));assert(windowMode()==BORDERLESS);assert(resets==1);
     assert(outer.right-outer.left==1200&&outer.bottom-outer.top==800);
@@ -189,7 +227,7 @@ class DisplayModesTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('display_patch', ROOT / 'bigworld/patch_stock_display_modes.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        names = ('client/script_bigworld.cpp', 'lib/moo/render_context.cpp')
+        names = ('client/script_bigworld.cpp', 'lib/moo/render_context.cpp', 'client/bw_winmain.cpp')
         with tarfile.open(archive) as original:
             prefix = next(name[:-len(names[0])] for name in original.getnames() if name.endswith('/' + names[0]))
             contents = {name: original.extractfile(prefix + name).read() for name in names}
