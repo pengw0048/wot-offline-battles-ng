@@ -172,6 +172,13 @@ def patches():
             'DECLARE_VERTEX_TYPE_MAPPING( VertexElement::%s, %s, %d );\n' % (
                 runtime_type, name, count) for name, runtime_type, count in STORAGES)
             + '\n' + mapping_anchor, 1)],
+        # Both stream offsets and blend-index validation query the runtime
+        # dispatcher. Type traits alone leave these storage types at zero.
+        'lib/moo/vertex_format.cpp': [(
+            '\t\tFILL_INFO( SC_REVERSE_PADDED_WW_ );',
+            '\t\tFILL_INFO( SC_REVERSE_PADDED_WW_ );' + ''.join(
+                '\n\t\tFILL_INFO( %s );' % name
+                for name, unused, count in STORAGES), 1)],
         'lib/moo/vertex_format_conversions.cpp': [
             (switch_anchor, switch_anchor + ''.join(
                 '\n\tX( %s, %s ) \\' % (name, runtime_type)

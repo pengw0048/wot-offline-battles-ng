@@ -7,6 +7,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -196,6 +197,74 @@ class ProcessedNativeTests(unittest.TestCase):
         original = ctypes.create_string_buffer(bytes((177, 177, 177, 177)))
         self.library.default_weights(original)
         self.assertEqual(original.raw[:4], bytes((177, 0, 255, 177)))
+
+
+class ProcessedStorageDispatchTests(unittest.TestCase):
+    def test_original_storage_traits_reach_runtime_size_and_component_queries(self):
+        archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE',
+                                     '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.exists():
+            self.skipTest('The pinned public engine archive is required')
+        with tempfile.TemporaryDirectory(prefix='processed-dispatch-') as temporary:
+            root = Path(temporary)
+            with tarfile.open(archive) as source:
+                names = set(patcher.patches()) | {'lib/moo/vertex_format.cpp'}
+                for name in names:
+                    member = next(m for m in source.getmembers()
+                                  if m.name.endswith('/programming/bigworld/' + name))
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(source.extractfile(member).read())
+            patcher.patch_engine(root)
+            element = (root / 'lib/moo/vertex_element.hpp').read_text()
+            storage = element[element.index('\tstruct StorageType'):]
+            storage = storage[:storage.index('\n\t};') + len('\n\t};')]
+            header = (root / 'lib/moo/vertex_format.hpp').read_text()
+            macros = header[header.index('#define DECLARE_VERTEX_TYPE_MAPPING('):
+                            header.index('// declare, but instead')]
+            producer = '\n'.join(line for line in header.splitlines()
+                                 if line.startswith('DECLARE_VERTEX_TYPE_MAPPING(') and
+                                 any(name in line for name, unused, count in patcher.STORAGES))
+            runtime = (root / 'lib/moo/vertex_format.cpp').read_text()
+            runtime = runtime[runtime.index('bool fillStorageInfo('):
+                              runtime.index('// Section: VertexFormat')]
+            # Compile the real patched dispatch and real new storage traits.
+            # Unrelated legacy traits need no fake conversion implementation.
+            code = CPP_PREFIX + '\nusing uint32 = std::uint32_t;\nnamespace VertexElement {\n'
+            code += storage + '\n' + patcher.NATIVE_STORAGE_TYPES
+            code += '\nuint32 componentCount(StorageType::Value);\nsize_t typeSize(StorageType::Value);\n}\n'
+            code += '''
+template<class T> class VertexElementTypeTraits;
+template<VertexElement::StorageType::Value T> class VertexElementStorageTypeTraits {
+public:
+    static const size_t s_size = 0, s_components = 0;
+};
+'''
+            code += macros + producer + '\n'
+            code += 'DECLARE_VERTEX_TYPE_MAPPING(float, FLOAT1, 1);\n'
+            code += 'DECLARE_VERTEX_TYPE_MAPPING(Ubyte3, UBYTE3, 3);\n' + runtime
+            code += '\nextern "C" unsigned metadata(unsigned storage, bool components) {\n'
+            code += 'auto value = static_cast<VertexElement::StorageType::Value>(storage);\n'
+            code += 'return static_cast<unsigned>(components ? VertexElement::componentCount(value) : VertexElement::typeSize(value));\n}\n'
+            code += 'extern "C" unsigned kind(unsigned index) {\nconst unsigned values[] = {'
+            code += ','.join('VertexElement::StorageType::' + name
+                             for name in ('FLOAT1', 'UBYTE3', 'UNKNOWN') +
+                             tuple(value[0] for value in patcher.STORAGES))
+            code += '}; return values[index]; }\n'
+            (root / 'dispatch.cpp').write_text(code)
+            library = root / ('dispatch.dylib' if sys.platform == 'darwin' else 'dispatch.so')
+            subprocess.run(['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror',
+                            '-fPIC', '-shared', str(root / 'dispatch.cpp'), '-o', str(library)],
+                           check=True)
+            actual = ctypes.CDLL(str(library))
+            actual.metadata.argtypes = [ctypes.c_uint, ctypes.c_bool]
+            for index, expected in enumerate(((4, 1), (3, 3), (0, 0),
+                                               (4, 1), (3, 3), (4, 3), (4, 2))):
+                with self.subTest(storage=index):
+                    self.assertEqual((actual.metadata(actual.kind(index), False),
+                                      actual.metadata(actual.kind(index), True)), expected)
+            self.assertEqual(actual.metadata(0xffffffff, False), 0)
+            self.assertEqual(actual.metadata(0xffffffff, True), 0)
 
 
 if __name__ == '__main__':
