@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -54,7 +55,7 @@ void sameNameAndThreads()
 {
     const std::string name = unique( "same" );
     StockIpcMutex first, second, other;
-    std::uint32_t error;
+    std::uint32_t error = 0;
     check( first.create( name.c_str(), error ), "create first handle", error );
     check( second.create( name.c_str(), error ), "open same name as second handle", error );
     check( first.handle() != second.handle(), "two distinct handles" );
@@ -106,7 +107,7 @@ void abandonedAndDestroyed()
 {
     const std::string name = unique( "abandoned" );
     StockIpcMutex observer;
-    std::uint32_t error;
+    std::uint32_t error = 0;
     check( observer.create( name.c_str(), error ), "observer handle", error );
     Thread owner( [&]()
     {
@@ -141,8 +142,11 @@ void closeAndRecreate()
 {
     const std::string first = unique( "first" ), second = unique( "second" );
     StockIpcMutex mutex;
-    std::uint32_t error;
+    std::uint32_t error = 0;
     check( mutex.create( first.c_str(), error ), "create before recreate", error );
+    // The Python method owns this close-before-create sequence. The core's
+    // create is the single CreateMutexA operation, not a second close owner.
+    check( mutex.close( error ), "close before recreating", error );
     check( mutex.create( second.c_str(), error ), "recreate with new name", error );
     HANDLE old = OpenMutexA( SYNCHRONIZE, FALSE, first.c_str() );
     check( old == NULL && GetLastError() == ERROR_FILE_NOT_FOUND, "recreate closed the previous handle" );
@@ -164,7 +168,7 @@ void closeAndRecreate()
 int child( const char * name, const char * ready, const char * go )
 {
     StockIpcMutex mutex;
-    std::uint32_t error;
+    std::uint32_t error = 0;
     if (!mutex.create( name, error ))
         return 10;
     const StockIpcMutex::WaitResult blocked = acquireSeconds( mutex, 0.f );
@@ -187,14 +191,16 @@ void otherProcess( const char * executable )
     HANDLE readyEvent = CreateEventA( NULL, TRUE, FALSE, ready.c_str() );
     HANDLE goEvent = CreateEventA( NULL, TRUE, FALSE, go.c_str() );
     StockIpcMutex mutex;
-    std::uint32_t error;
+    std::uint32_t error = 0;
     check( mutex.create( name.c_str(), error ), "parent create", error );
     check( acquireSeconds( mutex, 0.f ) == StockIpcMutex::WAIT_RESULT_ACQUIRED, "parent acquires" );
     std::string command = std::string( "\"" ) + executable + "\" --child " + name + " " + ready + " " + go;
     STARTUPINFOA startup = {};
     startup.cb = sizeof( startup );
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION process = {};
-    const BOOL started = CreateProcessA( NULL, &command[0], NULL, NULL, FALSE, 0, NULL, NULL,
+    const BOOL started = CreateProcessA( NULL, &command[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL,
         &startup, &process );
     check( started != FALSE, "child started", started ? 0 : GetLastError() );
     if (!started)
@@ -217,6 +223,17 @@ void conversions()
     check( StockIpcMutex::timeoutMilliseconds( 0.5f ) == 500, "0.5 s" );
     check( StockIpcMutex::timeoutMilliseconds( -1.f ) == 0xfffffc18u, "-1 s wraps" );
     check( StockIpcMutex::timeoutMilliseconds( 1e30f ) == 0, "out of range is zero" );
+    const std::uint32_t nonfinite[] = {0x7f800000,0xff800000,0x7fc00000,
+        0xffc00000,0x7f800001,0xff800001,0x7f7fffff,0xff7fffff};
+    for (const std::uint32_t bits : nonfinite)
+    {
+        float value;std::memcpy(&value,&bits,sizeof(value));
+        check( StockIpcMutex::timeoutMilliseconds(value)==0, "nonrepresentable CRT result has zero low word", bits );
+    }
+    check( StockIpcMutex::timeoutMilliseconds( -0.001f ) == 0xffffffffu, "negative millisecond wraps to INFINITE" );
+    check( StockIpcMutex::timeoutMilliseconds( -0.0009f ) == 0, "negative fraction truncates toward zero" );
+    check( StockIpcMutex::timeoutMilliseconds( 4294967.5f ) == 204, "large finite timeout retains low 32 bits" );
+    check( StockIpcMutex::timeoutMilliseconds( 1.0005f ) == 1000, "float widened before double milliseconds multiplication" );
 }
 }
 
