@@ -139,29 +139,31 @@ bool StockStaticModelSceneLoader::State::loadMaterials( const StringTable & stri
                 if (!p.kind) continue;
                 const char * name = strings.entry( p.name );
                 if (!name) return fail( "BSMA property key is absent from BWST" );
-                bool set = false;
+                // 0093e6b0 does not branch on the native setters' result.
+                // A shader can omit or optimize away an authored property;
+                // that does not invalidate this model or its collision data.
                 switch (p.kind)
                 {
-                case 1: set = base->setProperty( name, p.value == 1, true ); break;
+                case 1: base->setProperty( name, p.value == 1, true ); break;
                 case 2:
                 {
                     float value;
                     std::memcpy( &value, &p.value, 4 );
-                    set = base->setProperty( name, value, true );
+                    base->setProperty( name, value, true );
                     break;
                 }
                 case 3:
                 {
                     std::int32_t value;
                     std::memcpy( &value, &p.value, 4 );
-                    set = base->setProperty( name, static_cast<int>( value ), true );
+                    base->setProperty( name, static_cast<int>( value ), true );
                     break;
                 }
-                case 4: set = base->setProperty( name, matrix( source.matrices[p.value] ), true ); break;
+                case 4: base->setProperty( name, matrix( source.matrices[p.value] ), true ); break;
                 case 5:
                 {
                     const auto & v = source.vectors[p.value];
-                    set = base->setProperty( name, Vector4( v[0], v[1], v[2], v[3] ), true );
+                    base->setProperty( name, Vector4( v[0], v[1], v[2], v[3] ), true );
                     break;
                 }
                 case 6:
@@ -170,11 +172,10 @@ bool StockStaticModelSceneLoader::State::loadMaterials( const StringTable & stri
                     if (!resource) return fail( "BSMA texture key is absent from BWST" );
                     Moo::BaseTexturePtr texture;
                     if (*resource) texture = Moo::TextureManager::instance()->get( resource );
-                    set = base->setProperty( name, texture, true );
+                    base->setProperty( name, texture, true );
                     break;
                 }
                 }
-                if (!set) return fail( "Cannot bind original compiled material property" );
             }
         }
         materials[index] = material;

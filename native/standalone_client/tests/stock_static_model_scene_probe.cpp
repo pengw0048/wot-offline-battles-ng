@@ -48,6 +48,16 @@ int main(int argc,char** argv)
     // Clear queued resource users before retiring the mapping, as a real frame flush does.
     draw.clear();loader.unload();loader.unload();assert(space.dynamic.nodes.empty());
     assert(Moo::liveCaches.empty());assert(Moo::destruction.size()==2&&Moo::destruction[0]=="animation"&&Moo::destruction[1]=="cache");
+    // Shader variants can omit authored uniforms. Native setters then fail
+    // locally while the real model geometry and collision remain available.
+    Moo::missingProperties=true;StockStaticModelSceneLoader optimized(2);
+    assert(optimized.loadFromSpace(&space,file,{},Matrix(),strings));assert(optimized.bind());
+    objects.clear();for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
+    draw.pass=Moo::RENDERING_PASS_COLOR;
+    drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
+    assert(draw.items[0].material->base->properties==0);
+    hit={};assert(collision->doCollide(objects[0],Vector3(),Vector3(),SweepParams(),hit));assert(hit.triangles==1);
+    draw.clear();optimized.unload();Moo::missingProperties=false;
     // Masked mappings publish no scene objects but still own and release their actual resources.
     StockStaticModelSceneLoader hidden(1);
     assert(hidden.loadFromSpace(&space,file,{},Matrix(),strings));assert(hidden.bind());assert(space.dynamic.nodes.empty());hidden.unload();
