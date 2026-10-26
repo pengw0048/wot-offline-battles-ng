@@ -94,24 +94,26 @@ bool ManagedEffect::selectMaterialBinding(ComObjectWrap<ID3DXEffect>& binding,
     const uint32 pass = stockPass_;
     if (wasBegun)
     {
-        if (hadPass && FAILED(pEffect()->EndPass())) return false;
+        if (hadPass)
+        {
+            if (FAILED(pEffect()->EndPass())) return false;
+            stockPass_ = UINT_MAX;
+        }
         if (FAILED(pEffect()->End())) return false;
+        numPasses_ = 0;
     }
     activeBinding_ = binding;
     if (wasBegun)
     {
+        UINT passes = 0;
         if (FAILED(pEffect()->SetTechnique(currentTechnique())) ||
-            FAILED(pEffect()->Begin(&numPasses_, D3DXFX_DONOTSAVESTATE)))
-        {
-            numPasses_ = 0;
-            stockPass_ = UINT_MAX;
-            return false;
-        }
+            FAILED(pEffect()->Begin(&passes, D3DXFX_DONOTSAVESTATE))) return false;
+        numPasses_ = passes;
         if (hadPass)
         {
-            stockPass_ = pass;
             // Properties and object constants are written before CommitChanges.
             if (FAILED(pEffect()->BeginPass(pass))) return false;
+            stockPass_ = pass;
         }
     }
     stockBindingValid_ = true;
@@ -119,6 +121,97 @@ bool ManagedEffect::selectMaterialBinding(ComObjectWrap<ID3DXEffect>& binding,
 }
 
 """
+
+
+def replace_function(text, signature, replacement):
+    start = text.index(signature)
+    end = text.index('{', start)
+    depth = 1
+    while depth:
+        end += 1
+        depth += (text[end] == '{') - (text[end] == '}')
+    return text[:start] + replacement.strip() + text[end+1:]
+
+
+def patch_managed_lifecycle(text):
+    functions = (
+        ("bool ManagedEffect::begin( bool setAutoConstants )", r"""
+bool ManagedEffect::begin( bool setAutoConstants )
+{
+    BW_GUARD;
+    MF_ASSERT( pEffect_ != NULL );
+    if (this->beginCalled()) return false;
+    if (!stockBindingValid_) { activeBinding_ = NULL; stockBindingValid_ = true; return false; }
+    D3DXHANDLE technique = this->currentTechnique();
+    MF_ASSERT( technique != NULL );
+    if (FAILED(pEffect()->SetTechnique(technique))) return false;
+    if (setAutoConstants) this->setAutoConstants();
+    UINT passes = 0;
+    if (FAILED(pEffect()->Begin(&passes, D3DXFX_DONOTSAVESTATE))) return false;
+    numPasses_ = passes;
+    stockPass_ = UINT_MAX;
+    return true;
+}
+"""),
+        ("bool ManagedEffect::beginPass( uint32 pass )", r"""
+bool ManagedEffect::beginPass( uint32 pass )
+{
+    BW_GUARD;
+    MF_ASSERT( pEffect_ != NULL );
+    MF_ASSERT( this->beginCalled() );
+    MF_ASSERT( pass < numPasses_ );
+    const HRESULT result = pEffect()->BeginPass(pass);
+    if (SUCCEEDED(result)) stockPass_ = pass;
+    return SUCCEEDED(result);
+}
+"""),
+        ("bool ManagedEffect::endPass()", r"""
+bool ManagedEffect::endPass()
+{
+    BW_GUARD;
+    MF_ASSERT( pEffect_ != NULL );
+    const HRESULT result = pEffect()->EndPass();
+    if (SUCCEEDED(result)) stockPass_ = UINT_MAX;
+    return SUCCEEDED(result);
+}
+"""),
+        ("bool ManagedEffect::end()", r"""
+bool ManagedEffect::end()
+{
+    BW_GUARD;
+    MF_ASSERT( pEffect_ != NULL );
+    MF_ASSERT( this->beginCalled() );
+    const HRESULT result = pEffect()->End();
+    if (SUCCEEDED(result))
+    {
+        numPasses_ = 0;
+        activeBinding_ = NULL;
+        stockPass_ = UINT_MAX;
+        stockBindingValid_ = true;
+    }
+    return SUCCEEDED(result);
+}
+"""),
+        ("bool ManagedEffect::commitChanges()", r"""
+bool ManagedEffect::commitChanges()
+{
+    BW_GUARD;
+    MF_ASSERT( pEffect_ != NULL );
+    return stockBindingValid_ && SUCCEEDED(pEffect()->CommitChanges());
+}
+"""),
+    )
+    for signature, replacement in functions:
+        text = replace_function(text, signature, replacement)
+    signature = "bool ManagedEffect::selectMaterialBinding("
+    if signature in text:
+        # Replace the old body in cached preparations; never append a second
+        # method merely because this version's rollback logic has changed.
+        replacement = SELECT_BINDING[SELECT_BINDING.index(signature):].strip()
+        text = replace_function(text, signature, replacement)
+    else:
+        text = text.replace(functions[0][0], SELECT_BINDING + functions[0][0], 1)
+    return text
 
 
 def patch_properties(root):
@@ -180,21 +273,7 @@ def patch(root):
     text = replace_once(text, old, new, "real ARIE factory")
     text = replace_once(text, " \tpEffect_ =  pEffect;", "\tactiveBinding_ = NULL;\n\tstockPass_ = UINT_MAX;\n \tpEffect_ =  pEffect;", "reload binding reset")
     text = replace_once(text, "(*pValue)( pEffect_.pComObject(), it->first );", "(*pValue)( pEffect(), it->first );", "automatic constants destination")
-    start = text.index("bool ManagedEffect::begin( bool setAutoConstants )")
-    end = text.index("/**", text.index("bool ManagedEffect::commitChanges()", start))
-    block = text[start:end]
-    block = block.replace("pEffect_->", "pEffect()->")
-    block = replace_once(block, "\tMF_ASSERT( pEffect_ != NULL );\n\n\tD3DXHANDLE hCurrentTechnique",
-        "\tMF_ASSERT( pEffect_ != NULL );\n\tif (!stockBindingValid_) { activeBinding_ = NULL; stockBindingValid_ = true; return false; }\n\n\tD3DXHANDLE hCurrentTechnique", "binding begin failure")
-    block = replace_once(block, "return SUCCEEDED( pEffect()->CommitChanges() );",
-        "return stockBindingValid_ && SUCCEEDED( pEffect()->CommitChanges() );", "binding commit failure")
-    if "stockPass_ = pass;" not in block:
-        block = block.replace("return SUCCEEDED( pEffect()->BeginPass( pass ) );", "stockPass_ = pass;\n\treturn SUCCEEDED( pEffect()->BeginPass( pass ) );")
-        block = block.replace("return SUCCEEDED( pEffect()->EndPass() );", "stockPass_ = UINT_MAX;\n\treturn SUCCEEDED( pEffect()->EndPass() );")
-        block = block.replace("return SUCCEEDED( pEffect()->End() );", "const HRESULT result = pEffect()->End();\n\tactiveBinding_ = NULL;\n\tstockPass_ = UINT_MAX;\n\tstockBindingValid_ = true;\n\treturn SUCCEEDED(result);")
-    text = text[:start] + block + text[end:]
-    if SELECT_BINDING not in text:
-        text = text.replace("bool ManagedEffect::begin( bool setAutoConstants )", SELECT_BINDING + "bool ManagedEffect::begin( bool setAutoConstants )", 1)
+    text = patch_managed_lifecycle(text)
     path.write_text(text)
     apply_file(root, moo / "effect_material.cpp", [
         ("ID3DXEffect*\t\t\t\tpEffect = pManagedEffect_->pEffect();", "if (!properties_.select(*pManagedEffect_)) return;\n\tID3DXEffect*\t\t\t\tpEffect = pManagedEffect_->pEffect();", "immediate material owner"),

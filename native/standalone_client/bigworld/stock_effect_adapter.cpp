@@ -1031,7 +1031,10 @@ HRESULT STDMETHODCALLTYPE StockEffectAdapter::BeginPass(UINT pass) {
     return E_INVALIDARG;
   pass_ = pass;
   const auto result = apply_current();
-  // Keep the selected pass so a later CommitChanges can apply object values.
+  // A failed BeginPass has not established an active pass. Retain Begin so
+  // the caller can End the technique or retry after repairing its inputs.
+  if (FAILED(result))
+    pass_.reset();
   return result;
 }
 HRESULT STDMETHODCALLTYPE StockEffectAdapter::CommitChanges() {
