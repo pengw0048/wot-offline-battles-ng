@@ -12,6 +12,8 @@ import zipfile
 
 from native.standalone_client.tests.test_stock_space_assets import (
     HARNESS as ASSET_HARNESS, load_patch, without_includes, table_bytes)
+from native.standalone_client.tests.test_stock_vertex_resources import (
+    cache_patch, format_resources, resource_bytes, synthetic_resources)
 
 ROOT = Path(__file__).resolve().parents[1]
 patch = load_patch('patch_stock_space_geometry')
@@ -22,7 +24,35 @@ using string=std::string;
 using D3DPOOL=int;
 const D3DPOOL D3DPOOL_MANAGED=1;
 #define FAILED(value) ((value)<0)
+#define BW_GUARD
+#define DECLARE_DEBUG_COMPONENT2(a, b)
 unsigned fault=0,liveVertices=0;
+inline std::string operator+(const StringRef& a,const StringRef& b){return a.to_string()+b.to_string();}
+inline std::string operator+(const std::string& a,const StringRef& b){return a+b.to_string();}
+struct SimpleMutex{std::mutex value;};
+struct SimpleMutexHolder{std::lock_guard<std::mutex> lock;explicit SimpleMutexHolder(SimpleMutex& m):lock(m.value){}};
+template<class T> struct StringRefMap {
+    typedef std::map<std::string,T> Map;typedef typename Map::iterator iterator;typedef typename Map::const_iterator const_iterator;
+    typedef std::pair<StringRef,T> value_type;Map map_;
+    iterator find(const StringRef& key){return map_.find(key.to_string());}
+    iterator end(){return map_.end();}
+    std::pair<iterator,bool> insert(const value_type& value){return map_.insert(std::make_pair(value.first.to_string(),value.second));}
+};
+template<class P=void> struct StringRefSet {
+    std::set<std::string> set_;
+    size_t count(const StringRef& key)const{return set_.count(key.to_string());}
+    void insert(const StringRef& key){set_.insert(key.to_string());}
+};
+// Resource boundary: exact original (and optional engine-res) stream strides and targets.
+struct FormatResource{std::map<uint32,uint32> strides;std::map<std::string,std::string> targets;};
+std::map<std::string,FormatResource> resources;
+typedef const FormatResource* DataSectionPtr;
+struct BWResource {
+    static BWResource& instance(){static BWResource value;return value;}
+    DataSectionPtr openSection(const std::string& path){
+        if(fault==4)return nullptr;
+        auto found=resources.find(path);return found==resources.end()?nullptr:&found->second;}
+};
 namespace Moo {
 std::vector<std::shared_ptr<std::vector<unsigned char>>> buffers;
 struct VertexBuffer {
@@ -39,41 +69,63 @@ struct VertexBuffer {
 };
 struct RenderContext {static D3DPOOL patchD3DPool(D3DPOOL p){return p;}};
 struct VertexFormat {
-    std::string name_;uint32 index,stride;
-    unsigned streamCount()const{return index+1;}
-    uint32 streamStride(uint32 stream)const{return stream==index?stride:0;}
-    const std::string& name()const{return name_;}
+    struct ConversionContext{};
+    std::string name_;std::map<uint32,uint32> strides_;std::map<std::string,std::string> targets_;
+    unsigned streamCount()const{return strides_.empty()?0:strides_.rbegin()->first+1;}
+    uint32 streamStride(uint32 stream)const{auto found=strides_.find(stream);return found==strides_.end()?0:found->second;}
+    uint32 countElements()const{return uint32(strides_.size());}
+    StringRef name()const{return StringRef(name_.data(),name_.size());}
+    StringRef getTargetFormatName(const StringRef& key)const{
+        auto found=targets_.find(key.to_string());
+        return found==targets_.end()?StringRef():StringRef(found->second.data(),found->second.size());}
+    // Element parsing stays outside this harness; the fixture holds its strides.
+    static bool load(VertexFormat& format,DataSectionPtr section,const StringRef& name){
+        format.name_=name.to_string();format.strides_=section->strides;format.targets_=section->targets;
+        return !format.strides_.empty();}
 };
-VertexFormat formats[]={ {"xyznuvtb",0,32},{"xyznuv",0,24},{"xyznuviiiwwtb",0,40},
-    {"uv2",10,8},{"colour",11,4},{"instancing",9,64} };
-struct InstancingStream{};
-struct VertexFormatCache {
-    static const VertexFormat* get(const StringRef& name){
-        if(fault==4)return nullptr;
-        for(const auto& format:formats)if(format.name_==name.to_string())return &format;
-        return nullptr;
-    }
-    static const VertexFormat* getTarget(const VertexFormat& source,const StringRef&,bool){return &source;}
-    template<class T> static StringRef getTargetName(const StringRef&,bool){return {"instancing",10};}
+struct InstancingStream{static StringRef name(){return StringRef("instancing",10);}};
+class VertexFormatCache {
+public:
+    static const VertexFormat* get(const StringRef& formatName);
+    static const VertexFormat* find(const StringRef& formatName);
+    static const VertexFormat* add(const StringRef& formatName,const VertexFormat& format);
+    static string getResourcePath(const StringRef& formatName);
+    static const VertexFormat* getTarget(const VertexFormat& source,const StringRef& key,bool fallback=true);
+    template<class T> static StringRef getTargetName(const StringRef& key,bool fallback=true){
+        const VertexFormat* source=get(T::name());const VertexFormat* target=source?getTarget(*source,key,fallback):nullptr;
+        return target?target->name():StringRef();}
 };
+// Public 14.4.1 VertexDeclaration::get opens the named definition directly;
+// combine/merge rejects a stream that both declarations define.
 struct VertexDeclaration {
-    const VertexFormat* value;
-    const VertexFormat& format()const{return *value;}
-    static const char* getTargetDevice(){return "DX9";}
+    std::string name_;VertexFormat format_;
+    const VertexFormat& format()const{return format_;}
+    static const char* getTargetDevice(){return "D3D9";}
+    static std::map<std::string,std::unique_ptr<VertexDeclaration>>& cache(){static std::map<std::string,std::unique_ptr<VertexDeclaration>> value;return value;}
     static VertexDeclaration* get(const StringRef& name){
         if(fault==5)return nullptr;
-        static VertexDeclaration values[6];
-        for(unsigned i=0;i<6;++i)if(formats[i].name_==name.to_string()){
-            values[i].value=&formats[i];return &values[i];}
-        return nullptr;
+        auto& values=cache();auto found=values.find(name.to_string());
+        if(found!=values.end())return found->second.get();
+        DataSectionPtr section=BWResource::instance().openSection(VertexFormatCache::getResourcePath(name));
+        std::unique_ptr<VertexDeclaration> value(new VertexDeclaration);value->name_=name.to_string();
+        if(!section||!VertexFormat::load(value->format_,section,name))return nullptr;
+        return (values[value->name_]=std::move(value)).get();
     }
-    static VertexDeclaration* combine(VertexDeclaration* a,VertexDeclaration* b){return fault==7||!b?nullptr:a;}
+    static VertexDeclaration* combine(VertexDeclaration* a,VertexDeclaration* b){
+        if(fault==7||!a||!b)return nullptr;
+        auto& values=cache();const std::string key=a->name_+"_"+b->name_;auto found=values.find(key);
+        if(found!=values.end())return found->second.get();
+        std::unique_ptr<VertexDeclaration> value(new VertexDeclaration(*a));value->name_=key;
+        for(const auto& stream:b->format_.strides_)
+            if(!value->format_.strides_.insert(stream).second)return nullptr;
+        return (values[key]=std::move(value)).get();
+    }
 };
 struct VertexStreamDesc {
-    uint32 streamIndex_;unsigned formatIndex;
+    uint32 streamIndex_;const char* formatName_;
     using StreamDescs=std::vector<VertexStreamDesc>;
-    const VertexFormat* defaultVertexFormat()const{return fault==6?nullptr:&formats[formatIndex];}
-    static const StreamDescs& getKnownStreams(){static StreamDescs value{{10,3},{11,4}};return value;}
+    const VertexFormat* defaultVertexFormat()const{return fault==6?nullptr:VertexFormatCache::get(formatName_);}
+    static const StreamDescs& getKnownStreams(){static StreamDescs value{{10,"uv2"},{11,"colour"}};return value;}
 };
 class Vertices:public ReferenceCount {
 public:
@@ -118,6 +170,7 @@ public:
     const char* resourceID()const{return "fixture";}
 };
 }}
+@CACHE_SOURCE@
 @STRING_TYPES@
 @GEOMETRY_TYPES@
 @STRING_HEADER@
@@ -128,6 +181,13 @@ int main(int argc,char** argv){
     assert(argc==3);std::ifstream input(argv[1],std::ios::binary);std::ofstream output(argv[2],std::ios::binary);
     if(!input||!output)return 2;
     auto read=[&](std::uint32_t& value){return bool(input.read(reinterpret_cast<char*>(&value),4));};
+    auto u32=[&](){std::uint32_t value=0;read(value);return value;};
+    auto text=[&](){std::string value(u32(),'\0');input.read(&value[0],value.size());return value;};
+    for(std::uint32_t n=u32();n;--n){
+        std::string name=text();BW::FormatResource& resource=BW::resources[name];
+        for(std::uint32_t s=u32();s;--s){std::uint32_t stream=u32();resource.strides[stream]=u32();}
+        for(std::uint32_t t=u32();t;--t){std::string key=text();resource.targets[key]=text();}
+    }
     auto write=[&](std::uint32_t value){output.write(reinterpret_cast<char*>(&value),4);};
     auto blob=[&](std::vector<unsigned char>& data){std::uint32_t bytes;if(!read(bytes)||bytes>512*1024*1024)return false;
         data.resize(bytes);return bool(input.read(reinterpret_cast<char*>(data.data()),bytes));};
@@ -166,12 +226,15 @@ int main(int argc,char** argv){
 }
 '''
 # The production StringRef accepts C strings and BW strings implicitly.
-HARNESS = HARNESS.replace('#include <map>', '#include <map>\n#include <memory>')
+HARNESS = HARNESS.replace('#include <map>', '#include <map>\n#include <memory>\n#include <mutex>\n#include <set>')
 HARNESS = HARNESS.replace('T* get()const{return pointer_;}',
     'T* get()const{return pointer_;} T* operator->()const{return pointer_;}')
 HARNESS = HARNESS.replace('const char* data;size_t length;',
     'const char* data;size_t length;\n    StringRef(const char* p):data(p),length(std::strlen(p)){}\n'
-    '    StringRef(const std::string& p):data(p.data()),length(p.size()){}')
+    '    StringRef(const std::string& p):data(p.data()),length(p.size()){}\n'
+    '    static const size_t npos=size_t(-1);StringRef():data(""),length(0){}\n'
+    '    bool empty()const{return !length;}\n'
+    '    size_t find(const StringRef& v)const{size_t at=to_string().find(v.to_string());return at==std::string::npos?npos:at;}')
 
 
 def array(rows, fmt):
@@ -225,47 +288,62 @@ class StaticGeometryTests(unittest.TestCase):
         directory.mkdir(parents=True)
         names = ('string_table_types.hpp', 'static_geometry_types.hpp', 'string_table.hpp',
                  'static_geometry.hpp', 'string_table.cpp', 'static_geometry.cpp')
+        cache = cls.root / 'lib/moo/vertex_format_cache.cpp'
+        cache.parent.mkdir(parents=True)
         with tarfile.open(archive) as source:
             members = source.getnames()
             for name in names:
                 member = next(n for n in members if n.endswith('/programming/bigworld/lib/compiled_space/' + name))
                 (directory / name).write_bytes(source.extractfile(member).read())
+            member = next(n for n in members if n.endswith('/programming/bigworld/lib/moo/vertex_format_cache.cpp'))
+            cache.write_bytes(source.extractfile(member).read())
+        pinned_cache = cache.read_text()
+        cache_patch.patch(cls.root)
         strings_patch.patch(cls.root)
         patch.patch(cls.root)
         before = {name: (directory / name).read_bytes() for name in names}
         patch.patch(cls.root)
         assert before == {name: (directory / name).read_bytes() for name in names}
-        text = HARNESS
         markers = ('STRING_TYPES', 'GEOMETRY_TYPES', 'STRING_HEADER', 'GEOMETRY_HEADER', 'STRING_SOURCE', 'GEOMETRY_SOURCE')
-        for marker, name in zip(markers, names):
-            text = text.replace('@' + marker + '@', without_includes((directory / name).read_text()))
-        cls.source = cls.root / 'probe.cpp'
-        cls.source.write_text(text)
-        cls.binary = cls.root / 'probe'
-        subprocess.run(['c++', '-std=c++14', '-O1', '-Wall', '-Wextra', '-Werror',
-                        '-Wno-unused-const-variable', '-Wno-unused-local-typedefs',
-                        '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
-                        str(cls.source), '-o', str(cls.binary)], check=True)
+        cls.binaries = {}
+        # The pinned lookup reproduces the runtime failure; the patched one is #1513 0x009a8000.
+        for variant, lookup in (('patched', cache.read_text()), ('pinned', pinned_cache)):
+            text = HARNESS.replace('@CACHE_SOURCE@', without_includes(lookup))
+            for marker, name in zip(markers, names):
+                text = text.replace('@' + marker + '@', without_includes((directory / name).read_text()))
+            source = cls.root / (variant + '.cpp')
+            source.write_text(text)
+            cls.binaries[variant] = cls.root / variant
+            subprocess.run(['c++', '-std=c++14', '-O1', '-Wall', '-Wextra', '-Werror',
+                            '-Wno-unused-const-variable', '-Wno-unused-local-typedefs',
+                            '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
+                            str(source), '-o', str(cls.binaries[variant])], check=True)
+        client = os.environ.get('WOT_0922_CLIENT')
+        cls.resources = format_resources(client) if client else synthetic_resources()
 
     @classmethod
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
-    def run_cases(self, cases):
-        inputs, expected = bytearray(struct.pack('<I', len(cases))), bytearray()
+    def run_cases(self, cases, variant='patched', resources=None):
+        resources = self.resources if resources is None else resources
+        inputs = bytearray(resource_bytes(resources) + struct.pack('<I', len(cases)))
+        expected = bytearray()
         for version, data_version, fault, metadata, data, valid in cases:
             inputs += struct.pack('<4I', version, data_version, fault, len(metadata)) + metadata
             inputs += struct.pack('<I', len(data)) + data
             expected += describe(metadata)[0] if valid else struct.pack('<I', 0)
         source, output = self.root / 'inputs.bin', self.root / 'outputs.bin'
         source.write_bytes(inputs)
-        subprocess.run([str(self.binary), str(source), str(output)], check=True)
+        subprocess.run([str(self.binaries[variant]), str(source), str(output)], check=True)
         self.assertEqual(output.read_bytes(), expected)
 
     def test_gpu_native_resource_ownership_and_failure_transactions(self):
         metadata, data = fixture()
-        self.run_cases([(2, 2, 0, metadata, data, True)] +
-                       [(2, 2, fault, metadata, data, False) for fault in range(1, 9)])
+        self.run_cases([(2, 2, 0, metadata, data, True)])
+        # Lookup and declaration caches are process-wide, so each fault starts fresh.
+        for fault in range(1, 9):
+            self.run_cases([(2, 2, fault, metadata, data, False)])
 
     def test_invalid_section_versions_arrays_and_stream_ranges(self):
         metadata, data = fixture()
@@ -290,6 +368,10 @@ class StaticGeometryTests(unittest.TestCase):
             self.skipTest('WOT_0922_CLIENT is required for original compiled geometry')
         sys.path.insert(0, str(ROOT.parents[1] / 'tools'))
         from space_bin_0922 import CompiledSpace
+        # The runtime also mounts public engine-res, whose set-1 targets shadow nothing in #1513.
+        layers = [self.resources]
+        if os.environ.get('WOT_ENGINE_RES'):
+            layers.append(format_resources(client, os.environ['WOT_ENGINE_RES']))
         total = [0, 0, 0, 0]
         for package in (Path(client) / 'res/packages').glob('*.pkg'):
             with zipfile.ZipFile(package) as archive:
@@ -298,13 +380,16 @@ class StaticGeometryTests(unittest.TestCase):
                         continue
                     space = CompiledSpace(archive.read(name))
                     metadata, data = space.section_data('BWSG'), space.section_data('BSGD')
-                    self.run_cases([(2, 2, 0, metadata, data, True)])
+                    for resources in layers:
+                        self.run_cases([(2, 2, 0, metadata, data, True)], resources=resources)
+                        self.run_cases([(2, 2, 0, metadata, data, False)], 'pinned', resources)
                     counts = describe(metadata)[1:]
                     total[0] += 1
                     for i, value in enumerate(counts, 1):
                         total[i] += value
         self.assertGreater(total[0], 0)
-        print('Production static geometry consumed %d original maps, %d resources, %d streams, %d exact vertex buffers' % tuple(total))
+        print('Production static geometry consumed %d original maps, %d resources, %d streams, %d exact vertex buffers'
+              ' over %d resource layers; the pinned lookup rejected every map' % (tuple(total) + (len(layers),)))
 
 
 if __name__ == '__main__':
