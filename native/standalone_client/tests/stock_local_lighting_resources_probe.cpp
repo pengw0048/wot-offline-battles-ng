@@ -89,10 +89,11 @@ struct Scene{IntersectSceneView view;template<class T>T* getView(){return &view;
 struct SceneIntersectContext{explicit SceneIntersectContext(Scene&){}};
 struct ClientSpace{Scene value;Scene& scene(){return value;}};using ClientSpacePtr=std::shared_ptr<ClientSpace>;
 namespace DeprecatedSpaceHelpers{ClientSpacePtr space=std::make_shared<ClientSpace>();ClientSpacePtr cameraSpace(){return space;}}
-struct SceneDrawContext{SceneDrawContext(Scene&,Moo::DrawContext&){}};
+extern thread_local const Moo::DrawContext* activeLocalShadowDraw;
+struct SceneDrawContext{Moo::DrawContext* draw;SceneDrawContext(Scene&,Moo::DrawContext& context):draw(&context){}};
 namespace DrawHelpers{unsigned culls=0,draws=0;std::vector<Moo::Camera> cameras;std::vector<int> faces;
 void cull(SceneIntersectContext&,Scene&,const Matrix& m,IntersectionSet&){assert(m.tag==200);++culls;}
-void drawSceneVisibilitySet(SceneDrawContext&,Scene&,const IntersectionSet&){auto& rc=Moo::rc();assert(!rc.scene&&shadowParameters.algorithm==1&&shadowParameters.parameters.x==30);assert(rc.width==rc.height&&(rc.width==128||rc.width==256));cameras.push_back(rc.camera());faces.push_back(rc.view().tag);++draws;}}
+void drawSceneVisibilitySet(SceneDrawContext& context,Scene&,const IntersectionSet&){assert(activeLocalShadowDraw==context.draw);auto& rc=Moo::rc();assert(!rc.scene&&shadowParameters.algorithm==1&&shadowParameters.parameters.x==30);assert(rc.width==rc.height&&(rc.width==128||rc.width==256));cameras.push_back(rc.camera());faces.push_back(rc.view().tag);++draws;}}
 int setStockSceneViewport(DX::Viewport* v,bool scene){auto& rc=Moo::rc();assert(!v->X&&!v->Y&&v->MinZ==0&&v->MaxZ==1&&!scene);rc.scene=scene;return rc.failViewport?-1:0;}
 struct StockDeferredBuffers{int quality=0;int shadowQuality()const{return quality;}};
 StockDeferredBuffers* stockDeferredBuffers(){static StockDeferredBuffers b;return &b;}
@@ -103,6 +104,14 @@ StockLocalLighting::StockLocalLighting():state_(new State){}
 StockLocalLighting::~StockLocalLighting(){deleteUnmanagedObjects();}
 int main(){
 auto& rc=Moo::rc();auto& gpu=rc.gpu;
+assert(!activeLocalShadowDraw);
+{
+Moo::DrawContext outer(3),inner(3);
+LocalShadowDrawScope outerScope(outer);assert(activeLocalShadowDraw==&outer);
+{LocalShadowDrawScope innerScope(inner);assert(activeLocalShadowDraw==&inner);}
+assert(activeLocalShadowDraw==&outer);
+}
+assert(!activeLocalShadowDraw);
 {
 StockLocalLighting owner;auto& state=*owner.state_;state.omniMaterial=std::make_shared<Moo::EffectMaterial>();state.spotMaterial=std::make_shared<Moo::EffectMaterial>();state.blurMaterial=std::make_shared<Moo::EffectMaterial>();
 owner.createUnmanagedObjects();assert(state.shadows&&state.cube&&state.cubeDepth&&state.instances.live&&Moo::RenderTarget::alive==4);
@@ -117,11 +126,11 @@ assert(!state.omniMaterial->binding.texture&&!state.spotMaterial->binding.textur
 owner.deleteUnmanagedObjects();assert(Moo::RenderTarget::alive==0);
 owner.createUnmanagedObjects();assert(Moo::RenderTarget::alive==4);
 auto omni=std::make_shared<Moo::OmniLight>();
-assert(state.drawShadow(omni)&&DrawHelpers::draws==6&&DeprecatedSpaceHelpers::space->scene().view.queries==1);
+assert(state.drawShadow(omni)&&DrawHelpers::draws==6&&DeprecatedSpaceHelpers::space->scene().view.queries==1&&!activeLocalShadowDraw);
 for(auto camera:DrawHelpers::cameras)assert(camera.n==.001f&&camera.f==30&&camera.aspect==1&&camera.fov==MATH_PI*.5f);
 assert(DrawHelpers::faces==std::vector<int>({0,1,2,3,0,5}));assert(rc.camera().n==.1f&&rc.camera().f==1000&&shadowParameters.algorithm==0&&shadowParameters.parameters.x==0);
 StockLocalLighting::State::Spot spotLight;spotLight.light=std::make_shared<Moo::SpotLight>();
-assert(state.drawShadow(spotLight,0)&&DrawHelpers::draws==7&&DrawHelpers::culls==1);
+assert(state.drawShadow(spotLight,0)&&DrawHelpers::draws==7&&DrawHelpers::culls==1&&!activeLocalShadowDraw);
 assert(DrawHelpers::cameras.back().n==.1f&&DrawHelpers::cameras.back().f==60&&rc.camera().f==1000);
 assert(!rc.depth&&rc.scene&&rc.width==1920&&rc.height==1080);
 const auto draws=DrawHelpers::draws;gpu.failClear=true;assert(!state.drawShadow(omni)&&DrawHelpers::draws==draws);gpu.failClear=false;

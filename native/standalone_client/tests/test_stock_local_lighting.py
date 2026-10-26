@@ -52,8 +52,9 @@ class StockLocalLightingTests(unittest.TestCase):
                 depth += (cpp[end] == '{') - (cpp[end] == '}')
                 end += 1
             return cpp[start:end]
-        production = '\n'.join(body(signature) + (';' if signature.startswith(('struct ', 'class ')) else '') for signature in (
-            'bool detachTexture(', 'class CameraScope', 'class TargetScope', 'void cubeView(', 'void drawShadowObjects(', 'bool select(', 'void clearTexture(', 'struct StockLocalLighting::State',
+        production = re.search(r'^thread_local const Moo::DrawContext \* activeLocalShadowDraw = NULL;$', cpp, re.MULTILINE).group(0) + '\n'
+        production += '\n'.join(body(signature) + (';' if signature.startswith(('struct ', 'class ')) else '') for signature in (
+            'class LocalShadowDrawScope', 'bool detachTexture(', 'class CameraScope', 'class TargetScope', 'void cubeView(', 'void drawShadowObjects(', 'bool select(', 'void clearTexture(', 'struct StockLocalLighting::State',
             'bool StockLocalLighting::State::drawShadow(const Moo::OmniLightPtr& light)', 'bool StockLocalLighting::State::drawShadow(Spot& light, unsigned index)', 'bool StockLocalLighting::State::blur(', 'void StockLocalLighting::createUnmanagedObjects(', 'void StockLocalLighting::deleteUnmanagedObjects('))
         probe = (ROOT / 'tests/stock_local_lighting_resources_probe.cpp').read_text().replace('@PRODUCTION@', production)
         with tempfile.TemporaryDirectory(prefix='stock-local-light-draw-') as directory:
