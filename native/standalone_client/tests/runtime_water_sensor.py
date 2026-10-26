@@ -49,6 +49,10 @@ def inspect_owner():
     assert sensor.isOwning
     assert sensor.waterHeight == 0.
     assert not sensor.isInWater and not sensor.isUnderWater and not sensor.isSplash
+    empty = sensor.speedLink
+    assert type(empty).__name__ == 'DataLinks::PyDataLink<float>'
+    assert empty is not sensor.speedLink
+    invalid(empty)
     invalid(lambda: setattr(sensor, 'isInWater', True))
     invalid(lambda: sensor.setLodSettings(()))
     sensor.setLodSettings((150., 15))
@@ -63,6 +67,22 @@ def inspect_owner():
     sensor.sensorPlaneLink = changed
     assert tuple(retained().translation) == (10., 2., 5.)
     assert tuple(sensor.sensorPlaneLink().translation) == (-4., 1., 3.)
+    speed = [5.]
+    sensor.speedLink = lambda: speed[0]
+    first, second = sensor.speedLink, sensor.speedLink
+    assert first is not second and first() == 5.
+    speed[0] = 7.
+    assert second() == 7.
+    speed[0] = None
+    assert first() == 5. and second() == 7.
+    invalid(sensor.speedLink)
+    sensor.speedLink = first
+    assert sensor.speedLink() == 5.
+    speed[0] = 9.
+    assert first() == 9.
+    speed[0] = None
+    assert sensor.speedLink() == 5.
+    REPORT['checks'].append('actual typed empty FloatLink and independent callable/cache value copies')
     sensor.speedLink = lambda: 5.
 
     class Callback(object):
