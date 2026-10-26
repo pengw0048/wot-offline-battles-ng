@@ -67,7 +67,7 @@ public:
 bool groundBelowSurface( SpaceID spaceID, const std::array<float, 3> & from,
     const std::array<float, 3> & to )
 {
-    ClientSpacePtr space = SpaceManager::instance().space( spaceID );
+    ClientSpacePtr space( SpaceManager::instance().space( spaceID ) );
     if (!space)
         return false;
     HeavySplashHit hit;

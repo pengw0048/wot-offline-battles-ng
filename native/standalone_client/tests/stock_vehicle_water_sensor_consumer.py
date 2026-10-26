@@ -112,6 +112,7 @@ assert sensor.speedLink is None
 plane = sensor.sensorPlaneLink
 assert type(plane).__name__ == 'DataLinks::PyDataLink<Matrix>'
 expect(TypeError, plane)
+# Registration order only: the host's __members__ is a fixture, not BigWorld's.
 assert sensor.__members__[:8] == ['isUnderWater', 'waterHeight', 'speedLink', 'sensorPlaneLink',
                                   'isSplash', 'isInWater', 'onUnderWaterSwitch', 'onWaterSplash']
 assert 'isOwning' in sensor.__members__
