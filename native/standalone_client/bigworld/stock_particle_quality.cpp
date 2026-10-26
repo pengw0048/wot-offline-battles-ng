@@ -3,10 +3,57 @@
 #include "app.hpp"
 
 #include "resmgr/bwresource.hpp"
+#include "moo/graphics_settings.hpp"
+#include "romp/hdr_support.hpp"
 
 BW_BEGIN_NAMESPACE
 namespace
 {
+class ParticleQualitySetting : public Moo::GraphicsSetting
+{
+public:
+    explicit ParticleQualitySetting( bool sniper ) : Moo::GraphicsSetting(
+        sniper ? "SNIPER_MODE_EFFECTS_QUALITY" : "EFFECTS_QUALITY",
+        sniper ? "Sniper mode effects quality" : "Effects quality",
+        0, false, false ), sniper_( sniper )
+    {
+        // 00971070 gives the two registries distinct option/profile mappings.
+        if (!sniper) addOption( "MAX", "Max", true );
+        addOption( "HIGH", "High", true );
+        addOption( "MEDIUM", "Medium", true );
+        addOption( "LOW", "Low", true );
+        addOption( "OFF", "Off", true );
+    }
+    virtual void onOptionSelected( int option )
+    {
+        static const int ordinary[] = { 1, 2, 3, 4, 9 };
+        static const int sniper[] = { 5, 7, 8, 9 };
+        if (option < 0 || option >= (sniper_ ? 4 : 5)) return;
+        stockParticleQuality().select_profile(
+            sniper_ ? sniper[option] : ordinary[option], sniper_ );
+        // 00970ee0's jump-table blocks tail-call the real HDR owner. The
+        // sniper callback 00970f90 leaves that renderer-wide flag unchanged.
+        if (!sniper_) HDRSupport::setGlobalEnabled( option < 3 );
+    }
+private:
+    bool sniper_;
+};
+
+bool registerParticleQualitySetting( bool sniper )
+{
+    const char * label = sniper ? "SNIPER_MODE_EFFECTS_QUALITY" : "EFFECTS_QUALITY";
+    auto previous = Moo::GraphicsSetting::getFromLabel( label );
+    if (previous)
+    {
+        if (dynamic_cast<ParticleQualitySetting *>( previous.getObject() )) return true;
+        PyErr_Format( PyExc_RuntimeError,
+            "Original particle quality setting '%s' already has another owner", label );
+        return false;
+    }
+    Moo::GraphicsSetting::add( new ParticleQualitySetting( sniper ) );
+    return true;
+}
+
 wot::StockParticleQualityProfile readProfile( DataSectionPtr section, bool sniper )
 {
     wot::StockParticleQualityProfile value;
@@ -47,5 +94,10 @@ bool initialiseStockParticleQualityProfiles()
         stockParticleQuality().register_profile( name, true, readProfile( option, true ) );
     }
     return true;
+}
+
+bool initialiseStockParticleQualitySettings()
+{
+    return registerParticleQualitySetting( true ) && registerParticleQualitySetting( false );
 }
 BW_END_NAMESPACE

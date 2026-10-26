@@ -9,4 +9,5 @@ BW_BEGIN_NAMESPACE
 // same state and must be restored before exporting wg_initCustomSettings.
 wot::StockParticleQuality & stockParticleQuality();
 bool initialiseStockParticleQualityProfiles();
+bool initialiseStockParticleQualitySettings();
 BW_END_NAMESPACE
