@@ -8,7 +8,7 @@ SNAPSHOT_AND_APPLY = r'''GraphicsSetting::SettingsVector GraphicsSetting::stockC
 {
     SettingsVector result;
     for (const auto& setting : settings())
-        if (setting->label() != "presets")
+        if (setting->stockImportant())
             result.push_back(std::make_pair(setting->label(), setting->activeOption()));
     std::sort(result.begin(), result.end());
     return result;
@@ -67,9 +67,14 @@ def apply(root):
          '    }')
     edit(cpp, '\telse if (setIt != latentSettings.end())',
          '\telse if (!stockDesired && setIt != latentSettings.end())')
+    edit(cpp, '\telse if (optionInSetting < 0)',
+         '\telse if (!stockDesired && optionInSetting < 0)')
     edit(cpp, 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
          SNAPSHOT_AND_APPLY + 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
          'GraphicsSetting::SettingsVector GraphicsSetting::stockCurrentSettings()')
+    # Cached engines may already contain the earlier preset-only snapshot.
+    edit(cpp, 'if (setting->label() != "presets")',
+         'if (setting->stockImportant())')
     edit(cpp, '''bool GraphicsSetting::needsRestart()
 {
 \treturn getSettingsData().s_needsRestart;

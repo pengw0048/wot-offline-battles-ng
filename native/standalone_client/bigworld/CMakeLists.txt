@@ -58,6 +58,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_initialization.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings_consumers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_presets.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_display_modes.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math_providers.cpp"

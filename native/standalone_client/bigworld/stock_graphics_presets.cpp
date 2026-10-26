@@ -11,6 +11,7 @@ namespace
 {
 wot::StockGraphicsPresets catalogue;
 bool registered=false;
+bool desiredPublished=false;
 
 wot::StockGraphicsSettings toStock(const Moo::GraphicsSetting::SettingsVector& input)
 {
@@ -62,13 +63,21 @@ public:
             const auto* preset=catalogue.byAuthoredIndex(static_cast<int>(i));
             MF_ASSERT(preset);
             addOption(preset->optionName.c_str(),preset->optionName.c_str(),true);
+            profiles_.push_back(*preset);
         }
+        stockArrayOptions(true);
     }
     virtual void onOptionSelected(int option)
     {
-        const auto* preset=catalogue.byAuthoredIndex(option);
-        if(preset)catalogue.publish(preset->settings);
+        if(option>=0 && static_cast<std::size_t>(option)<profiles_.size())
+        {
+            catalogue.publish(profiles_[option].settings);
+            desiredPublished=true;
+        }
     }
+    const std::vector<wot::StockGraphicsPreset>& profiles() const { return profiles_; }
+private:
+    std::vector<wot::StockGraphicsPreset> profiles_;
 };
 
 void apply(const wot::StockGraphicsSettings& settings)
@@ -98,9 +107,58 @@ wot::StockGraphicsPreset& lookup(const BW::string& name)
 }
 }
 
+void prepareStockGraphicsSettingsPublication()
+{
+    Moo::GraphicsSetting::SettingsVector desired;
+    // Callbacks can publish another desired vector. Own the admitted input
+    // while applying it, and retain its authored application order.
+    for (const auto& entry : catalogue.desired())
+        desired.emplace_back(BW::string(entry.first.data(),entry.first.size()),
+            static_cast<uint32>(entry.second));
+    Moo::GraphicsSetting::applyStockPreset(desired);
+    auto setting=Moo::GraphicsSetting::getFromLabel("presets");
+    if (setting)
+    {
+        // 91d570 -> 91f450 reloads the catalogue and forces the matched option.
+        loadCatalogue();
+        setting->selectOption(catalogue.lookup(catalogue.currentKey()).authoredIndex,true);
+    }
+}
+
+PyObject* stockGraphicsPresetOptions()
+{
+    auto setting=Moo::GraphicsSetting::getFromLabel("presets");
+    auto* presets=dynamic_cast<PresetsSetting*>(setting.getObject());
+    if (!presets)
+    {
+        PyErr_SetString(PyExc_RuntimeError,"The presets options have no native owner");
+        return NULL;
+    }
+    const auto& profiles=presets->profiles();
+    PyObjectPtr result(PyList_New(profiles.size()),PyObjectPtr::STEAL_REFERENCE);
+    if (!result) return NULL;
+    for (std::size_t i=0;i<profiles.size();++i)
+    {
+        const auto& preset=profiles[i];
+        PyObjectPtr values(dictionary(preset.settings),PyObjectPtr::STEAL_REFERENCE);
+        PyObjectPtr key(PyString_FromStringAndSize(preset.optionName.data(),preset.optionName.size()),
+            PyObjectPtr::STEAL_REFERENCE);
+        if (!values || !key) return NULL;
+        PyObject* option=Py_BuildValue("{s:i,s:O,s:O}","index",preset.authoredIndex,
+            "key",key.get(),"settings",values.get());
+        if (!option) return NULL;
+        PyList_SET_ITEM(result.get(),i,option);
+    }
+    Py_INCREF(result.get());
+    return result.get();
+}
+
 bool stockGraphicsPresetDesiredOption(const BW::string& label,int& option)
 {
-    return registered && catalogue.desiredOption(std::string(label.data(),label.size()),option);
+    // 91c320 reads the already published vector before the presets setting
+    // itself is constructed. Preference publication, not presets registration,
+    // makes a cold constructor's desired value available without a callback.
+    return desiredPublished && catalogue.desiredOption(std::string(label.data(),label.size()),option);
 }
 
 bool stockGraphicsPresetsActive(){return registered;}
@@ -114,6 +172,7 @@ void publishStockGraphicsPreferences(const Moo::GraphicsSetting::SettingsVector&
 {
     if(catalogue.presets().empty() && catalogue.hasPresetOverload())loadCatalogue();
     catalogue.publish(toStock(settings));
+    desiredPublished=true;
 }
 
 bool initialiseStockGraphicsPresets()
