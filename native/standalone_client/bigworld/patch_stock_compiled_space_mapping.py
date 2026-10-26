@@ -34,7 +34,7 @@ def patch(root):
          '\tStaticSceneProvider::registerHandlers( this->scene() );\n'
          '\tregisterStockCompiledSpaceHandlers( this->scene() );')
     edit(cpp, '''bool CompiledSpace::doAddMapping( GeometryMappingID mappingID,
-\t\tMatrix& transform, const BW::string & path, 
+\t\tMatrix& transform, const BW::string & path,\x20
 \t\tconst SmartPointer< DataSection >& pSettings )
 {
 \tMF_ASSERT( this->mappingIDToIndex( mappingID ) == size_t(-1) );''',

@@ -31,6 +31,7 @@ struct HDRSupport {
 };
 int HDRSupport::writes=0;
 bool HDRSupport::enabled=false;
+bool initialiseStockParticleQualitySetting(bool);
 namespace Moo {
 template<class T> struct Ptr : std::shared_ptr<T> {
     Ptr()=default; Ptr(T* p):std::shared_ptr<T>(p) {}

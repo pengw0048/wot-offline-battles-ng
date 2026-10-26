@@ -27,6 +27,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_data.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_compiled_space_mapping.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_static_model_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_space_lights.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_file.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene.cpp"
@@ -36,6 +37,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_lod.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_wind.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_renderer.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tps_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tps_visual.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_settings.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_quality.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_resources.cpp"
@@ -99,7 +102,9 @@ target_sources(bwclient PRIVATE
 # Keep its C++14/PCH contract intact; the recovered numerical core uses C++17.
 if(MSVC)
     set_source_files_properties(${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "/std:c++17;/fp:strict")
+        PROPERTIES COMPILE_OPTIONS "/std:c++17;/fp:strict;/arch:SSE2")
+    # The legacy engine selects /arch:SSE, which leaves scalar arithmetic on
+    # x87. Recovered numerical code is checked against the original SSE2 path.
     # These adapters include the public engine's C++14 STL declarations.
     # Retain that observed surface in their otherwise C++17 translation units.
     set_source_files_properties(

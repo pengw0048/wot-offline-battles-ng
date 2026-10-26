@@ -82,6 +82,7 @@ bool stockBattlegroundParticlePhase( const Moo::DrawContext * context );
 bool isStockBattlegroundParticleItem( Moo::DrawContext::UserDrawItem * item );
 void drawStockBattlegroundParticleItem( Moo::DrawContext::UserDrawItem * item );
 void finishStockBattlegroundParticles();
+unsigned classifyStockBattlegroundSprite( float x, float y, float z );
 void finiStockBattlegroundElements();
 bool drawStockBattlegroundElements();
 BW_END_NAMESPACE

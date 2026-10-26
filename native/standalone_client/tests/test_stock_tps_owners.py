@@ -81,7 +81,11 @@ class StockTPSOwnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='wot-tps-owner-') as directory:
             work = Path(directory)
             with tarfile.open(archive) as tar:
-                for suffix in ('lib/particle/meta_particle_system.cpp', 'lib/particle/meta_particle_system.hpp'):
+                for suffix in ('lib/particle/meta_particle_system.cpp', 'lib/particle/meta_particle_system.hpp',
+                               'lib/particle/actions/particle_system_action.hpp',
+                               'lib/particle/actions/particle_system_action.cpp',
+                               'lib/particle/particle_system.cpp', 'client/world_app.cpp',
+                               'client/facade_app.cpp', 'client/script_app.cpp'):
                     member = next(member for member in tar if member.name.endswith('/' + suffix))
                     destination = work / suffix
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -89,11 +93,25 @@ class StockTPSOwnerTests(unittest.TestCase):
             patch.patch(work)
             source = (work / 'lib/particle/meta_particle_system.cpp').read_text()
             header = (work / 'lib/particle/meta_particle_system.hpp').read_text()
+            before = {p: p.read_bytes() for p in work.rglob('*') if p.is_file()}
             patch.patch(work)
+            self.assertEqual(before, {p: p.read_bytes() for p in work.rglob('*') if p.is_file()})
             self.assertEqual(source, (work / 'lib/particle/meta_particle_system.cpp').read_text())
             self.assertEqual(header, (work / 'lib/particle/meta_particle_system.hpp').read_text())
             self.assertEqual(source.count('writeUInt( "addition/inv_render_groups"'), 1)
             self.assertNotRegex(source, r'readUInt\(\s*"addition/inv_render_groups"')
+            actions = (work / 'lib/particle/actions/particle_system_action.cpp').read_text()
+            self.assertEqual(actions.count('return createStockInfluxPSA();'), 1)
+            self.assertEqual(actions.count('return wrapStockInfluxPSA( pAction );'), 1)
+            world = work / 'client/world_app.cpp'
+            # The Battleground patch may run before or after the tPS patch.
+            world.write_text(world.read_text().replace('        GlobalEmbodiments::tick( dGameTime );',
+                '        GlobalEmbodiments::tick( dGameTime );\n        tickStockBattlegroundElements();'))
+            patch.patch(work)
+            self.assertIn('tickStockBattlegroundElements();\n        tickStockTPSRuntime( dGameTime );', world.read_text())
+            ordered = world.read_text()
+            patch.patch(work)
+            self.assertEqual(ordered, world.read_text())
             harness = HARNESS.replace('@CLONE@', extract_method(source, 'MetaParticleSystemPtr MetaParticleSystem::clone() const'))
             harness = harness.replace('@TICK@', extract_method(source, 'bool MetaParticleSystem::tick( float dTime )'))
             # Public SmartPointer accepts raw new; adapt only the harness pointer alias.

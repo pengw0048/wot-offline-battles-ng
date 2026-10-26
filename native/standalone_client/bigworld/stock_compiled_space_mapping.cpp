@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_compiled_space_mapping.hpp"
 #include "stock_static_model_scene.hpp"
+#include "stock_space_lights.hpp"
 #include "stock_tree_scene_loader.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/compiled_space_mapping.hpp"
@@ -28,6 +29,7 @@ public:
         addLoader( &models_ );
         addLoader( &trees_ );
         addLoader( &particles_ );
+        addLoader( &lights_ );
     }
 
     virtual ~StockCompiledSpaceMapping()
@@ -35,6 +37,7 @@ public:
         // Stop/join the background loader and remove scene memberships while
         // every concrete loader still exists. The base destructor is idempotent.
         unloadSync();
+        removeLoader( &lights_ );
         removeLoader( &particles_ );
         removeLoader( &trees_ );
         removeLoader( &models_ );
@@ -46,6 +49,7 @@ private:
     StockStaticModelSceneLoader models_;
     StockTreeSceneLoader trees_;
     ParticleSystemLoader particles_;
+    StockLightSceneLoader lights_;
 };
 }
 

@@ -12,6 +12,7 @@ class StockTPSEmissionClock
 public:
     explicit StockTPSEmissionClock( const StockTPSEmitterResource & resource ) :
         rate_( resource.scalar( 0x74 ) ) {}
+    explicit StockTPSEmissionClock( float effectiveRate ) : rate_( effectiveRate ) {}
     float remaining = 0.f;
 
     template<class Sink> void advance( float elapsed, float density, Sink & sink )

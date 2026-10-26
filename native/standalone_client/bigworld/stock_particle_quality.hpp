@@ -10,4 +10,5 @@ BW_BEGIN_NAMESPACE
 wot::StockParticleQuality & stockParticleQuality();
 bool initialiseStockParticleQualityProfiles();
 bool initialiseStockParticleQualitySettings();
+bool initialiseStockParticleQualitySetting( bool sniper );
 BW_END_NAMESPACE

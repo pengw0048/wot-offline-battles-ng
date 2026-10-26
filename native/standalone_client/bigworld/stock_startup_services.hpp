@@ -9,4 +9,6 @@ extern int StockStartupServices_token;
 // This is a constituent of wg_initCustomSettings, not its replacement: the
 // renderer/particle settings must also be restored before exporting that API.
 bool initialiseStockScriptGraphicsSettings();
+bool initialiseStockVehicleDustSetting();
+bool initialiseStockSniperSwingSetting();
 BW_END_NAMESPACE

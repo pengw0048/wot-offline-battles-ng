@@ -95,6 +95,8 @@ public:
 #include "pyscript/script.hpp"
 BW_BEGIN_NAMESPACE
 bool initialiseStockTPSQuality();
+bool initialiseStockSmokeSetting();
+bool initialiseStockTPSPerformerSetting();
 void tickStockTPSQuality( float elapsed );
 void finiStockTPSQuality();
 void ensureStockTPSPerformer();

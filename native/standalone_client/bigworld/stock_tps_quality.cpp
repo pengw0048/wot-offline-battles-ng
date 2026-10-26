@@ -70,8 +70,10 @@ bool initialiseStockTPSQuality()
         configuration.lodMultiplier = root->readFloat( "ParticleSystem/PS_PERFORMANCE_LOD_MULT", 1.f );
     }
     if (performer) performer->configure( configuration );
-    return registerTPSSetting( false ) && registerTPSSetting( true );
+    return initialiseStockSmokeSetting() && initialiseStockTPSPerformerSetting();
 }
+bool initialiseStockSmokeSetting() { return registerTPSSetting( false ); }
+bool initialiseStockTPSPerformerSetting() { return registerTPSSetting( true ); }
 void ensureStockTPSPerformer()
 {
     if (!performer)

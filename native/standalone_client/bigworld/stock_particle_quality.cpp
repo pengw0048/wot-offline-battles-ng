@@ -98,6 +98,7 @@ bool initialiseStockParticleQualityProfiles()
 
 bool initialiseStockParticleQualitySettings()
 {
-    return registerParticleQualitySetting( true ) && registerParticleQualitySetting( false );
+    return initialiseStockParticleQualitySetting( true ) && initialiseStockParticleQualitySetting( false );
 }
+bool initialiseStockParticleQualitySetting( bool sniper ) { return registerParticleQualitySetting( sniper ); }
 BW_END_NAMESPACE

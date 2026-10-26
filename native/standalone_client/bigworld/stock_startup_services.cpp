@@ -60,12 +60,21 @@ bool registerScriptSetting( const char * label, const char * description,
 }
 }
 
-bool initialiseStockScriptGraphicsSettings()
+bool initialiseStockVehicleDustSetting()
 {
     return registerScriptSetting( "VEHICLE_DUST_ENABLED",
-        "Vehicle Dust Enabled", vehicleDustEnabled ) &&
-        registerScriptSetting( "SNIPER_MODE_SWINGING_ENABLED",
-            "Sniper Mode Swinging Enabled", sniperModeSwingingEnabled );
+        "Vehicle Dust Enabled", vehicleDustEnabled );
+}
+
+bool initialiseStockSniperSwingSetting()
+{
+    return registerScriptSetting( "SNIPER_MODE_SWINGING_ENABLED",
+        "Sniper Mode Swinging Enabled", sniperModeSwingingEnabled );
+}
+
+bool initialiseStockScriptGraphicsSettings()
+{
+    return initialiseStockVehicleDustSetting() && initialiseStockSniperSwingSetting();
 }
 
 // 0096f3f0/0096f3b0 return Python ints, not booleans or option indices.

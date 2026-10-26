@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_battleground_elements.hpp"
 #include "stock_environment_constants.hpp"
+#include "stock_tps_scene.hpp"
 #include "connection_control.hpp"
 #include "connection_model/bw_connection.hpp"
 #include "duplo/py_material_fashion.hpp"
@@ -521,11 +522,13 @@ bool stockBattlegroundParticlePhase( const Moo::DrawContext * context )
 }
 bool isStockBattlegroundParticleItem( Moo::DrawContext::UserDrawItem * item )
 {
+    if (isStockTPSParticleItem( item )) return true;
     const auto particle = dynamic_cast<ParticleSystemDrawItem *>( item );
     return particle && particle->isBattlegroundSprite();
 }
 void drawStockBattlegroundParticleItem( Moo::DrawContext::UserDrawItem * item )
 {
+    if (isStockTPSParticleItem( item )) { drawStockTPSParticleItem( item );return; }
     ParticleSystemDrawItem * particle = static_cast<ParticleSystemDrawItem *>( item );
     particle->drawBattlegroundSplit();
 }
@@ -536,6 +539,13 @@ void finishStockBattlegroundParticles()
     pending.swap( deferredParticles );
     for (const auto & draw : pending)
         draw.renderer->realDraw( draw.world, draw.particles->begin(), draw.particles->end() );
+    finishStockTPSParticleItems();
+}
+
+unsigned classifyStockBattlegroundSprite( float x, float y, float z )
+{
+    const auto state = fogOwner.lock();
+    return state && state->active ? unsigned(state->splitter.classify( x, y, z )) : 1u;
 }
 
 bool drawStockBattlegroundElements()

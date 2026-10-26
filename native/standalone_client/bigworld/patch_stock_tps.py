@@ -47,6 +47,54 @@ def patch(root):
 \t// save cache to file
 \tpDS->save();''')
     pending.append((path, source))
+    path = root / 'lib/particle/actions/particle_system_action.hpp'
+    source = replace(path.read_text(), '\tPSA_TYPE_ID_MAX\t\t\t\t= 16',
+                     '\tPSA_INFLUX_TYPE_ID\t\t\t= 16,\n\tPSA_TYPE_ID_MAX\t\t\t\t= 17')
+    pending.append((path, source))
+    path = root / 'lib/particle/actions/particle_system_action.cpp'
+    source = replace(path.read_text(), '#include "pch.hpp"',
+                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    for signature, addition in (
+        ('const BW::string & ParticleSystemAction::typeToName(int type)',
+         '    if (type == PSA_INFLUX_TYPE_ID) return stockInfluxActionName();'),
+        ('int ParticleSystemAction::nameToType(const BW::string &name)',
+         '    if (name == stockInfluxActionName()) return PSA_INFLUX_TYPE_ID;'),
+        ('ParticleSystemActionPtr ParticleSystemAction::createActionOfType(int type)',
+         '    if (type == PSA_INFLUX_TYPE_ID) return createStockInfluxPSA();')):
+        source = replace(source, signature + '\n{', signature + '\n{\n' + addition)
+    source = replace(source, 'int type = pAction->typeID();',
+                     'int type = pAction->typeID();\n    if (type == PSA_INFLUX_TYPE_ID) return wrapStockInfluxPSA( pAction );')
+    pending.append((path, source))
+    path = root / 'lib/particle/particle_system.cpp'
+    source = replace(path.read_text(), '#include "pch.hpp"',
+                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = replace(source, '\tthis->clearBoundingBox();\n\treturn true;\n}',
+                     '\tthis->clearBoundingBox();\n    for (const auto & action : actions_) resetStockInfluxMotion( action.getObject() );\n\treturn true;\n}')
+    pending.append((path, source))
+    path = root / 'client/world_app.cpp'
+    source = replace(path.read_text(), '#include "pch.hpp"',
+                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    if '        tickStockTPSRuntime( dGameTime );' not in source:
+        source = replace(source, '        GlobalEmbodiments::tick( dGameTime );',
+                         '        GlobalEmbodiments::tick( dGameTime );\n        tickStockTPSRuntime( dGameTime );')
+    # GasCloud refreshes the shared splitter before the real tPS quad producer.
+    source = source.replace('        tickStockTPSRuntime( dGameTime );\n        tickStockBattlegroundElements();',
+                            '        tickStockBattlegroundElements();\n        tickStockTPSRuntime( dGameTime );')
+    if source.count('        tickStockTPSRuntime( dGameTime );') != 1:
+        raise RuntimeError('The tPS frame owner must tick exactly once')
+    pending.append((path, source))
+    path = root / 'client/facade_app.cpp'
+    source = replace(path.read_text(), '#include "pch.hpp"',
+                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    flush = '        App::instance().drawContext( App::COLOUR_DRAW_CONTEXT ).flush( Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );'
+    source = replace(source, flush, '        drawStockTPSRuntime();\n' + flush)
+    pending.append((path, source))
+    path = root / 'client/script_app.cpp'
+    source = replace(path.read_text(), '#include "pch.hpp"',
+                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = replace(source, '\tBigWorldClientScript::fini();',
+                     '\tfiniStockTPSRuntime();\n\tBigWorldClientScript::fini();')
+    pending.append((path, source))
     for path, source in pending:
         path.write_text(source)
 
