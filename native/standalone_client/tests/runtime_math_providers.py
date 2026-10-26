@@ -66,13 +66,15 @@ def init(*args):
         import Math
         import ResMgr
         identity = values(Math.Matrix())
+        provider_type = Math.Matrix.__base__
+        assert provider_type.__name__ == 'MatrixProvider'
         names = ('WGYawOnlyTransform', 'WGInverseTransform', 'WGBoundMatrixProvider',
                  'WGCombinedMP', 'WGTranslationOnlyMP', 'WGStrategicAreaViewMP',
                  'WGSmoothTranslationOnlyMP', 'WGReplayAwaredSmoothTranslationOnlyMP')
         for name in names:
             factory = getattr(Math, name)
             instance = factory()
-            assert isinstance(instance, Math.MatrixProvider), name
+            assert isinstance(instance, provider_type), name
             assert values(instance) == identity, name
             invalid(lambda: factory(1))
             if name != 'WGCombinedMP':
@@ -161,6 +163,7 @@ def init(*args):
         invalid(lambda: ResMgr.appDirectory(1))
         REPORT['application_directory'] = directory
         REPORT['active_content_type'] = ResMgr.activeContentType()
+        assert REPORT['active_content_type'] == 2, 'The prepared HD application metadata was not loaded'
 
         controller = BigWorld.WGReplayController()
         controller.playbackSpeed = 0
@@ -229,6 +232,7 @@ def start():
     if REPORT['status'] == 'failed':
         finish(REPORT['error'])
     else:
+        STATE['deadline'] = time.time() + 15
         BigWorld.callback(0.0, check_tick)
 
 
