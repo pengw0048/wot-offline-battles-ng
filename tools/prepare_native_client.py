@@ -130,6 +130,9 @@ def prepare(client, package):
         if not (package / required).is_file():
             raise ValueError('Independent client package is missing ' + required)
     originals = original_resource_paths(client)
+    # BWResourceImpl snapshots this physical application metadata before mounts.
+    # Preserve the original producer byte-for-byte beside the independent EXE.
+    content_metadata = (client / 'app_type.xml').read_bytes()
     root = ET.Element('root')
     paths = ET.SubElement(root, 'Paths')
     # Original resources.xml, game.pyc and entities.xml own startup. The narrow
@@ -138,6 +141,7 @@ def prepare(client, package):
     native_resources.mkdir(exist_ok=True)
     for path in [native_resources] + originals + [package / 'res', package / 'engine-res']:
         ET.SubElement(paths, 'Path').text = path.as_posix()
+    atomic_write(package / 'app_type.xml', content_metadata)
     atomic_write(package / 'paths.xml', ET.tostring(root, encoding='utf-8',
                                                   xml_declaration=True))
     record = {

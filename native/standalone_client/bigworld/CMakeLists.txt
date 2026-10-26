@@ -52,6 +52,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_quality.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_resources.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_startup_services.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_resource_content.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_preferences_path.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_numeric_format.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_initialization.cpp"

@@ -33,6 +33,7 @@ class NativeClientResourcePaths(unittest.TestCase):
           <Path type="hd">res/packages/hd.pkg</Path>
           <Path>res</Path>
         </Paths></root>''')
+        (self.client / 'app_type.xml').write_bytes(b'<protocol><app_type>hd</app_type><switch_to_type>sd</switch_to_type></protocol>\r\n')
         for name in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml'):
             path = self.package / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +61,7 @@ class NativeClientResourcePaths(unittest.TestCase):
         state = json.loads((self.package / 'original-client.json').read_text())
         self.assertEqual(state['personality'], 'game')
         self.assertFalse(state['original_executable_used_at_runtime'])
+        self.assertEqual((self.package / 'app_type.xml').read_bytes(), (self.client / 'app_type.xml').read_bytes())
 
     def test_missing_authored_package_preserves_previous_paths(self):
         (self.package / 'paths.xml').write_text('previous configuration')
@@ -68,6 +70,16 @@ class NativeClientResourcePaths(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Missing authored HD package'):
                 prepare.prepare(self.client, self.package)
         self.assertEqual((self.package / 'paths.xml').read_text(), 'previous configuration')
+
+    def test_missing_original_content_metadata_preserves_previous_configuration(self):
+        (self.package / 'paths.xml').write_text('previous configuration')
+        (self.package / 'app_type.xml').write_text('previous metadata')
+        (self.client / 'app_type.xml').unlink()
+        with patch.object(prepare, 'inspect_client', return_value={'version': '0.9.22.0.1', 'build': '1513'}):
+            with self.assertRaises(FileNotFoundError):
+                prepare.prepare(self.client, self.package)
+        self.assertEqual((self.package / 'paths.xml').read_text(),'previous configuration')
+        self.assertEqual((self.package / 'app_type.xml').read_text(),'previous metadata')
 
     def test_reader_matches_hd_mount_order_and_nested_terrain(self):
         nested = io.BytesIO()
