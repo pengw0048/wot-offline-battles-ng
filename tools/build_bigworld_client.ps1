@@ -233,6 +233,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         Set-Content -LiteralPath $EngineConfig -Encoding utf8
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_numeric_parsing.py"),
         $EngineRoot) "stock-python-numeric-parsing-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_math_specials.py"),
+        $EngineRoot) "stock-python-math-specials-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),
