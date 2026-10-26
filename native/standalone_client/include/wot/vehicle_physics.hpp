@@ -182,7 +182,8 @@ struct VehicleEngineConfiguration {
 };
 
 struct VehiclePhysicsModeConfiguration {
-    // The dictionary key is retained: global helpers explicitly read normal.
+    // Optional byte-string key metadata; native dispatch uses mode_index.
+    // Global helpers separately read the original modes.normal dictionary.
     std::string name;
     // Native mode_index=-1 means the current mode when replacing a setting.
     std::int32_t mode_index;
@@ -237,6 +238,98 @@ struct VehiclePhysicsConfiguration {
     std::vector<VehicleFakeGearConfiguration> forward_gears;
     std::vector<VehicleFakeGearConfiguration> backward_gears;
 };
+
+// Hull portion of f84370, before the real D3DX inertia-matrix boundary.
+// The adapter constructs/inverts that matrix; these are the original scalar
+// inputs and do not substitute a complete configured Tank or solver graph.
+struct VehicleBodyMassProperties {
+    float mass;
+    float inverse_mass;
+    Vector3 inertia_diagonal;
+};
+VehicleBodyMassProperties build_vehicle_hull_mass_properties(
+    const VehicleBodyConfiguration& body,
+    const VehicleChassisConfiguration& chassis);
+
+// Inputs emitted by Tank::rebuildShape (0x00f8b8d0) before its real D3DX
+// calls. Each face is encoded as its vertex count followed by vertex indices.
+// Slots 0/1 are embedded shapes; slots 2/3 belong to the shape collection.
+// D3DX transforms, convex topology and body installation remain separate
+// construction stages; this value alone is not a configured physical vehicle.
+struct VehicleTankConvexSource {
+    std::vector<Vector3> vertices;
+    std::vector<std::uint32_t> faces;
+};
+struct VehicleTankShapeSource {
+    Vector3 local_translation;
+    std::array<VehicleTankConvexSource, 4> polyhedra;
+    bool has_auxiliary_box;
+    std::array<Vector3, 2> auxiliary_box_endpoints;
+};
+// Tangents are the results of the original two libm calls, supplied by their
+// source field names. Keeping that boundary explicit permits an instruction oracle to
+// validate geometry without substituting host libm for the original CRT.
+VehicleTankShapeSource build_vehicle_tank_shape_source(
+    const VehicleBodyConfiguration& body,
+    const VehicleShapeConfiguration& shape,
+    const VehicleChassisConfiguration& chassis,
+    float terrain_board_tangent, float tank_board_tangent);
+
+// ConvexPolyhedron's actual f6d270 topology. Parallel opposite face normals
+// share one direction and retain a signed per-face dot product. Adjacency is
+// indexed by deduplicated vertices, including repeated closing face indices.
+struct VehicleConvexFace {
+    std::vector<std::uint32_t> vertices;
+    std::uint32_t normal_index;
+    float normal_scale;
+};
+struct VehicleConvexTopology {
+    std::vector<Vector3> vertices;
+    std::vector<Vector3> edge_directions;
+    std::vector<Vector3> normal_directions;
+    std::vector<VehicleConvexFace> faces;
+    std::vector<std::vector<std::uint32_t>> vertex_faces;
+    VehicleCollisionBounds local_bounds;
+};
+// The native adapter supplies D3DXVec3Normalize; no portable approximation is
+// substituted for that API in a physical owner. Source faces are produced by
+// build_vehicle_tank_shape_source, then their vertices are D3DX-transformed.
+VehicleConvexTopology build_vehicle_convex_topology(
+    const VehicleTankConvexSource& source, Vector3 (*normalize)(Vector3));
+
+// Geometry after actual D3DX local translation and convex construction.
+// This owns geometry only; configuring a Tank additionally requires the real
+// hull, engine, wheel and constraint owners before publication.
+struct VehicleTankGeometry {
+    std::array<VehicleConvexTopology, 4> polyhedra;
+    bool has_auxiliary_box;
+    Vector3 auxiliary_box_center;
+    Vector3 auxiliary_box_dimensions;
+};
+
+// f87e90 emits ten wheel constructors in interleaved left/right order.
+// These values precede the real rigid-body/D3DX construction at f7f280.
+struct VehicleWheelConstruction {
+    Vector3 local_position;
+    std::uint32_t side;
+    std::uint32_t index;
+    float carrying_length;
+    float stiffness_factor;
+    float equilibrium_deflection;
+    float normalized_load;
+    float radius;
+    float mass;
+    float forward_inertia_factor;
+    float inertia_factor;
+};
+float vehicle_wheel_equilibrium_deflection(
+    const VehicleChassisConfiguration& chassis, std::uint32_t index,
+    float chassis_vertical_force, float normalized_load);
+std::array<VehicleWheelConstruction, 10> build_vehicle_chassis_wheels(
+    const VehicleBodyConfiguration& body,
+    const VehicleChassisConfiguration& chassis, float chassis_vertical_force);
+VehicleBodyMassProperties build_vehicle_wheel_mass_properties(
+    const VehicleWheelConstruction& wheel);
 
 // Original leftTrackScroll/rightTrackScroll outputs (TrackChassis +0x128/12c).
 // These are not independently integrated by the presentation/filter owner.
