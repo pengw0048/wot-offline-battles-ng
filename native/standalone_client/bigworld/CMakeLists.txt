@@ -24,6 +24,7 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_suspension.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_authority.cpp")
 set(WOT_STOCK_ADAPTER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/offline_fork_module.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_data.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_compiled_space_mapping.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_lifecycle.cpp"
@@ -97,6 +98,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_filter.cpp")
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})
+include("${CMAKE_CURRENT_LIST_DIR}/offline_fork.cmake")
 target_include_directories(bwclient PRIVATE "${BW_SOURCE_DIR}/client"
     "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")

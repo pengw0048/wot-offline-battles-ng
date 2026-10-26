@@ -17,6 +17,7 @@ $D3dxVersion = "9.29.952.8"
 $ScaleformRevision = "7d92be560bf1b2e4ecae9ac69e340d4cae9a557e"
 $ScaleformVersion = "4.2.22"
 $GlooxVersion = "1.0.28"
+$OfflineForkRevision = "144619f6eb2925f8da4b13637bf65b8550fc898f"
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $StandaloneRoot = Join-Path $RepositoryRoot "native\standalone_client\bigworld"
 $StandaloneCmake = Join-Path $StandaloneRoot "CMakeLists.txt"
@@ -191,6 +192,28 @@ print('Licensed SDK input extracted: %d files' % len(members))
     }
     Invoke-Checked "tar" @("-xjf", $GlooxArchive, "-C", $GlooxRoot,
         "--strip-components", "1") "gloox-source-extract.log"
+
+    $OfflineForkArchive = Join-Path $WorkRoot "offline-fork.tar.gz"
+    $OfflineForkRoot = Join-Path $WorkRoot "offline-fork"
+    $OfflineForkPrefix = "wot-0.9.22-offline-battles-$OfflineForkRevision"
+    New-Item -ItemType Directory -Path $OfflineForkRoot | Out-Null
+    Invoke-WebRequest -Uri "https://codeload.github.com/colorfulmeans/wot-0.9.22-offline-battles/tar.gz/$OfflineForkRevision" -OutFile $OfflineForkArchive
+    $OfflineForkMembers = @(& tar -tzf $OfflineForkArchive)
+    if ($LASTEXITCODE -ne 0 -or $OfflineForkMembers.Count -eq 0) {
+        throw "Cannot inspect the pinned offline gameplay source archive."
+    }
+    foreach ($Member in $OfflineForkMembers) {
+        if (($Member -ne $OfflineForkPrefix -and
+                -not $Member.StartsWith("$OfflineForkPrefix/")) -or
+                $Member.Contains("..") -or $Member.Contains('\')) {
+            throw "Unexpected offline gameplay source archive member: $Member"
+        }
+    }
+    Invoke-Checked "tar" @("-xzf", $OfflineForkArchive, "-C", $OfflineForkRoot,
+        "--strip-components", "1", "$OfflineForkPrefix/native",
+        "$OfflineForkPrefix/src", "$OfflineForkPrefix/LICENSE") "offline-fork-source-extract.log"
+    @{ revision = $OfflineForkRevision } | ConvertTo-Json | Set-Content -LiteralPath `
+        (Join-Path $OfflineForkRoot "fork-source.json") -Encoding utf8NoBOM
 
     # The pinned source predates the current SDK's API deprecations and the
     # standard library's nodiscard annotations. Keep /WX for other diagnostics.
@@ -375,6 +398,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         gloox_upstream = "https://camaya.net/download/gloox-$GlooxVersion.tar.bz2"
         gloox_version = $GlooxVersion
         gloox_tls = "Windows SChannel"
+        offline_fork_upstream = "https://github.com/colorfulmeans/wot-0.9.22-offline-battles"
+        offline_fork_release = "v0.10.1"
+        offline_fork_revision = $OfflineForkRevision
         scaleform_audio = "GFx abstract SoundRenderer; optional FMOD backend disabled"
         generator = "Visual Studio 17 2022"
         toolset = "v142"
@@ -404,6 +430,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
         "-DWOT_SCALEFORM_FMOD_ADDON=OFF",
         "-DWOT_WWISE_SDK_ROOT=$WwiseSdk",
         "-DWOT_GLOOX_SOURCE_ROOT=$GlooxRoot",
+        "-DWOT_OFFLINE_FORK_ROOT=$OfflineForkRoot",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5") "configure.log"
     if ($env:SCCACHE_PATH) {
         $CacheExe = (Get-Command $env:SCCACHE_PATH -ErrorAction Stop).Source
@@ -578,6 +605,8 @@ https://visualstudio.microsoft.com/license-terms/
         -Destination (Join-Path $ClientOutput "gloox-COPYING.txt")
     Copy-Item -LiteralPath (Join-Path $GlooxRoot "LICENSE") `
         -Destination (Join-Path $ClientOutput "gloox-LICENSE.txt")
+    Copy-Item -LiteralPath (Join-Path $OfflineForkRoot "LICENSE") `
+        -Destination (Join-Path $ClientOutput "offline-fork-LICENSE.txt")
     Write-Host "Built standalone BigWorld engine binary: $ClientOutput"
     Write-Host "Includes the standalone bootstrap and public engine resources; no WoT game resources are included."
 }
