@@ -3,6 +3,7 @@ from __future__ import print_function
 import imp
 import json
 import os
+import struct
 import sys
 import traceback
 
@@ -49,6 +50,56 @@ def inspect_builtin():
     assert consumer._load() is backend
     assert consumer._load() is backend
     REPORT['checks'].append('fixed fork consumer reuses the registered builtin')
+    for source, bits in (('inf', 0x7ff0000000000000), ('-inf', 0xfff0000000000000),
+                         ('nan', 0xfff8000000000000), ('-nan', 0x7ff8000000000000)):
+        assert struct.unpack('<Q', struct.pack('<d', float(source)))[0] == bits
+        hex_bits = 0xfff8000000000000 if 'nan' in source else bits
+        assert struct.unpack('<Q', struct.pack('<d', float.fromhex(source)))[0] == hex_bits
+    REPORT['checks'].append('actual embedded special-value parsing matches original bits')
+
+    import offline_instance_guard_native as platform
+    assert not getattr(platform, '__file__', None)
+    assert platform._wot_offline_fork_revision == expected['revision']
+    methods = sorted(name for name in dir(platform) if not name.startswith('_'))
+    assert methods == sorted(('install_exception_trail', 'hide_process_windows',
+        'show_process_windows', 'apply_standard_gameplay_mask',
+        'restore_standard_gameplay_mask')), methods
+    for name in methods:
+        try:
+            getattr(platform, name)(1)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('Unexpected argument accepted: ' + name)
+    policy = imp.load_source('independent_process_consumer',
+                             os.path.join(ROOT, 'instance_guard_consumer.py'))
+    assert policy._load_native_bridge() is platform
+    requested = {policy.ALLOW_MULTIPLE_CLIENTS_ENV: '1'}
+    assert policy.release_if_requested(requested)
+    assert policy.release_if_requested(requested)
+    assert platform.restore_standard_gameplay_mask() == 102
+    assert platform.apply_standard_gameplay_mask() == 0
+    assert platform.apply_standard_gameplay_mask() == 101
+    assert platform.restore_standard_gameplay_mask() == 0
+    scope = imp.load_source('independent_mapping_consumer',
+                            os.path.join(ROOT, 'mapping_mask_consumer.py'))
+    def failure():
+        assert platform.apply_standard_gameplay_mask() == 101
+        raise ValueError('diagnostic mapping callback')
+    try:
+        scope.call_with_standard_gameplay_mask(failure, native_bridge=platform)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Mapping callback failure was lost')
+    assert platform.restore_standard_gameplay_mask() == 102
+    hidden = policy.hide_process_windows()
+    assert hidden >= 0
+    assert policy.hide_process_windows() == 0
+    restored = policy.show_process_windows()
+    assert 0 <= restored <= hidden
+    REPORT['process_windows'] = {'hidden': hidden, 'restored': restored}
+    REPORT['checks'].append('actual process services and reversible mapping scope')
 
 
 def onInit(isReload):
