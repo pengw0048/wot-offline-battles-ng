@@ -433,6 +433,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
         "-DWOT_WWISE_SDK_ROOT=$WwiseSdk",
         "-DWOT_GLOOX_SOURCE_ROOT=$GlooxRoot",
         "-DWOT_OFFLINE_FORK_ROOT=$OfflineForkRoot",
+        "-DPython3_EXECUTABLE=$((Get-Command python).Source)",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5") "configure.log"
     if ($env:SCCACHE_PATH) {
         $CacheExe = (Get-Command $env:SCCACHE_PATH -ErrorAction Stop).Source
