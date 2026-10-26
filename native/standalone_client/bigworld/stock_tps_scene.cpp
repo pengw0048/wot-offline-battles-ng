@@ -1239,6 +1239,29 @@ void resetStockInfluxMotion( ParticleSystemAction * action )
 {
     if (auto * influx = dynamic_cast<InfluxPSA *>( action )) influx->resetMotion();
 }
+bool playStockTPSOneShot( const BW::string & filename, const Vector3 & position, std::string & error )
+{
+    error.clear();
+    const auto owner = currentRuntime();
+    if (!owner || owner->closed) { error = "tPS runtime is unavailable";return false; }
+    const auto resource = owner->preload( filename, error );
+    if (!resource) return false;
+    Matrix world;
+    world.setTranslate( position );
+    auto effect = std::make_shared<SceneEffect>( *owner, resource, world );
+    for (const auto & group : effect->groups) for (const auto & source : group->sources)
+        if (source->failed) { error = "tPS one-shot emitter could not be created: " + filename;return false; }
+    // fa7fa0 -> fa7f40 -> f9a2c0 writes only the emitter position. The
+    // f9c7d0 constructor's direction remains (0,1,0), and no explicit
+    // attachment-matrix flag is set by fa16e0.
+    effect->setImplicitPose( TPSVector{position.x,position.y,position.z}, TPSVector{0.f,1.f,0.f} );
+    // fa16e0 submits the independent effect to the same manager and marks it
+    // for retirement. No PSA last-start timer or externally owned weak view is
+    // involved; Runtime retains it until every source and particle finishes.
+    if (owner->closed) { error = "tPS runtime closed during one-shot creation";return false; }
+    owner->pendingEffects.push_back( std::move(effect) );
+    return true;
+}
 bool initialiseStockTPSRuntime()
 {
     if (!initialiseStockTPSQuality()) return false;

@@ -215,6 +215,10 @@ assert((phase==0&&Moo::rc().target=="gbuffer0") || (phase==1&&(Moo::rc().target=
 assert(Moo::rc().scene);
 if(!step())return false;
 passes.push_back({phase==1?"WGSD_AO":"WGSD_COLOR",Moo::rc().target,true,true,Moo::rc().w,Moo::rc().h,{},{}});return true;}
+bool drawStockDynamicDecals(){
+assert(Moo::rc().target=="gbuffer0"&&Moo::rc().scene);
+if(!step())return false;
+passes.push_back({"DYNAMIC_COLOR",Moo::rc().target,true,true,Moo::rc().w,Moo::rc().h,{},{}});return true;}
 struct Resolution{wot::StockDynamicResolution value;const wot::StockDynamicResolution& state()const{return value;}} resolution;
 Resolution* stockDynamicResolution(){return &resolution;}
 struct SSAOSettings{float m_radius=.1f,m_fade=2.f,m_amplify=1.f;};
@@ -299,7 +303,7 @@ assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene"&&Moo::rc().w==1279&&Mo
 failAt=0;owner=&effectOwner;
 for(int quality=0;quality!=5;++quality){
 effectOwner.depthQuality_.lighting=quality;passes.clear();assert(effectOwner.drawSpaceDecals());
-assert(passes.back().technique=="WGSD_COLOR"&&Moo::rc().stack.empty()&&Moo::rc().target=="scene");
+assert(passes.size()==2&&passes[0].technique=="WGSD_COLOR"&&passes[1].technique=="DYNAMIC_COLOR"&&Moo::rc().stack.empty()&&Moo::rc().target=="scene");
 passes.clear();assert(effectOwner.drawSpaceDecalsAO());
 if(quality<3)assert(passes.size()==1&&passes[0].technique=="WGSD_AO"&&passes[0].target==(quality<2?"full":"half"));
 else assert(passes.empty());

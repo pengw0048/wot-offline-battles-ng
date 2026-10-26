@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "vehicle_appearance.hpp"
+#include "stock_vehicle_stickers.hpp"
 #include "stock_vehicle_fashions.hpp"
 
 #include "pyscript/script_math.hpp"
@@ -139,10 +140,14 @@ struct CompoundState
         CompoundNode & node = nodes[index];
         // #1513 0x008e3f00 writes providers directly into local transforms.
         // Applying a provider as an extra transform doubles authored offsets.
-        if (index == 0 && matrix)
-            matrix->matrix( node.local );
-        else if (node.source)
-            node.source->matrix( node.local );
+        MatrixProviderPtr provider = index == 0 && matrix ? matrix : node.source;
+        if (provider)
+        {
+            Matrix local = node.local;
+            provider->matrix( local );
+            if (!active) return false;
+            node.local = local;
+        }
         if (node.parent >= 0)
         {
             if (!evaluate( static_cast<size_t>( node.parent ), visiting ))
@@ -166,6 +171,36 @@ struct CompoundState
 };
 
 typedef std::shared_ptr<CompoundState> CompoundStatePtr;
+
+class CompoundStickerGeometry : public StockVehicleStickerGeometry
+{
+public:
+    CompoundStickerGeometry(const CompoundStatePtr& state, size_t part) :
+        state_(state), part_(part), identity_(state->parts[part].model.get()) {}
+
+    virtual bool acquire(PyModelPtr& model, Matrix& world)
+    {
+        CompoundStatePtr state = state_.lock();
+        if (!state || !state->active || part_ >= state->parts.size() ||
+            state->parts[part_].model.get() != identity_ || !state->evaluate())
+            return false;
+        // Matrix providers can synchronously reset the compound while evaluate
+        // calls Python. Revalidate the live part before dereferencing it again.
+        if (!state->active || part_ >= state->parts.size() ||
+            state->parts[part_].model.get() != identity_ ||
+            state->parts[part_].mount >= state->nodes.size()) return false;
+        world = state->nodes[state->parts[part_].mount].world;
+        model = state->parts[part_].model;
+        return model->pSuperModel() != NULL;
+    }
+
+private:
+    std::weak_ptr<CompoundState> state_;
+    size_t part_;
+    // Identity comparison only, after locking the live part owner. Retaining
+    // the PyModel here would cycle through its node's sticker attachment.
+    PyObject* identity_;
+};
 
 // A real pre-transform fashion writes the original skeleton's local pose
 // before Model::dress computes the skin palette. PyModelNode.local only
@@ -474,6 +509,18 @@ public:
     }
     PY_AUTO_METHOD_DECLARE( RETOWN, getBoundsForPart, ARG( int, END ) )
 
+    PyObject* getPartGeometryLink(int index)
+    {
+        if (!state_->active || index < 0 || static_cast<size_t>(index) >= state_->parts.size())
+        {
+            PyErr_SetString(PyExc_ValueError, "CompoundModel has no such active part");
+            return NULL;
+        }
+        return newStockVehicleStickerGeometry(
+            std::make_shared<CompoundStickerGeometry>(state_, static_cast<size_t>(index)));
+    }
+    PY_AUTO_METHOD_DECLARE( RETOWN, getPartGeometryLink, ARG( int, END ) )
+
     bool isHighPriorityReflection() const { return highPriorityReflection_; }
     void isHighPriorityReflection( bool value )
     {
@@ -557,6 +604,7 @@ PY_BEGIN_METHODS( PyCompoundModel )
     PY_METHOD( node )
     PY_METHOD( reset )
     PY_METHOD( getBoundsForPart )
+    PY_METHOD( getPartGeometryLink )
     PY_METHOD( setupFashions )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyCompoundModel )

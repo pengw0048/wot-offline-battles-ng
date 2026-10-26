@@ -2,6 +2,7 @@
 #include "stock_space_decals.hpp"
 #include "stock_space_decals_data.hpp"
 #include "stock_space_decals_texture.hpp"
+#include "stock_deferred_decal_draw.hpp"
 #include "stock_deferred_buffers.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/compiled_space.hpp"
@@ -104,8 +105,8 @@ class DecalRenderer : public Moo::DeviceCallback
 {
 public:
     std::array<DecalQuality, 5> quality = {{
-        {1.f, 0, 0, 2500}, {.8f, 1, 1, 1600}, {.6f, 1, 1, 900},
-        {.4f, 2, 1, 400}, {0.f, 4, 1, 1}}};
+        {1.f, 0, 0, 2048}, {.8f, 1, 1, 1024}, {.6f, 1, 1, 512},
+        {.4f, 2, 1, 256}, {0.f, 4, 1, 1}}};
     int selection = 0;
     uint32 anisotropy = 2;
     bool active = false, frame = false;
@@ -706,35 +707,18 @@ bool DecalRenderer::draw(unsigned phase)
         for (unsigned index = 0; index != 4; ++index) putDecalFloat(value.record, 88 + index * 4, fade);
         putDecalFloat(value.record, 108, parallax);
         prepared.push_back(value);
-        if (prepared.size() == option.visibleLimit) break;
     }
     // a8e1c0 sorts the original single scene-provider material group by type,
     // signed projection byte, authored priority and ascending distance. Each
     // direct texture draw stays in that order; textures never reorder overlap.
     std::sort(prepared.begin(), prepared.end(), [](const PreparedDecal& a, const PreparedDecal& b)
     {
-        if (a.material != b.material) return a.material < b.material;
-        const auto& x = a.queued.state->data.decals[a.queued.index];
-        const auto& y = b.queued.state->data.decals[b.queued.index];
-        if (x.type() != y.type()) return x.type() < y.type();
-        if (x.bytes[0x54] != y.bytes[0x54]) return x.bytes[0x54] < y.bytes[0x54];
-        return a.queued.distanceSquared < b.queued.distanceSquared;
+        return wot::stockDecalAdmissionLess(stockDeferredDecalAdmissionKey(a.record),
+            stockDeferredDecalAdmissionKey(b.record));
     });
+    if (prepared.size() > option.visibleLimit) prepared.resize(option.visibleLimit);
     static const unsigned phases[][5] = {{7, 0, 1, 4, 6}, {2, 8, 8, 8, 8}, {3, 8, 8, 8, 8}, {5, 8, 8, 8, 8}};
-    static const char* const techniques[] = {"PBS", "PBS_PARALLAX", "AMBIENT_OCCLUSION", "SHADOWS",
-        "PBS_ROAD", "ENV_MAPPING", "SHADOWS_FORWARD", "DIFFUSE"};
-    if (prepared.empty()) return true;
-    DecalDeviceScope states;
-    if (!states.valid()) return decalFailure("Cannot preserve the actual decal device state");
-    auto* buffers = stockDeferredBuffers();
-    DX::BaseTexture* kinds = buffers ? buffers->objectKindCopy() : NULL;
-    if (!kinds) return decalFailure("The original immutable object-kind input is unavailable");
-    Moo::rc().effectVisualContext().worldMatrix(NULL);
-    Moo::rc().effectVisualContext().updateSharedConstants(Moo::CONSTANTS_PER_VIEW);
-    const auto* resolution = stockDynamicResolution();
-    const auto& size = Moo::rc().backBufferDesc();
-    const auto projection = resolution ? resolution->shaderProjection() : wot::StockDynamicResolution().project(size.Width, size.Height);
-    const Vector4 sourceProjection(projection.parameters[0], projection.parameters[1], projection.parameters[2], projection.parameters[3]);
+    std::vector<StockDeferredDecalPacket> packets;
     for (unsigned materialIndex = 0; materialIndex != 5 && phases[phase][materialIndex] != 8; ++materialIndex)
     {
         for (unsigned kind = 0; kind != 4; ++kind)
@@ -770,44 +754,96 @@ bool DecalRenderer::draw(unsigned phase)
                 if (width > 65536 || height > 65536 || !width || !height) return decalFailure("Invalid original decal texture rectangle");
                 const uint16 rect[] = {0, 0, static_cast<uint16>(width - 1), static_cast<uint16>(height - 1)};
                 std::memcpy(value.record.data() + 116, rect, 8);
-                const auto packed = wot::packStockSpaceDecal(input, value.record);
-                const char* const maps[] = {"g_map1", "g_map2", "g_map3", "g_map4"};
-                const Moo::VisualPtr visual = kind == 3 ? plane : cube;
-                auto drawTechnique = [&](const char* name)
-                {
-                    if (!material->setTechnique(name) || !material->begin()) return false;
-                    bool success = true;
-                    for (uint32 pass = 0; pass < material->numPasses(); ++pass)
-                    {
-                        if (!material->beginPass(pass)) { success = false; break; }
-                        // Material begin/pass selection can activate another ARIE
-                        // binding. Set parameters on that actual pass binding.
-                        ID3DXEffect* effect = material->pEffect()->pEffect();
-                        bool bound = effect && SUCCEEDED(effect->SetTexture("g_texObjKind", kinds)) &&
-                            SUCCEEDED(effect->SetVector("g_texObjKindDRRParams", &sourceProjection)) &&
-                            SUCCEEDED(effect->SetBool("g_cameraIsInsideDecal", kind == 1)) &&
-                            SUCCEEDED(effect->SetBool("g_useStencil", kind == 0)) &&
-                            SUCCEEDED(effect->SetBool("g_pbsReady", resource.pbsReady)) &&
-                            SUCCEEDED(effect->SetBool("g_enableSSAO", buffers->ambientOcclusionEnabled())) &&
-                            SUCCEEDED(effect->SetInt("g_anisotropy", anisotropy)) &&
-                            SUCCEEDED(effect->SetFloat("g_depthMipSkip", phase == 1 && buffers->depthEffectsHalfResolution() ? 1.f : 0.f)) &&
-                            setStockDeferredDecalConversion(effect);
-                        for (unsigned index = 0; bound && index != 4; ++index)
-                            bound = SUCCEEDED(effect->SetTexture(maps[index], textures[index]));
-                        const bool drawn = bound && SUCCEEDED(effect->CommitChanges()) && drawDecalGeometry(*this, visual, packed);
-                        const bool ended = material->endPass();
-                        if (!drawn || !ended) { success = false; break; }
-                    }
-                    const bool ended = material->end();
-                    return success && ended;
-                };
-                if ((kind == 0 && !drawTechnique("STENCIL")) || !drawTechnique(techniques[value.material]))
-                    return decalFailure("Cannot draw the original decal instance/technique");
+                StockDeferredDecalPacket packet;
+                packet.material = input;
+                packet.record = value.record;
+                std::copy(textures, textures + 4, packet.textures.begin());
+                packet.kind = kind;
+                packets.push_back(packet);
             }
         }
     }
-    return true;
+    return drawStockDeferredDecalPackets(packets, phase);
 }
+}
+
+unsigned stockDeferredDecalVisibleLimit()
+{
+    auto owner = renderer;
+    return owner ? owner->quality[owner->selection].visibleLimit : 0;
+}
+
+void clearStockDeferredDecalTextures()
+{
+    auto owner = renderer;
+    if (owner) clearDecalBinding(owner->material);
+}
+
+bool drawStockDeferredDecalPackets(const std::vector<StockDeferredDecalPacket>& packets, unsigned phase)
+{
+    static const char* const techniques[] = {"PBS", "PBS_PARALLAX", "AMBIENT_OCCLUSION", "SHADOWS",
+        "PBS_ROAD", "ENV_MAPPING", "SHADOWS_FORWARD", "DIFFUSE"};
+    if (packets.empty()) return true;
+    auto owner = renderer;
+    if (!owner || !owner->active || !owner->frame || phase > 3 ||
+        !owner->material || !owner->plane || !owner->cube)
+        return decalFailure("Deferred decal drawing requires its current frame owner");
+    auto& material = owner->material;
+    DecalDeviceScope states;
+    if (!states.valid()) return decalFailure("Cannot preserve the actual decal device state");
+    auto* buffers = stockDeferredBuffers();
+    DX::BaseTexture* kinds = buffers ? buffers->objectKindCopy() : NULL;
+    if (!kinds) return decalFailure("The original immutable object-kind input is unavailable");
+    Moo::rc().effectVisualContext().worldMatrix(NULL);
+    Moo::rc().effectVisualContext().updateSharedConstants(Moo::CONSTANTS_PER_VIEW);
+    const auto* resolution = stockDynamicResolution();
+    const auto& size = Moo::rc().backBufferDesc();
+    const auto projection = resolution ? resolution->shaderProjection() : wot::StockDynamicResolution().project(size.Width, size.Height);
+    const Vector4 sourceProjection(projection.parameters[0], projection.parameters[1], projection.parameters[2], projection.parameters[3]);
+    for (const auto& packet : packets)
+    {
+        uint32 type = 0;
+        std::memcpy(&type, packet.record.data(), 4);
+        if (type >= 8 || packet.kind >= 4)
+            return decalFailure("Invalid original deferred decal material/projection");
+        const auto& input = packet.material;
+        const auto& textures = packet.textures;
+        const unsigned kind = packet.kind;
+        const auto packed = wot::packStockSpaceDecal(input, packet.record);
+        const char* const maps[] = {"g_map1", "g_map2", "g_map3", "g_map4"};
+        const Moo::VisualPtr visual = kind == 3 ? owner->plane : owner->cube;
+        auto drawTechnique = [&](const char* name)
+        {
+            if (!material->setTechnique(name) || !material->begin()) return false;
+            bool success = true;
+            for (uint32 pass = 0; pass < material->numPasses(); ++pass)
+            {
+                if (!material->beginPass(pass)) { success = false; break; }
+                // Material begin/pass selection can activate another ARIE
+                // binding. Set parameters on that actual pass binding.
+                ID3DXEffect* effect = material->pEffect()->pEffect();
+                bool bound = effect && SUCCEEDED(effect->SetTexture("g_texObjKind", kinds)) &&
+                    SUCCEEDED(effect->SetVector("g_texObjKindDRRParams", &sourceProjection)) &&
+                    SUCCEEDED(effect->SetBool("g_cameraIsInsideDecal", kind == 1)) &&
+                    SUCCEEDED(effect->SetBool("g_useStencil", kind == 0)) &&
+                    SUCCEEDED(effect->SetBool("g_pbsReady", input.controls[6] != 0)) &&
+                    SUCCEEDED(effect->SetBool("g_enableSSAO", buffers->ambientOcclusionEnabled())) &&
+                    SUCCEEDED(effect->SetInt("g_anisotropy", input.controls[4])) &&
+                    SUCCEEDED(effect->SetFloat("g_depthMipSkip", phase == 1 && buffers->depthEffectsHalfResolution() ? 1.f : 0.f)) &&
+                    setStockDeferredDecalConversion(effect);
+                for (unsigned index = 0; bound && index != 4; ++index)
+                    bound = SUCCEEDED(effect->SetTexture(maps[index], textures[index]));
+                const bool drawn = bound && SUCCEEDED(effect->CommitChanges()) && drawDecalGeometry(*owner, visual, packed);
+                const bool ended = material->endPass();
+                if (!drawn || !ended) { success = false; break; }
+            }
+            const bool ended = material->end();
+            return success && ended;
+        };
+        if ((kind == 0 && !drawTechnique("STENCIL")) || !drawTechnique(techniques[type]))
+            return decalFailure("Cannot draw the original decal instance/technique");
+    }
+    return true;
 }
 
 bool initialiseStockSpaceDecals()

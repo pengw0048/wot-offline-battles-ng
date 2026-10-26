@@ -256,6 +256,12 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-scene-settings-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_tps.py"),
         $EngineRoot) "stock-tps-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ground_effects.py"),
+        $EngineRoot) "stock-ground-effects-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_damage_sticker_registration.py"),
+        $EngineRoot) "stock-damage-sticker-registration-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_stickers.py"),
+        $EngineRoot) "stock-vehicle-stickers-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_time_of_day.py"),
         $EngineRoot) "stock-time-of-day-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_deferred_lighting.py"),
@@ -297,6 +303,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-flares-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_decals.py"),
         $EngineRoot) "stock-space-decals-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_decals.py"),
+        $EngineRoot) "stock-dynamic-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_local_lighting.py"),
         $EngineRoot) "stock-local-lighting-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_compiled_space_mapping.py"),

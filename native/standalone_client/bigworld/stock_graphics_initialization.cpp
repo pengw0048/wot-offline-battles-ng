@@ -7,6 +7,8 @@
 #include "stock_particle_quality.hpp"
 #include "stock_tps_quality.hpp"
 #include "stock_tps_scene.hpp"
+#include "stock_ground_effects.hpp"
+#include "stock_vehicle_stickers.hpp"
 #include "stock_graphics_settings_consumers.hpp"
 #include "stock_graphics_presets.hpp"
 
@@ -38,7 +40,7 @@ bool initialiseStockCustomGraphicsSettings()
         !initialiseStockSniperSwingSetting() ||
         !initialiseStockGraphicsPresets()) return false;
     initialiseStockVehicleCamouflageConfig();
-    return initialiseStockTPSRuntime();
+    return initialiseStockTPSRuntime() && initialiseStockGroundEffects() && initialiseStockVehicleStickers();
 }
 
 static PyObject * py_wg_initCustomSettings( PyObject * args )
