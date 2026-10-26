@@ -91,6 +91,9 @@ struct RenderContext {
     Device* device(){return deviceReady?&gpu:nullptr;}HWND windowHandle(){return reinterpret_cast<void*>(7);}
     unsigned nDevices(){return unsigned(adapters.size());}const DeviceInfo& deviceInfo(unsigned i){return adapters.at(i);}
     unsigned deviceIndex(){return activeDevice;}unsigned modeIndex(){return activeMode;}bool windowed(){return ::windowed;}
+    float fullScreenRatio=16.f/9.f,halfWidth=400.f,halfHeight=300.f;
+    float fullScreenAspectRatio(){return fullScreenRatio;}
+    float screenWidth(){return halfWidth+halfWidth;}float screenHeight(){return halfHeight+halfHeight;}
     bool changeMode(unsigned index,bool target){++changes;if(!changeOK)return false;activeMode=index;::windowed=target;return true;}
     bool resetDevice(){++resets;return resetOK;}
 };
@@ -103,7 +106,7 @@ void stockNotifyReadPreferences(int mode){preferenceReads.push_back(mode);if(pre
 PyObject* modeIndex(PyObject*,PyObject*){return PyInt_FromLong(activeMode);}
 #define METHOD(name) {#name,[](PyObject*,PyObject* args)->PyObject*{return py_##name(args);},METH_VARARGS,NULL}
 PyMethodDef methods[]={METHOD(isWindowVisible),METHOD(listVideoModesAllMonitors),METHOD(listBorderlessResolutionsAllMonitors),
-METHOD(wg_getMaxWindowedResolution),METHOD(wg_getMaxBorderlessResolution),METHOD(getWindowMode),
+METHOD(wg_getMaxWindowedResolution),METHOD(wg_getMaxBorderlessResolution),METHOD(getWindowMode),METHOD(getAspectRatio),
 METHOD(getActiveMonitorIndex),METHOD(getExclusiveFullscreenMonitorIndex),METHOD(wg_getCurrentResolution),
 METHOD(wg_getMonitorNames),METHOD(getBorderlessParameters),METHOD(setBorderlessFixedSize),METHOD(setActiveMonitorIndex),
 {"videoModeIndex",modeIndex,METH_VARARGS,NULL},{NULL,NULL,0,NULL}};
@@ -115,10 +118,19 @@ int main(){
     PyModule_AddIntConstant(module,"WindowModeExclusiveFullscreen",EXCLUSIVE);
     PyModule_AddIntConstant(module,"WindowModeBorderless",BORDERLESS);
     windowed=false;style=WS_POPUP;outer={0,0,2560,1440};
+    // Exclusive mode reports the configured ratio, not the 800x600 back buffer.
+    run("import BigWorld as B,struct\nf32=lambda v:struct.unpack('f',struct.pack('f',v))[0]\n"
+        "assert B.getAspectRatio()==f32(16./9) and type(B.getAspectRatio()) is float\n"
+        "try: B.getAspectRatio(1);assert False\n"
+        "except TypeError as e: assert str(e)=='getAspectRatio() takes no arguments.'\n");
     run("import BigWorld as B\nassert B.getWindowMode()==1\n"
         "assert B.wg_getCurrentResolution(0)==(800.,600.,144.)\n"
         "assert B.wg_getMaxWindowedResolution(0)==(1904,1001,144)\n");
     windowed=true;style=WS_OVERLAPPEDWINDOW;outer={100,100,916,739};
+    run("assert B.getWindowMode()==0 and B.getAspectRatio()==f32(4./3)\n");
+    Moo::rc().halfWidth=960.f;Moo::rc().halfHeight=400.f;style=WS_POPUP;
+    run("assert B.getWindowMode()==2 and B.getAspectRatio()==f32(2.4)\n");
+    Moo::rc().halfWidth=400.f;Moo::rc().halfHeight=300.f;style=WS_OVERLAPPEDWINDOW;
     run("import BigWorld as B\n"
         "m=B.listVideoModesAllMonitors()\n"
         "assert len(m)==2 and len(m[0])==3 and m[0][2]==(2,1920,1080,32,'1920x1080x32@75Hz',75)\n"

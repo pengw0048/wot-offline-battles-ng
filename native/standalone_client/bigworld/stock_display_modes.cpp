@@ -309,6 +309,18 @@ static PyObject * py_getWindowMode( PyObject * args )
 }
 PY_MODULE_FUNCTION( getWindowMode, BigWorld )
 
+// 0064ff20: exclusive fullscreen reports the configured ratio; windowed and
+// borderless modes report the live back-buffer ratio.
+static PyObject * py_getAspectRatio( PyObject * args )
+{
+    if (PyTuple_Size( args ) != 0)
+        return PyErr_Format( PyExc_TypeError, "getAspectRatio() takes no arguments." );
+    const float ratio = windowMode() == EXCLUSIVE ? Moo::rc().fullScreenAspectRatio() :
+        Moo::rc().screenWidth() / Moo::rc().screenHeight();
+    return PyFloat_FromDouble( ratio );
+}
+PY_MODULE_FUNCTION( getAspectRatio, BigWorld )
+
 static PyObject * py_getActiveMonitorIndex( PyObject * args )
 {
     int mode;
