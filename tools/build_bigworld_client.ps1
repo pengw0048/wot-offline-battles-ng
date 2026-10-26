@@ -283,6 +283,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-terrain-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_trees.py"),
         $EngineRoot) "stock-space-trees-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_scene_ownership.py"),
+        $EngineRoot) "stock-dynamic-scene-ownership-patch.log"
 
     # Microsoft's D3DX package supplies the legacy headers/import libraries
     # alongside the runner's Windows SDK, without installing the old SDK.
