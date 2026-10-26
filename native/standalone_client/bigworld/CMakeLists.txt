@@ -96,6 +96,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_audio.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_fashions.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_visuals.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_water_sensor.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_filter.cpp")
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})

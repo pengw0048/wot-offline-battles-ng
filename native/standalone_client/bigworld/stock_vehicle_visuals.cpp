@@ -4,6 +4,7 @@
 #include "stock_vehicle_components.hpp"
 #include "stock_vehicle_animators.hpp"
 #include "stock_vehicle_audio.hpp"
+#include "stock_vehicle_water_sensor.hpp"
 #include "vehicle_appearance.hpp"
 #include "stock_scene_collision.hpp"
 
@@ -889,6 +890,9 @@ static PyObject * py_createBoolLink( PyObject * args )
             return source->sideFlying( property == "isLeftSideFlying" );
         } );
     }
+    std::function<bool()> reader;
+    if (stockWaterSensorBoolLink( owner, property, reader ))
+        return new StockBoolLink( reader );
     StockVehicleFilterVisualState value;
     if (property == "isStrafing" && readStockVehicleFilterVisualState( owner, value ))
     {
@@ -1122,6 +1126,8 @@ PY_FACTORY( PyTrackScroll, BigWorld )
 void tickStockVehicleComponents( float frameTime )
 {
     updateLodCalculators();
+    // Phase 1 continues with WaterSensor 01493428 and DetailedEngineState 0149342c.
+    tickStockWaterSensors( frameTime );
     tickStockDetailedEngineStates( frameTime );
     // Original static factory order: LOD 01493100, Recoil 01493104,
     // Suspension 0149328c. Recoil and Suspension both register phase 2.
