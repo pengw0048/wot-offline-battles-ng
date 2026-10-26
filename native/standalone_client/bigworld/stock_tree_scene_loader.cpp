@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_tree_scene_loader.hpp"
 #include "stock_tree_scene.hpp"
+#include "stock_space_sounds.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "scene/scene.hpp"
 #include "scene/scene_object.hpp"
@@ -16,6 +17,9 @@ struct StockTreeSceneLoader::State
     StockTreeSceneHandler handler;
     CompiledSpace * space = NULL;
     std::vector<DynamicObjectHandle> membership;
+    const void* soundMapping = NULL;
+    StockSpaceSounds soundOwner;
+    std::vector<StockSpaceSoundHandle> soundHandles;
     bool bound = false;
 };
 
@@ -32,6 +36,7 @@ bool StockTreeSceneLoader::doLoadFromSpace( ClientSpace * space, BinaryFormat & 
     }
     auto candidate = std::make_shared<State>();
     candidate->space = dynamic_cast<CompiledSpace *>( space );
+    candidate->soundMapping = &reader;
     if (!candidate->space)
     {
         ERROR_MSG( "StockTreeSceneLoader: SpTr3 requires the actual compiled-space owner\n" );
@@ -59,6 +64,7 @@ bool StockTreeSceneLoader::doBind()
         return false;
     }
     state->bound = true;
+    state->soundOwner = acquireStockSpaceSounds( state->space );
     const SceneObject * objects = state->handler.objects();
     for (size_t index = 0; index < state->handler.objectCount(); ++index)
     {
@@ -76,6 +82,15 @@ bool StockTreeSceneLoader::doBind()
         spatial->getWorldTransform( object, &world );
         spatial->getWorldVisibilityBoundingBox( object, &visibility );
         state->handler.worldCollisionBounds( index, collision );
+        const auto sound = addStockSpaceNamedSound( state->soundOwner,
+            state->handler.soundResource( index ), world );
+        if (state_ != state)
+        {
+            removeStockSpaceSound( state->soundOwner, sound );return false;
+        }
+        registerStockSpaceObjectSound( state->soundOwner,state->soundMapping,
+            true,static_cast<uint32>(index),sound );
+        state->soundHandles.push_back( sound );
         // An absent native BSP remains an empty collision broadphase bound.
         // The visible cached mesh is not substituted for physical geometry.
         DynamicObjectHandle handle = state->space->dynamicScene().addObject( object, world, collision, visibility );
@@ -94,6 +109,9 @@ bool StockTreeSceneLoader::doBind()
 void StockTreeSceneLoader::removeMembership( const std::shared_ptr<State> & state )
 {
     state->bound = false;
+    std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
+    for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );
+    state->soundOwner.reset();
     std::vector<DynamicObjectHandle> retired;
     retired.swap( state->membership );
     for (const auto & handle : retired) state->space->dynamicScene().removeObject( handle );

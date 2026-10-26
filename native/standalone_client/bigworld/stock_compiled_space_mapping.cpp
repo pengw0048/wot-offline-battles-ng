@@ -5,6 +5,7 @@
 #include "stock_space_flares.hpp"
 #include "stock_space_water_scene.hpp"
 #include "stock_space_decals.hpp"
+#include "stock_space_sounds.hpp"
 #include "stock_tree_scene_loader.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/compiled_space_mapping.hpp"
@@ -37,6 +38,8 @@ public:
         addLoader( &water_ );
         addLoader( &flares_ );
         addLoader( &decals_ );
+        // Original WTau binds after the model, tree, particle and WGDE owners.
+        addLoader( &sounds_ );
     }
 
     virtual ~StockCompiledSpaceMapping()
@@ -44,6 +47,7 @@ public:
         // Stop/join the background loader and remove scene memberships while
         // every concrete loader still exists. The base destructor is idempotent.
         unloadSync();
+        removeLoader( &sounds_ );
         removeLoader( &decals_ );
         removeLoader( &flares_ );
         removeLoader( &water_ );
@@ -63,6 +67,7 @@ private:
     ParticleSystemLoader particles_;
     StockLightSceneLoader lights_;
     StockWaterSceneLoader water_;
+    StockSpaceSoundLoader sounds_;
 };
 }
 

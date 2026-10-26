@@ -252,6 +252,10 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-replay-controller-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_data.py"),
         $EngineRoot) "stock-space-data-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_lifecycle.py"),
+        $EngineRoot) "stock-space-lifecycle-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_sounds.py"),
+        $EngineRoot) "stock-space-sounds-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_display_modes.py"),
         $EngineRoot) "stock-display-modes-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings_consumers.py"),

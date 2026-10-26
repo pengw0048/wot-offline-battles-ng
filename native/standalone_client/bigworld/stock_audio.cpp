@@ -260,6 +260,7 @@ void saveSpeakerPreference(const char* key, unsigned value) {
 }
 
 bool stockAudioReady() { return StockAudioDetail::manager().ready; }
+bool stockAudioApplicationAvailable() { return StockAudioDetail::manager().configuration != NULL; }
 
 bool initialiseStockAudio(DataSectionPtr root, void* window) {
     using namespace StockAudioDetail;
@@ -503,6 +504,8 @@ struct Source {
     Vector3 offset = Vector3::zero();
     Matrix pose;
     BW::string name;
+    bool multiplePositionsSet = false;
+    std::vector<AkSoundPosition> multiplePositions;
     ~Source() {
         Manager& state = manager();
         if (!global && state.sound && epoch == state.epoch && id != AK_INVALID_GAME_OBJECT)
@@ -624,7 +627,7 @@ void updateSources() {
     }
     for (const auto& source : snapshot) {
         MatrixProviderPtr provider = source->matrix;
-        if (!provider || !sourceValid(source)) continue;
+        if (!provider || source->multiplePositionsSet || !sourceValid(source)) continue;
         Matrix pose;
         provider->matrix(pose);
         if (!state.ready || state.epoch != epoch) return;
@@ -757,7 +760,13 @@ bool reinitialise() {
                 continue;
             }
             state.sources[source.id] = saved.second.source;
-            AK::SoundEngine::SetPosition(source.id, transform(source.pose, source.offset));
+            if (!source.multiplePositionsSet)
+                AK::SoundEngine::SetPosition(source.id, transform(source.pose, source.offset));
+            else
+                accepted = result(AK::SoundEngine::SetMultiplePositions(source.id,
+                    source.multiplePositions.empty() ? NULL : source.multiplePositions.data(),
+                    static_cast<AkUInt16>(source.multiplePositions.size()),
+                    AK::SoundEngine::MultiPositionType_MultiDirections), "SetMultiplePositions") && accepted;
         }
     }
     AK::SoundEngine::SetPosition(state.listener, transform(camera));
@@ -1032,6 +1041,26 @@ bool playStockAudioSource(const StockAudioSource& source, const BW::string& even
 bool setStockAudioSourceMatrix(const StockAudioSource& source, MatrixProviderPtr provider) {
     if (!StockAudioDetail::sourceValid(source)) return false;
     source->matrix = provider;
+    source->multiplePositionsSet = false;
+    source->multiplePositions.clear();
+    return true;
+}
+bool setStockAudioSourcePositions(const StockAudioSource& source, const std::vector<Vector3>& positions) {
+    if (!StockAudioDetail::sourceValid(source) || positions.size() > 65535) return false;
+    std::vector<AkSoundPosition> values;
+    values.reserve(positions.size());
+    for (const auto& position : positions) {
+        AkSoundPosition value;
+        // Original 124a450 emits this exact orientation; 1250fe0 always
+        // supplies SDK type 2, independently of the wrapper's third argument.
+        value.Set(position.x, position.y, position.z, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f);
+        values.push_back(value);
+    }
+    if (!StockAudioDetail::result(AK::SoundEngine::SetMultiplePositions(source->id,
+        values.empty() ? NULL : values.data(), static_cast<AkUInt16>(values.size()),
+        AK::SoundEngine::MultiPositionType_MultiDirections), "SetMultiplePositions")) return false;
+    source->multiplePositions.swap(values);
+    source->multiplePositionsSet = true;
     return true;
 }
 bool setStockAudioSourceOffset(const StockAudioSource& source, const Vector3& offset) {

@@ -1112,6 +1112,14 @@ bool StockTreeSceneHandler::objectAvailable( size_t index ) const
     return index < implementation_->instances.size() && implementation_->instances[index].type != NULL;
 }
 
+BW::string StockTreeSceneHandler::soundResource( size_t index ) const
+{
+    // 6c5b30/6c5b50 use the live tree instance's original
+    // resource name plus the unmodified instance world transform.
+    if (!objectAvailable( index )) return BW::string();
+    return engineString( implementation_->instances[index].type->resource );
+}
+
 void StockTreeSceneHandler::worldCollisionBounds( size_t index, BoundingBox & bounds ) const
 {
     bounds = BoundingBox::s_insideOut_;

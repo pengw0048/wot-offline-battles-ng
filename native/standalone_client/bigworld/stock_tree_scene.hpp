@@ -31,6 +31,7 @@ public:
     const SceneObject * objects() const;
     size_t objectCount() const;
     bool objectAvailable( size_t index ) const;
+    BW::string soundResource( size_t index ) const;
     void worldCollisionBounds( size_t index, BoundingBox & bounds ) const;
     virtual SceneTypeSystem::RuntimeTypeID typeID() const;
     virtual SceneTypeSystem::RuntimeTypeID runtimeTypeID() const;

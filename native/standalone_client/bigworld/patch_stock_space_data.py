@@ -3,8 +3,8 @@ import argparse
 from pathlib import Path
 
 
-def replace_once(source, before, after):
-    if source.count(after) == 1:
+def replace_once(source, before, after, marker=None):
+    if source.count(marker or after) == 1:
         return source
     if source.count(before) != 1:
         raise ValueError('Unrecognized pinned typed-space lifecycle seam: '+repr(before))
@@ -15,7 +15,7 @@ def patch(root):
     root = Path(root)
     script_path = root / 'client/script_bigworld.cpp'
     script = script_path.read_text(encoding='utf-8-sig')
-    script = replace_once(script, '#include "pch.hpp"', '#include "pch.hpp"\n#include "stock_space_data.hpp"')
+    script = replace_once(script, '#include "pch.hpp"', '#include "pch.hpp"\n#include "stock_space_data.hpp"', '#include "stock_space_data.hpp"')
     script = replace_once(script, '\t// Load all the standard entity scripts\n\tbool ret = EntityType::init();',
         '\t// Publish the real ordered space mapping before entity modules import it.\n'
         '\tif (!initialiseStockSpaceData()) return false;\n\n'
@@ -24,15 +24,17 @@ def patch(root):
         '\tfinaliseStockSpaceData();\n\tMaterialKinds::fini();\n\tScript::fini();')
     space_path = root / 'lib/space/client_space.cpp'
     space = space_path.read_text(encoding='utf-8-sig')
-    space = replace_once(space, '#include "pch.hpp"', '#include "pch.hpp"\n#include "stock_space_data.hpp"')
-    space = replace_once(space, 'ClientSpace::~ClientSpace()\n{\n\tSpaceManager::instance().delSpace( this );',
-        'ClientSpace::~ClientSpace()\n{\n'
-        '\t// Block callback publication against a native owner already retiring.\n'
-        '\tisCleared_ = true;\n'
-        '\tretireStockSpaceData( id_, this );\n'
-        '\tSpaceManager::instance().delSpace( this );')
-    space = replace_once(space, '\tisCleared_ = true;\n\tdoClear();',
-        '\tisCleared_ = true;\n'
+    space = replace_once(space, '#include "pch.hpp"', '#include "pch.hpp"\n#include "stock_space_data.hpp"', '#include "stock_space_data.hpp"')
+    destructor=space.index('ClientSpace::~ClientSpace()\n{')
+    end=space.index('\n}',destructor)
+    body=space[destructor:end]
+    if '\tisCleared_ = true;' not in body:
+        body=body.replace('ClientSpace::~ClientSpace()\n{',
+            'ClientSpace::~ClientSpace()\n{\n\t// Block callback publication against a native owner already retiring.\n\tisCleared_ = true;')
+    body=replace_once(body,'\tSpaceManager::instance().delSpace( this );',
+        '\tretireStockSpaceData( id_, this );\n\tSpaceManager::instance().delSpace( this );')
+    space=space[:destructor]+body+space[end:]
+    space = replace_once(space, '\tdoClear();',
         '\t// 684280 removes the typed object before clearing native geometry.\n'
         '\tretireStockSpaceData( id_, this );\n'
         '\tdoClear();')

@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "stock_static_model_scene.hpp"
+#include "stock_space_sounds.hpp"
+#include "stock_space_sounds_data.hpp"
 #include "wot/stock_static_model_binary.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/compiled_space.hpp"
@@ -74,6 +76,9 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
     std::vector<std::shared_ptr<BSPTree>> colliders;
     std::vector<Instance> instances;
     std::vector<DynamicObjectHandle> membership;
+    const void* soundMapping = NULL;
+    StockSpaceSounds soundOwner;
+    std::vector<StockSpaceSoundHandle> soundHandles;
     bool bound = false;
 
     static bool fail( const char * message )
@@ -559,6 +564,7 @@ bool StockStaticModelSceneLoader::doLoadFromSpace( ClientSpace * space, BinaryFo
     if (state_ || unloadDepth_) return State::fail( "Previous mapping has not unloaded" );
     auto candidate = std::make_shared<State>();
     candidate->space = dynamic_cast<CompiledSpace *>( space );
+    candidate->soundMapping = &file;
     if (!candidate->space) return State::fail( "BSMI requires the actual compiled-space owner" );
     // Original BSMI transforms are world matrices. The mapping matrix must not
     // be applied to a compiled placement a second time.
@@ -575,10 +581,37 @@ bool StockStaticModelSceneLoader::doBind()
     state->bound = true;
     state->updateAnimations( 0.f );
     state->previousPose = state->currentPose;
+    state->soundOwner = acquireStockSpaceSounds( state->space );
     if (state_ != state) return false;
     for (auto & instance : state->instances)
     {
         if (!instance.active || instance.visibility.insideOut()) continue;
+        // 6c2490 addresses DB.names by BSMO.sounds[model]. 6c24f0
+        // composes the authored fragile hardpoint with the instance world;
+        // its hardPoint string parameter is not a second lookup or override.
+        const uint32 model = state->binary.instances.models[instance.index];
+        const uint32 definition = state->binary.models.sounds[model];
+        if (definition != 0xffffffffu && state->soundOwner)
+        {
+            State::Binary::Matrix localValues,worldValues;
+            std::string error;
+            if (!wot::stockSpaceModelSoundMatrices(state->binary,instance.index,localValues,worldValues,error))
+                ERROR_MSG("StaticSceneSoundFeature: %s\n",error.c_str());
+            else
+            {
+                const Matrix local=State::matrix(localValues),sourceWorld=State::matrix(worldValues);
+                Matrix world;
+                D3DXMatrixMultiply( &world, &local, &sourceWorld );
+                const auto sound = addStockSpaceModelSound( state->soundOwner, definition, world );
+                if (state_ != state)
+                {
+                    removeStockSpaceSound( state->soundOwner, sound );return false;
+                }
+                registerStockSpaceObjectSound( state->soundOwner,state->soundMapping,
+                    false,static_cast<uint32>(instance.index),sound );
+                state->soundHandles.push_back( sound );
+            }
+        }
         const auto handle = state->space->dynamicScene().addObject( instance.object,
             instance.world, instance.collision, instance.visibility );
         if (state_ != state)
@@ -594,6 +627,9 @@ bool StockStaticModelSceneLoader::doBind()
 void StockStaticModelSceneLoader::removeMembership( const std::shared_ptr<State> & state )
 {
     state->bound = false;
+    std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
+    for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );
+    state->soundOwner.reset();
     std::vector<DynamicObjectHandle> retired;
     retired.swap( state->membership );
     for (const auto & handle : retired) state->space->dynamicScene().removeObject( handle );
