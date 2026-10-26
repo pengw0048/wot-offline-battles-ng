@@ -29,9 +29,12 @@ def patch(root):
     header='lib/resmgr/bwresource.hpp'
     edit(header,'\tDataSectionPtr \t\t\t\trootSection();',
          '\tDataSectionPtr \t\t\t\trootSection();\n\tint stockActiveContentType() const;')
-    copied=(root/'lib/stock_resource_content.hpp',Path(__file__).with_name('stock_resource_content.hpp').read_bytes())
+    edit('lib/resmgr/CMakeLists.txt', '\tbwresource.cpp\n',
+         '\tbwresource.cpp\n\tstock_resource_content_reader.cpp\n')
+    copied=[(root/'lib/stock_resource_content.hpp',Path(__file__).with_name('stock_resource_content.hpp').read_bytes()),
+            (root/'lib/resmgr/stock_resource_content_reader.cpp',Path(__file__).with_name('stock_resource_content_reader.cpp').read_bytes())]
     for path,source in pending.items():(root/path).write_text(source,encoding='utf-8')
-    copied[0].write_bytes(copied[1])
+    for path,contents in copied:path.write_bytes(contents)
 
 
 if __name__=='__main__':

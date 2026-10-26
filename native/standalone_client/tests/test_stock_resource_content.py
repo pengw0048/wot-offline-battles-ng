@@ -50,7 +50,7 @@ struct IFileSystem{enum FileType{FT_NOT_FOUND,FT_FILE};std::map<std::string,Bina
 
 class ResourceContentTests(unittest.TestCase):
     def test_actual_physical_reader_and_lifetime(self):
-        source=(ROOT/'bigworld/stock_resource_content.cpp').read_text()
+        source=(ROOT/'bigworld/stock_resource_content_reader.cpp').read_text()
         production=body(source,'int loadStockResourceContentType(')
         probe=PREFIX+production+r'''
 int main(){
@@ -80,7 +80,7 @@ for(const char* name:{"HD"," sd","hd ","unknown",""}){files.entries["app/app_typ
         result=subprocess.run([str(python),'-c',script,str(ROOT/'tests'),str(client/'WorldOfTanks.exe')],input=json.dumps(names).encode(),capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode())
         expected=json.loads(result.stdout)
-        source=(ROOT/'bigworld/stock_resource_content.cpp').read_text()
+        source=(ROOT/'bigworld/stock_resource_content_reader.cpp').read_text()
         main=['int main(){IFileSystem files;auto b=std::make_shared<Binary>();files.entries["app_type.xml"]=b;']
         for name in names:
             literal=json.dumps(name).replace('\\u0000','\\0')
@@ -98,7 +98,7 @@ for(const char* name:{"HD"," sd","hd ","unknown",""}){files.entries["app/app_typ
         with tempfile.TemporaryDirectory(prefix='resource-content-patch-') as directory,tarfile.open(archive) as original:
             root=Path(directory)
             for member in original.getmembers():
-                for relative in ('lib/resmgr/bwresource.cpp','lib/resmgr/bwresource.hpp'):
+                for relative in ('lib/resmgr/bwresource.cpp','lib/resmgr/bwresource.hpp','lib/resmgr/CMakeLists.txt'):
                     if member.name.endswith('/programming/bigworld/'+relative):
                         path=root/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(original.extractfile(member).read())
             patch.patch(root);once={p.relative_to(root):p.read_bytes() for p in root.rglob('*') if p.is_file()}
