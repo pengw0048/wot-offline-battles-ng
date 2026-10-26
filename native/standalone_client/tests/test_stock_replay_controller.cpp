@@ -78,6 +78,33 @@ int main(int argc,char** argv){
         require(controller.tick(0,error)&&observer->messages.size()==beforeRestart+2,
                 "Reentrant replay restart lost its file or connection clock");
         controller.stop();
+        wot::StockReplayFile callbacks;
+        Bytes payload;string(payload,"bootcamp_setContext");string(payload,std::string("\x80\x02K\x07\x85.",6));
+        append(callbacks,0x31,0,payload);append(callbacks,0x31,.2f,payload);
+        save(callbacks,root+"/controller-callbacks.wotreplay");
+        auto* callbackConnection=new Observer;
+        wot::StockReplayController callbackOwner{std::unique_ptr<wot::StockReplayConnection>(callbackConnection)};
+        unsigned dataCalls=0;
+        callbackOwner.onDataCallback=[&](const std::string& name,const std::string& data){
+            require(name=="bootcamp_setContext"&&data==std::string("\x80\x02K\x07\x85.",6),
+                "Named callback packet changed its two native length-prefixed strings");
+            ++dataCalls;
+        };
+        require(callbackOwner.startPlayback(root+"/controller-callbacks.wotreplay",error),error.c_str());
+        require(callbackOwner.tick(0,error)&&dataCalls==1,"Due startup callback did not reach its actual named consumer");
+        callbackOwner.onClientReady();
+        require(callbackOwner.tick(.1f,error)&&dataCalls==1,"Future callback crossed its native packet-time barrier");
+        require(callbackOwner.tick(.11f,error)&&dataCalls==2,"Second callback packet was lost");
+        callbackOwner.stop();
+        const auto callbackBegins=callbackConnection->begins;
+        wot::StockReplayFile malformedCallback;payload.pop_back();append(malformedCallback,0x31,0,payload);
+        save(malformedCallback,root+"/controller-callback-malformed.wotreplay");
+        require(!callbackOwner.startPlayback(root+"/controller-callback-malformed.wotreplay",error)&&
+            callbackConnection->begins==callbackBegins,"Malformed callback crossed preflight before the native connection began");
+        require(callbackOwner.startPlayback(root+"/controller-callbacks.wotreplay",error),error.c_str());
+        callbackOwner.onDataCallback=[&](const std::string&,const std::string&){++dataCalls;callbackOwner.stop();};
+        require(callbackOwner.tick(1,error)&&dataCalls==3&&!callbackOwner.playing(),
+            "Named callback teardown advanced a retired replay packet batch");
         require(!controller.setSpeed(std::numeric_limits<float>::quiet_NaN(),error),"Invalid playback speed was accepted");
         std::cout<<"Replay controller core contract passed: strict preflight, wire fields, ready/version barriers, real file clock and reentrant teardown; entity observer is not native acceptance"<<std::endl;
         return 0;

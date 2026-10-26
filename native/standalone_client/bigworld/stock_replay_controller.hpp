@@ -5,6 +5,11 @@
 
 namespace wot {
 std::string stockReplayAutoStartFile(const std::vector<std::string>& arguments);
+#if defined(_WIN32)
+// Registers this independent executable as a supported replay application.
+// Existing extension defaults and Windows UserChoice are preserved.
+bool stockRegisterReplayExtension(const std::wstring& executable,std::uint32_t& error);
+#endif
 struct StockReplayClock { double time=0,serverOffset=0;bool attached=false; };
 struct StockReplayAction {
     std::uint32_t type=0,id=0,space=0,vehicle=0;
@@ -49,6 +54,7 @@ public:
     int playerVehicleID=0;
     bool controllingCamera=true;
     std::function<void()> onFinished,onVersionDiffers;
+    std::function<void(const std::string&,const std::string&)> onDataCallback;
 private:
     bool preflight(const StockReplayStream& stream,std::string& error) const;
     std::unique_ptr<StockReplayConnection> connection_;

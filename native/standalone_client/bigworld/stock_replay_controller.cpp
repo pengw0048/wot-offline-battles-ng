@@ -16,9 +16,13 @@
 #include <cstring>
 #include <cwchar>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace wot { namespace {
 class PacketReader {
@@ -62,6 +66,71 @@ std::string stockReplayAutoStartFile(const std::vector<std::string>& arguments){
     return result;
 }
 
+#if defined(_WIN32)
+namespace {
+const wchar_t replayProgID[]=L"WoTIndependent.Replay.0922";
+struct RegistryKey {
+    HKEY value=NULL;
+    ~RegistryKey(){if(value)RegCloseKey(value);}
+};
+LSTATUS writeRegistryString(HKEY root,const std::wstring& path,const wchar_t* name,const std::wstring& text){
+    RegistryKey key;
+    LSTATUS status=RegCreateKeyExW(root,path.c_str(),0,NULL,REG_OPTION_NON_VOLATILE,
+        KEY_QUERY_VALUE|KEY_SET_VALUE,NULL,&key.value,NULL);
+    if(status!=ERROR_SUCCESS)return status;
+    return RegSetValueExW(key.value,name,0,REG_SZ,reinterpret_cast<const BYTE*>(text.c_str()),
+        static_cast<DWORD>((text.size()+1)*sizeof(wchar_t)));
+}
+LSTATUS hasRegistryString(HKEY root,const wchar_t* path,const wchar_t* name,bool& populated){
+    populated=false;RegistryKey key;
+    LSTATUS status=RegOpenKeyExW(root,path,0,KEY_QUERY_VALUE,&key.value);
+    if(status==ERROR_FILE_NOT_FOUND||status==ERROR_PATH_NOT_FOUND)return ERROR_SUCCESS;
+    if(status!=ERROR_SUCCESS)return status;
+    DWORD type=0,size=0;status=RegQueryValueExW(key.value,name,NULL,&type,NULL,&size);
+    if(status==ERROR_FILE_NOT_FOUND)return ERROR_SUCCESS;
+    if(status!=ERROR_SUCCESS)return status;
+    // Preserve an unfamiliar existing value too; do not reinterpret its type.
+    if(type!=REG_SZ&&type!=REG_EXPAND_SZ){populated=true;return ERROR_SUCCESS;}
+    // A nontrivial existing value must be preserved without allocating a
+    // registry-controlled buffer. Only a canonical empty string is writable.
+    if(size>sizeof(wchar_t)){populated=true;return ERROR_SUCCESS;}
+    wchar_t text=0;size=sizeof(text);
+    status=RegQueryValueExW(key.value,name,NULL,&type,reinterpret_cast<BYTE*>(&text),&size);
+    if(status==ERROR_SUCCESS)populated=text!=0;
+    return status;
+}
+}
+bool stockRegisterReplayExtension(const std::wstring& path,std::uint32_t& error){
+    error=ERROR_SUCCESS;
+    if(path.size()<4||path.size()>32767||path.find(L'"')!=std::wstring::npos||path.find(L'\0')!=std::wstring::npos){
+        error=ERROR_INVALID_PARAMETER;return false;
+    }
+    std::wstring executable=path;std::replace(executable.begin(),executable.end(),L'/',L'\\');
+    const std::wstring base=L"Software\\Classes\\";
+    const std::wstring owner=base+replayProgID;
+    // Original 702520 registers a per-user open command for the current image.
+    // The independent image uses its own ProgID so this registration cannot
+    // replace another installation's command or the user's selected player.
+    LSTATUS status=writeRegistryString(HKEY_CURRENT_USER,owner,NULL,L"World of Tanks Battle Replay");
+    if(status==ERROR_SUCCESS)status=writeRegistryString(HKEY_CURRENT_USER,owner+L"\\shell\\open\\command",NULL,L"\""+executable+L"\" \"%1\"");
+    if(status==ERROR_SUCCESS)status=writeRegistryString(HKEY_CURRENT_USER,owner+L"\\DefaultIcon",NULL,L"\""+executable+L"\",0");
+    if(status!=ERROR_SUCCESS){error=status;return false;}
+    RegistryKey supported;
+    status=RegCreateKeyExW(HKEY_CURRENT_USER,(base+L".wotreplay\\OpenWithProgids").c_str(),0,NULL,
+        REG_OPTION_NON_VOLATILE,KEY_SET_VALUE,NULL,&supported.value,NULL);
+    if(status==ERROR_SUCCESS)status=RegSetValueExW(supported.value,replayProgID,0,REG_NONE,NULL,0);
+    if(status!=ERROR_SUCCESS){error=status;return false;}
+    bool userDefault=false,mergedDefault=false,userChoice=false;
+    status=hasRegistryString(HKEY_CURRENT_USER,L"Software\\Classes\\.wotreplay",NULL,userDefault);
+    if(status==ERROR_SUCCESS)status=hasRegistryString(HKEY_CLASSES_ROOT,L".wotreplay",NULL,mergedDefault);
+    if(status==ERROR_SUCCESS)status=hasRegistryString(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.wotreplay\\UserChoice",L"ProgId",userChoice);
+    if(status==ERROR_SUCCESS&&!userDefault&&!mergedDefault&&!userChoice)
+        status=writeRegistryString(HKEY_CURRENT_USER,base+L".wotreplay",NULL,replayProgID);
+    error=status;return status==ERROR_SUCCESS;
+}
+#endif
+
 StockReplayController::StockReplayController(std::unique_ptr<StockReplayConnection> connection)
     :connection_(std::move(connection)),clock_(new StockReplayClock){
     if(!connection_)throw std::invalid_argument("A real replay connection owner is required");
@@ -86,6 +155,8 @@ bool StockReplayController::preflight(const StockReplayStream& stream,std::strin
                 }else if(value.id!=base)throw std::runtime_error("Replay control packet has no created native entity");
             }else if(packet.type==0x18||packet.type==0x2d||packet.type==0x30){
                 PacketReader input(stream,packet);input.string();input.end();
+            }else if(packet.type==0x31){
+                PacketReader input(stream,packet);input.string();input.string();input.end();
             }else if(packet.type==0x15){
                 PacketReader input(stream,packet);input.timeAnchor();input.end();
             }else{
@@ -142,6 +213,12 @@ bool StockReplayController::tick(float delta,std::string& output){
             }else if(packet.type<=2){
                 const auto value=action(file_.stream(),packet);
                 if(!connection_->deliver(value,output)){error_=output;stop();return false;}
+            }else if(packet.type==0x31){
+                // 70bc30 writes two length-prefixed strings; 70ef70/7013f0
+                // dispatch the registered named handler at the packet time.
+                PacketReader input(file_.stream(),packet);
+                const auto name=input.string(),payload=input.string();input.end();
+                if(onDataCallback)onDataCallback(name,payload);
             }
             // Native entity creation may synchronously stop/restart this owner.
             if(identity!=identity_||!playing_)return true;
@@ -169,6 +246,8 @@ std::string StockReplayController::arenaInfo() const{return file_.stream().metad
 #include "connection/server_message_handler.hpp"
 #include "cstdmf/memory_stream.hpp"
 #include "cstdmf/debug.hpp"
+#include "pyscript/script.hpp"
+#include "script/pickler.hpp"
 #include <shellapi.h>
 #include <Python.h>
 
@@ -234,6 +313,8 @@ struct State {
     bool overwrite=false,modalWindows=true;
     std::vector<std::pair<int,int>> streamFilters;
     std::set<std::string> methodFilters;
+    std::map<std::string,PyObject*> dataCallbacks;
+    bool clearingCallbacks=false;
     State(){
         auto config=AppConfig::instance().pRoot();
         if(!config)throw std::runtime_error("Replay controller requires the native application settings");
@@ -274,14 +355,38 @@ void notify(PyController* owner,std::size_t index){
     PyObject* callback=owner->callbacks[index];if(!callback||callback==Py_None)return;Py_INCREF(callback);
     PyObject* result=PyObject_CallObject(callback,NULL);if(!result)PyErr_WriteUnraisable(callback);else Py_DECREF(result);Py_DECREF(callback);
 }
-int traverse(PyController* self,visitproc visit,void* arg){for(auto* callback:self->callbacks)Py_VISIT(callback);return 0;}
-int clear(PyController* self){if(self->state)self->state->controller.stop();for(auto*& callback:self->callbacks)Py_CLEAR(callback);return 0;}
+void deliverDataCallback(PyController* self,const std::string& name,const std::string& payload){
+    const auto found=self->state->dataCallbacks.find(name);
+    if(found==self->state->dataCallbacks.end()||!found->second)return;
+    // Retain before unpickling: pickle reconstruction can synchronously mutate
+    // this owner or replace its named callback.
+    PyObject* callback=found->second;Py_INCREF(callback);
+    ScriptObject arguments=Pickler::unpickle(BW::string(payload.data(),payload.size()));
+    PyObject* tuple=arguments.get();Py_XINCREF(tuple);
+    Script::call(callback,tuple,"WGReplayController::dataCallback: ");
+}
+int traverse(PyController* self,visitproc visit,void* arg){
+    for(auto* callback:self->callbacks)Py_VISIT(callback);
+    if(self->state)for(const auto& item:self->state->dataCallbacks)Py_VISIT(item.second);
+    return 0;
+}
+int clear(PyController* self){
+    if(self->state&&self->state->clearingCallbacks)return 0;
+    if(self->state){self->state->clearingCallbacks=true;self->state->controller.stop();}
+    for(auto*& callback:self->callbacks)Py_CLEAR(callback);
+    if(self->state){
+        std::map<std::string,PyObject*> retired;retired.swap(self->state->dataCallbacks);
+        for(const auto& item:retired)Py_XDECREF(item.second);
+        self->state->clearingCallbacks=false;
+    }
+    return 0;
+}
 void dealloc(PyController* self){PyObject_GC_UnTrack(self);owners.erase(self);clear(self);delete self->state;Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));}
 PyObject* construct(PyTypeObject* cls,PyObject* args,PyObject* kwargs){
     if(PyTuple_Size(args)||(kwargs&&PyDict_Size(kwargs))){PyErr_SetString(PyExc_TypeError,"WGReplayController takes no arguments");return NULL;}
     auto* self=reinterpret_cast<PyController*>(cls->tp_alloc(cls,0));if(!self)return NULL;
     self->state=NULL;for(auto*& callback:self->callbacks)callback=NULL;
-    try{self->state=new State;owners.insert(self);self->state->controller.onFinished=[self](){notify(self,0);};self->state->controller.onVersionDiffers=[self](){notify(self,4);};}
+    try{self->state=new State;owners.insert(self);self->state->controller.onFinished=[self](){notify(self,0);};self->state->controller.onVersionDiffers=[self](){notify(self,4);};self->state->controller.onDataCallback=[self](const std::string& name,const std::string& payload){deliverDataCallback(self,name,payload);};}
     catch(const std::bad_alloc&){Py_DECREF(self);return PyErr_NoMemory();}
     catch(const std::exception& exception){Py_DECREF(self);PyErr_SetString(PyExc_RuntimeError,exception.what());return NULL;}return reinterpret_cast<PyObject*>(self);
 }
@@ -313,6 +418,49 @@ PyObject* metadata(PyController*,PyObject* args,PyObject* kwargs){PyObject* obje
 PyObject* resultName(PyController* self,PyObject* args,PyObject* kwargs){PyObject* name=NULL;int overwrite=0;char* names[]={const_cast<char*>("fileName"),const_cast<char*>("overwriteExisting"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"Oi",names,&name,&overwrite))return NULL;if(!text(name,self->state->resultName))return NULL;self->state->overwrite=overwrite!=0;Py_RETURN_NONE;}
 PyObject* streamFilter(PyController* self,PyObject* args,PyObject* kwargs){int low=0,high=0;char* names[]={const_cast<char*>("low"),const_cast<char*>("high"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"ii",names,&low,&high))return NULL;if(low<0||high>0xffff){PyErr_SetString(PyExc_ValueError,"Replay stream filter is outside the uint16 domain");return NULL;}self->state->streamFilters.emplace_back(low,high);Py_RETURN_NONE;}
 PyObject* methodFilter(PyController* self,PyObject* args,PyObject* kwargs){PyObject* name=NULL;char* names[]={const_cast<char*>("method"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&name))return NULL;std::string value;if(!text(name,value))return NULL;self->state->methodFilters.insert(value);Py_RETURN_NONE;}
+PyObject* registerExtension(PyController*,PyObject* args,PyObject* kwargs){
+    if(!noArgs(args,kwargs))return NULL;
+    std::vector<wchar_t> image(260,0);
+    for(;;){
+        const DWORD length=GetModuleFileNameW(NULL,image.data(),static_cast<DWORD>(image.size()));
+        if(!length){
+            WARNING_MSG("WGReplayController::registerWotReplayFileExtension: cannot read executable path (%lu)\n",GetLastError());
+            Py_RETURN_NONE;
+        }
+        if(length<image.size()){
+            std::uint32_t error=0;
+            if(!wot::stockRegisterReplayExtension(std::wstring(image.data(),length),error))
+                WARNING_MSG("WGReplayController::registerWotReplayFileExtension: registry registration failed (%lu)\n",static_cast<unsigned long>(error));
+            Py_RETURN_NONE;
+        }
+        if(image.size()>=32768){
+            WARNING_MSG("WGReplayController::registerWotReplayFileExtension: executable path exceeds the Windows command limit\n");
+            Py_RETURN_NONE;
+        }
+        image.resize(std::min<std::size_t>(image.size()*2,32768));
+    }
+}
+PyObject* getDataCallback(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* object=NULL;char* names[]={const_cast<char*>("name"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&object))return NULL;
+    std::string name;if(!text(object,name))return NULL;
+    const auto found=self->state->dataCallbacks.find(name);
+    PyObject* result=found==self->state->dataCallbacks.end()||!found->second?Py_None:found->second;
+    Py_INCREF(result);return result;
+}
+PyObject* setDataCallback(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* object=NULL;PyObject* callback=NULL;
+    char* names[]={const_cast<char*>("name"),const_cast<char*>("callback"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OO",names,&object,&callback))return NULL;
+    std::string name;if(!text(object,name))return NULL;
+    if(self->state->clearingCallbacks){PyErr_SetString(PyExc_RuntimeError,"Replay callbacks are being cleared");return NULL;}
+    // 68fd80 maps None to a null PyObjectPtr; other objects are retained
+    // without an invented callable check. 7013f0 skips null handlers.
+    if(callback==Py_None)callback=NULL;
+    auto& slot=self->state->dataCallbacks[name];
+    Py_XINCREF(callback);PyObject* previous=slot;slot=callback;Py_XDECREF(previous);
+    Py_RETURN_NONE;
+}
 PyObject* autoStart(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;return string(self->state->autoStart);}
 PyObject* getCallback(PyController* self,void* index){PyObject* value=self->callbacks[reinterpret_cast<std::size_t>(index)];if(!value)value=Py_None;Py_INCREF(value);return value;}
 int setCallback(PyController* self,PyObject* value,void* index){if(!value||(value!=Py_None&&!PyCallable_Check(value))){PyErr_SetString(PyExc_TypeError,"Replay callback must be callable or None");return -1;}auto*& slot=self->callbacks[reinterpret_cast<std::size_t>(index)];Py_INCREF(value);PyObject* previous=slot;slot=value;Py_XDECREF(previous);return 0;}
@@ -333,7 +481,7 @@ PyObject* getCamera(PyController* self,void*){return PyInt_FromLong(self->state-
 int setCamera(PyController* self,PyObject* value,void*){if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay camera control");return -1;}const int enabled=PyObject_IsTrue(value);if(enabled<0)return -1;if(self->state->controller.playing()){PyErr_SetString(PyExc_NotImplementedError,"Replay camera packet owner has not yet been recovered");return -1;}self->state->controller.controllingCamera=enabled!=0;return 0;}
 PyObject* getModal(PyController* self,void*){return PyBool_FromLong(self->state->modalWindows);}
 #define REPLAY_METHOD(name,method) {name,reinterpret_cast<PyCFunction>(method),METH_VARARGS|METH_KEYWORDS,NULL}
-PyMethodDef methods[]={REPLAY_METHOD("startRecording",record),REPLAY_METHOD("startPlayback",play),REPLAY_METHOD("beginTimeWarp",unsupported),REPLAY_METHOD("getTimeMark",timeMark),REPLAY_METHOD("stop",stop),REPLAY_METHOD("onClientReady",ready),REPLAY_METHOD("onCommonSfwUnloaded",commonUnloaded),REPLAY_METHOD("onAmmoButtonPressed",unsupported),REPLAY_METHOD("registerWotReplayFileExtension",unsupported),REPLAY_METHOD("getAutoStartFileName",autoStart),REPLAY_METHOD("setResultingFileName",resultName),REPLAY_METHOD("getGunReloadAmountLeft",unsupported),REPLAY_METHOD("setGunReloadTime",unsupported),REPLAY_METHOD("getArcadeGunMarkerSize",unsupported),REPLAY_METHOD("setArcadeGunMarkerSize",unsupported),REPLAY_METHOD("getSPGGunMarkerParams",unsupported),REPLAY_METHOD("setSPGGunMarkerParams",unsupported),REPLAY_METHOD("getAimClipPosition",unsupported),REPLAY_METHOD("setAimClipPosition",unsupported),REPLAY_METHOD("getConsumableSlotCooldownAmount",unsupported),REPLAY_METHOD("setActiveConsumableSlot",unsupported),REPLAY_METHOD("setArenaInfoStr",metadata),REPLAY_METHOD("getArenaInfoStr",arenaInfo),REPLAY_METHOD("setArenaStatisticsStr",metadata),REPLAY_METHOD("onBattleChatMessage",unsupported),REPLAY_METHOD("onLockTarget",unsupported),REPLAY_METHOD("onSniperMode",unsupported),REPLAY_METHOD("onSetCruiseMode",unsupported),REPLAY_METHOD("isPlaying",playing),REPLAY_METHOD("isEffectNeedToPlay",unsupported),REPLAY_METHOD("onServerAim",unsupported),REPLAY_METHOD("onSetEquipmentID",unsupported),REPLAY_METHOD("resetArenaPeriod",unsupported),REPLAY_METHOD("confirmDlgAccepted",confirm),REPLAY_METHOD("setDataCallback",unsupported),REPLAY_METHOD("serializeCallbackData",unsupported),REPLAY_METHOD("getCallbackHandler",unsupported),REPLAY_METHOD("isFileCompressed",compressed),REPLAY_METHOD("setupStreamExcludeFilter",streamFilter),REPLAY_METHOD("setupAvatarMethodExcludeFilter",methodFilter),{NULL,NULL,0,NULL}};
+PyMethodDef methods[]={REPLAY_METHOD("startRecording",record),REPLAY_METHOD("startPlayback",play),REPLAY_METHOD("beginTimeWarp",unsupported),REPLAY_METHOD("getTimeMark",timeMark),REPLAY_METHOD("stop",stop),REPLAY_METHOD("onClientReady",ready),REPLAY_METHOD("onCommonSfwUnloaded",commonUnloaded),REPLAY_METHOD("onAmmoButtonPressed",unsupported),REPLAY_METHOD("registerWotReplayFileExtension",registerExtension),REPLAY_METHOD("getAutoStartFileName",autoStart),REPLAY_METHOD("setResultingFileName",resultName),REPLAY_METHOD("getGunReloadAmountLeft",unsupported),REPLAY_METHOD("setGunReloadTime",unsupported),REPLAY_METHOD("getArcadeGunMarkerSize",unsupported),REPLAY_METHOD("setArcadeGunMarkerSize",unsupported),REPLAY_METHOD("getSPGGunMarkerParams",unsupported),REPLAY_METHOD("setSPGGunMarkerParams",unsupported),REPLAY_METHOD("getAimClipPosition",unsupported),REPLAY_METHOD("setAimClipPosition",unsupported),REPLAY_METHOD("getConsumableSlotCooldownAmount",unsupported),REPLAY_METHOD("setActiveConsumableSlot",unsupported),REPLAY_METHOD("setArenaInfoStr",metadata),REPLAY_METHOD("getArenaInfoStr",arenaInfo),REPLAY_METHOD("setArenaStatisticsStr",metadata),REPLAY_METHOD("onBattleChatMessage",unsupported),REPLAY_METHOD("onLockTarget",unsupported),REPLAY_METHOD("onSniperMode",unsupported),REPLAY_METHOD("onSetCruiseMode",unsupported),REPLAY_METHOD("isPlaying",playing),REPLAY_METHOD("isEffectNeedToPlay",unsupported),REPLAY_METHOD("onServerAim",unsupported),REPLAY_METHOD("onSetEquipmentID",unsupported),REPLAY_METHOD("resetArenaPeriod",unsupported),REPLAY_METHOD("confirmDlgAccepted",confirm),REPLAY_METHOD("setDataCallback",setDataCallback),REPLAY_METHOD("serializeCallbackData",unsupported),REPLAY_METHOD("getCallbackHandler",getDataCallback),REPLAY_METHOD("isFileCompressed",compressed),REPLAY_METHOD("setupStreamExcludeFilter",streamFilter),REPLAY_METHOD("setupAvatarMethodExcludeFilter",methodFilter),{NULL,NULL,0,NULL}};
 #undef REPLAY_METHOD
 PyGetSetDef properties[callbackCount+16];
 bool prepare(){
