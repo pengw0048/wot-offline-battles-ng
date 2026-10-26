@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <strsafe.h>
+#include <time.h>
 
 BW_BEGIN_NAMESPACE
 int StockNumericFormat_token = 1;
@@ -88,29 +89,75 @@ public:
             PyErr_SetString(PyExc_RuntimeError, "Windows numeric locale is unavailable");
             return false;
         }
-        const unsigned digits = wot::stock_numeric_format::niceDigits(
-            value, decimal_.NumDigits);
-        NUMBERFMTW format = decimal_;
-        format.NumDigits = digits;
-        if (digits == 0)
-            format.lpDecimalSep = const_cast<wchar_t *>(L"");
-        wchar_t input[317] = {}, output[512] = {};
-        // The original literal at 014bf240 is "%lf": six input decimals.
-        // A local copy preserves the original temporary NumDigits mutation
-        // and restoration without introducing a second locale owner.
-        if (SUCCEEDED(StringCchPrintfW(input, 317, L"%lf", value)) &&
-            GetNumberFormatW(LOCALE_USER_DEFAULT, 0, input, &format, output, 512))
-        {
-            result = output;
-            if (digits > 0)
-                wot::stock_numeric_format::trimDecimal(result);
-        }
-        else
-            result.clear();
+        // 006f4c3a: the original passes the nice digit count to 006f3ed0.
+        result = fractional(value, static_cast<int>(wot::stock_numeric_format::niceDigits(
+            value, decimal_.NumDigits)));
         return true;
     }
 
+    // 006f3ed0: precision < 0 keeps LOCALE_IDIGITS and the separator,
+    // 0 drops the separator, > 0 trims trailing zeroes. The original mutates
+    // and restores its shared format; a local copy has the same effect.
+    std::wstring fractional(double value, int precision) const
+    {
+        wchar_t input[317] = {}, output[512] = {};
+        if (FAILED(StringCchPrintfW(input, 317, L"%lf", value)))
+            return std::wstring();
+        NUMBERFMTW format = decimal_;
+        if (precision >= 0)
+        {
+            format.NumDigits = static_cast<UINT>(precision);
+            if (precision == 0)
+                format.lpDecimalSep = const_cast<wchar_t *>(L"");
+        }
+        if (!GetNumberFormatW(LOCALE_USER_DEFAULT, 0, input,
+                validNumber_ ? &format : NULL, output, 512))
+            return std::wstring();
+        std::wstring result = output;
+        if (precision > 0)
+            wot::stock_numeric_format::trimDecimal(result);
+        return result;
+    }
+
+    // 006f3d50 / 006f42b0: local time through the CRT, then NLS with the
+    // caller's DATE_* or TIME_* flags, LOCALE_USER_DEFAULT and no picture.
+    std::wstring date(std::int64_t value, DWORD flags) const
+    {
+        const SYSTEMTIME time = localSystemTime(value);
+        wchar_t output[512] = {};
+        if (!GetDateFormatW(LOCALE_USER_DEFAULT, flags, &time, NULL, output, 512))
+            return std::wstring();
+        return output;
+    }
+    std::wstring timeOfDay(std::int64_t value, DWORD flags) const
+    {
+        const SYSTEMTIME time = localSystemTime(value);
+        wchar_t output[512] = {};
+        if (!GetTimeFormatW(LOCALE_USER_DEFAULT, flags, &time, NULL, output, 512))
+            return std::wstring();
+        return output;
+    }
+
 private:
+    static SYSTEMTIME localSystemTime(std::int64_t value)
+    {
+        // The original ignores _localtime64_s' status. UCRT fills tm with -1
+        // and fails quietly for negative times and times past 3001-01-19;
+        // the resulting SYSTEMTIME makes NLS fail, so the text is empty.
+        tm local;
+        const __time64_t stamp = value;
+        _localtime64_s(&local, &stamp);
+        SYSTEMTIME result;
+        result.wYear = static_cast<WORD>(local.tm_year + 1900);
+        result.wMonth = static_cast<WORD>(local.tm_mon + 1);
+        result.wDayOfWeek = static_cast<WORD>(local.tm_wday);
+        result.wDay = static_cast<WORD>(local.tm_mday);
+        result.wHour = static_cast<WORD>(local.tm_hour);
+        result.wMinute = static_cast<WORD>(local.tm_min);
+        result.wSecond = static_cast<WORD>(local.tm_sec);
+        result.wMilliseconds = 0;
+        return result;
+    }
     static bool numericLocale(LCTYPE key, UINT &result)
     {
         return GetLocaleInfoW(LOCALE_USER_DEFAULT, key | LOCALE_RETURN_NUMBER,
@@ -181,6 +228,11 @@ bool readDouble(PyObject *value, double &result)
     return false;
 }
 
+PyObject *unicodeResult(const std::wstring &value)
+{
+    return PyUnicode_FromWideChar(value.data(), static_cast<Py_ssize_t>(value.size()));
+}
+
 PyObject *utf8Result(const std::wstring &value)
 {
     // 006f2990/006f2be0/006f33d0: wide -> unicode -> strict UTF-8 byte str.
@@ -229,4 +281,152 @@ PyObject *py_wg_getNiceNumberFormat(PyObject *args)
     return utf8Result(result);
 }
 PY_MODULE_FUNCTION(wg_getNiceNumberFormat, BigWorld)
+
+namespace
+{
+// The U variants (006f2880 ... 006f3c40) return the same text as unicode.
+PyObject *textResult(const std::wstring &value, bool unicode)
+{
+    return unicode ? unicodeResult(value) : utf8Result(value);
+}
+
+template <class Format>
+PyObject *integerFormat(PyObject *args, const char *name, bool unicode, Format format)
+{
+    if (PyTuple_Size(args) != 1)
+        return Script::argCountError(name, 1, 1, "int64");
+    std::int64_t number;
+    if (!readInteger(PyTuple_GetItem(args, 0), number))
+        return NULL;
+    return textResult(format(number), unicode);
+}
+
+template <class Format>
+PyObject *doubleFormat(PyObject *args, const char *name, bool unicode, Format format)
+{
+    if (PyTuple_Size(args) != 1)
+        return Script::argCountError(name, 1, 1, "double");
+    double number;
+    if (!readDouble(PyTuple_GetItem(args, 0), number))
+        return NULL;
+    return textResult(format(number), unicode);
+}
+
+// 006f49f0/006f4a90/...: seconds -> 013d83cf time64 (truncated toward zero).
+template <class Format>
+PyObject *timeFormat(PyObject *args, const char *name, bool unicode, Format format)
+{
+    return doubleFormat(args, name, unicode, [&format](double seconds)
+    {
+        return format(wot::stock_numeric_format::signedInteger(seconds));
+    });
+}
+
+std::wstring fractional(double value) { return numericFormats().fractional(value, -1); }
+std::wstring longDate(std::int64_t value) { return numericFormats().date(value, DATE_LONGDATE); }
+std::wstring shortDate(std::int64_t value) { return numericFormats().date(value, DATE_SHORTDATE); }
+std::wstring yearMonth(std::int64_t value) { return numericFormats().date(value, DATE_YEARMONTH); }
+std::wstring longTime(std::int64_t value) { return numericFormats().timeOfDay(value, 0); }
+std::wstring shortTime(std::int64_t value) { return numericFormats().timeOfDay(value, TIME_NOSECONDS); }
+}
+
+PyObject *py_wg_getFractionalFormat(PyObject *args)
+{
+    return doubleFormat(args, "wg_getFractionalFormat", false, fractional);
+}
+PY_MODULE_FUNCTION(wg_getFractionalFormat, BigWorld)
+
+PyObject *py_wg_getFractionalFormatU(PyObject *args)
+{
+    return doubleFormat(args, "wg_getFractionalFormatU", true, fractional);
+}
+PY_MODULE_FUNCTION(wg_getFractionalFormatU, BigWorld)
+
+PyObject *py_wg_getGoldFormatU(PyObject *args)
+{
+    return integerFormat(args, "wg_getGoldFormatU", true,
+        [](std::int64_t value) { return numericFormats().gold(value); });
+}
+PY_MODULE_FUNCTION(wg_getGoldFormatU, BigWorld)
+
+PyObject *py_wg_getIntegralFormatU(PyObject *args)
+{
+    return integerFormat(args, "wg_getIntegralFormatU", true,
+        [](std::int64_t value) { return numericFormats().integral(value); });
+}
+PY_MODULE_FUNCTION(wg_getIntegralFormatU, BigWorld)
+
+PyObject *py_wg_getNiceNumberFormatU(PyObject *args)
+{
+    if (PyTuple_Size(args) != 1)
+        return Script::argCountError("wg_getNiceNumberFormatU", 1, 1, "double");
+    double number;
+    if (!readDouble(PyTuple_GetItem(args, 0), number))
+        return NULL;
+    std::wstring result;
+    if (!numericFormats().nice(number, result))
+        return NULL;
+    return unicodeResult(result);
+}
+PY_MODULE_FUNCTION(wg_getNiceNumberFormatU, BigWorld)
+
+PyObject *py_wg_getLongDateFormat(PyObject *args)
+{
+    return timeFormat(args, "wg_getLongDateFormat", false, longDate);
+}
+PY_MODULE_FUNCTION(wg_getLongDateFormat, BigWorld)
+
+PyObject *py_wg_getLongDateFormatU(PyObject *args)
+{
+    return timeFormat(args, "wg_getLongDateFormatU", true, longDate);
+}
+PY_MODULE_FUNCTION(wg_getLongDateFormatU, BigWorld)
+
+PyObject *py_wg_getLongTimeFormat(PyObject *args)
+{
+    return timeFormat(args, "wg_getLongTimeFormat", false, longTime);
+}
+PY_MODULE_FUNCTION(wg_getLongTimeFormat, BigWorld)
+
+PyObject *py_wg_getLongTimeFormatU(PyObject *args)
+{
+    return timeFormat(args, "wg_getLongTimeFormatU", true, longTime);
+}
+PY_MODULE_FUNCTION(wg_getLongTimeFormatU, BigWorld)
+
+PyObject *py_wg_getShortDateFormat(PyObject *args)
+{
+    return timeFormat(args, "wg_getShortDateFormat", false, shortDate);
+}
+PY_MODULE_FUNCTION(wg_getShortDateFormat, BigWorld)
+
+PyObject *py_wg_getShortDateFormatU(PyObject *args)
+{
+    return timeFormat(args, "wg_getShortDateFormatU", true, shortDate);
+}
+PY_MODULE_FUNCTION(wg_getShortDateFormatU, BigWorld)
+
+PyObject *py_wg_getShortTimeFormat(PyObject *args)
+{
+    return timeFormat(args, "wg_getShortTimeFormat", false, shortTime);
+}
+PY_MODULE_FUNCTION(wg_getShortTimeFormat, BigWorld)
+
+PyObject *py_wg_getShortTimeFormatU(PyObject *args)
+{
+    return timeFormat(args, "wg_getShortTimeFormatU", true, shortTime);
+}
+PY_MODULE_FUNCTION(wg_getShortTimeFormatU, BigWorld)
+
+PyObject *py_wg_getYMDateFormat(PyObject *args)
+{
+    return timeFormat(args, "wg_getYMDateFormat", false, yearMonth);
+}
+PY_MODULE_FUNCTION(wg_getYMDateFormat, BigWorld)
+
+PyObject *py_wg_getYMDateFormatU(PyObject *args)
+{
+    return timeFormat(args, "wg_getYMDateFormatU", true, yearMonth);
+}
+PY_MODULE_FUNCTION(wg_getYMDateFormatU, BigWorld)
 BW_END_NAMESPACE
