@@ -41,6 +41,28 @@ def function(source, signature):
 
 
 class AntialiasingPatchTests(unittest.TestCase):
+    def test_public_header_dependency_without_adapter_include_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fresh_engine(root)
+            patch = load_patch()
+            patch.patch(root)
+            headers = ('lib/stock_antialiasing.hpp', 'lib/stock_temporal_antialiasing.hpp',
+                       'lib/wot/stock_antialiasing.hpp')
+            before = [(root/name).stat().st_mtime_ns for name in headers]
+            patch.patch(root)
+            self.assertEqual(before, [(root/name).stat().st_mtime_ns for name in headers])
+            cpp = root/'probe.cpp'
+            binary = root/'probe'
+            cpp.write_text('#include "wot/stock_antialiasing.hpp"\n'
+                           'int main() { wot::StockMultisamplingSelection value; '
+                           'value.request(4); return value.type == 4 ? 0 : 1; }\n')
+            result = subprocess.run(['c++', '-std=c++14', '-I'+str(root/'lib'),
+                                     str(cpp), '-o', str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_actual_device_preference_read_write_and_initial_queue(self):
         with tempfile.TemporaryDirectory()as folder:
             root=Path(folder);fresh_engine(root);load_patch().patch(root)

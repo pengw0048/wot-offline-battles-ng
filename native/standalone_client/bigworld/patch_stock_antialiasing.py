@@ -159,11 +159,23 @@ bool RenderContext::isMultisamplingEnabled() const
          '                g_cfg.m_tonemapping.m_middleGray, g_cfg.m_tonemapping.m_whitePoint))\n'
          '            ERROR_MSG("Antialiasing: native HDR temporal resolve failed\\n");',
          '        if (!resolveStockTemporalHDR(m_hdrRT, m_finalAvgLumRT->pTexture(),')
-    # Validate every anchor before publishing any translation unit.
+    # Public RenderContext/EnviroMinder consumers do not all link the renderer
+    # targets. Publish their adapter headers with the public engine headers.
+    application = Path(__file__).resolve().parent
+    headers = ((application / 'stock_antialiasing.hpp', root / 'lib/stock_antialiasing.hpp'),
+               (application / 'stock_temporal_antialiasing.hpp', root / 'lib/stock_temporal_antialiasing.hpp'),
+               (application.parent / 'include/wot/stock_antialiasing.hpp',
+                root / 'lib/wot/stock_antialiasing.hpp'))
+    sources = [(destination, source.read_text()) for source, destination in headers]
+    # Validate every anchor and source before publishing any translation unit.
     for relative, text in pending.items():
         path = root / relative
         if path.read_text() != text:
             path.write_text(text)
+    for destination, text in sources:
+        if not destination.exists() or destination.read_text() != text:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(text)
 
 
 if __name__ == '__main__':
