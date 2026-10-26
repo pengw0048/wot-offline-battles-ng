@@ -138,6 +138,16 @@ AkTransform transform(const Matrix& matrix, const Vector3& offset = Vector3::zer
         front.x, front.y, front.z, up.x, up.y, up.z);
     return output;
 }
+AkTransform providerTransform(const Matrix& matrix, const Vector3& offset) {
+    // Original 1250e10 copies row 2 as front and row 0 as top. This source
+    // path is distinct from the application's listener/camera transform.
+    const Vector3 position=matrix.applyToOrigin()+offset;
+    const Vector3 front=matrix.applyToUnitAxisVector(2);
+    const Vector3 top=matrix.applyToUnitAxisVector(0);
+    AkTransform output;
+    output.Set(position.x,position.y,position.z,front.x,front.y,front.z,top.x,top.y,top.z);
+    return output;
+}
 bool loadBank(const BW::string& name) {
     Manager& state = manager();
     if (!state.sound) return false;
@@ -501,8 +511,10 @@ struct Source {
     bool global = false;
     bool auxSend = false;
     MatrixProviderPtr matrix;
+    std::uint64_t matrixRevision = 0;
     Vector3 offset = Vector3::zero();
     Matrix pose;
+    bool poseFromProvider = false;
     BW::string name;
     bool multiplePositionsSet = false;
     std::vector<AkSoundPosition> multiplePositions;
@@ -520,7 +532,7 @@ struct Voice {
     bool playing = false, notify = true;
     PyObjectPtr weakOwner;
 };
-struct SoundObjectWrapper { PyObject_HEAD SourcePtr* source; };
+struct SoundObjectWrapper { PyObject_HEAD SourcePtr* source; bool detachMatrixOnDelete; };
 struct SoundWrapper {
     PyObject_HEAD
     VoicePtr* voice;
@@ -561,9 +573,10 @@ SourcePtr createSource(PyObject* name, MatrixProviderPtr matrix, const Vector3& 
             source->id = AK_INVALID_GAME_OBJECT;
             return source;
         }
-        if (matrix) matrix->matrix(source->pose);
+        if (matrix) { matrix->matrix(source->pose);source->poseFromProvider=true; }
         if (!sourceValid(source)) return source;
-        AK::SoundEngine::SetPosition(source->id, transform(source->pose, position));
+        AK::SoundEngine::SetPosition(source->id, source->poseFromProvider ?
+            providerTransform(source->pose,position) : transform(source->pose,position));
         AkAuxSendValue send;
         send.listenerID = state.listener;
         send.auxBusID = state.auxiliaryBus;
@@ -628,11 +641,14 @@ void updateSources() {
     for (const auto& source : snapshot) {
         MatrixProviderPtr provider = source->matrix;
         if (!provider || source->multiplePositionsSet || !sourceValid(source)) continue;
+        const auto revision=source->matrixRevision;
         Matrix pose;
         provider->matrix(pose);
         if (!state.ready || state.epoch != epoch) return;
+        if (source->matrixRevision!=revision || !sourceValid(source)) continue;
         source->pose = pose;
-        AK::SoundEngine::SetPosition(source->id, transform(pose, source->offset));
+        source->poseFromProvider = true;
+        AK::SoundEngine::SetPosition(source->id, providerTransform(pose, source->offset));
     }
 }
 void deliverCallbacks() {
@@ -761,7 +777,8 @@ bool reinitialise() {
             }
             state.sources[source.id] = saved.second.source;
             if (!source.multiplePositionsSet)
-                AK::SoundEngine::SetPosition(source.id, transform(source.pose, source.offset));
+                AK::SoundEngine::SetPosition(source.id, source.poseFromProvider ?
+                    providerTransform(source.pose,source.offset) : transform(source.pose,source.offset));
             else
                 accepted = result(AK::SoundEngine::SetMultiplePositions(source.id,
                     source.multiplePositions.empty() ? NULL : source.multiplePositions.data(),
@@ -794,11 +811,19 @@ bool arity(PyObject* args, Py_ssize_t count, const char* name) {
     return false;
 }
 void objectDelete(PyObject* self) {
-    delete reinterpret_cast<SoundObjectWrapper*>(self)->source;
+    auto* wrapper=reinterpret_cast<SoundObjectWrapper*>(self);
+    // Factory-created objects own the provider attachment. Borrowed vehicle
+    // source views do not detach it (124acd0/124ad70, factory flag +0x18).
+    if (wrapper->detachMatrixOnDelete)
+        setStockAudioSourceMatrix(*wrapper->source,MatrixProviderPtr());
+    delete wrapper->source;
     PyObject_Del(self);
 }
 void soundDelete(PyObject* self) {
     auto* wrapper = reinterpret_cast<SoundWrapper*>(self);
+    // 1251a90 first calls 124f7d0: dropping the Python sound stops its live
+    // SDK playing ID, before releasing callbacks and the source lease.
+    stop(*wrapper->voice);
     if (wrapper->weakrefs) PyObject_ClearWeakRefs(self);
     Py_XDECREF(wrapper->callback);
     delete wrapper->voice;
@@ -846,7 +871,7 @@ PyObject* soundIsPlaying(PyObject* self, void*) {
 PyObject* soundReleaseMatrix(PyObject* self, PyObject* args) {
     if (!arity(args, 0, "releaseMatrix")) return NULL;
     const auto& voice = *reinterpret_cast<SoundWrapper*>(self)->voice;
-    if (voice && voice->source) voice->source->matrix = MatrixProviderPtr();
+    if (voice) setStockAudioSourceMatrix(voice->source, MatrixProviderPtr());
     Py_RETURN_NONE;
 }
 SourcePtr sourceOf(PyObject* self, bool sound) {
@@ -888,6 +913,15 @@ PyObject* objectPlay(PyObject* self, PyObject* args) {
     // The original wrapper's bool denotes accepted string argument shape.
     Py_RETURN_TRUE;
 }
+PyObject* objectNamedNoOperation(PyObject* args, const char* method) {
+    BW::string event;
+    if (!arity(args, 1, method) || Script::setData(PyTuple_GET_ITEM(args, 0), event)) return NULL;
+    // Exact 124b390/124ae90 validate one string and return None. Neither
+    // invokes the audio owner; stopAll and PySound.stop own actual stopping.
+    Py_RETURN_NONE;
+}
+PyObject* objectStop(PyObject*, PyObject* args) { return objectNamedNoOperation(args, "stop"); }
+PyObject* objectIsPlaying(PyObject*, PyObject* args) { return objectNamedNoOperation(args, "isPlaying"); }
 PyObject* objectStopAll(PyObject* self, PyObject* args) {
     if (!arity(args, 0, "stopAll")) return NULL;
     SourcePtr source = sourceOf(self, false);
@@ -900,13 +934,55 @@ PyObject* objectStopAll(PyObject* self, PyObject* args) {
 }
 PyObject* objectMatrix(PyObject* self, void*) {
     SourcePtr source = sourceOf(self, false);
-    return source ? Script::getData(source->matrix) : Script::getData(MatrixProviderPtr());
+    return sourceValid(source) ? Script::getData(source->matrix) : Script::getData(MatrixProviderPtr());
 }
 int objectSetMatrix(PyObject* self, PyObject* value, void*) {
     MatrixProviderPtr matrix;
-    if (!value || Script::setData(value, matrix)) return -1;
-    sourceOf(self, false)->matrix = matrix;
+    if (!value) { PyErr_SetString(PyExc_TypeError,"Cannot delete matrixProvider");return -1; }
+    if (Script::setData(value, matrix)) return -1;
+    setStockAudioSourceMatrix(sourceOf(self, false), matrix);
     return 0;
+}
+PyObject* soundMatrix(PyObject*, void*) {
+    // 12525e0 returns its static null provider, even after a successful set.
+    Py_RETURN_NONE;
+}
+int soundSetMatrix(PyObject* self, PyObject* value, void*) {
+    MatrixProviderPtr matrix;
+    if (!value) { PyErr_SetString(PyExc_TypeError,"Cannot delete matrixProvider");return -1; }
+    if (Script::setData(value, matrix)) return -1;
+    setStockAudioSourceMatrix(sourceOf(self, true), matrix);
+    return 0;
+}
+PyObject* objectName(PyObject* self, void*) {
+    const SourcePtr source=sourceOf(self, false);
+    return Script::getData(sourceValid(source) ? source->name : BW::string());
+}
+PyObject* soundName(PyObject* self, void*) {
+    const auto& voice=*reinterpret_cast<SoundWrapper*>(self)->voice;
+    return Script::getData(voice && sourceValid(voice->source) ? voice->event : BW::string());
+}
+PyObject* soundVolume(PyObject*, void*) {
+    // Both original types share 1252760: reading volume returns float(1).
+    return PyFloat_FromDouble(1.0);
+}
+int setVolume(PyObject* self, PyObject* value, bool sound) {
+    float volume;
+    if (!value) { PyErr_SetString(PyExc_TypeError,"Cannot delete volume");return -1; }
+    if (Script::setData(value, volume, "volume")) return -1;
+    setStockAudioSourceVolume(sourceOf(self, sound), volume);
+    return 0;
+}
+int objectSetVolume(PyObject* self, PyObject* value, void*) { return setVolume(self, value, false); }
+int soundSetVolume(PyObject* self, PyObject* value, void*) { return setVolume(self, value, true); }
+PyObject* soundIntrospection(PyObject*, void*) {
+    // 69ae90 allocates a fresh empty list; it does not enumerate the tables.
+    return PyList_New(0);
+}
+int soundReadOnly(PyObject* self, PyObject*, void* attribute) {
+    PyErr_Format(PyExc_TypeError, "Sorry, the attribute %s in %s is read-only",
+        static_cast<const char*>(attribute), Py_TYPE(self)->tp_name);
+    return -1;
 }
 
 PyMethodDef soundMethods[] = {
@@ -915,13 +991,24 @@ PyMethodDef soundMethods[] = {
     {"setRTPC", soundRTPC, METH_VARARGS, NULL}, {"setSwitch", soundSwitch, METH_VARARGS, NULL},
     {"releaseMatrix", soundReleaseMatrix, METH_VARARGS, NULL}, {NULL, NULL, 0, NULL}};
 PyMethodDef objectMethods[] = {
-    {"play", objectPlay, METH_VARARGS, NULL}, {"stopAll", objectStopAll, METH_VARARGS, NULL},
+    {"play", objectPlay, METH_VARARGS, NULL}, {"stop", objectStop, METH_VARARGS, NULL},
+    {"stopAll", objectStopAll, METH_VARARGS, NULL},
     {"setRTPC", objectRTPC, METH_VARARGS, NULL}, {"setSwitch", objectSwitch, METH_VARARGS, NULL},
+    {"isPlaying", objectIsPlaying, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};
 PyGetSetDef soundAttributes[] = {
-    {const_cast<char*>("isPlaying"), soundIsPlaying, NULL, NULL, NULL},
+    {const_cast<char*>("__members__"), soundIntrospection, soundReadOnly, NULL, const_cast<char*>("__members__")},
+    {const_cast<char*>("__methods__"), soundIntrospection, soundReadOnly, NULL, const_cast<char*>("__methods__")},
+    {const_cast<char*>("isPlaying"), soundIsPlaying, soundReadOnly, NULL, const_cast<char*>("isPlaying")},
+    {const_cast<char*>("volume"), soundVolume, soundSetVolume, NULL, NULL},
+    {const_cast<char*>("name"), soundName, soundReadOnly, NULL, const_cast<char*>("name")},
+    {const_cast<char*>("matrixProvider"), soundMatrix, soundSetMatrix, NULL, NULL},
     {NULL, NULL, NULL, NULL, NULL}};
 PyGetSetDef objectAttributes[] = {
+    {const_cast<char*>("__members__"), soundIntrospection, soundReadOnly, NULL, const_cast<char*>("__members__")},
+    {const_cast<char*>("__methods__"), soundIntrospection, soundReadOnly, NULL, const_cast<char*>("__methods__")},
+    {const_cast<char*>("name"), objectName, soundReadOnly, NULL, const_cast<char*>("name")},
+    {const_cast<char*>("volume"), soundVolume, objectSetVolume, NULL, NULL},
     {const_cast<char*>("matrixProvider"), objectMatrix, objectSetMatrix, NULL, NULL},
     {NULL, NULL, NULL, NULL, NULL}};
 bool typesReady() {
@@ -1040,10 +1127,26 @@ bool playStockAudioSource(const StockAudioSource& source, const BW::string& even
 }
 bool setStockAudioSourceMatrix(const StockAudioSource& source, MatrixProviderPtr provider) {
     if (!StockAudioDetail::sourceValid(source)) return false;
-    source->matrix = provider;
-    source->multiplePositionsSet = false;
-    source->multiplePositions.clear();
-    return true;
+    const auto revision=++source->matrixRevision;
+    const auto epoch=source->epoch;
+    // 1251080/1250e10 sample a new provider immediately; detaching samples
+    // the old provider once before releasing it, retaining that SDK position.
+    MatrixProviderPtr sampled=provider ? provider : source->matrix;
+    if (provider) source->matrix=provider;
+    bool accepted=true;
+    if (sampled) {
+        Matrix pose;
+        sampled->matrix(pose);
+        // A provider may synchronously retire or replace its source binding.
+        if (!StockAudioDetail::sourceValid(source) || source->epoch!=epoch ||
+            source->matrixRevision!=revision) return false;
+        source->pose=pose;
+        source->poseFromProvider=true;
+        accepted=StockAudioDetail::result(AK::SoundEngine::SetPosition(source->id,
+            StockAudioDetail::providerTransform(pose,source->offset)), "SetPosition");
+    }
+    if (!provider) source->matrix=MatrixProviderPtr();
+    return accepted;
 }
 bool setStockAudioSourcePositions(const StockAudioSource& source, const std::vector<Vector3>& positions) {
     if (!StockAudioDetail::sourceValid(source) || positions.size() > 65535) return false;
@@ -1103,6 +1206,7 @@ PyObject* wrapStockAudioSource(const StockAudioSource& source) {
     auto* object = PyObject_New(StockAudioDetail::SoundObjectWrapper, &StockAudioDetail::objectType);
     if (!object) return NULL;
     object->source = new StockAudioSource(source ? source : StockAudioSource(new StockAudioDetail::Source));
+    object->detachMatrixOnDelete = false;
     return reinterpret_cast<PyObject*>(object);
 }
 
@@ -1259,6 +1363,7 @@ PyObject* py_WW_getSoundObject(PyObject* args) {
     // WW_getSoundObject factory returns an invalid handle for this input.
     object->source = new SourcePtr(PyString_Check(name) ?
         createSource(name, matrix, offset, aux) : SourcePtr(new Source));
+    object->detachMatrixOnDelete = true;
     return reinterpret_cast<PyObject*>(object);
 }
 PY_MODULE_FUNCTION(WW_getSoundObject, _WWISE)
