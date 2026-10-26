@@ -11,6 +11,7 @@
 #include "stock_vehicle_stickers.hpp"
 #include "stock_graphics_settings_consumers.hpp"
 #include "stock_graphics_presets.hpp"
+#include "vehicle_appearance.hpp"
 
 #include "romp/hdr_support.hpp"
 
@@ -40,7 +41,8 @@ bool initialiseStockCustomGraphicsSettings()
         !initialiseStockSniperSwingSetting() ||
         !initialiseStockGraphicsPresets()) return false;
     initialiseStockVehicleCamouflageConfig();
-    return initialiseStockTPSRuntime() && initialiseStockGroundEffects() && initialiseStockVehicleStickers();
+    return initialiseStockTPSRuntime() && initialiseStockGroundEffects() &&
+        initialiseStockVehicleStickers() && initialiseStockVehicleAppearanceResources();
 }
 
 static PyObject * py_wg_initCustomSettings( PyObject * args )

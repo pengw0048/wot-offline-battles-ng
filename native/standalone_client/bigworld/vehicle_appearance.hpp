@@ -12,6 +12,11 @@ BW_BEGIN_NAMESPACE
 // factories into a client that does not otherwise reference their classes.
 extern int StockVehicleAppearance_token;
 
+// After resources.xml and Moo are ready; release after drawing has stopped and
+// before Moo's effect/texture owners are destroyed. Both calls are idempotent.
+bool initialiseStockVehicleAppearanceResources();
+void finiStockVehicleAppearanceResources();
+
 // Entity prerequisite orders own this request, not the Entity. Cancellation
 // drops its result and makes a late background callback harmless.
 bool beginStockVehiclePrerequisites( PyObject * resources, PyObjectPtr & request );

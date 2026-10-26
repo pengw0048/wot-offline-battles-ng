@@ -3,6 +3,7 @@
 #include "stock_vehicle_stickers.hpp"
 #include "stock_vehicle_fashions.hpp"
 #include "stock_local_lighting.hpp"
+#include "stock_effect_adapter.hpp"
 
 #include "pyscript/script_math.hpp"
 #include "cstdmf/bgtask_manager.hpp"
@@ -14,9 +15,16 @@
 #include "model/super_model.hpp"
 #include "model/super_model_node_tree.hpp"
 #include "moo/node.hpp"
+#include "moo/draw_context.hpp"
+#include "moo/complex_effect_material.hpp"
+#include "moo/effect_material.hpp"
+#include "moo/effect_visual_context.hpp"
+#include "moo/texture_manager.hpp"
 #include "moo/render_context.hpp"
+#include "resmgr/auto_config.hpp"
 #include "romp/py_resource_refs.hpp"
 #include "romp/resource_ref.hpp"
+#include "romp/water_scene_renderer.hpp"
 
 #include <map>
 #include <memory>
@@ -82,6 +90,116 @@ PY_FACTORY( WGAdaptiveMatrixProvider, Math )
 
 namespace
 {
+AutoConfigString compoundStippleMap( "system/stippleMap" );
+
+class CompoundStippleConstant : public Moo::EffectConstantValue
+{
+public:
+    explicit CompoundStippleConstant( Moo::BaseTexturePtr texture ) : texture_( texture ) {}
+    virtual bool operator()( ID3DXEffect * effect, D3DXHANDLE handle )
+    {
+        return SUCCEEDED( effect->SetTexture( handle, texture_ ? texture_->pTexture() : NULL ) );
+    }
+private:
+    Moo::BaseTexturePtr texture_;
+};
+
+void clearCompoundStippleBinding( ID3DXEffect * effect )
+{
+    if (!effect) return;
+    const D3DXHANDLE handle = effect->GetParameterBySemantic( NULL, "StippleMap" );
+    if (handle) effect->SetTexture( handle, NULL );
+}
+
+void clearCompoundStippleMaterial( Moo::EffectMaterialPtr material )
+{
+    if (!material || !material->pEffect()) return;
+    ID3DXEffect * binding = material->properties().existingStockBinding();
+    clearCompoundStippleBinding( binding );
+    ID3DXEffect * current = material->pEffect()->pEffect();
+    if (current != binding && current && !wot::is_stock_effect( current ))
+        clearCompoundStippleBinding( current );
+}
+
+struct CompoundRenderingResources
+{
+    bool open = false;
+    bool registered = false;
+    Moo::BaseTexturePtr texture;
+    Moo::EffectConstantValuePtr constant;
+    std::shared_ptr<Moo::DrawContext::OverrideBlock> stipple;
+
+    void close()
+    {
+        if (!open && !registered) return;
+        open = false;
+        Moo::rc().effectVisualContext().unregisterAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_OBJECT, "StippleMap" );
+        Moo::EffectConstantValuePtr * mapping =
+            Moo::rc().effectVisualContext().getMapping( "StippleMap", false );
+        if (mapping && mapping->get() == constant.get()) *mapping = NULL;
+        registered = false;
+        for (unsigned index = 0; stipple && index < 2; ++index)
+        {
+            Moo::ComplexEffectMaterial * complex = stipple->stockMaterial( index != 0 );
+            if (!complex) continue;
+            clearCompoundStippleMaterial( complex->baseMaterial() );
+            for (unsigned pass = 0; pass < Moo::RENDERING_PASS_COUNT; ++pass)
+                for (unsigned instanced = 0; instanced < 2; ++instanced)
+                    clearCompoundStippleMaterial( complex->pass(
+                        static_cast<Moo::ERenderingPassType>( pass ), instanced != 0 ) );
+        }
+        IDirect3DDevice9 * device = Moo::rc().device();
+        if (device && texture)
+            for (unsigned stage = 0; stage < 20; ++stage)
+            {
+                const DWORD slot = stage < 16 ? stage : D3DVERTEXTEXTURESAMPLER0 + stage - 16;
+                ComObjectWrap<IDirect3DBaseTexture9> bound;
+                if (SUCCEEDED( device->GetTexture( slot, &bound ) ) &&
+                    bound.pComObject() == texture->pTexture()) device->SetTexture( slot, NULL );
+            }
+        Moo::rc().invalidateStateCache();
+        constant = NULL;
+        texture = NULL;
+        stipple.reset();
+    }
+};
+std::shared_ptr<CompoundRenderingResources> compoundRenderingResources;
+
+class CompoundStippleScope
+{
+public:
+    CompoundStippleScope( Moo::DrawContext & context,
+        const std::shared_ptr<Moo::DrawContext::OverrideBlock> & block ) :
+        context_( context ), block_( block ), previous_( NULL )
+    {
+        if (block_) previous_ = context_.stockExchangeOverrideBlock( block_.get() );
+    }
+    ~CompoundStippleScope()
+    {
+        if (block_) context_.stockExchangeOverrideBlock( previous_ );
+    }
+private:
+    Moo::DrawContext & context_;
+    std::shared_ptr<Moo::DrawContext::OverrideBlock> block_;
+    Moo::DrawContext::OverrideBlock * previous_;
+    CompoundStippleScope( const CompoundStippleScope & ) = delete;
+    CompoundStippleScope & operator=( const CompoundStippleScope & ) = delete;
+};
+
+class CompoundReflectionScope
+{
+public:
+    CompoundReflectionScope( Moo::DrawContext & context, const PyModel * model ) :
+        context_( context ), previous_( context.stockExchangeApprovedReflectionModel( model ) ) {}
+    ~CompoundReflectionScope() { context_.stockExchangeApprovedReflectionModel( previous_ ); }
+private:
+    Moo::DrawContext & context_;
+    const PyModel * previous_;
+    CompoundReflectionScope( const CompoundReflectionScope & ) = delete;
+    CompoundReflectionScope & operator=( const CompoundReflectionScope & ) = delete;
+};
+
 enum AssemblyOperationKind { ROOT_PART, ADD_PART, EMPLACE_PART, ADD_NODE, NODE_ALIAS };
 
 struct AssemblyOperation
@@ -484,7 +602,7 @@ class PyCompoundModel : public PyAttachment
     Py_Header( PyCompoundModel, PyAttachment )
 public:
     explicit PyCompoundModel( const CompoundStatePtr & state ) :
-        PyAttachment( &s_type_ ), state_( state ), visible_( true ) {}
+        PyAttachment( &s_type_ ), state_( state ) {}
 
     virtual ~PyCompoundModel()
     {
@@ -501,7 +619,7 @@ public:
             { item.object->tick( elapsed ); } );
     }
     virtual bool needsUpdate() const { return state_->active; }
-    virtual bool isLodVisible() const { return state_->active && visible_; }
+    virtual bool isLodVisible() const { return this->visible(); }
 #if ENABLE_TRANSFORM_VALIDATION
     virtual bool isTransformFrameDirty( uint32 frame ) const
     {
@@ -531,15 +649,46 @@ public:
     }
     virtual void draw( Moo::DrawContext & context, const Matrix & /* world */ )
     {
-        if (state_->active && visible_)
+        // 008de410/008de2c0 suppress both parts and their independent
+        // attachments outside pass 2 when the compound skips its colour pass.
+        if (skipColorPass_ && context.renderingPassType() != Moo::RENDERING_PASS_SHADOWS)
+            return;
+        if (this->visible())
         {
             std::vector<CompoundPart> parts = state_->parts;
-            for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            // 008de410 approves the complete compound at its root once, then
+            // charges all parts. It never consumes a separate budget slot per
+            // part or lets a budget boundary reflect only half the vehicle.
+            PyModelPtr reflectionModel = parts[0].model;
+            const bool reflection = Moo::rc().reflectionScene();
+            const bool drawParts = !reflection || (WaterSceneRenderer::currentScene() &&
+                WaterSceneRenderer::currentScene()->shouldReflect(
+                    state_->nodes[0].world.applyToOrigin(), reflectionModel.get() ));
+            const auto resources = compoundRenderingResources;
+            const auto override = stipple_ && resources && resources->open ? resources->stipple :
+                std::shared_ptr<Moo::DrawContext::OverrideBlock>();
+            if (drawParts && stipple_ && !override)
             {
-                CompoundPart & part = parts[index];
-                part.model->draw( context, state_->nodes[part.mount].world );
+                ERROR_MSG( "CompoundModel: stipple rendering resources are unavailable\n" );
+                return;
             }
-            visitCompoundAttachments( state_, [&context]( CompoundAttachment & item )
+            if (drawParts)
+            {
+                if (reflection)
+                    for (size_t index = 0; index < parts.size(); ++index)
+                        WaterSceneRenderer::incReflectionCount();
+                // Original 008de410 scopes the override only around its own
+                // model parts; independently registered attachments retain the
+                // caller's previous override when their draw is dispatched.
+                CompoundStippleScope scope( context, override );
+                for (size_t index = 0; index < parts.size() && state_->active; ++index)
+                {
+                    CompoundPart & part = parts[index];
+                    CompoundReflectionScope approved( context, reflection ? part.model.get() : NULL );
+                    part.model->draw( context, state_->nodes[part.mount].world );
+                }
+            }
+            visitCompoundAttachments( state_, [&context, reflection, &reflectionModel]( CompoundAttachment & item )
                 {
                     // 008de1d0 publishes flags 01/15 -> ab8060 masks
                     // 203/337. Native point/spot shadow queries a68f90 and
@@ -547,7 +696,20 @@ public:
                     // The same public pass also draws sunlight. Its original
                     // mask is independent of this local-light participation.
                     if (!stockLocalLightingShadowContext( context ) || item.castsLocalShadow)
+                    {
+                        // 008de2c0 independently tests each attachment at its
+                        // own world position with the parent compound's priority.
+                        if (reflection)
+                        {
+                            if (!WaterSceneRenderer::currentScene() ||
+                                !WaterSceneRenderer::currentScene()->shouldReflect(
+                                    item.world.applyToOrigin(), reflectionModel.get() )) return;
+                            WaterSceneRenderer::incReflectionCount();
+                        }
+                        CompoundReflectionScope approved( context,
+                            reflection ? item.object->getPyModel() : NULL );
                         item.object->draw( context, item.world );
+                    }
                 } );
         }
     }
@@ -741,19 +903,60 @@ public:
     }
     PY_AUTO_METHOD_DECLARE( RETOWN, getPartGeometryLink, ARG( int, END ) )
 
-    bool isHighPriorityReflection() const { return highPriorityReflection_; }
+    bool isHighPriorityReflection() const { return state_->active && highPriorityReflection_; }
     void isHighPriorityReflection( bool value )
     {
         highPriorityReflection_ = value;
-        for (size_t index = 0; index < state_->parts.size(); ++index)
-            state_->parts[index].model->highPriorityReflection( value );
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            parts[index].model->highPriorityReflection( value );
     }
     PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( bool, isHighPriorityReflection, isHighPriorityReflection )
 
     MatrixProviderPtr matrix() const { return state_->matrix; }
-    void matrix( MatrixProviderPtr value ) { state_->matrix = value; }
+    void matrix( MatrixProviderPtr value )
+    {
+        if (!state_->active) return;
+        MatrixProviderPtr previous = state_->matrix;
+        state_->matrix = value;
+    }
     PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( MatrixProviderPtr, matrix, matrix )
-    PY_RW_ATTRIBUTE_DECLARE( visible_, visible )
+    bool visible() const
+    {
+        // 008df790 tests all per-part visibility bytes, not a separate
+        // compound-level cached flag. 008dfd30 writes every byte on assignment.
+        if (state_->active)
+            for (size_t index = 0; index < state_->parts.size(); ++index)
+                if (state_->parts[index].model->visible()) return true;
+        return false;
+    }
+    void visible( bool value )
+    {
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            parts[index].model->visible( value );
+    }
+    PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( bool, visible, visible )
+    bool inWorld() const { return state_->active && PyAttachment::isInWorld(); }
+    PY_RO_ATTRIBUTE_DECLARE( this->inWorld(), isInWorld )
+    Vector3 position() const
+    {
+        return state_->active ? state_->nodes[0].world.applyToOrigin() : Vector3::zero();
+    }
+    void position( const Vector3 & value )
+    {
+        if (!state_->active) return;
+        // 008ddb70 installs a new static root provider containing a pure
+        // translation. It discards the old root rotation/scale/provider.
+        Matrix translation;
+        translation.setTranslate( value );
+        PyMatrix * provider = new PyMatrix();
+        provider->set( translation );
+        this->matrix( MatrixProviderPtr( provider, true ) );
+    }
+    PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( Vector3, position, position )
+    PY_RW_ATTRIBUTE_DECLARE( skipColorPass_, skipColorPass )
+    PY_RW_ATTRIBUTE_DECLARE( stipple_, stipple )
 
     PY_METHOD_DECLARE( py_setupFashions )
 
@@ -783,8 +986,9 @@ public:
 private:
     CompoundStatePtr state_;
     std::map<size_t, PyObjectPtr> handles_;
-    bool visible_;
     bool highPriorityReflection_ = false;
+    bool skipColorPass_ = false;
+    bool stipple_ = false;
 };
 PyObject * PyCompoundModel::py_setupFashions( PyObject * args )
 {
@@ -845,6 +1049,10 @@ PY_BEGIN_ATTRIBUTES( PyCompoundModel )
     PY_ATTRIBUTE( matrix )
     PY_ATTRIBUTE( visible )
     PY_ATTRIBUTE( isHighPriorityReflection )
+    PY_ATTRIBUTE( isInWorld )
+    PY_ATTRIBUTE( position )
+    PY_ATTRIBUTE( skipColorPass )
+    PY_ATTRIBUTE( stipple )
 PY_END_ATTRIBUTES()
 
 namespace
@@ -1434,6 +1642,55 @@ bool writeStockVehicleCompoundNodeLocal( PyObject * compound,
 {
     return compound && PyCompoundModel::Check( compound ) &&
         static_cast<PyCompoundModel *>( compound )->writeNodeLocal( name, local );
+}
+
+bool initialiseStockVehicleAppearanceResources()
+{
+    if (compoundRenderingResources && compoundRenderingResources->open) return true;
+    const BW::string & textureName = compoundStippleMap.value();
+    if (textureName.empty())
+    {
+        ERROR_MSG( "CompoundModel: resources.xml system/stippleMap is not configured\n" );
+        return false;
+    }
+    auto resources = std::make_shared<CompoundRenderingResources>();
+    resources->texture = Moo::TextureManager::instance()->get(
+        textureName, true, true, true, "texture/compound stipple" );
+    if (!resources->texture || !resources->texture->pTexture())
+    {
+        ERROR_MSG( "CompoundModel: cannot load stipple texture %s\n", textureName.c_str() );
+        return false;
+    }
+    // ManagedEffect classifies per-object semantics when an effect is loaded.
+    // Register the genuine producer before constructing either override effect.
+    resources->constant = new CompoundStippleConstant( resources->texture );
+    Moo::rc().effectVisualContext().registerAutoConstant(
+        Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_OBJECT, "StippleMap", resources->constant );
+    *Moo::rc().effectVisualContext().getMapping( "StippleMap" ) = resources->constant;
+    resources->registered = true;
+    resources->stipple = std::make_shared<Moo::DrawContext::OverrideBlock>(
+        BW::StringRef( "shaders/std_effects/stipple/stipple" ), false );
+    for (unsigned index = 0; index < 2; ++index)
+    {
+        Moo::ComplexEffectMaterial * material = resources->stipple->stockMaterial( index != 0 );
+        if (!material || !material->baseMaterial() || !material->baseMaterial()->pEffect())
+        {
+            ERROR_MSG( "CompoundModel: cannot load original %s stipple effect\n",
+                index ? "skinned" : "rigid" );
+            resources->close();
+            return false;
+        }
+    }
+    resources->open = true;
+    compoundRenderingResources = resources;
+    return true;
+}
+
+void finiStockVehicleAppearanceResources()
+{
+    auto resources = compoundRenderingResources;
+    compoundRenderingResources.reset();
+    if (resources) resources->close();
 }
 
 BW_END_NAMESPACE
