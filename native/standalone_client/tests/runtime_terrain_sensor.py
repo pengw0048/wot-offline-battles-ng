@@ -185,7 +185,19 @@ def onInit(isReload):
 
 
 def init(*args):
+    import BigWorld
     REPORT['lifecycle'].append('init')
+    try:
+        # Replay the native graphics publication normally owned by game.init
+        # and SettingsCore before the first authored terrain load.
+        assert BigWorld.wg_initCustomSettings() is None
+        BigWorld.generateGfxSettings()
+        REPORT['native_graphics_published'] = True
+        REPORT['graphics_settings'] = dict((label, BigWorld.graphicSetting(label)[1])
+            for label in ('RENDER_PIPELINE', 'SHADOWS_QUALITY', 'DECALS_QUALITY',
+                          'LIGHTING_QUALITY', 'TERRAIN_QUALITY'))
+    except Exception:
+        STATE['failure'] = traceback.format_exc()
     save()
     return True
 

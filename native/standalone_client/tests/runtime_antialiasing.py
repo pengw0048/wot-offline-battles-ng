@@ -104,7 +104,20 @@ def onInit(isReload):
 
 
 def init(*args):
+    import BigWorld
     REPORT['lifecycle'].append('init')
+    try:
+        # Register and apply native settings at the same boundary as game.init
+        # and SettingsCore; this does not replay the rest of their Python work.
+        assert BigWorld.wg_initCustomSettings() is None
+        BigWorld.generateGfxSettings()
+        REPORT['native_graphics_published'] = True
+        REPORT['graphics_settings'] = dict((label, BigWorld.graphicSetting(label)[1])
+            for label in ('RENDER_PIPELINE', 'SHADOWS_QUALITY', 'DECALS_QUALITY',
+                          'LIGHTING_QUALITY', 'TERRAIN_QUALITY'))
+    except Exception:
+        REPORT['status'] = 'failed'
+        REPORT['error'] = traceback.format_exc()
     save()
     return True
 
