@@ -182,13 +182,21 @@ class StockVehicleTerrainSensorTest(unittest.TestCase):
             for case, line in zip(cases, lines):
                 self.assertEqual(oracle.encode_entries(updater.run(*case)), line, case)
             gates = oracle.lod_cases()
-            (path / 'lod.cpp').write_text(oracle.LOD_PROBE)
-            subprocess.run([CXX, '-std=c++14', '-Wall', '-Werror', '-I', str(ROOT / 'bigworld'),
-                            str(path / 'lod.cpp'), '-o', str(path / 'lod')], check=True)
             stdin = ''.join('%d %d %d %d\n' % tuple(case) for case in gates)
-            produced = subprocess.run([str(path / 'lod')], input=stdin, text=True, check=True,
-                                      capture_output=True).stdout.split()
-            self.assertEqual([str(int(original.lod_gate(*case))) for case in gates], produced)
+            expected = [str(int(original.lod_gate(*case))) for case in gates]
+            # Both components call 00781f70. Compare each production gate with
+            # those instructions, including unordered limits and distances.
+            for component in ('Terrain', 'Water'):
+                source = oracle.LOD_PROBE.replace('stock_vehicle_terrain_sensor_data.hpp',
+                    'stock_vehicle_%s_sensor_data.hpp' % component.lower())
+                source = source.replace('stockTerrainSensorLodAllows',
+                                        'stock%sSensorLodAllows' % component)
+                (path / 'lod.cpp').write_text(source)
+                subprocess.run([CXX, '-std=c++14', '-Wall', '-Werror', '-I', str(ROOT / 'bigworld'),
+                                str(path / 'lod.cpp'), '-o', str(path / 'lod')], check=True)
+                produced = subprocess.run([str(path / 'lod')], input=stdin, text=True, check=True,
+                                          capture_output=True).stdout.split()
+                self.assertEqual(expected, produced, component)
 
 
 if __name__ == '__main__':

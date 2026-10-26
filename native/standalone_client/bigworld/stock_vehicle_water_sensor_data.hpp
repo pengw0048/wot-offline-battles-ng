@@ -26,10 +26,10 @@ struct StockWaterSensorSample {
     std::array<float, 3> hitPoint{};
 };
 
-// LodProcessorHandlerMixin 00781f70: process unless either limit is exceeded.
+// LodProcessorHandlerMixin 00781f70: comiss/jb rejects unordered distances.
 inline bool stockWaterSensorLodAllows(float maxDistance, std::uint32_t maxPriority,
     float distance, std::uint32_t priority) {
-    return !(maxDistance < distance) && !(maxPriority < priority);
+    return maxDistance >= distance && priority <= maxPriority;
 }
 
 // 00794cb0 after the LOD gate. `matrix` is the sampled sensor plane (row-major,

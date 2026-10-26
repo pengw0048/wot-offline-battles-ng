@@ -4,6 +4,7 @@
 #include "stock_vehicle_components.hpp"
 #include "stock_vehicle_animators.hpp"
 #include "stock_vehicle_audio.hpp"
+#include "stock_vehicle_terrain_sensor.hpp"
 #include "stock_vehicle_water_sensor.hpp"
 #include "vehicle_appearance.hpp"
 #include "stock_scene_collision.hpp"
@@ -1165,9 +1166,11 @@ PY_FACTORY( PyTrackScroll, BigWorld )
 void tickStockVehicleComponents( float frameTime )
 {
     updateLodCalculators();
-    // Phase 1 continues with WaterSensor 01493428 and DetailedEngineState 0149342c.
+    // Phase 1 continues with WaterSensor 01493428, DetailedEngineState 0149342c
+    // and TerrainMatKindSensor 01493430 (manager 005af760).
     tickStockWaterSensors( frameTime );
     tickStockDetailedEngineStates( frameTime );
+    tickStockTerrainMatKindSensors( frameTime );
     // Original static factory order: LOD 01493100, Recoil 01493104,
     // Suspension 0149328c. Recoil and Suspension both register phase 2.
     tickStockVehicleRecoil( frameTime );

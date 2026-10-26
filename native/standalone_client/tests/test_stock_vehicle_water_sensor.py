@@ -77,11 +77,12 @@ int main() {
     assert(t.underWater & 1);
     // Heavy probe goes straight down by heavyDepth from the hit point.
     assert((stockWaterSensorHeavyProbeEnd({{1, 2, 3}}, c) == V3{{1, 1.5f, 3}}));
-    // LOD gate 00781f70: NaN distance passes, strict limits fail.
+    // LOD gate 00781f70: inclusive limits; unordered distance or limit fails.
     assert(stockWaterSensorLodAllows(150.f, 15, 150.f, 15));
     assert(!stockWaterSensorLodAllows(150.f, 15, 150.0001f, 0));
     assert(!stockWaterSensorLodAllows(150.f, 15, 0.f, 16));
-    assert(stockWaterSensorLodAllows(150.f, 15, std::numeric_limits<float>::quiet_NaN(), 0));
+    assert(!stockWaterSensorLodAllows(150.f, 15, std::numeric_limits<float>::quiet_NaN(), 0));
+    assert(!stockWaterSensorLodAllows(std::numeric_limits<float>::quiet_NaN(), 15, 0.f, 0));
     // LowFrequencyUpdater: first due after one interval, stamp on the crossing frame,
     // due entries first, older stamps first, at most `limit` sorted.
     std::vector<StockLowFrequencyEntry> e;
