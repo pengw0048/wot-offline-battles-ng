@@ -156,8 +156,9 @@ def onInit(isReload):
     REPORT['lifecycle'].append('onInit')
 
 
-def onChangeEnvironments():
+def onChangeEnvironments(environment):
     REPORT['lifecycle'].append('onChangeEnvironments')
+    REPORT['environment'] = environment
 
 
 def fini():
