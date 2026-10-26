@@ -338,6 +338,11 @@ void finaliseStockGraphicsSettingsConsumers()
     Py_XDECREF(previous);
 }
 bool drawStockBinoculars() { return !owner || owner->draw(); }
+bool stockBinocularsEnabled()
+{
+    // 00aeb910 reads the same native instance exported by wg_binoculars.
+    return owner && !owner->closed && owner->state.enabled;
+}
 bool stockSniperFloraVisible()
 {
     return wot::stockSniperFloraVisible(sniperGrassEnabled, owner && owner->state.enabled);

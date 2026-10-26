@@ -7,6 +7,7 @@ extern int StockGraphicsSettingsConsumers_token;
 bool initialiseStockGraphicsSettingsConsumers();
 void finaliseStockGraphicsSettingsConsumers();
 bool drawStockBinoculars();
+bool stockBinocularsEnabled();
 bool stockSniperFloraVisible();
 bool initialiseStockSniperFloraSetting();
 BW_END_NAMESPACE

@@ -24,6 +24,12 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_suspension.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_authority.cpp")
 set(WOT_STOCK_ADAPTER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene_loader.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_materials.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_geometry.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_lod.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_tree_wind.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_renderer.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_settings.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tps_quality.cpp"
