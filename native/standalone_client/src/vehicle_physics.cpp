@@ -78,7 +78,8 @@ VehicleTankShapeSource build_vehicle_tank_shape_source(
         (shape.terrain_front_chamfer_fraction + shape.terrain_front_chamfer_fraction) * hy;
     const float body_aft_height =
         (shape.terrain_aft_chamfer_fraction + shape.terrain_aft_chamfer_fraction) * hy;
-    const float clearance = (chassis.wheel_radius + chassis.clearance) *
+    // f8bd66 adds Chassis::Settings +0x74 (wheelPenetration) and +0x6c.
+    const float clearance = (chassis.wheel_penetration + chassis.clearance) *
         shape.auxiliary_clearance;
     const float terrain_side_offset = hy * tank_tangent;
     const float terrain_lower_side = (clearance + hy) * tank_tangent;

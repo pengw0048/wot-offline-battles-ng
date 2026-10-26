@@ -206,7 +206,8 @@ class TankShapeSourceOracle:
     def run(self, words):
         # sizeXYZ, comY, boxZ, turretXYZ, turretWidth, complex,
         # auxiliary clearance, tank aft/front chamfers, terrain aft/front,
-        # wheel radius, clearance, wheel positions[5], terrain/tank tangents.
+        # wheel penetration (+0x74), clearance, wheel positions[5],
+        # terrain/tank tangents.
         assert len(words) == 24
         self.uc.mem_write(self.body + 0x14, struct.pack('<9I', *words[:9]))
         self.complex = bool(words[9])
@@ -269,7 +270,7 @@ int main(){
   b.turret_top_position={v[5],v[6],v[7]};b.turret_top_width=v[8];s.use_complex_form=words[9]!=0;
   s.auxiliary_clearance=v[10];s.tank_aft_chamfer_fraction=v[11];s.tank_front_chamfer_fraction=v[12];
   s.terrain_aft_chamfer_fraction=v[13];s.terrain_front_chamfer_fraction=v[14];
-  c.wheel_radius=v[15];c.clearance=v[16];for(unsigned i=0;i<5;++i)c.road_wheel_positions[i]=v[17+i];
+  c.wheel_penetration=v[15];c.clearance=v[16];for(unsigned i=0;i<5;++i)c.road_wheel_positions[i]=v[17+i];
   const auto r=wot::build_vehicle_tank_shape_source(b,s,c,v[22],v[23]);
   auto put=[](float value){std::uint32_t word;std::memcpy(&word,&value,4);std::cout<<word<<' ';};
   auto vec=[&](const wot::Vector3& a){put(a.x);put(a.y);put(a.z);};
