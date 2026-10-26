@@ -319,6 +319,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-battleground-elements-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_deferred_buffers.py"),
         $EngineRoot) "stock-deferred-buffers-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_antialiasing.py"),
+        $EngineRoot) "stock-antialiasing-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_traces.py"),
         $EngineRoot) "stock-vehicle-traces-patch.log"
 

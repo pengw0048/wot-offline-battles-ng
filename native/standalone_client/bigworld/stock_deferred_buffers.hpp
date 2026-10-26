@@ -6,6 +6,8 @@
 #include "moo/render_target.hpp"
 #include "moo/com_object_wrap.hpp"
 #include "resmgr/datasection.hpp"
+#include "stock_antialiasing.hpp"
+#include "stock_temporal_antialiasing.hpp"
 
 BW_BEGIN_NAMESPACE
 class IRendererPipeline;
@@ -21,6 +23,9 @@ bool bindStockDeferredLegacyDecalInputs(ID3DXEffect* effect);
 void clearStockDeferredLegacyDecalInputs(const Moo::EffectMaterialPtr& material);
 bool setStockDeferredTextureScale(ID3DXEffect* effect,const char* parameter,uint width,uint height);
 bool drawStockDeferredSunLight(const Moo::EffectMaterialPtr& material);
+bool finishStockAntialiasingScene();
+bool resolveStockTemporalHDR(const Moo::RenderTargetPtr& source,
+    DX::BaseTexture* averageLuminance, float middleGray, float whitePoint);
 
 // One owner belongs to the actual deferred pipeline. Its depth texture and
 // linear-depth semantic are shared by scene reconstruction and decal draws.
@@ -31,6 +36,7 @@ public:
     ~StockDeferredBuffers();
     bool initialise();
     bool begin();
+    bool beginOpaqueVelocity();
     bool prepare();
     bool drawSpaceDecals();
     bool drawSpaceDecalsAO();
@@ -47,6 +53,11 @@ public:
     bool ambientOcclusionEnabled() const;
     bool contactShadowsEnabled() const;
     bool depthEffectsHalfResolution() const { return depthQuality_.directHalfResolution(); }
+    uint32 customAAMode() const { return customAAMode_; }
+    void customAAMode(uint32 mode);
+    bool applyAntialiasing();
+    StockTemporalAASupport& temporalAA() { return temporalAA_; }
+    const StockTemporalAASupport& temporalAA() const { return temporalAA_; }
     DX::BaseTexture* objectKindCopy();
     virtual void createManagedObjects();
     virtual void deleteManagedObjects();
@@ -90,6 +101,10 @@ private:
     bool frameActive_=false;
     bool prepared_=false;
     bool kindCopied_=false;
+    StockFXAASupport fxaa_;
+    StockTemporalAASupport temporalAA_;
+    uint32 customAAMode_=0;
+    bool aaMaterialsReady_=false;
 };
 StockDeferredBuffers* stockDeferredBuffers();
 BW_END_NAMESPACE

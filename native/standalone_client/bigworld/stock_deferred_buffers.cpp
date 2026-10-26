@@ -76,14 +76,40 @@ public:
     explicit SceneProjectionConstant(bool viewProjection) : viewProjection_(viewProjection) {}
     virtual bool operator()(ID3DXEffect* effect,D3DXHANDLE handle)
     {
-        // 99dd20/99ddb0 start from the actual view's projection and only
-        // postmultiply a jitter matrix when the main temporal owner is
-        // enabled with >1 samples. This backend exposes no temporal AA option.
-        const Matrix& matrix=viewProjection_?Moo::rc().viewProjection():Moo::rc().projection();
+        // 99dd20/99ddb0 postmultiply the main temporal jitter when enabled.
+        Matrix matrix=viewProjection_?Moo::rc().viewProjection():Moo::rc().projection();
+        if(owner && owner->temporalAA().temporalEnabled())
+            matrix.postMultiply(owner->temporalAA().jitter());
         return SUCCEEDED(effect->SetMatrix(handle,&matrix));
     }
 private:
     bool viewProjection_;
+};
+
+class TemporalConstant : public Moo::EffectConstantValue
+{
+public:
+    enum Kind { PARAMETERS, REPROJECTION, WRITE_VELOCITY, VELOCITY_TEXTURE };
+    explicit TemporalConstant(Kind kind) : kind_(kind) {}
+    virtual bool operator()(ID3DXEffect* effect,D3DXHANDLE handle)
+    {
+        if(!owner)return false;
+        const auto& temporal=owner->temporalAA();
+        switch(kind_)
+        {
+        case PARAMETERS:return SUCCEEDED(effect->SetVector(handle,&temporal.parameters()));
+        case WRITE_VELOCITY:return SUCCEEDED(effect->SetBool(handle,temporal.temporalEnabled()));
+        case VELOCITY_TEXTURE:return SUCCEEDED(effect->SetTexture(handle,temporal.velocityTexture()));
+        case REPROJECTION:
+        {
+            const Matrix matrix=temporal.reprojection();
+            return SUCCEEDED(effect->SetMatrix(handle,&matrix));
+        }
+        }
+        return false;
+    }
+private:
+    Kind kind_;
 };
 
 class TargetScope
@@ -258,7 +284,7 @@ bool StockDeferredBuffers::initialise()
 
 bool StockDeferredBuffers::ready() const
 {
-    return hardwareDepth_ && depthSurface_ && linearDepth_ && linearDepthSurface_ && reducedDepthMip_ &&
+    return aaMaterialsReady_ && hardwareDepth_ && depthSurface_ && linearDepth_ && linearDepthSurface_ && reducedDepthMip_ &&
         reducedDepth_ && converted_[0] && converted_[1] && kindCopy_ &&
         depthMaterial_ && conversionMaterial_ && kindCopyMaterial_ &&
         lowPrecisionDepth_ && depthEffectsHalf_ && depthEffectsFull_ &&
@@ -288,6 +314,9 @@ bool StockDeferredBuffers::contactShadowsEnabled() const
 
 void StockDeferredBuffers::createManagedObjects()
 {
+    const bool fxaaReady=fxaa_.createManagedObjects();
+    const bool temporalReady=temporalAA_.createManagedObjects();
+    aaMaterialsReady_=fxaaReady && temporalReady;
     if (!Moo::createEffect(depthMaterial_,"shaders/auxiliary/hierarchical_z.fx") ||
         !Moo::createEffect(conversionMaterial_,"shaders/std_effects/g_buffer_old2pbs_conversion.fx") ||
         !Moo::createEffect(kindCopyMaterial_,"shaders/std_effects/wg_deferred_decal.fx") ||
@@ -312,12 +341,25 @@ void StockDeferredBuffers::createManagedObjects()
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW,"JitteredProjection",new SceneProjectionConstant(false));
         Moo::rc().effectVisualContext().registerAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW,"JitteredViewProjection",new SceneProjectionConstant(true));
+        const auto perFrame=Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME;
+        const auto perView=Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW;
+        Moo::rc().effectVisualContext().registerAutoConstant(perFrame,"TAAParams",
+            new TemporalConstant(TemporalConstant::PARAMETERS));
+        Moo::rc().effectVisualContext().registerAutoConstant(perView,"ReprojectionMat",
+            new TemporalConstant(TemporalConstant::REPROJECTION));
+        Moo::rc().effectVisualContext().registerAutoConstant(perFrame,"WriteGBufferVelocity",
+            new TemporalConstant(TemporalConstant::WRITE_VELOCITY));
+        Moo::rc().effectVisualContext().registerAutoConstant(perFrame,"WriteGBufferVelocityBranch",
+            new TemporalConstant(TemporalConstant::WRITE_VELOCITY));
+        Moo::rc().effectVisualContext().registerAutoConstant(perFrame,"GBufferChannel3",
+            new TemporalConstant(TemporalConstant::VELOCITY_TEXTURE));
         constantsRegistered_=true;
     }
 }
 
 void StockDeferredBuffers::deleteManagedObjects()
 {
+    fxaa_.deleteManagedObjects();temporalAA_.deleteManagedObjects();aaMaterialsReady_=false;
     if(constantsRegistered_)
     {
         Moo::rc().effectVisualContext().unregisterAutoConstant(
@@ -332,6 +374,13 @@ void StockDeferredBuffers::deleteManagedObjects()
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW,"JitteredProjection");
         Moo::rc().effectVisualContext().unregisterAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW,"JitteredViewProjection");
+        const auto perFrame=Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME;
+        const auto perView=Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_VIEW;
+        Moo::rc().effectVisualContext().unregisterAutoConstant(perFrame,"TAAParams");
+        Moo::rc().effectVisualContext().unregisterAutoConstant(perView,"ReprojectionMat");
+        Moo::rc().effectVisualContext().unregisterAutoConstant(perFrame,"WriteGBufferVelocity");
+        Moo::rc().effectVisualContext().unregisterAutoConstant(perFrame,"WriteGBufferVelocityBranch");
+        Moo::rc().effectVisualContext().unregisterAutoConstant(perFrame,"GBufferChannel3");
         constantsRegistered_=false;
     }
     depthMaterial_=NULL;conversionMaterial_=NULL;kindCopyMaterial_=NULL;
@@ -413,6 +462,7 @@ void StockDeferredBuffers::createUnmanagedObjects()
 void StockDeferredBuffers::deleteUnmanagedObjects()
 {
     end();
+    fxaa_.deleteUnmanagedObjects();temporalAA_.deleteUnmanagedObjects();
     clearTexture(depthMaterial_,"g_hardwareDepthMap");clearTexture(depthMaterial_,"g_prevMipMap");
     clearTexture(conversionMaterial_,"g_buffer0");clearTexture(conversionMaterial_,"g_buffer2");
     clearTexture(kindCopyMaterial_,"g_texSource");
@@ -432,8 +482,16 @@ bool StockDeferredBuffers::begin()
 {
     if(frameActive_)return true;
     if(!ready() || FAILED(Moo::rc().device()->GetDepthStencilSurface(&previousDepth_)))return false;
+    // a6a940 enables DBE ScalarTAA at construction. a6b890/a6b8f0 retain it
+    // for high lighting quality or active high-quality contact shadows.
+    const bool scalar=depthQuality_.lighting<2 || contactShadowsEnabled();
+    if(!temporalAA_.beginFrame(scalar))
+    {
+        previousDepth_=NULL;return false;
+    }
     if(FAILED(Moo::rc().device()->SetDepthStencilSurface(depthSurface_.pComObject())))
     {
+        temporalAA_.cancelFrame();
         previousDepth_=NULL;return false;
     }
     frameActive_=true;
@@ -443,10 +501,19 @@ bool StockDeferredBuffers::begin()
     return true;
 }
 
+bool StockDeferredBuffers::beginOpaqueVelocity()
+{
+    if(!frameActive_ || !temporalAA_.beginOpaque())return false;
+    if(FAILED(Moo::rc().setRenderTarget(3,temporalAA_.velocitySurface())))return false;
+    Moo::rc().setWriteMask(3,temporalAA_.temporalEnabled()?0xf:0);
+    return true;
+}
+
 bool StockDeferredBuffers::end()
 {
     if(!frameActive_)return true;
     frameActive_=false;
+    temporalAA_.endFrame();
     endStockSpaceDecals();
     prepared_=false;
     kindCopied_=false;
@@ -489,7 +556,7 @@ bool StockDeferredBuffers::fillLinearDepth()
             success=SUCCEEDED(effect->SetTexture("g_prevMipMap",linearDepth_.pComObject())) &&
                 SUCCEEDED(effect->SetVector("g_prevMipMapDRRParams",&projection)) &&
                 SUCCEEDED(Moo::rc().device()->Clear(0,NULL,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|D3DCLEAR_STENCIL,
-                    0xffffffffu,1.f,0)) && draw(depthMaterial_);
+                    0xffffffffu,1.f,3)) && draw(depthMaterial_);
         }
         reducedDepth_->pop();
         Moo::rc().effectVisualContext().updateSharedConstants(Moo::CONSTANTS_PER_SCREEN);
@@ -563,8 +630,8 @@ bool StockDeferredBuffers::blurDepthEffects(const Moo::RenderTargetPtr& input,
         TargetScope target;
         if(!target.bind(surface,depth,width,height) || !select(bilateralBlurMaterial_,techniques[pass]))return false;
         ID3DXEffect* effect=bilateralBlurMaterial_->pEffect()->pEffect();
-        // 9d62e0: the non-TAA path has no prepared depth/mask target. Both
-        // passes consume the actual HZ semantic and preserve the same layout.
+        // a447d0 passes depth mode 2 for both native DBE filter passes. The
+        // optional mask target remains absent for this owner's authored path.
         if(FAILED(effect->SetInt("g_depthMode",2)) ||
             FAILED(effect->SetBool("g_useMaskRT",false)) ||
             FAILED(effect->SetBool("g_useBilateralFilter",bilateral)) ||
@@ -584,6 +651,8 @@ bool StockDeferredBuffers::blurDepthEffects(const Moo::RenderTargetPtr& input,
 bool StockDeferredBuffers::fillDepthEffects()
 {
     const uint width=depthEffectsHalf_->width(),height=depthEffectsHalf_->height();
+    const bool temporal=temporalAA_.scalarEnabled();
+    const float sampleIndex=temporal?static_cast<float>(Moo::rc().frameTimestamp()&1u):0.f;
     const Vector4 halfProjection=targetProjection(width,height);
     ComObjectWrap<DX::Surface> surface;
     // COPY_DEPTH is a physical downsample of the complete HZ allocation.
@@ -602,8 +671,8 @@ bool StockDeferredBuffers::fillDepthEffects()
         TargetScope target;
         if(!target.bind(surface,reducedDepth_->depthBuffer(),width,height) ||
             FAILED(Moo::rc().device()->Clear(0,NULL,D3DCLEAR_TARGET,0x00ff00ffu,1.f,0)))return false;
-        // a6b110's original neutral RGBA=(1,0,1,0). AO writes R; contact
-        // shadows write B. ScalarTAA's master defaults disabled (99d860).
+        // a6b110's original neutral RGBA=(1,0,1,0). AO writes R and contact
+        // shadows write B; a6a940 enables the real half-resolution ScalarTAA.
         if(ambientOcclusionEnabled())
         {
             const auto& settings=pipeline_.ssaoSupport()->settings();
@@ -617,8 +686,8 @@ bool StockDeferredBuffers::fillDepthEffects()
             if(FAILED(effect->SetBool("g_halfResolution",true)) ||
                 FAILED(effect->SetBool("g_lowQuality",low)) ||
                 FAILED(effect->SetBool("g_useLowPrecisionDepth",true)) ||
-                FAILED(effect->SetBool("g_enableTAA",false)) ||
-                FAILED(effect->SetFloat("g_taaSampleIndex",0.f)) ||
+                FAILED(effect->SetBool("g_enableTAA",temporal)) ||
+                FAILED(effect->SetFloat("g_taaSampleIndex",sampleIndex)) ||
                 FAILED(effect->SetVector("g_packedParams0",&packed0)) ||
                 FAILED(effect->SetVector("g_packedParams1",&packed1)) ||
                 FAILED(effect->SetTexture("g_LowPrecisionDepthTexture",lowPrecisionDepth_->pTexture())) ||
@@ -627,19 +696,30 @@ bool StockDeferredBuffers::fillDepthEffects()
         }
         if(contactShadowsEnabled())
         {
-            const Vector4 parameters(activeScreenShadows.amplify,0.f,
+            const Vector4 parameters(activeScreenShadows.amplify,sampleIndex,
                 static_cast<float>(std::rand())*3.051851e-05f,0.f);
             if(!select(contactShadowMaterial_,"TRACE"))return false;
             ID3DXEffect* effect=contactShadowMaterial_->pEffect()->pEffect();
             if(FAILED(effect->SetBool("g_lowQuality",depthQuality_.lowQualityContactShadows())) ||
-                FAILED(effect->SetBool("g_enableTAA",false)) ||
+                FAILED(effect->SetBool("g_enableTAA",temporal)) ||
                 FAILED(effect->SetVector("g_ssShadowsParams",&parameters)) ||
                 FAILED(effect->SetTexture("g_LowPrecisionDepthTexture",lowPrecisionDepth_->pTexture())) ||
                 !draw(contactShadowMaterial_))return false;
         }
     }
+    Moo::RenderTargetPtr source=temporalAA_.resolveScalar(depthEffectsHalf_,
+        reducedDepth_->depthBuffer(),true);
+    if(!source)return false;
     if(depthQuality_.directHalfResolution())
+    {
+        if(temporal)
+        {
+            ComObjectWrap<DX::Surface> resolved;
+            if(FAILED(source->pSurface(resolved)) ||
+                !Moo::copySurface(depthEffectsHalf_.getObject(),resolved))return false;
+        }
         return blurDepthEffects(depthEffectsHalf_,depthEffectsHalfScratch_,false,false,false,1.f,0.f);
+    }
     surface=NULL;
     if(FAILED(depthEffectsFull_->pSurface(surface)))return false;
     const auto& size=Moo::rc().backBufferDesc();
@@ -657,7 +737,7 @@ bool StockDeferredBuffers::fillDepthEffects()
             FAILED(effect->SetBool("g_processOnlyOpaque",true)) ||
             FAILED(effect->SetBool("g_useMaskRT",false)) ||
             FAILED(effect->SetTexture("g_maskTexture",NULL)) ||
-            FAILED(effect->SetTexture("g_halfResTexture",depthEffectsHalf_->pTexture())) ||
+            FAILED(effect->SetTexture("g_halfResTexture",source->pTexture())) ||
             FAILED(effect->SetVector("g_halfResTextureDRRParams",&halfProjection)) ||
             !draw(bilateralUpscaleMaterial_))return false;
     }
@@ -671,8 +751,42 @@ bool StockDeferredBuffers::prepare()
 {
     // 9c3d60 builds depth first, converts legacy resources next, then draws
     // deferred decals. All three consumers see the same completed scene.
-    prepared_=frameActive_ && ready() && fillLinearDepth() && convertMaterials() && fillDepthEffects();
+    // 9d79c0's tree/flora flags belong to the separate SRT renderer (755cd0),
+    // selected by 748260/6c5bb0 only for resources containing ".srt". This
+    // pinned client has none: its restored SPT/ctree owner uses old-ST4 COLOR
+    // shaders, which write velocity themselves. Preserve those MRT3 pixels;
+    // do not report old-ST4 draws as SRT submissions and overwrite their wind.
+    prepared_=frameActive_ && ready() && fillLinearDepth() &&
+        temporalAA_.prepareVelocity(depthSurface_.pComObject(),true,true) &&
+        convertMaterials() && fillDepthEffects();
     return prepared_;
+}
+
+void StockDeferredBuffers::customAAMode(uint32 mode)
+{
+    // 99def0 accepts the native single-device path when its optional AFR
+    // service is absent. This RenderContext has one device and no AFR owner.
+    customAAMode_=mode<4?mode:0;
+    const auto settings=wot::stockCustomAAMode(customAAMode_,true);
+    fxaa_.enable(settings.fxaa);
+    temporalAA_.configure(settings);
+}
+
+bool StockDeferredBuffers::applyAntialiasing()
+{
+    return frameActive_ && fxaa_.apply() && temporalAA_.resolveLDR();
+}
+
+bool finishStockAntialiasingScene()
+{
+    // ForwardPipeline's virtual+9c is NULL in the original executable.
+    return !owner || owner->applyAntialiasing();
+}
+
+bool resolveStockTemporalHDR(const Moo::RenderTargetPtr& source,
+    DX::BaseTexture* averageLuminance,float middleGray,float whitePoint)
+{
+    return !owner || owner->temporalAA().resolveHDR(source,averageLuminance,middleGray,whitePoint);
 }
 
 DX::BaseTexture* StockDeferredBuffers::objectKindCopy()

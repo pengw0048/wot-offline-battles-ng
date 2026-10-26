@@ -26,11 +26,14 @@ class DeferredOwnerPatchTests(unittest.TestCase):
     def test_actual_depth_frame_lifetime_and_prepare_failure(self):
         source = (ROOT/'bigworld/stock_deferred_buffers.cpp').read_text()
         bodies = []
-        for method,next_method in (('begin()', 'end()'), ('end()', 'select('), ('prepare()', 'objectKindCopy()')):
+        for method in ('begin()', 'end()', 'prepare()'):
             start = source.index('bool StockDeferredBuffers::'+method)
-            marker = ('DX::BaseTexture* StockDeferredBuffers::'+next_method if next_method=='objectKindCopy()'
-                      else 'bool StockDeferredBuffers::'+next_method)
-            bodies.append(source[start:source.index(marker,start)])
+            end = source.index('{',start)
+            depth = 1
+            while depth:
+                end += 1
+                depth += (source[end]=='{')-(source[end]=='}')
+            bodies.append(source[start:end+1])
         host = r'''
 #include <cassert>
 #include <cstddef>
@@ -54,6 +57,11 @@ namespace Moo{struct RenderContext{Device gpu;Device* device(){return &gpu;}};
 RenderContext& rc(){static RenderContext context;return context;}}
 struct StockDeferredBuffers{
 ComObjectWrap<Surface> previousDepth_,depthSurface_;
+struct{int lighting=0;}depthQuality_;
+struct Temporal{bool beginOK=true,velocityOK=true;unsigned cancels=0,ends=0;
+bool beginFrame(bool scalar){assert(scalar);return beginOK;}void cancelFrame(){++cancels;}
+bool prepareVelocity(Surface*,bool,bool){return velocityOK;}void endFrame(){++ends;}}temporalAA_;
+bool contactShadowsEnabled(){return false;}
 bool frameActive_=false,prepared_=false,kindCopied_=false;
 bool resourcesReady=true,fillSuccess=true,conversionSuccess=true,depthEffectsSuccess=true;
 unsigned fills=0,conversions=0,depthEffects=0;
@@ -72,7 +80,10 @@ StockDeferredBuffers owner;owner.depthSurface_=&depth;assert(depth.refs==2);
 assert(!owner.prepare()&&!owner.fills&&!owner.conversions);
 owner.resourcesReady=false;assert(!owner.begin()&&!device.gets);
 owner.resourcesReady=true;device.failGet=true;assert(!owner.begin()&&!owner.previousDepth_.value);
+device.failGet=false;owner.temporalAA_.beginOK=false;assert(!owner.begin()&&!owner.previousDepth_.value);
+assert(device.current==&original&&original.refs==2);owner.temporalAA_.beginOK=true;
 device.failGet=false;device.failSet=true;assert(!owner.begin()&&!owner.previousDepth_.value);
+assert(owner.temporalAA_.cancels==1);
 assert(original.refs==2&&depth.refs==2&&device.current==&original);
 device.failSet=false;assert(owner.begin()&&device.current==&depth&&original.refs==2&&depth.refs==3);
 assert(decalBegins==1&&decalEnds==0);
@@ -86,6 +97,7 @@ owner.kindCopied_=true;assert(owner.end()&&device.current==&original);
 assert(!owner.frameActive_&&!owner.prepared_&&!owner.kindCopied_&&!owner.previousDepth_.value);
 assert(original.refs==2&&depth.refs==2);
 const auto sets=device.sets;assert(owner.end()&&device.sets==sets);
+assert(owner.temporalAA_.ends==1);
 assert(decalEnds==1);
 assert(owner.begin());device.failSet=true;assert(!owner.end()&&!owner.previousDepth_.value);
 assert(original.refs==1&&depth.refs==3);device.failSet=false;
@@ -179,7 +191,11 @@ uint width()const{return w;}uint height()const{return h;}
 int pSurface(ComObjectWrap<DX::Surface>& output){if(!step())return -1;output=&surface;return 0;}
 DX::Surface* pTexture(){return &surface;}DX::Surface* depthBuffer(){return &depth;}
 };
-using RenderTargetPtr=std::shared_ptr<RenderTarget>;
+struct RenderTargetPtr:std::shared_ptr<RenderTarget>{
+using std::shared_ptr<RenderTarget>::shared_ptr;
+RenderTargetPtr(const std::shared_ptr<RenderTarget>& p):std::shared_ptr<RenderTarget>(p){}
+RenderTarget* getObject()const{return get();}};
+bool copySurface(RenderTarget*,const ComObjectWrap<DX::Surface>&){return step();}
 struct Context{
 struct Saved{uint w,h;bool scene;std::string target;};
 std::vector<Saved> stack;uint w=1279,h=719;bool scene=true;std::string target="scene";
@@ -191,6 +207,7 @@ int setRenderTarget(unsigned,void*){return step()?0:-1;}
 uint screenWidth()const{return w;}uint screenHeight()const{return h;}
 void screenWidth(uint v){w=v;}void screenHeight(uint v){h=v;}
 const Desc& backBufferDesc()const{return desc;}
+unsigned frameTimestamp()const{return 0;}
 struct Device{int SetDepthStencilSurface(DX::Surface*){return step()?0:-1;}
 int Clear(unsigned,void*,int flags,unsigned color,float,unsigned){assert(flags==D3DCLEAR_TARGET&&color==0x00ff00ffu);return step()?0:-1;}} gpu;
 Device* device(){return &gpu;}
@@ -229,6 +246,8 @@ ComObjectWrap<DX::Surface> gbufferSurface(unsigned index){return {&buffers[index
 wot::StockScreenSpaceShadowSettings activeScreenShadows;
 struct StockDeferredBuffers{
 Pipeline pipeline_;wot::StockDepthEffectQuality depthQuality_;bool aoEnvironment=true;
+struct Temporal{bool scalarEnabled()const{return false;}
+Moo::RenderTargetPtr resolveScalar(const Moo::RenderTargetPtr& source,DX::Surface* depth,bool opaque){assert(depth&&opaque);return source;}}temporalAA_;
 ComObjectWrap<DX::Surface> depthSurface_;
 Moo::RenderTargetPtr reducedDepth_,lowPrecisionDepth_,depthEffectsHalf_,depthEffectsFull_,depthEffectsScratch_,depthEffectsHalfScratch_;
 Moo::RenderTargetPtr aoNoise_,horizonNoise_;
@@ -345,12 +364,14 @@ owner=nullptr;passes.clear();assert(!drawStockDeferredSunLight(sun)&&passes.empt
     def test_actual_non_temporal_projection_semantics_follow_the_view(self):
         source = (ROOT/'bigworld/stock_deferred_buffers.cpp').read_text()
         start = source.index('class SceneProjectionConstant')
-        production = source[start:source.index('\nclass TargetScope',start)]
+        production = source[start:source.index('\nclass TemporalConstant',start)]
         host = r"""
 #include <cassert>
 #define SUCCEEDED(hr) ((hr)>=0)
 using D3DXHANDLE=const char*;
-struct Matrix{float values[16];};
+struct Matrix{float values[16];void postMultiply(const Matrix& b){Matrix a=*this;
+for(unsigned i=0;i<4;++i)for(unsigned j=0;j<4;++j){values[i*4+j]=0;
+for(unsigned k=0;k<4;++k)values[i*4+j]+=a.values[i*4+k]*b.values[k*4+j];}}};
 struct ID3DXEffect;
 namespace Moo{
 struct EffectConstantValue{virtual ~EffectConstantValue(){};virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
@@ -358,6 +379,10 @@ struct RenderContext{Matrix p,vp;const Matrix& projection()const{return p;}const
 RenderContext& rc(){static RenderContext context;return context;}
 }
 struct ID3DXEffect{Matrix value;bool fail=false;int SetMatrix(D3DXHANDLE,const Matrix* input){value=*input;return fail?-1:0;}};
+struct Owner{struct Temporal{bool enabled=false;Matrix shift;
+bool temporalEnabled()const{return enabled;}const Matrix& jitter()const{return shift;}}temporal;
+const Temporal& temporalAA()const{return temporal;}};
+Owner* owner=nullptr;
 @PRODUCTION@
 int main(){
 SceneProjectionConstant projection(false),viewProjection(true);ID3DXEffect effect;
@@ -367,6 +392,14 @@ assert(projection(&effect,"JitteredProjection"));for(unsigned i=0;i!=16;++i)asse
 assert(viewProjection(&effect,"JitteredViewProjection"));for(unsigned i=0;i!=16;++i)assert(effect.value.values[i]==Moo::rc().vp.values[i]);
 }
 effect.fail=true;assert(!projection(&effect,"JitteredProjection"));assert(!viewProjection(&effect,"JitteredViewProjection"));
+effect.fail=false;Owner active;owner=&active;active.temporal.enabled=true;
+for(unsigned i=0;i<16;++i)active.temporal.shift.values[i]=i%5==0?1.f:0.f;
+active.temporal.shift.values[12]=.25f;active.temporal.shift.values[13]=-.125f;
+assert(projection(&effect,"JitteredProjection"));
+for(unsigned row=0;row<4;++row){const float* original=Moo::rc().p.values+row*4;
+assert(effect.value.values[row*4]==original[0]+original[3]*.25f);
+assert(effect.value.values[row*4+1]==original[1]-original[3]*.125f);
+assert(effect.value.values[row*4+2]==original[2]&&effect.value.values[row*4+3]==original[3]);}
 }
 """.replace('@PRODUCTION@',production)
         with tempfile.TemporaryDirectory(prefix='actual-scene-projection-') as directory:
