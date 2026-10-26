@@ -44,6 +44,8 @@ void PyErr_SetString(int,const char*){}
 struct StockVehicleStickerGeometry {virtual ~StockVehicleStickerGeometry(){};virtual bool acquire(PyModelPtr&,Matrix&)=0;};
 @NODE@;
 @PART@;
+struct CompoundAttachment;
+using CompoundAttachmentPtr=std::shared_ptr<CompoundAttachment>;
 @STATE@;
 using CompoundStatePtr=std::shared_ptr<CompoundState>;
 @GEOMETRY@;

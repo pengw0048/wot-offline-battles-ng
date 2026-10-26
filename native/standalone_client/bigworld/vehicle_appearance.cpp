@@ -2,6 +2,7 @@
 #include "vehicle_appearance.hpp"
 #include "stock_vehicle_stickers.hpp"
 #include "stock_vehicle_fashions.hpp"
+#include "stock_local_lighting.hpp"
 
 #include "pyscript/script_math.hpp"
 #include "cstdmf/bgtask_manager.hpp"
@@ -115,12 +116,16 @@ struct CompoundPart
     std::vector<std::pair<BW::string, size_t> > bones;
 };
 
+struct CompoundAttachment;
+typedef std::shared_ptr<CompoundAttachment> CompoundAttachmentPtr;
+
 struct CompoundState
 {
     std::vector<CompoundNode> nodes;
     std::vector<CompoundPart> parts;
     std::map<BW::string, size_t> names;
     MatrixProviderPtr matrix;
+    std::vector<CompoundAttachmentPtr> attachments;
     bool active;
     uint32 frame;
     uint32 spaceID;
@@ -171,6 +176,81 @@ struct CompoundState
 };
 
 typedef std::shared_ptr<CompoundState> CompoundStatePtr;
+
+// #1513 AttachmentList::NodeProvider (008db160/008fd4a0) is a real
+// MatrixLiaison. Its setter acknowledges the attachment's initial transform
+// without replacing the authored local offset or the compound node pose.
+struct CompoundAttachment : MatrixLiaison
+{
+    PyAttachmentPtr object;
+    size_t node;
+    Matrix local;
+    Matrix world;
+    bool castsLocalShadow;
+    bool active;
+
+    CompoundAttachment( PyAttachmentPtr value, size_t index,
+        const Matrix & offset, const Matrix & parent, bool flags ) :
+        object( value ), node( index ), local( offset ), castsLocalShadow( flags ), active( true )
+    {
+        world.multiply( local, parent );
+    }
+
+    virtual const Matrix & getMatrix() const { return world; }
+    virtual bool setMatrix( const Matrix & ) { return true; }
+
+    bool ownsObject()
+    {
+        return object->isAttached() && object->matrixLiaison() == this;
+    }
+
+    void retire()
+    {
+        // Membership is removed before calling arbitrary attachment code.
+        // Reentrant removal and compound reset therefore see the retired item.
+        active = false;
+        if (!this->ownsObject()) return;
+        if (object->isInWorld()) object->leaveWorld();
+        if (this->ownsObject()) object->detach();
+    }
+
+    ~CompoundAttachment() { this->retire(); }
+};
+
+CompoundAttachmentPtr findCompoundAttachment( const CompoundStatePtr & state, PyObject * object )
+{
+    for (size_t index = 0; index < state->attachments.size(); ++index)
+    {
+        CompoundAttachmentPtr item = state->attachments[index];
+        if (item->active && item->object.get() == object) return item;
+    }
+    return CompoundAttachmentPtr();
+}
+
+void removeCompoundAttachment( const CompoundStatePtr & state, PyObject * object )
+{
+    for (size_t index = 0; index < state->attachments.size(); ++index)
+    {
+        CompoundAttachmentPtr item = state->attachments[index];
+        if (item->object.get() != object) continue;
+        state->attachments.erase( state->attachments.begin() + index );
+        item->retire();
+        return;
+    }
+}
+
+template<class Callback>
+void visitCompoundAttachments( const CompoundStatePtr & state, Callback callback )
+{
+    const std::vector<CompoundAttachmentPtr> snapshot = state->attachments;
+    for (size_t index = 0; index < snapshot.size() && state->active; ++index)
+    {
+        const CompoundAttachmentPtr & item = snapshot[index];
+        if (!item->active || !item->ownsObject()) continue;
+        item->world.multiply( item->local, state->nodes[item->node].world );
+        callback( *item );
+    }
+}
 
 class CompoundStickerGeometry : public StockVehicleStickerGeometry
 {
@@ -256,8 +336,33 @@ class PyCompoundNode : public MatrixProvider
 public:
     PyCompoundNode( const CompoundStatePtr & state, size_t node ) :
         MatrixProvider( false, &s_type_ ), state_( state ), node_( node ) {}
-    virtual void matrix( Matrix & result ) const { result = state_->nodes[node_].world; }
+    virtual void matrix( Matrix & result ) const
+    {
+        result = state_->active ? state_->nodes[node_].world : Matrix::identity;
+    }
     PY_RO_ATTRIBUTE_DECLARE( state_->nodes[node_].name, name )
+    bool isDangling() const { return !state_->active; }
+    PY_RO_ATTRIBUTE_DECLARE( this->isDangling(), isDangling )
+    MatrixProviderPtr local() const
+    {
+        if (!state_->active) return MatrixProviderPtr();
+        return node_ == 0 ? state_->matrix : state_->nodes[node_].source;
+    }
+    void local( MatrixProviderPtr value )
+    {
+        if (!state_->active) return;
+        // Keep the old provider alive until the new binding is visible: its
+        // Python destructor may reset the compound or rebind this same node.
+        MatrixProviderPtr previous = this->local();
+        if (node_ == 0) state_->matrix = value;
+        else state_->nodes[node_].source = value;
+    }
+    PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( MatrixProviderPtr, local, local )
+    Vector3 position() const
+    {
+        return state_->active ? state_->nodes[node_].world.applyToOrigin() : Vector3::zero();
+    }
+    PY_RO_ATTRIBUTE_DECLARE( this->position(), position )
     PyObject * pyGet_localMatrix()
     {
         // 008dcd90 returns a Math.Matrix value, not a provider or a writable
@@ -265,16 +370,64 @@ public:
         return Script::getData( state_->active ? state_->nodes[node_].local : Matrix::identity );
     }
     PY_RO_ATTRIBUTE_SET( localMatrix )
+    PyObject * attach( PyObjectPtr object, const Matrix & offset, bool flags )
+    {
+        if (!state_->active) Py_RETURN_NONE;
+        if (!PyAttachment::Check( object.get() ))
+        {
+            PyErr_SetString( PyExc_TypeError, "attach requires a native PyAttachment" );
+            return NULL;
+        }
+        PyAttachmentPtr attachment( static_cast<PyAttachment *>( object.get() ) );
+        if (attachment->isAttached())
+        {
+            PyErr_SetString( PyExc_TypeError, "Attachment cannot be attached elsewhere" );
+            return NULL;
+        }
+        CompoundAttachmentPtr item( new CompoundAttachment( attachment, node_, offset,
+            state_->nodes[node_].world, flags ) );
+        // Publish the identity before virtual attach/enterWorld may call Python.
+        state_->attachments.push_back( item );
+        if (!attachment->attach( item.get() ))
+        {
+            removeCompoundAttachment( state_, object.get() );
+            if (!PyErr_Occurred()) PyErr_SetString( PyExc_TypeError, "Attachment rejected its node" );
+            return NULL;
+        }
+        if (!state_->active || !item->active || !item->ownsObject())
+        {
+            item->retire();
+            Py_RETURN_NONE;
+        }
+        // 008da620/008da7b0 enter the attachment immediately, even when the
+        // compound has not yet been inserted into a ClientSpace.
+        if (!attachment->isInWorld()) attachment->enterWorld();
+        if (!state_->active || !item->active) item->retire();
+        Py_RETURN_NONE;
+    }
+    PY_AUTO_METHOD_DECLARE( RETOWN, attach, NZARG( PyObjectPtr,
+        OPTARG( Matrix, Matrix::identity, OPTARG( bool, false, END ) ) ) )
+    void detach( PyObjectPtr object )
+    {
+        // 008e05a0 compares the owning compound, not the adapter's node index.
+        if (state_->active) removeCompoundAttachment( state_, object.get() );
+    }
+    PY_AUTO_METHOD_DECLARE( RETVOID, detach, NZARG( PyObjectPtr, END ) )
 private:
     CompoundStatePtr state_;
     size_t node_;
 };
 PY_TYPEOBJECT( PyCompoundNode )
 PY_BEGIN_METHODS( PyCompoundNode )
+    PY_METHOD( attach )
+    PY_METHOD( detach )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyCompoundNode )
     PY_ATTRIBUTE( name )
+    PY_ATTRIBUTE( isDangling )
+    PY_ATTRIBUTE( local )
     PY_ATTRIBUTE( localMatrix )
+    PY_ATTRIBUTE( position )
 PY_END_ATTRIBUTES()
 
 class PyCompoundPartBounds : public MatrixProvider
@@ -293,10 +446,17 @@ public:
         {
             // #1513 008dd280 transforms this part's authored minimum by its
             // mount node and scales each basis row by the matching extent.
-            CompoundPart & part = state_->parts[part_];
+            PyModelPtr model = state_->parts[part_].model;
+            const size_t mount = state_->parts[part_].mount;
             BoundingBox bounds;
-            part.model->localBoundingBox( bounds );
-            const Matrix & world = state_->nodes[part.mount].world;
+            model->localBoundingBox( bounds );
+            if (!state_->active || part_ >= state_->parts.size() ||
+                state_->parts[part_].model.get() != model.get())
+            {
+                result = last_;
+                return;
+            }
+            const Matrix & world = state_->nodes[mount].world;
             const Vector3 extent = bounds.maxBounds() - bounds.minBounds();
             last_ = world;
             last_.translation( world.applyPoint( bounds.minBounds() ) );
@@ -333,9 +493,12 @@ public:
 
     virtual void tick( float elapsed )
     {
-        if (state_->active)
-            for (size_t index = 0; index < state_->parts.size(); ++index)
-                state_->parts[index].model->tick( elapsed );
+        if (!state_->active || !state_->evaluate()) return;
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            parts[index].model->tick( elapsed );
+        visitCompoundAttachments( state_, [elapsed]( CompoundAttachment & item )
+            { item.object->tick( elapsed ); } );
     }
     virtual bool needsUpdate() const { return state_->active; }
     virtual bool isLodVisible() const { return state_->active && visible_; }
@@ -353,58 +516,94 @@ public:
     {
         if (!state_->active || !state_->evaluate())
             return;
-        for (size_t index = 0; index < state_->parts.size(); ++index)
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
         {
-            CompoundPart & part = state_->parts[index];
-            const Matrix & pose = state_->nodes[part.mount].world;
+            CompoundPart & part = parts[index];
+            const Matrix pose = state_->nodes[part.mount].world;
             part.model->worldTransform( pose );
+            if (!state_->active) return;
             part.model->updateAnimations( pose, lod );
         }
+        visitCompoundAttachments( state_, [lod]( CompoundAttachment & item )
+            { item.object->updateAnimations( item.world, lod ); } );
         state_->frame = Moo::rc().frameTimestamp();
     }
     virtual void draw( Moo::DrawContext & context, const Matrix & /* world */ )
     {
         if (state_->active && visible_)
-            for (size_t index = 0; index < state_->parts.size(); ++index)
+        {
+            std::vector<CompoundPart> parts = state_->parts;
+            for (size_t index = 0; index < parts.size() && state_->active; ++index)
             {
-                CompoundPart & part = state_->parts[index];
+                CompoundPart & part = parts[index];
                 part.model->draw( context, state_->nodes[part.mount].world );
             }
+            visitCompoundAttachments( state_, [&context]( CompoundAttachment & item )
+                {
+                    // 008de1d0 publishes flags 01/15 -> ab8060 masks
+                    // 203/337. Native point/spot shadow queries a68f90 and
+                    // a69610 require mask 100, present only for the true case.
+                    // The same public pass also draws sunlight. Its original
+                    // mask is independent of this local-light participation.
+                    if (!stockLocalLightingShadowContext( context ) || item.castsLocalShadow)
+                        item.object->draw( context, item.world );
+                } );
+        }
     }
     virtual void enterWorld()
     {
         PyAttachment::enterWorld();
-        for (size_t index = 0; index < state_->parts.size(); ++index)
-            state_->parts[index].model->enterWorld();
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            if (!parts[index].model->isInWorld()) parts[index].model->enterWorld();
+        visitCompoundAttachments( state_, []( CompoundAttachment & item )
+            { if (!item.object->isInWorld()) item.object->enterWorld(); } );
     }
     virtual void leaveWorld()
     {
-        for (size_t index = 0; index < state_->parts.size(); ++index)
-            if (state_->parts[index].model->isInWorld())
-                state_->parts[index].model->leaveWorld();
         if (this->isInWorld())
             PyAttachment::leaveWorld();
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            if (parts[index].model->isInWorld()) parts[index].model->leaveWorld();
+        visitCompoundAttachments( state_, []( CompoundAttachment & item )
+            { if (item.object->isInWorld()) item.object->leaveWorld(); } );
     }
     virtual void tossed( bool outside )
     {
-        for (size_t index = 0; index < state_->parts.size(); ++index)
-            state_->parts[index].model->tossed( outside );
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            parts[index].model->tossed( outside );
+        visitCompoundAttachments( state_, [outside]( CompoundAttachment & item )
+            { item.object->tossed( outside ); } );
     }
     virtual void localBoundingBox( BoundingBox & bounds, bool skinny = false )
     {
         Matrix inverse;
         if (!state_->active || !inverse.invert( state_->nodes[0].world ))
             return;
-        for (size_t index = 0; index < state_->parts.size(); ++index)
+        std::vector<CompoundPart> parts = state_->parts;
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
         {
-            CompoundPart & part = state_->parts[index];
+            CompoundPart & part = parts[index];
             BoundingBox local;
             part.model->localBoundingBox( local, skinny );
+            if (!state_->active) return;
             Matrix relative;
             relative.multiply( state_->nodes[part.mount].world, inverse );
             local.transformBy( relative );
             bounds.addBounds( local );
         }
+        visitCompoundAttachments( state_, [&bounds, &inverse, skinny]( CompoundAttachment & item )
+            {
+                BoundingBox local;
+                item.object->localBoundingBox( local, skinny );
+                Matrix relative;
+                relative.multiply( item.world, inverse );
+                local.transformBy( relative );
+                bounds.addBounds( local );
+            } );
     }
     virtual void localVisibilityBox( BoundingBox & bounds, bool skinny = false )
     {
@@ -413,11 +612,16 @@ public:
     virtual void worldBoundingBox( BoundingBox & bounds, const Matrix &, bool skinny = false )
     {
         if (state_->active)
-            for (size_t index = 0; index < state_->parts.size(); ++index)
+        {
+            std::vector<CompoundPart> parts = state_->parts;
+            for (size_t index = 0; index < parts.size() && state_->active; ++index)
             {
-                CompoundPart & part = state_->parts[index];
+                CompoundPart & part = parts[index];
                 part.model->worldBoundingBox( bounds, state_->nodes[part.mount].world, skinny );
             }
+            visitCompoundAttachments( state_, [&bounds, skinny]( CompoundAttachment & item )
+                { item.object->worldBoundingBox( bounds, item.world, skinny ); } );
+        }
     }
     virtual void worldVisibilityBox( BoundingBox & bounds, const Matrix & world, bool skinny = false )
     {
@@ -509,6 +713,22 @@ public:
     }
     PY_AUTO_METHOD_DECLARE( RETOWN, getBoundsForPart, ARG( int, END ) )
 
+    PyObject * getBoundsForRoot() { return this->getBoundsForPart( 0 ); }
+    PY_AUTO_METHOD_DECLARE( RETOWN, getBoundsForRoot, END )
+
+    bool containsAttachment( PyObjectPtr object )
+    {
+        return state_->active && !!findCompoundAttachment( state_, object.get() );
+    }
+    PY_AUTO_METHOD_DECLARE( RETDATA, containsAttachment, ARG( PyObjectPtr, END ) )
+
+    // Both #1513 wrappers (008dc6f0/008dc920) validate one BW::string and
+    // return None. Their complete native bodies perform no sound operation.
+    void getSound( const BW::string & ) {}
+    void playSound( const BW::string & ) {}
+    PY_AUTO_METHOD_DECLARE( RETVOID, getSound, ARG( BW::string, END ) )
+    PY_AUTO_METHOD_DECLARE( RETVOID, playSound, ARG( BW::string, END ) )
+
     PyObject* getPartGeometryLink(int index)
     {
         if (!state_->active || index < 0 || static_cast<size_t>(index) >= state_->parts.size())
@@ -541,9 +761,18 @@ public:
     {
         if (!state_->active)
             return;
-        this->leaveWorld();
         state_->active = false;
-        state_->parts.clear();
+        // Retire all identities before a virtual leaveWorld/detach or a
+        // Python finalizer can reenter reset, query nodes, or detach an item.
+        std::vector<CompoundAttachmentPtr> attachments;
+        attachments.swap( state_->attachments );
+        std::vector<CompoundPart> parts;
+        parts.swap( state_->parts );
+        if (this->isInWorld()) PyAttachment::leaveWorld();
+        for (size_t index = 0; index < attachments.size(); ++index)
+            attachments[index]->retire();
+        for (size_t index = 0; index < parts.size(); ++index)
+            if (parts[index].model->isInWorld()) parts[index].model->leaveWorld();
         state_->matrix = NULL;
         for (size_t index = 0; index < state_->nodes.size(); ++index)
             state_->nodes[index].source = NULL;
@@ -604,6 +833,10 @@ PY_BEGIN_METHODS( PyCompoundModel )
     PY_METHOD( node )
     PY_METHOD( reset )
     PY_METHOD( getBoundsForPart )
+    PY_METHOD( getBoundsForRoot )
+    PY_METHOD( containsAttachment )
+    PY_METHOD( getSound )
+    PY_METHOD( playSound )
     PY_METHOD( getPartGeometryLink )
     PY_METHOD( setupFashions )
 PY_END_METHODS()

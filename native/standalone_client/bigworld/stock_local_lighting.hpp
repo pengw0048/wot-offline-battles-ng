@@ -5,6 +5,11 @@
 #include <memory>
 
 BW_BEGIN_NAMESPACE
+namespace Moo { class DrawContext; }
+// The public SHADOWS pass also renders directional sunlight. Only the real
+// point/spot shadow owner establishes this more specific drawing context.
+bool stockLocalLightingShadowContext( const Moo::DrawContext & context );
+
 // #1513 has separate SUN/OMNI/SPOT effects and a real per-frame local-shadow
 // cache. The SUN owner remains on LightsManager; this owner supplies the latter
 // two effects, their volume geometry and VSM render targets.

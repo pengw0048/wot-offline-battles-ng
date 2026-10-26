@@ -37,6 +37,20 @@
 BW_BEGIN_NAMESPACE
 namespace
 {
+thread_local const Moo::DrawContext * activeLocalShadowDraw = NULL;
+
+class LocalShadowDrawScope
+{
+public:
+    explicit LocalShadowDrawScope( const Moo::DrawContext & context ) :
+        previous_( activeLocalShadowDraw ) { activeLocalShadowDraw = &context; }
+    ~LocalShadowDrawScope() { activeLocalShadowDraw = previous_; }
+private:
+    const Moo::DrawContext * previous_;
+    LocalShadowDrawScope( const LocalShadowDrawScope & ) = delete;
+    LocalShadowDrawScope & operator=( const LocalShadowDrawScope & ) = delete;
+};
+
 using LocalMath = wot::StockLocalLightMath;
 LocalMath::Vector values(const Vector3& value) { return {{value.x, value.y, value.z}}; }
 LocalMath::Four values(const Moo::Colour& value) { return {{value.r, value.g, value.b, value.a}}; }
@@ -251,12 +265,18 @@ void cubeView(unsigned face, const Vector3& position, Matrix& view)
 
 void drawShadowObjects(Scene& scene, Moo::DrawContext& draw, const IntersectionSet& objects)
 {
+    const LocalShadowDrawScope localShadow( draw );
     draw.begin(Moo::DrawContext::OPAQUE_CHANNEL_MASK);
     SceneDrawContext context(scene, draw);
     DrawHelpers::drawSceneVisibilitySet(context, scene, objects);
     draw.end(Moo::DrawContext::OPAQUE_CHANNEL_MASK);
     draw.flush(Moo::DrawContext::OPAQUE_CHANNEL_MASK);
 }
+}
+
+bool stockLocalLightingShadowContext( const Moo::DrawContext & context )
+{
+    return activeLocalShadowDraw == &context;
 }
 
 struct StockLocalLighting::State
