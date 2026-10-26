@@ -42,9 +42,10 @@ def patch(root):
         Matrix& transform, const BW::string & path,
         const SmartPointer< DataSection >& pSettings )
 {
-    // 00654d90: local addSpaceGeometryMapping explicitly requests all bits.
+    // Local mapping normally requests all bits. The offline standard-gameplay
+    // scope selects bit 0 here; the resulting mapping owns the captured value.
     return addMappingWithVisibilityMask( mappingID, transform, path,
-        0xffffffffU, pSettings );
+        stockLocalGeometryMappingMask(), pSettings );
 }
 
 bool CompiledSpace::addMappingWithVisibilityMask( GeometryMappingID mappingID,

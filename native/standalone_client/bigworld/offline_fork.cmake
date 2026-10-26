@@ -21,3 +21,16 @@ set_target_properties(WotOfflineMath PROPERTIES CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES DISABLE_PRECOMPILE_HEADERS YES)
 target_link_libraries(bwclient WotOfflineMath)
 target_include_directories(bwclient PRIVATE "${WOT_OFFLINE_FORK_GENERATED}")
+
+# The platform bridge uses the same interpreter and Win32 services, without
+# inheriting BigWorld's precompiled header or the original PE-address adapter.
+add_library(WotOfflinePlatform STATIC "${CMAKE_CURRENT_LIST_DIR}/stock_offline_platform.cpp")
+target_compile_definitions(WotOfflinePlatform PRIVATE Py_BUILD_CORE NOMINMAX)
+target_include_directories(WotOfflinePlatform PRIVATE
+    "${BW_SOURCE_DIR}/third_party/python/Include"
+    "${BW_SOURCE_DIR}/third_party/python/PC")
+target_compile_options(WotOfflinePlatform PRIVATE /std:c++17 /fp:strict /W4 /WX /wd4996 /wd5033)
+set_target_properties(WotOfflinePlatform PROPERTIES CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED YES DISABLE_PRECOMPILE_HEADERS YES)
+target_link_libraries(WotOfflinePlatform PUBLIC user32)
+target_link_libraries(bwclient WotOfflinePlatform)

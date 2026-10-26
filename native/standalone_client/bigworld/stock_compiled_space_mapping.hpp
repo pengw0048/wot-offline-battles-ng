@@ -15,5 +15,8 @@ CompiledSpaceMapping * createStockCompiledSpaceMapping(
     const DataSectionPtr & settings, CompiledSpace & space,
     AssetClient * assetClient, uint32 visibilityMask );
 void registerStockCompiledSpaceHandlers( Scene & scene );
+uint32 stockLocalGeometryMappingMask();
+long applyStockStandardGameplayMapping();
+long restoreStockStandardGameplayMapping();
 }
 BW_END_NAMESPACE

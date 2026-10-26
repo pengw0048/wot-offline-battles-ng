@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_compiled_space_mapping.hpp"
+#include "wot/offline_mapping_policy.hpp"
 #include "stock_static_model_scene.hpp"
 #include "stock_space_lights.hpp"
 #include "stock_space_flares.hpp"
@@ -17,6 +18,7 @@ namespace CompiledSpace
 {
 namespace
 {
+wot::OfflineMappingPolicy localMappingPolicy;
 // 006b9380 dispatches the original sections to their own loaders. Original
 // maps have no public BWSS/VLOS or BWTS container to instantiate or synthesize.
 class StockCompiledSpaceMapping : public CompiledSpaceMapping
@@ -70,6 +72,10 @@ private:
     StockSpaceSoundLoader sounds_;
 };
 }
+
+uint32 stockLocalGeometryMappingMask() { return localMappingPolicy.mask(); }
+long applyStockStandardGameplayMapping() { return localMappingPolicy.apply(); }
+long restoreStockStandardGameplayMapping() { return localMappingPolicy.restore(); }
 
 CompiledSpaceMapping * createStockCompiledSpaceMapping(
     const BW::string & path, const Matrix & transform,

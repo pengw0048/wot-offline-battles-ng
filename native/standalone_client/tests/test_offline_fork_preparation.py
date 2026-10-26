@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'bigworld'))
-from prepare_offline_fork import NATIVE_MATH_PATH, PINNED_COMMIT, adapt_native_math, prepare
+from prepare_offline_fork import (
+    BOOTSTRAP_PATH, INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT,
+    adapt_instance_guard, adapt_native_math, prepare)
 
 
 class OfflineForkPreparationTests(unittest.TestCase):
@@ -24,9 +26,10 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / 'input'
         shutil.copytree(self.original / 'native', self.source / 'native')
-        consumer = self.source / NATIVE_MATH_PATH
-        consumer.parent.mkdir(parents=True)
-        shutil.copyfile(self.original / NATIVE_MATH_PATH, consumer)
+        for relative in (NATIVE_MATH_PATH, INSTANCE_GUARD_PATH, BOOTSTRAP_PATH):
+            consumer = self.source / relative
+            consumer.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.original / relative, consumer)
         (self.source / 'fork-source.json').write_text('{"revision":"' + PINNED_COMMIT + '"}')
         self.output = self.root / 'output'
 
@@ -76,6 +79,62 @@ class OfflineForkPreparationTests(unittest.TestCase):
             namespace = self.consumer()
             self.assertIsNone(namespace['_load']())
             self.assertIsNone(namespace['_backend'])
+
+    def platform_consumer(self):
+        namespace = {'__name__': 'isolated_instance_guard'}
+        exec(compile(adapt_instance_guard((self.original / INSTANCE_GUARD_PATH).read_text()),
+                     'instance_guard.py', 'exec'), namespace)
+        return namespace
+
+    def platform(self):
+        builtin = types.ModuleType('offline_instance_guard_native')
+        builtin._wot_offline_fork_revision = PINNED_COMMIT
+        builtin.install_exception_trail = lambda: 301
+        builtin.hide_process_windows = lambda: 2
+        builtin.show_process_windows = lambda: 1
+        builtin.apply_standard_gameplay_mask = lambda: 0
+        builtin.restore_standard_gameplay_mask = lambda: 0
+        return builtin
+
+    def test_process_policy_uses_builtin_without_original_pe_repairs(self):
+        builtin = self.platform()
+        with patch.dict(sys.modules, {'offline_instance_guard_native': builtin}):
+            namespace = self.platform_consumer()
+            self.assertFalse(namespace['release_if_requested']({}))
+            self.assertIs(namespace['_load_native_bridge'](), builtin)
+            requested = {namespace['ALLOW_MULTIPLE_CLIENTS_ENV']: '1'}
+            self.assertTrue(namespace['release_if_requested'](requested))
+            self.assertTrue(namespace['release_if_requested'](requested))
+            self.assertEqual(namespace['hide_process_windows'](), 2)
+            self.assertEqual(namespace['show_process_windows'](), 1)
+            builtin.hide_process_windows = lambda: -170
+            with self.assertRaises(namespace['ClientInstanceGuardError']):
+                namespace['hide_process_windows']()
+
+    def test_process_policy_rejects_wrong_revision_and_incomplete_module(self):
+        for mutation in ('revision', 'missing'):
+            builtin = self.platform()
+            if mutation == 'revision':
+                builtin._wot_offline_fork_revision = 'original-exe-sidecar'
+            else:
+                del builtin.restore_standard_gameplay_mask
+            with patch.dict(sys.modules, {'offline_instance_guard_native': builtin}):
+                namespace = self.platform_consumer()
+                requested = {namespace['ALLOW_MULTIPLE_CLIENTS_ENV']: '1'}
+                for unused in range(2):
+                    with self.assertRaises(ImportError):
+                        namespace['release_if_requested'](requested)
+                self.assertIsNone(namespace['_native_bridge'])
+
+    def test_diagnostic_trail_failure_does_not_reject_process_policy(self):
+        builtin = self.platform()
+        def failed_trail():
+            raise OSError('diagnostic output unavailable')
+        builtin.install_exception_trail = failed_trail
+        with patch.dict(sys.modules, {'offline_instance_guard_native': builtin}):
+            namespace = self.platform_consumer()
+            self.assertTrue(namespace['release_if_requested'](
+                {namespace['ALLOW_MULTIPLE_CLIENTS_ENV']: '1'}))
 
 
 if __name__ == '__main__':
