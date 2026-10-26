@@ -96,6 +96,9 @@ struct RenderContext {
 };
 RenderContext& rc(){assert(initialized);static RenderContext value;return value;}
 }
+std::vector<int> preferenceReads;
+void(*preferenceReadHook)(int)=nullptr;
+void stockNotifyReadPreferences(int mode){preferenceReads.push_back(mode);if(preferenceReadHook)preferenceReadHook(mode);}
 #include "@PRODUCTION@"
 PyObject* modeIndex(PyObject*,PyObject*){return PyInt_FromLong(activeMode);}
 #define METHOD(name) {#name,[](PyObject*,PyObject* args)->PyObject*{return py_##name(args);},METH_VARARGS,NULL}
@@ -174,8 +177,9 @@ int main(){
     // -1 must still apply the requested enum; it is not the public bool API.
     assert(stockChangeVideoMode(-1,BORDERLESS));assert(windowMode()==BORDERLESS);assert(resets==1);
     assert(outer.right-outer.left==1200&&outer.bottom-outer.top==800);
+    assert(preferenceReads==std::vector<int>{BORDERLESS});
     changeOK=false;assert(!stockChangeVideoMode(-1,WINDOWED));assert(windowMode()==BORDERLESS);
-    assert(outer.right-outer.left==1200);changeOK=true;
+    assert(outer.right-outer.left==1200);assert(preferenceReads.size()==1);changeOK=true;
     assert(stockChangeVideoMode(-1,WINDOWED));assert(windowMode()==WINDOWED);
     assert(outer.right-outer.left==816&&outer.bottom-outer.top==639);
     run("B.setActiveMonitorIndex(0,0)\nassert B.getActiveMonitorIndex(0)==0\n");
@@ -184,6 +188,10 @@ int main(){
     int before=changes;assert(!stockChangeVideoMode(0,EXCLUSIVE));assert(changes==before);
     assert(!stockChangeVideoMode(9,WINDOWED));assert(!stockChangeVideoMode(0,3));
     resetOK=false;assert(!stockChangeVideoMode(-1,BORDERLESS));assert(windowMode()==WINDOWED);resetOK=true;
+    assert((preferenceReads==std::vector<int>{BORDERLESS,WINDOWED}));
+    preferenceReadHook=[](int mode){assert(mode==BORDERLESS);preferenceReadHook=nullptr;assert(stockChangeVideoMode(-1,WINDOWED));};
+    assert(stockChangeVideoMode(-1,BORDERLESS));assert(windowMode()==WINDOWED);
+    assert((preferenceReads==std::vector<int>{BORDERLESS,WINDOWED,BORDERLESS,WINDOWED}));
     deviceReady=false;PyObject* args=PyTuple_New(0);assert(!py_listVideoModesAllMonitors(args));
     assert(PyErr_ExceptionMatches(PyExc_RuntimeError));PyErr_Clear();Py_DECREF(args);deviceReady=true;
     // Optional exact-bytecode integration uses the real production wrappers.

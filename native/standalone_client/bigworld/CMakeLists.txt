@@ -55,6 +55,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_resource_content.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scaleform_resources.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_preferences_path.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_preferences_callbacks.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_numeric_format.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_initialization.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings_consumers.cpp"

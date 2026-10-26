@@ -1,6 +1,7 @@
 #ifndef WOT_STOCK_DISPLAY_MODES_PORTABLE
 #include "pch.hpp"
 #include "stock_display_modes.hpp"
+#include "stock_preferences_callbacks.hpp"
 #include "moo/render_context.hpp"
 #include "moo/init.hpp"
 #include <wtsapi32.h>
@@ -476,6 +477,9 @@ bool stockChangeVideoMode( int modeIndex, int mode )
         if (!positionWindow( rectangle, 0 )) return restore();
         rememberNormalWindow();
     }
+    // 9229e0 -> 622af0 publishes only after the mode application succeeds.
+    // No display-state writes may follow a synchronously reentrant callback.
+    stockNotifyReadPreferences(windowMode());
     return true;
 }
 
