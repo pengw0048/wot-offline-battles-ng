@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <limits>
 #include <array>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -297,16 +299,6 @@ struct VehicleConvexTopology {
 VehicleConvexTopology build_vehicle_convex_topology(
     const VehicleTankConvexSource& source, Vector3 (*normalize)(Vector3));
 
-// Geometry after actual D3DX local translation and convex construction.
-// This owns geometry only; configuring a Tank additionally requires the real
-// hull, engine, wheel and constraint owners before publication.
-struct VehicleTankGeometry {
-    std::array<VehicleConvexTopology, 4> polyhedra;
-    bool has_auxiliary_box;
-    Vector3 auxiliary_box_center;
-    Vector3 auxiliary_box_dimensions;
-};
-
 // f87e90 emits ten wheel constructors in interleaved left/right order.
 // These values precede the real rigid-body/D3DX construction at f7f280.
 struct VehicleWheelConstruction {
@@ -331,6 +323,223 @@ std::array<VehicleWheelConstruction, 10> build_vehicle_chassis_wheels(
 VehicleBodyMassProperties build_vehicle_wheel_mass_properties(
     const VehicleWheelConstruction& wheel);
 
+// Win32 entry points the original construction graph calls. The native
+// adapter binds UCRT __libm_sse2_tanf and D3DX9_43; host tests bind declared
+// stand-ins. inverse leaves the destination unchanged when D3DX returns NULL.
+struct VehicleNativeMath {
+    float (*tangent)(float);
+    Vector3 (*normalize)(Vector3);
+    Vector3 (*transform_coordinate)(Vector3, const VehicleMatrix&);
+    Vector3 (*transform_normal)(Vector3, const VehicleMatrix&);
+    void (*inverse)(VehicleMatrix&, const VehicleMatrix&);
+};
+
+// #1513 0x00f527b0, including its SSE pairwise summation order.
+VehicleMatrix multiply_vehicle_matrices(const VehicleMatrix& left,
+                                        const VehicleMatrix& right);
+
+// Unassigned (context, row, generation) identity written by the original
+// constructors. Solver registration happens per step, not during configure.
+struct VehicleConstraintHandle {
+    std::uint32_t context = 0;
+    std::int32_t row = -1;
+    std::uint32_t generation = 0;
+};
+
+// ConvexPolyhedron (0x150): f6d270 local topology plus f55e40 world state.
+struct VehicleConvexPolyhedron {
+    VehicleConvexTopology topology;
+    std::vector<Vector3> world_vertices;  // +0x48
+    std::vector<Vector3> world_normals;   // +0x3c
+    std::vector<Vector3> world_edges;     // +0x30
+    VehicleMatrix transform = vehicle_identity_matrix();  // +0x60
+    VehicleCollisionBounds world_bounds{
+        {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+         std::numeric_limits<float>::max()},
+        {-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+         -std::numeric_limits<float>::max()}};
+    VehicleMatrix local_box{};  // +0xb8: scaled local extent at local minimum
+    VehicleMatrix world_box{};  // +0xf8
+};
+
+// Oriented box allocated by f65930 (0x11c) and refreshed by 0x00933220.
+struct VehicleConvexBox {
+    VehicleMatrix transform = vehicle_identity_matrix();  // +0x00
+    VehicleMatrix inverse{};                              // +0x40
+    Vector3 center{};                                     // +0x80
+    Vector3 dimensions{1.0f, 1.0f, 1.0f};                 // +0x8c
+    Vector3 world_center{};                               // +0x98
+    std::array<Vector3, 3> axes{};                        // +0xa4
+    std::array<Vector3, 3> half_axes{};                   // +0xc8
+    VehicleCollisionBounds world_bounds{
+        {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+         std::numeric_limits<float>::max()},
+        {-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+         -std::numeric_limits<float>::max()}};            // +0xec
+    std::array<std::array<float, 2>, 3> projections{};    // +0x104
+};
+
+// Shape collection (boxes, then polyhedra). Tank::rebuildShape appends;
+// it never clears previously appended shapes.
+struct VehicleShapeCollection {
+    std::vector<VehicleConvexBox> boxes;
+    std::vector<VehicleConvexPolyhedron> polyhedra;
+};
+
+// #1513 0x00f6f800 RigidBody constructor state, plus the separately stored
+// mass (+0x00) and inertia (+0x08) that VehicleRigidBody does not carry.
+struct VehicleBodyInertia {
+    float mass = 1.0f;
+    VehicleMatrix inertia = vehicle_identity_matrix();
+};
+VehicleRigidBody make_vehicle_rigid_body();
+
+// Tank::Settings (0xe0) for one mode. The trailing fields are constructor
+// values (f900a0) that no Reader assigns; f803a0 consumes +0xb8.
+struct VehicleTankModeSettings {
+    VehicleBodyConfiguration body;
+    VehicleShapeConfiguration shape;
+    bool siege_mode_available;
+    bool flag_7c = false;            // +0x7c
+    float value_80 = 2.0f;           // +0x80
+    float value_84 = 2.0f;           // +0x84
+    float wheel_bounds_offset = 0.2f;  // +0xb8
+    std::array<float, 6> values_bc{{1.0f, 1.0f, 1.0f, 0.1f, 0.0f, 0.8f}};  // +0xbc
+    Vector3 vector_d4{};             // +0xd4
+};
+
+// Wheel record (0x4b4) built by f866f0 -> f7f280.
+struct VehicleChassisWheel {
+    VehicleWheelConstruction construction;
+    bool enabled = true;                 // +0x10, constructor argument
+    VehicleBodyInertia inertia;          // body +0x00/+0x08 at wheel +0x1c
+    VehicleRigidBody body;               // +0x1c
+    VehicleMatrix local_pose{};          // +0x308
+    std::array<bool, 2> flags_35c{{true, true}};  // +0x35c
+    Vector3 down{0.0f, -1.0f, 0.0f};     // +0x360
+    float scale_36c = 1.0f;              // +0x36c
+    float side_contact_scale = 1.0f;     // +0x3ac
+    float forward_contact_scale = 1.0f;  // +0x3b0
+    std::array<std::int32_t, 2> rows{{-1, -1}};       // +0x428
+    std::array<VehicleConstraintHandle, 11> handles;  // +0x430
+};
+
+// TrackChassis (0x148): Chassis f81380 + f86a50, wheels from f87e90.
+struct VehicleTrackChassis {
+    std::vector<std::optional<VehicleChassisConfiguration>> settings;  // +0xc4
+    std::int32_t mode = 0;                       // +0xc0
+    float vertical_force = 0.0f;                 // +0x64, written by f84e80
+    std::vector<VehicleChassisWheel> wheels;     // +0xa4
+    // +0xb4: f85f60 resizes to two tracks; f87e90 then appends 0..4 to the
+    // first and 1..5 to the second without clearing either.
+    std::vector<std::vector<std::uint32_t>> tracks;
+    std::array<std::int32_t, 4> rows{};          // +0x50, f82b80 per step
+    VehicleMatrix matrix_d0 = vehicle_identity_matrix();  // +0xd0
+    VehicleConstraintHandle handle;              // +0x13c
+};
+
+// Engine (0x33c): RigidBody at +4; settings install by mode_index.
+struct VehicleEngine {
+    std::vector<std::optional<VehicleEngineConfiguration>> settings;  // +0x330
+    std::int32_t mode = 0;                     // +0x32c
+    VehicleBodyInertia inertia;
+    VehicleRigidBody body;                     // +0x04, f6f800 when created
+    float value_2f8 = 0.05f;                   // +0x2f8
+    float value_304 = 0.0f;                    // +0x304, cleared with a speed reset
+    bool flag_308 = false;                     // +0x308, cleared by f7ea60
+    float value_310 = 1.0f;                    // +0x310
+    std::array<VehicleConstraintHandle, 2> handles;  // +0x314
+};
+
+// One curve entry (0x14) produced by FakeGearBox::install (0x00f97a60).
+struct VehicleFakeGearPoint {
+    float previous_speed;
+    float speed;
+    float previous_low_rpm;
+    float high_rpm;
+    float hysteresis;
+};
+
+struct VehicleTankAnchor {     // Tank +0x688, f97a30
+    float velocity_factor = 0.0f;          // +0x0c
+    float constant_fraction = 0.0f;        // +0x10
+    float maximum_reaction_factor = 0.5f;  // +0x14
+    VehicleConstraintHandle handle;        // +0x20
+};
+struct VehicleTankRail {       // Tank +0x70c, f98040
+    float factor_in_contact = 0.0f;        // +0x10
+    VehicleConstraintHandle handle;        // +0x14
+};
+struct VehicleTankGimlet {     // Tank +0x6b4, f97d30 (constructor values first)
+    VehicleGimletConfiguration settings{1.0f, 1.0f, 1.0f, 0.5f, 2.0f, 2.0f,
+        0.2f, 0.2f, 2.0f, 2.0f, 1.0f, 1.0f, 2.0f, 2.0f, 1.0f, 1.5f};
+    VehicleConstraintHandle handle;        // +0x4c
+};
+struct VehicleTankFakeGearBox {  // Tank +0x660
+    std::uint32_t value_10 = 0x7f;         // +0x10
+    std::vector<std::vector<VehicleFakeGearPoint>> curves;  // +0x1c
+};
+
+enum class VehicleTankComponent : std::uint8_t { anchor, gimlet, rail, fake_gearbox };
+
+// Vehicle +0x04..+0x24 input state written by Tank::setInput (0x00f85a30).
+struct VehicleTankInputState {
+    std::uint32_t mask_steering = 0;     // +0x04: nonzero keeps only bits 2..3
+    float rotation_time = 0.0f;          // +0x08: cleared on direction change
+    std::uint32_t signals = 0;           // +0x0c
+    std::array<bool, 13> flags{};        // +0x14..+0x20
+    std::uint32_t value_24 = 0;          // +0x24, cleared by f84370
+};
+
+// Tank (0xaf4): the native owner created by WGVehiclePhysics.configure. The
+// hull RigidBody (+0x1c8) is VehiclePhysics::rigid_body(); this owner keeps
+// only its mass and inertia, never a second copy of the live hull.
+struct VehicleTank {
+    std::vector<std::optional<VehicleTankModeSettings>> settings;  // +0x63c
+    std::int32_t mode = 0;                          // +0x638
+    VehicleBodyInertia hull;                        // +0x1c8/+0x1d0
+    std::array<VehicleConvexPolyhedron, 2> embedded;    // +0x28, +0x4b4
+    std::array<VehicleShapeCollection, 2> collections;  // +0x178, +0x190
+    bool turret_collision = true;                   // +0x1a8
+    VehicleTankInputState input;
+    VehicleEngine engine;                           // +0x1c0
+    VehicleTrackChassis chassis;                    // +0x1b8
+    VehicleTankFakeGearBox fake_gearbox;
+    VehicleTankAnchor anchor;
+    VehicleTankGimlet gimlet;
+    VehicleTankRail rail;
+    std::vector<VehicleTankComponent> components;   // +0x654, appended by f84370
+    VehicleBodyInertia snapshot_inertia;            // +0x740
+    VehicleRigidBody snapshot;
+    std::array<VehicleConstraintHandle, 16> handles;  // +0xa30
+
+    const VehicleTankModeSettings& current_settings() const;
+    const VehicleChassisConfiguration& current_chassis() const;
+    const VehicleEngineConfiguration& current_engine() const;
+};
+
+// Tank::rebuildShape (0x00f8b8d0) geometry after actual libm/D3DX calls.
+// polyhedra[0..1] rebuild the embedded shapes; [2] and [3] are appended to
+// the second and first collections; the box joins the first collection.
+struct VehicleTankGeometry {
+    std::array<VehicleTankConvexSource, 4> polyhedra;
+    bool has_auxiliary_box;
+    Vector3 auxiliary_box_center;
+    Vector3 auxiliary_box_dimensions;
+};
+VehicleTankGeometry build_vehicle_tank_geometry(
+    const VehicleBodyConfiguration& body, const VehicleShapeConfiguration& shape,
+    const VehicleChassisConfiguration& chassis, const VehicleNativeMath& math);
+
+// f6d270 on an existing owner: local and world vectors are rebuilt, but each
+// vertex's adjacency vector keeps its old face IDs before the new ones.
+void rebuild_vehicle_convex_polyhedron(VehicleConvexPolyhedron& owner,
+    const VehicleTankConvexSource& source, const VehicleNativeMath& math);
+// #1513 0x00f55e40 and 0x00933220.
+void transform_vehicle_convex_polyhedron(VehicleConvexPolyhedron& owner,
+    const VehicleMatrix& transform, const VehicleNativeMath& math);
+void refresh_vehicle_convex_box(VehicleConvexBox& box, const VehicleNativeMath& math);
+
 // Original leftTrackScroll/rightTrackScroll outputs (TrackChassis +0x128/12c).
 // These are not independently integrated by the presentation/filter owner.
 struct VehicleTrackState {
@@ -354,11 +563,36 @@ struct VehicleDamperSpring {
 
 // The WGVehiclePhysics state owner. DynamicsSimulator owns the group update;
 // a filter consumes this object's published state and never runs a second
-// controller. The complete configure/contact/solver path is being recovered;
-// this interface deliberately exposes no successful placeholder for it.
+// controller. configure builds the native Tank graph; stepping it belongs to
+// the separate world-simulation owner.
 class VehiclePhysics {
 public:
     VehiclePhysics();
+
+    // #1513 f4fd30 -> f900a0 -> f8b8a0. Validation and every allocation
+    // happen before the commit, so a thrown exception leaves the previous
+    // graph, hull body and epoch unchanged. std::invalid_argument reports an
+    // input the original would turn into a null or out-of-range native write.
+    void configure(const VehiclePhysicsConfiguration& configuration,
+                   const VehicleNativeMath& math);
+    std::uint64_t configuration_epoch() const { return configuration_epoch_; }
+    const VehicleTank* tank() const { return tank_.get(); }
+
+    // hullCOMZ getter 0x00f50650: f82b30 over the current chassis settings.
+    float hull_com_z() const;
+
+    // Tank::setTransform (0x00f91450): hull, active shapes, wheels, snapshot.
+    void set_tank_transform(const VehicleMatrix& transform,
+                            const VehicleNativeMath& math);
+
+    // isFrozen setter 0x00f55d10 without the unexposed onBecameFrozenCb.
+    bool frozen() const { return frozen_; }
+    bool frozen_during_frame() const { return frozen_during_frame_; }
+    bool allow_freeze() const { return allow_freeze_; }
+    void set_frozen(bool value);
+    // Wrapper +0x7f4..+0x800 and +0x94 (constructor 0 and 1000).
+    std::array<float, 4> freeze_epsilons{};
+    float simulation_y_bound = 1000.0f;
 
     const VehicleMatrix& entity_transform() const { return entity_transform_; }
     Vector3 linear_velocity() const { return body_.linear_velocity; }
@@ -366,8 +600,7 @@ public:
     const VehicleTrackState& track_state() const { return tracks_; }
     const VehicleRigidBody& rigid_body() const { return body_; }
     // Original f48905..f48928 initializes the physics-owned AABB inside-out.
-    // The complete configure producer has not yet been restored; consumers
-    // must preserve that state rather than substitute model/hull estimates.
+    // configure does not publish it; f56240 does after a configured pose.
     const VehicleCollisionBounds& collision_bounds() const { return collision_bounds_; }
 
     // The original centerOfMass setter (0x00f542e0) only stores this offset;
@@ -413,9 +646,16 @@ public:
 private:
     friend class DynamicsSimulator;
 
-    // The entity-transform portion of #1513 0x00f56240. World stepping calls
-    // this after body integration; it is not an integration/contact solver.
+    // #1513 0x00f56240: entity transform, then f84be0 world bounds once a
+    // Tank exists. World stepping calls this after body integration.
     void publish_entity_transform();
+    void publish_collision_bounds();
+
+    std::unique_ptr<VehicleTank> tank_;
+    std::uint64_t configuration_epoch_ = 0;
+    bool frozen_during_frame_ = false;  // +0xb7
+    bool frozen_ = false;               // +0xb8, mirrored at +0x8b2
+    bool allow_freeze_ = true;          // +0xb9
 
     VehicleCollisionBounds collision_bounds_{
         {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),

@@ -40,23 +40,6 @@ Vector3 transform_normal(Vector3 vector, const VehicleMatrix& matrix) {
                 vector.z * matrix.rows[2][2]};
 }
 
-// #1513 0x00f705c0 writes only rows 0..2 and preserves the destination's
-// translation. Copy inputs because the original routine supports aliasing.
-void multiply_rotation_rows(VehicleMatrix& destination,
-                            const VehicleMatrix& left,
-                            const VehicleMatrix& right) {
-    const VehicleMatrix a = left;
-    const VehicleMatrix b = right;
-    for (int row = 0; row != 3; ++row) {
-        for (int column = 0; column != 4; ++column) {
-            const float first = a.rows[row][1] * b.rows[1][column];
-            const float second = a.rows[row][0] * b.rows[0][column];
-            const float third = a.rows[row][2] * b.rows[2][column];
-            destination.rows[row][column] = (first + second) + third;
-        }
-    }
-}
-
 VehicleMatrix inverse_orthonormal(const VehicleMatrix& matrix) {
     // #1513 0x011bb940: transpose rotation and negate translated dot products.
     VehicleMatrix inverse{};
@@ -119,13 +102,29 @@ void record_snapshot(VehicleRigidBody& body) {
 
 void refresh_inverse_state(VehicleRigidBody& body) {
     body.inverse_transform = inverse_orthonormal(body.transform);
-    multiply_rotation_rows(body.inverse_world_inertia, body.inverse_transform,
+    multiply_vehicle_rotation_rows(body.inverse_world_inertia, body.inverse_transform,
                             body.inverse_body_inertia);
-    multiply_rotation_rows(body.inverse_world_inertia, body.inverse_world_inertia,
+    multiply_vehicle_rotation_rows(body.inverse_world_inertia, body.inverse_world_inertia,
                             body.transform);
 }
 
 } // namespace
+
+void multiply_vehicle_rotation_rows(VehicleMatrix& destination,
+                                    const VehicleMatrix& left,
+                                    const VehicleMatrix& right) {
+    // Copy inputs because the original routine supports aliasing.
+    const VehicleMatrix a = left;
+    const VehicleMatrix b = right;
+    for (int row = 0; row != 3; ++row) {
+        for (int column = 0; column != 4; ++column) {
+            const float first = a.rows[row][1] * b.rows[1][column];
+            const float second = a.rows[row][0] * b.rows[0][column];
+            const float third = a.rows[row][2] * b.rows[2][column];
+            destination.rows[row][column] = (first + second) + third;
+        }
+    }
+}
 
 VehicleMatrix vehicle_identity_matrix() {
     VehicleMatrix result{};
@@ -235,7 +234,7 @@ bool step_vehicle_rigid_body(VehicleRigidBody& body, float elapsed) {
         const VehicleMatrix rotation = rotation_axis(axis, elapsed * angular_speed);
         set_row(body.transform, 3, {});
         body.transform.rows[3][3] = 1;
-        multiply_rotation_rows(body.transform, body.transform, rotation);
+        multiply_vehicle_rotation_rows(body.transform, body.transform, rotation);
     }
     set_row(body.transform, 3, position);
     body.transform.rows[3][3] = 1;

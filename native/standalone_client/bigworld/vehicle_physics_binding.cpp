@@ -1,13 +1,13 @@
 #include "pch.hpp"
 #include "vehicle_physics_binding.hpp"
 #include "stock_scene_collision.hpp"
+#include "stock_vehicle_native_math.hpp"
 
 #include "pyscript/script_math.hpp"
 #include "wot/vehicle_physics.hpp"
 
 #include <memory>
 #include <cmath>
-#include <d3dx9math.h>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -435,8 +435,10 @@ bool readStockVehiclePhysicsConfiguration( PyObject * object,
             !anchor.child( "anchorVelFactor" ).floating( result.anchor_velocity_factor ) ||
             !rail.child( "railFactorInContact" ).floating( result.rail_factor_in_contact ) ||
             !readStockPhysicsGimlet( normal.child( "gimlet" ), result.gimlet ) ||
-            !readStockPhysicsGears( root.child( "fakegearbox" ).child( "fwdgears" ), result.forward_gears ) ||
-            !readStockPhysicsGears( root.child( "fakegearbox" ).child( "bkwdgears" ), result.backward_gears )) return false;
+            // f84e80 reads modes.normal.fakegearbox; __buildConfigurations
+            // moves the producer's root fakegearbox into every mode.
+            !readStockPhysicsGears( normal.child( "fakegearbox" ).child( "fwdgears" ), result.forward_gears ) ||
+            !readStockPhysicsGears( normal.child( "fakegearbox" ).child( "bkwdgears" ), result.backward_gears )) return false;
         output = std::move( result );
         return true;
     }
@@ -450,6 +452,44 @@ bool readStockVehiclePhysicsConfiguration( PyObject * object,
         PyErr_SetString( PyExc_OverflowError, "Physics configuration sequence exceeds native storage" );
         return false;
     }
+}
+
+bool configureStockVehiclePhysics( wot::VehiclePhysics & core, PyObject * object,
+    const wot::VehicleNativeMath & math )
+{
+    // The Reader may reenter Python, including a nested configure on this
+    // object. A newer committed epoch wins; the outer result is discarded.
+    const std::uint64_t epoch = core.configuration_epoch();
+    wot::VehiclePhysicsConfiguration configuration;
+    if (!readStockVehiclePhysicsConfiguration( object, configuration )) return false;
+    if (core.configuration_epoch() != epoch)
+    {
+        PyErr_SetString( PyExc_RuntimeError,
+            "WGVehiclePhysics.configure was superseded by a nested configure" );
+        return false;
+    }
+    try
+    {
+        core.configure( configuration, math );
+        return true;
+    }
+    catch (const std::invalid_argument & error)
+    {
+        PyErr_SetString( PyExc_ValueError, error.what() );
+    }
+    catch (const std::length_error &)
+    {
+        PyErr_SetString( PyExc_OverflowError, "Physics configuration exceeds native storage" );
+    }
+    catch (const std::bad_alloc &)
+    {
+        PyErr_NoMemory();
+    }
+    catch (const std::exception & error)
+    {
+        PyErr_SetString( PyExc_RuntimeError, error.what() );
+    }
+    return false;
 }
 
 // This wrapper owns precisely one authoritative core. Presentation objects
@@ -475,6 +515,17 @@ public:
     PY_RO_ATTRIBUTE_DECLARE( nativeVector( core_.angular_velocity() ), angVelocity )
     PY_RO_ATTRIBUTE_DECLARE( core_.track_state().left_scroll, leftTrackScroll )
     PY_RO_ATTRIBUTE_DECLARE( core_.track_state().right_scroll, rightTrackScroll )
+
+    PY_METHOD_DECLARE( py_configure )
+    PyObject * pyGet_hullCOMZ();
+    PY_RO_ATTRIBUTE_SET( hullCOMZ )
+    PyObject * pyGet_isFrozen() { return Script::getData( core_.frozen() ); }
+    int pySet_isFrozen( PyObject * value );
+    PY_RW_ATTRIBUTE_DECLARE( core_.freeze_epsilons[0], freezeAccelEpsilon )
+    PY_RW_ATTRIBUTE_DECLARE( core_.freeze_epsilons[1], freezeAngAccelEpsilon )
+    PY_RW_ATTRIBUTE_DECLARE( core_.freeze_epsilons[2], freezeVelEpsilon )
+    PY_RW_ATTRIBUTE_DECLARE( core_.freeze_epsilons[3], freezeAngVelEpsilon )
+    PY_RW_ATTRIBUTE_DECLARE( core_.simulation_y_bound, simulationYBound )
 
     Vector3 centerOfMass() const
     {
@@ -632,6 +683,53 @@ PyObject * PyWGVehiclePhysics::py_setDamperSpringsLength( PyObject * args )
     Py_RETURN_NONE;
 }
 
+PyObject * PyWGVehiclePhysics::py_configure( PyObject * args )
+{
+    PyObject * value;
+    if (!PyArg_ParseTuple( args, "O:configure", &value ))
+        return NULL;
+    const wot::VehicleNativeMath * math;
+    try
+    {
+        math = &stock_vehicle_native_math::services();
+    }
+    catch (const std::exception & error)
+    {
+        PyErr_SetString( PyExc_RuntimeError, error.what() );
+        return NULL;
+    }
+    // #1513 f4fedd returns AL=1 only after f900a0 completes.
+    if (!configureStockVehiclePhysics( core_, value, *math )) return NULL;
+    Py_RETURN_TRUE;
+}
+
+PyObject * PyWGVehiclePhysics::pyGet_hullCOMZ()
+{
+    // The original getter dereferences the Tank without a null check.
+    if (!core_.tank())
+    {
+        PyErr_SetString( PyExc_ValueError, "hullCOMZ requires a configured WGVehiclePhysics" );
+        return NULL;
+    }
+    return Script::getData( core_.hull_com_z() );
+}
+
+int PyWGVehiclePhysics::pySet_isFrozen( PyObject * value )
+{
+    bool frozen;
+    if (Script::setData( value, frozen, "isFrozen" ) != 0) return -1;
+    try
+    {
+        core_.set_frozen( frozen );
+    }
+    catch (const std::logic_error & error)
+    {
+        PyErr_SetString( PyExc_ValueError, error.what() );
+        return -1;
+    }
+    return 0;
+}
+
 PY_TYPEOBJECT( PyWGVehiclePhysics )
 PY_BEGIN_METHODS( PyWGVehiclePhysics )
     PY_METHOD( removeAllDamperSprings )
@@ -641,6 +739,7 @@ PY_BEGIN_METHODS( PyWGVehiclePhysics )
     PY_METHOD( applyImpulseToCoM )
     PY_METHOD( setDamperSpringsLength )
     PY_METHOD( setArenaBounds )
+    PY_METHOD( configure )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )
     PY_ATTRIBUTE( matrix )
@@ -653,6 +752,13 @@ PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )
     PY_ATTRIBUTE( visibilityMask )
     PY_ATTRIBUTE( leftTrackScroll )
     PY_ATTRIBUTE( rightTrackScroll )
+    PY_ATTRIBUTE( hullCOMZ )
+    PY_ATTRIBUTE( isFrozen )
+    PY_ATTRIBUTE( freezeAccelEpsilon )
+    PY_ATTRIBUTE( freezeAngAccelEpsilon )
+    PY_ATTRIBUTE( freezeVelEpsilon )
+    PY_ATTRIBUTE( freezeAngVelEpsilon )
+    PY_ATTRIBUTE( simulationYBound )
 PY_END_ATTRIBUTES()
 PY_FACTORY_NAMED( PyWGVehiclePhysics, "WGVehiclePhysics", BigWorld )
 
@@ -665,65 +771,6 @@ wot::VehiclePhysics * unwrapStockVehiclePhysics( PyObject * object )
         return NULL;
     }
     return &static_cast<PyWGVehiclePhysics *>( object )->core();
-}
-
-namespace
-{
-wot::Vector3 normalizeStockVehicleConvexVector( wot::Vector3 value )
-{
-    const D3DXVECTOR3 source( value.x, value.y, value.z );
-    D3DXVECTOR3 result;
-    D3DXVec3Normalize( &result, &source );
-    return { result.x, result.y, result.z };
-}
-}
-
-wot::VehicleTankGeometry buildStockVehicleTankGeometry(
-    const wot::VehicleBodyConfiguration & body,
-    const wot::VehicleShapeConfiguration & shape,
-    const wot::VehicleChassisConfiguration & chassis )
-{
-    // f8b8d0 calls tankBoardAngle first, then terrBoardAngle. In particular,
-    // the embedded shapes use the terrain fields; do not infer their field
-    // producers from the two storage owners' names.
-    const float tankTangent = std::tan( shape.tank_board_angle * 0.017453292f );
-    const float terrainTangent = std::tan( shape.terrain_board_angle * 0.017453292f );
-    const wot::VehicleTankShapeSource source = wot::build_vehicle_tank_shape_source(
-        body, shape, chassis, terrainTangent, tankTangent );
-    D3DXMATRIX local;
-    D3DXMatrixTranslation( &local, source.local_translation.x,
-        source.local_translation.y, source.local_translation.z );
-    const auto transform = [&local]( wot::Vector3 value )
-    {
-        const D3DXVECTOR3 input( value.x, value.y, value.z );
-        D3DXVECTOR4 output;
-        D3DXVec3Transform( &output, &input, &local );
-        return wot::Vector3{ output.x, output.y, output.z };
-    };
-    wot::VehicleTankGeometry geometry{};
-    wot::VehicleTankConvexSource translated;
-    for (size_t index = 0; index != source.polyhedra.size(); ++index)
-    {
-        const auto & input = source.polyhedra[index];
-        if ((index & 1) == 0) translated.vertices.clear();
-        // The extended variant appends four top vertices to the same twelve
-        // translated base vertices, matching the original SDK call order.
-        for (size_t vertex = translated.vertices.size(); vertex != input.vertices.size(); ++vertex)
-            translated.vertices.push_back( transform( input.vertices[vertex] ) );
-        translated.faces = input.faces;
-        geometry.polyhedra[index] = wot::build_vehicle_convex_topology(
-            translated, &normalizeStockVehicleConvexVector );
-    }
-    geometry.has_auxiliary_box = source.has_auxiliary_box;
-    if (geometry.has_auxiliary_box)
-    {
-        const wot::Vector3 a = transform( source.auxiliary_box_endpoints[0] );
-        const wot::Vector3 b = transform( source.auxiliary_box_endpoints[1] );
-        geometry.auxiliary_box_center = {
-            (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, (a.z + b.z) * 0.5f };
-        geometry.auxiliary_box_dimensions = { a.x - b.x, a.y - b.y, a.z - b.z };
-    }
-    return geometry;
 }
 
 BW_END_NAMESPACE

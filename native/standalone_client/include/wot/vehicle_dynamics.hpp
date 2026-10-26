@@ -15,6 +15,12 @@ struct VehicleMatrix {
 
 VehicleMatrix vehicle_identity_matrix();
 
+// #1513 0x00f705c0 writes only rows 0..2 and preserves the destination's
+// translation. Inputs may alias the destination.
+void multiply_vehicle_rotation_rows(VehicleMatrix& destination,
+                                    const VehicleMatrix& left,
+                                    const VehicleMatrix& right);
+
 struct VehicleLoads {
     Vector3 force{};
     Vector3 torque{};
