@@ -231,6 +231,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
     $EngineConfigText -replace '(?m)^#define BUILT_BY_BIGWORLD[\t ]+1[\t ]*$', `
         '#define BUILT_BY_BIGWORLD 0' |
         Set-Content -LiteralPath $EngineConfig -Encoding utf8
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_numeric_parsing.py"),
+        $EngineRoot) "stock-python-numeric-parsing-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),
