@@ -18,7 +18,7 @@ PY27 = Path(os.environ.get('WOT_PY27', str(Path.home() / '.pyenv/versions/2.7.18
 ENGINE_FILES = ('lib/camera/cursor_camera.hpp', 'lib/camera/cursor_camera.cpp',
                 'lib/camera/cursor_camera.ipp', 'lib/romp/water.hpp', 'lib/math/angle.hpp',
                 'lib/math/angle.ipp', 'lib/math/mathdef.hpp', 'lib/math/matrix.ipp',
-                'lib/math/vector3.ipp')
+                'lib/math/vector3.ipp', 'client/script_app.cpp')
 WATER_QUERY = '\tfloat stockGroundRayDistance(const Vector3& start, const Vector3& end) const;'
 
 
@@ -43,6 +43,13 @@ def fresh_engine(root, ground_effects=True):
         text = water.read_text(encoding='utf-8-sig')
         anchor = '\tbool visible() const { return visible_; }'
         water.write_text(text.replace(anchor, WATER_QUERY + '\n' + anchor, 1))
+        script = root / 'client/script_app.cpp'
+        text = script.read_text(encoding='utf-8-sig')
+        text = text.replace('#include "pch.hpp"',
+                            '#include "pch.hpp"\n#include "stock_ground_effects.hpp"', 1)
+        text = text.replace('\tBigWorldClientScript::fini();',
+                            '\tfiniStockGroundEffects();\n\tBigWorldClientScript::fini();', 1)
+        script.write_text(text)
 
 
 def function(source, signature):
@@ -106,6 +113,11 @@ class CursorCameraPatchTests(unittest.TestCase):
             self.assertIn('PY_AUTO_METHOD_DECLARE( RETOK, wg_setModelsToCollideWith,\n\t\tARG( PyObjectPtr, END ) )',
                           header)
             self.assertIn('PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( bool, sptHiding, sptHiding )', header)
+            script = (root / 'client/script_app.cpp').read_text()
+            self.assertIn('#include "stock_cursor_camera.hpp"', script)
+            self.assertEqual(script.count('finiStockCursorCameraHiding();'), 1)
+            self.assertLess(script.index('finiStockCursorCameraHiding();'),
+                            script.index('BigWorldClientScript::fini();'))
             methods = function(source, 'PY_BEGIN_METHODS( CursorCamera )')
             # The original method table at 01a13678 lists exactly these three.
             self.assertEqual([line.strip() for line in methods.splitlines() if 'PY_METHOD(' in line],
@@ -121,6 +133,7 @@ class CursorCameraPatchTests(unittest.TestCase):
             ('lib/camera/cursor_camera.cpp', '\tPY_METHOD( shake )\n', '\tPY_METHOD( shakeIt )\n'),
             ('lib/camera/cursor_camera.hpp', '\tVector3 cameraDirInWS_;\n\t//@}\n', '\tVector3 cameraDirInWS_;\n'),
             ('lib/romp/water.hpp', WATER_QUERY, ''),
+            ('client/script_app.cpp', '\tfiniStockGroundEffects();', ''),
         )
         for relative, before, after in mutations:
             with self.subTest(anchor=before), tempfile.TemporaryDirectory() as folder:

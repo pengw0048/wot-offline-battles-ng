@@ -7,6 +7,7 @@ from pathlib import Path
 HEADER = 'lib/camera/cursor_camera.hpp'
 SOURCE = 'lib/camera/cursor_camera.cpp'
 WATER = 'lib/romp/water.hpp'
+SCRIPT_APP = 'client/script_app.cpp'
 
 UPDATE_START = '/**\n *\tUpdates the camera position and viewing direction based on time.'
 UPDATE_END = ('\n// -----------------------------------------------------------------------------\n'
@@ -496,6 +497,12 @@ def patch(root):
 
     if 'float stockGroundRayDistance(const Vector3& start, const Vector3& end) const;' not in text(WATER):
         raise ValueError('CursorCamera water lift requires the stock ground-effects Water query')
+
+    # Release retained camera targets while Python and its engine owners live.
+    edit(SCRIPT_APP, '#include "stock_ground_effects.hpp"',
+         '#include "stock_ground_effects.hpp"\n#include "stock_cursor_camera.hpp"')
+    edit(SCRIPT_APP, '\tfiniStockGroundEffects();',
+         '\tfiniStockCursorCameraHiding();\n\tfiniStockGroundEffects();')
 
     edit(HEADER, 'class WorldTriangle;\n', 'class WorldTriangle;\nclass BSPTree;\n', 'class BSPTree;\n')
     edit(HEADER, '\tvirtual void update( float deltaTime );\n\t//@}',
