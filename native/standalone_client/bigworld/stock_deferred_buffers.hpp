@@ -37,6 +37,7 @@ public:
     void setLightingQuality(int option) { lightingSelection_.quality=option;depthQuality_.lighting=option; }
     void setShadowQuality(int option) { depthQuality_.shadows=option; }
     int lightingQuality() const { return lightingSelection_.quality; }
+    int shadowQuality() const { return depthQuality_.shadows; }
     int transmissionType() { return lightingSelection_.transmissionType(); }
     bool prepared() const { return prepared_; }
     DX::Texture* linearDepth() const;

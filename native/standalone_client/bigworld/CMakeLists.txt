@@ -28,6 +28,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_compiled_space_mapping.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_static_model_scene.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_lights.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_local_lighting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_file.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene.cpp"
