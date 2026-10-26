@@ -34,6 +34,17 @@ void GraphicsSetting::applyStockPreset(const SettingsVector& input)
 
 '''
 
+FORCE_ACTIVE_OPTION = r'''void GraphicsSetting::stockForceActiveOption(int optionIndex)
+{
+    // 91f3c0 clamps, stores and notifies only this setting: no slave, pending
+    // entry, support filter or restart request.
+    if (options_.empty()) return;
+    activeOption_ = std::max(0, std::min(optionIndex, int(options_.size()) - 1));
+    onOptionSelected(activeOption_);
+}
+
+'''
+
 
 def apply(root):
     root = Path(root)
@@ -65,6 +76,11 @@ def apply(root):
          '        setting->activeOption_ = stockDesiredOption;\n'
          '        optionInSetting = stockDesiredOption;\n'
          '    }')
+    edit(cpp, 'void GraphicsSetting::add(GraphicsSettingPtr setting)\n{\n\tBW_GUARD;\n',
+         'void GraphicsSetting::add(GraphicsSettingPtr setting)\n{\n\tBW_GUARD;\n'
+         '    // 91c320 publishes a setting once, at construction. Adding the same\n'
+         '    // object again must not reread desired state or make it its own slave.\n'
+         '    if (GraphicsSetting::getFromLabel(setting->label()) == setting) return;\n')
     edit(cpp, '\telse if (setIt != latentSettings.end())',
          '\telse if (!stockDesired && setIt != latentSettings.end())')
     edit(cpp, '\telse if (optionInSetting < 0)',
@@ -72,6 +88,9 @@ def apply(root):
     edit(cpp, 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
          SNAPSHOT_AND_APPLY + 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
          'GraphicsSetting::SettingsVector GraphicsSetting::stockCurrentSettings()')
+    edit(cpp, 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
+         FORCE_ACTIVE_OPTION + 'void GraphicsSetting::commitSettings( SettingsVector& _settings )',
+         'void GraphicsSetting::stockForceActiveOption(int optionIndex)')
     # Cached engines may already contain the earlier preset-only snapshot.
     edit(cpp, 'if (setting->label() != "presets")',
          'if (setting->stockImportant())')
@@ -99,6 +118,9 @@ def apply(root):
          '\tstatic SettingsVector stockCurrentSettings();\n'
          '\tstatic void captureStockPresetBaseline();\n'
          '\tstatic void applyStockPreset(const SettingsVector& settings);')
+    edit(header, '\tstatic void applyStockPreset(const SettingsVector& settings);',
+         '\tstatic void applyStockPreset(const SettingsVector& settings);\n'
+         '\tvoid stockForceActiveOption(int optionIndex);')
 
     cpp = 'client/bw_winmain.cpp'
     edit(cpp, '#include "bw_winmain.hpp"',

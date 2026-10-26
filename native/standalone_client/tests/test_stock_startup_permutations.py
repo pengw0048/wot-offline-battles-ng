@@ -80,13 +80,17 @@ namespace Moo {
 class GraphicsSetting {
  int active_;
  std::vector<bool> supported_;
+ std::string label_;
 public:
- GraphicsSetting(const std::string&,const std::string&,int active,bool,bool,bool):active_(active){}
+ GraphicsSetting(const std::string& label,const std::string&,int active,bool,bool,bool):active_(active),label_(label){}
  virtual ~GraphicsSetting()=default;
  virtual void onOptionSelected(int)=0;
  int activeOption() const{return active_;}
  void addOption(const std::string&,const std::string&,bool supported){supported_.push_back(supported);}
+ static int restored;
  static void add(GraphicsSetting* setting){
+  // GraphicsSetting::add restores a published option without a callback (91c320).
+  if(restored>=0&&setting->active_<0){setting->active_=setting->label_=="RENDER_PIPELINE"?restored:1;return;}
   if(setting->active_<0){
    for(std::size_t i=0;i<setting->supported_.size();++i)if(setting->supported_[i]){
     setting->active_=static_cast<int>(i);setting->onOptionSelected(setting->active_);return;
@@ -101,13 +105,15 @@ struct EffectCompiler {
  static void setMacroDefinition(const std::string& key,const std::string& value){definitions[key]=value;}
  static void fxoInfix(const std::string& value){infix=value;}
 };
+int GraphicsSetting::restored=-1;
 std::map<std::string,std::string> EffectCompiler::definitions;
 std::string EffectCompiler::infix;
 }
 ''' + actual + '\n' + owner + r'''
 int main(int argc,char** argv){
- assert(argc==3);
+ assert(argc==4);
  const bool deferred=std::atoi(argv[1])!=0;
+ if(std::atoi(argv[3]))Moo::GraphicsSetting::restored=deferred?0:1;
  g_pipelineMacroSetting->addOption("DEFERRED","Deferred shading",deferred,"1");
  g_pipelineMacroSetting->addOption("FORWARD","Forward shading",true,"0");
  Moo::GraphicsSetting::add(g_pipelineMacroSetting);
@@ -125,7 +131,8 @@ int main(int argc,char** argv){
         output = self.compile(source)
         for deferred in ('0', '1'):
             for reversed_order in ('0', '1'):
-                subprocess.run([str(output), deferred, reversed_order], check=True)
+                for restored in ('0', '1'):
+                    subprocess.run([str(output), deferred, reversed_order, restored], check=True)
 
     def test_scaleform_formats_variadic_values_and_preserves_severity(self):
         log = self.extract('lib/scaleform/log.cpp')

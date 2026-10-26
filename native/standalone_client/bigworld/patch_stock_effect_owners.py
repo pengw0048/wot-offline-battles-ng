@@ -302,6 +302,7 @@ def patch(root):
     patch_environment(root)
     patch_instancing(root)
     patch_macro_settings(root)
+    patch_renderer_startup(root)
     patch_resource_names(root)
 
 
@@ -543,10 +544,57 @@ def patch_instancing(root):
     path.write_text(text)
 
 
+# The upstream constructor body is one whitespace-only line; keep it exact.
+PIPELINE_SETTING_TAIL = '''            )   :   EffectMacroSetting(label, desc, macro, setupFunc, true), m_fullyInited(false)
+        {
+''' + '        ' + '''
+        }
+
+        virtual void onOptionSelected(int optionIndex)
+        {
+            if (m_fullyInited)
+            {
+                Moo::EffectMacroSetting::onOptionSelected(optionIndex);
+            }
+            m_fullyInited = true;
+        }
+
+    private:
+        bool m_fullyInited;
+    };'''
+PUBLIC_MACRO_SPELLING = '''                // Public engine FX sources use the old macro spelling.
+                Moo::EffectCompiler::setMacroDefinition(
+                    "BW_DEFERRED_SHADING", optionIndex == 0 ? "1" : "0");
+'''
+STOCK_PIPELINE_SETTING_TAIL = '''            )   :   EffectMacroSetting(label, desc, macro, setupFunc, true)
+        {
+''' + '        ' + '''
+        }
+
+        virtual void onOptionSelected(int optionIndex)
+        {
+            // GraphicsSetting::add restores this option without a callback, so the
+            // setupSettings notification is the first one and must define both macros.
+            Moo::EffectMacroSetting::onOptionSelected(optionIndex);
+            // Public engine FX sources use the old macro spelling.
+            Moo::EffectCompiler::setMacroDefinition(
+                "BW_DEFERRED_SHADING", optionIndex == 0 ? "1" : "0");
+        }
+    };'''
+
+
 def patch_macro_settings(root):
     # 00941230 creates SHADER_DEBUG (release option 1) and
     # WG_DEFERRED_SHADING (deferred 0, forward 1). setupSettings sorts by
     # macro name, so the original packaged permutations are 10 and 11.
+    path = root / "lib/moo/renderer.cpp"
+    text = path.read_text()
+    # Engine trees patched before the callback-free restoration keep the guard.
+    guarded = PIPELINE_SETTING_TAIL.replace(
+        "                Moo::EffectMacroSetting::onOptionSelected(optionIndex);\n",
+        "                Moo::EffectMacroSetting::onOptionSelected(optionIndex);\n" + PUBLIC_MACRO_SPELLING)
+    if guarded in text:
+        path.write_text(text.replace(guarded, PIPELINE_SETTING_TAIL, 1))
     apply_file(root, Path("lib/moo/renderer.cpp"), [
         ('#include "moo/effect_macro_setting.hpp"',
          '#include "moo/effect_macro_setting.hpp"\n#include "moo/effect_compiler.hpp"',
@@ -554,12 +602,7 @@ def patch_macro_settings(root):
         ('"RENDER_PIPELINE", "Render pipeline", "BW_DEFERRED_SHADING", &configureKeywordSetting',
          '"RENDER_PIPELINE", "Render pipeline", "WG_DEFERRED_SHADING", &configureKeywordSetting',
          "original pipeline macro name"),
-        ('                Moo::EffectMacroSetting::onOptionSelected(optionIndex);',
-         '                Moo::EffectMacroSetting::onOptionSelected(optionIndex);\n'
-         '                // Public engine FX sources use the old macro spelling.\n'
-         '                Moo::EffectCompiler::setMacroDefinition(\n'
-         '                    "BW_DEFERRED_SHADING", optionIndex == 0 ? "1" : "0");',
-         "public source pipeline macro consumer"),
+        (PIPELINE_SETTING_TAIL, STOCK_PIPELINE_SETTING_TAIL, "public source pipeline macro consumer"),
         ('    //-- For now there will be only one EffectMacroSetting called RENDER_PIPELINE and it gives us',
          '    void configureStockShaderDebug(Moo::EffectMacroSetting& setting)\n'
          '    {\n'
@@ -575,6 +618,56 @@ def patch_macro_settings(root):
          '    g_pipelineMacroSetting = NULL;\n    g_stockShaderDebugSetting = NULL;',
          "shader debug setting teardown"),
     ])
+
+
+def remove_once(text, old, kept, label):
+    if text.count(old) == 1:
+        return text.replace(old, kept, 1)
+    if old not in text and kept in text:
+        return text
+    raise RuntimeError("Unexpected public engine source for " + label)
+
+
+def patch_renderer_startup(root):
+    # 0093fd00 has no option cache: settings forward only after init, and the
+    # init loop transfers option 0. Restored values arrive with 91ce80.
+    apply_file(root, Path("lib/moo/renderer.cpp"), [
+        ('    Moo::GraphicsSetting::add(g_pipelineMacroSetting);\n\n'
+         '    if (isAssetProcessor)\n    {\n        return (m_inited = true);\n    }\n\n',
+         '    Moo::GraphicsSetting::add(g_pipelineMacroSetting);\n\n'
+         '    if (isAssetProcessor)\n    {\n        return (m_inited = true);\n    }\n\n'
+         '    // 93fd7e: without deferred support a restored DEFERRED option is forced\n'
+         '    // to FORWARD through 91f3c0, which also notifies the setting.\n'
+         '    if (!supportDS && g_pipelineMacroSetting->activeOption() == 0)\n'
+         '        g_pipelineMacroSetting->stockForceActiveOption(1);\n\n',
+         "original unsupported deferred fallback"),
+        ('''    for (uint i = 0; i < IRendererPipeline::GRAPHICS_SETTING_COUNT; ++i)
+    {
+        m_pipeline->onGraphicsOptionSelected((IRendererPipeline::EGraphicsSetting)i, m_options[i]);
+    }
+''', '''    // 93fef0 transfers option 0 to every setting owner; restored values follow
+    // from the explicit preference application.
+    for (uint i = 0; i < IRendererPipeline::GRAPHICS_SETTING_COUNT; ++i)
+    {
+        m_pipeline->onGraphicsOptionSelected((IRendererPipeline::EGraphicsSetting)i, 0);
+    }
+''', "original initial option transfer"),
+    ])
+    path = root / "lib/moo/renderer.cpp"
+    text = path.read_text()
+    for setting in ("SHADOWS", "DECALS", "LIGHTING"):
+        kept = "        m_settings[IRendererPipeline::GRAPHICS_SETTING_%s_QUALITY] = setting;" % setting
+        text = remove_once(text, "        m_options[IRendererPipeline::GRAPHICS_SETTING_%s_QUALITY] = -1;\n" % setting
+                           + kept, kept, "renderer option cache " + setting)
+    path.write_text(text)
+    path = root / "lib/moo/renderer.hpp"
+    text = path.read_text()
+    text = remove_once(text, "        m_options[setting] = option;\n\n        if (m_inited)",
+                       "        if (m_inited)", "renderer option cache write")
+    text = remove_once(text, "    //-- common graphics settings.\n"
+                       "    int                                         m_options[IRendererPipeline::GRAPHICS_SETTING_COUNT];\n",
+                       "    //-- common graphics settings.\n", "renderer option cache")
+    path.write_text(text)
 
 
 def patch_resource_names(root):

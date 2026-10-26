@@ -87,6 +87,9 @@ BinaryPtr EffectCompiler::loadOrCompile( const BW::string& resourceID )
 ''', "local compile and cache")
     compiler = replace_once(compiler, "\ts_macros_[macro] = value;",
         "\tSimpleMutexHolder guard( s_runtimeCompileMutex_ );\n"
+        "\t// FXO names keep the infix fixed at EffectManager creation; later\n"
+        "\t// restart-required selections must not change the macros behind it.\n"
+        "\tif (!s_fxoInfix_.empty()) return;\n"
         "\ts_macros_[macro] = value;", "macro synchronization")
     compiler = replace_once(compiler, "\ts_fxoInfix_ = infix;",
         "\tSimpleMutexHolder guard( s_runtimeCompileMutex_ );\n"
