@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_deferred_buffers.hpp"
+#include "stock_space_decals.hpp"
 #include "stock_dynamic_resolution.hpp"
 #include "stock_effect_adapter.hpp"
 #include "moo/effect_visual_context.hpp"
@@ -437,6 +438,7 @@ bool StockDeferredBuffers::begin()
     frameActive_=true;
     prepared_=false;
     kindCopied_=false;
+    beginStockSpaceDecals();
     return true;
 }
 
@@ -444,6 +446,7 @@ bool StockDeferredBuffers::end()
 {
     if(!frameActive_)return true;
     frameActive_=false;
+    endStockSpaceDecals();
     prepared_=false;
     kindCopied_=false;
     const bool restored=SUCCEEDED(Moo::rc().device()->SetDepthStencilSurface(previousDepth_.pComObject()));
@@ -689,6 +692,36 @@ DX::BaseTexture* StockDeferredBuffers::objectKindCopy()
         FAILED(effect->SetVector("g_texSourceDRRParams",&projection)) || !draw(kindCopyMaterial_))return NULL;
     kindCopied_=true;
     return kindCopy_->pTexture();
+}
+
+bool StockDeferredBuffers::drawSpaceDecals()
+{
+    if(!frameActive_ || !prepared_)return false;
+    const auto& size=Moo::rc().backBufferDesc();
+    TargetScope target;
+    if(!target.bind(pipeline_.gbufferSurface(0),depthSurface_.pComObject(),size.Width,size.Height) ||
+        FAILED(Moo::rc().setRenderTarget(1,pipeline_.gbufferSurface(1))) ||
+        FAILED(Moo::rc().setRenderTarget(2,pipeline_.gbufferSurface(2))))return false;
+    // Original effect channel order: material, encoded normal, albedo. The
+    // public legacy decal effect uses a different order in its separate pass.
+    return drawStockSpaceDecalsPhase(0);
+}
+
+bool StockDeferredBuffers::drawSpaceDecalsAO()
+{
+    if(!frameActive_ || !prepared_)return false;
+    if(!ambientOcclusionEnabled())return true;
+    // a45180 -> a6b0e0 selects the completed DBE target: +4 for direct
+    // half-resolution, +0xc for resolved full-resolution. a6b110 has already
+    // finished upscale/filtering before the original decal phases begin.
+    const bool half=depthQuality_.directHalfResolution();
+    const Moo::RenderTargetPtr destination=half?depthEffectsHalf_:depthEffectsFull_;
+    ComObjectWrap<DX::Surface> surface;
+    if(!destination || FAILED(destination->pSurface(surface)))return false;
+    TargetScope target;
+    if(!target.bind(surface,half?reducedDepth_->depthBuffer():depthSurface_.pComObject(),
+        destination->width(),destination->height()))return false;
+    return drawStockSpaceDecalsPhase(1);
 }
 
 StockDeferredBuffers* stockDeferredBuffers() { return owner; }

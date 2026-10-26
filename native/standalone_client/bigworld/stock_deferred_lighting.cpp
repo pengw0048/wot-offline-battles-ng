@@ -5,7 +5,9 @@
 #include "moo/render_context.hpp"
 #include "moo/texture_manager.hpp"
 #include "resmgr/bwresource.hpp"
+#include "resmgr/auto_config.hpp"
 #endif
+#include <cmath>
 
 BW_BEGIN_NAMESPACE
 void packStockDeferredSphericalHarmonics( const Vector3 (&source)[9], float (&packed)[28] )
@@ -34,6 +36,17 @@ namespace
 StockDeferredLightingSettings activeSettings;
 Moo::BaseTexturePtr brdfLut;
 bool constantsRegistered = false;
+// 5c8990 constructs exactly this AutoConfigString. a74bc0 uses its value
+// only when the environment's authored prefiltered map cannot be loaded.
+AutoConfigString defaultPmrem("system/PMREMTexture");
+
+Moo::BaseTexturePtr lightingTexture(const BW::string& resource)
+{
+    Moo::BaseTexturePtr texture = !resource.empty() && BWResource::fileExists(resource) ?
+        Moo::TextureManager::instance()->get(resource, true, false, true, "Art/File Textures/") : NULL;
+    return texture && texture->pTexture() && texture->width() &&
+        texture->status() == Moo::BaseTexture::STATUS_READY ? texture : NULL;
+}
 
 class SphericalHarmonicsConstant : public Moo::EffectConstantValue
 {
@@ -54,11 +67,32 @@ public:
         return brdfLut && brdfLut->pTexture() && SUCCEEDED( effect->SetTexture( handle, brdfLut->pTexture() ) );
     }
 };
+
+class PmremConstant : public Moo::EffectConstantValue
+{
+public:
+    virtual bool operator()(ID3DXEffect* effect, D3DXHANDLE handle)
+    {
+        return activeSettings.loaded && activeSettings.pmrem && activeSettings.pmrem->pTexture() &&
+            SUCCEEDED(effect->SetTexture(handle, activeSettings.pmrem->pTexture()));
+    }
+};
+
+class PmremMipsConstant : public Moo::EffectConstantValue
+{
+public:
+    virtual bool operator()(ID3DXEffect* effect, D3DXHANDLE handle)
+    {
+        return activeSettings.loaded && activeSettings.pmrem && SUCCEEDED(
+            effect->SetValue(handle, activeSettings.pmremMips, sizeof(activeSettings.pmremMips)));
+    }
+};
 }
 
 bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferredLightingSettings & settings )
 {
     settings.loaded = false;
+    settings.pmrem = NULL;
     if (!environment)
     {
         ERROR_MSG( "Deferred lighting: the original environment resource is unavailable\n" );
@@ -80,6 +114,28 @@ bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferre
     // The original reader reads then discards max_lum (a750c6/fstp).
     source->readFloat( "max_lum", 1.f );
     packStockDeferredSphericalHarmonics( coefficients, settings.sphericalHarmonics );
+    // a82950/a74bc0: this is an already-prefiltered authored DDS, not a
+    // generated cube or an alias for an unrelated environment texture.
+    settings.pmremResource = environment->readString("PBS/DEFERRED/PMREM");
+    settings.pmrem = lightingTexture(settings.pmremResource);
+    if (!settings.pmrem)
+    {
+        settings.pmremResource = defaultPmrem.value();
+        settings.pmrem = lightingTexture(settings.pmremResource);
+    }
+    if (!settings.pmrem)
+    {
+        ERROR_MSG("Deferred lighting: neither authored nor configured fallback PMREM is available\n");
+        return false;
+    }
+    // Preserve a74bc0's binary32 log/multiply boundary before ceil. a74650
+    // publishes (7, computedMipCount-7, non-A8R8G8B8, 0).
+    const float logarithm = std::log(float(settings.pmrem->width()));
+    volatile float projected = logarithm * 1.442695f;
+    settings.pmremMips[0] = 7.f;
+    settings.pmremMips[1] = float(std::ceil(double(projected))) - 9.f;
+    settings.pmremMips[2] = settings.pmrem->format() != D3DFMT_A8R8G8B8 ? 1.f : 0.f;
+    settings.pmremMips[3] = 0.f;
     settings.loaded = true;
     return true;
 }
@@ -91,7 +147,7 @@ void activateStockDeferredLightingSettings( const StockDeferredLightingSettings 
 
 void deactivateStockDeferredLightingSettings()
 {
-    activeSettings.loaded = false;
+    activeSettings = StockDeferredLightingSettings();
 }
 
 bool initialiseStockDeferredLightingConstants()
@@ -114,6 +170,10 @@ bool initialiseStockDeferredLightingConstants()
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9", new SphericalHarmonicsConstant );
         Moo::rc().effectVisualContext().registerAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "EnvBRDFLut", new BrdfLutConstant );
+        Moo::rc().effectVisualContext().registerAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PMREM", new PmremConstant );
+        Moo::rc().effectVisualContext().registerAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PMREMMipsNumber", new PmremMipsConstant );
         constantsRegistered = true;
     }
     // SpeedTreeMaterials belongs to the actual SpeedTree renderer/type pool.
@@ -129,6 +189,10 @@ void finaliseStockDeferredLightingConstants()
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9" );
         Moo::rc().effectVisualContext().unregisterAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "EnvBRDFLut" );
+        Moo::rc().effectVisualContext().unregisterAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PMREM" );
+        Moo::rc().effectVisualContext().unregisterAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PMREMMipsNumber" );
         constantsRegistered = false;
     }
     brdfLut = NULL;

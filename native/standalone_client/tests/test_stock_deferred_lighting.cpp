@@ -29,12 +29,26 @@ struct DataSection {
     float readFloat(const char* name,float fallback){assert(std::string(name)=="max_lum");++luminanceReads;return fallback;}
 };
 using DataSectionPtr=std::shared_ptr<DataSection>;
-struct StockDeferredLightingSettings {float sphericalHarmonics[28]={};bool loaded=false;};
+namespace Moo {struct BaseTexture;using BaseTexturePtr=std::shared_ptr<BaseTexture>;}
+struct StockDeferredLightingSettings {
+    float sphericalHarmonics[28]={};bool loaded=false;
+    std::string pmremResource;Moo::BaseTexturePtr pmrem;float pmremMips[4]={};
+};
+struct AutoConfigString {
+    explicit AutoConfigString(const char* name){assert(std::string(name)=="system/PMREMTexture");}
+    const std::string& value()const{static std::string resource="system/maps/PMREM.dds";return resource;}
+};
+enum {D3DFMT_A8R8G8B8=21};
 namespace BWResource {
 std::map<std::string,DataSectionPtr> resources;
 bool textureExists=false;
+bool pmremExists=true;
 DataSectionPtr openSection(const std::string& name){return resources[name];}
-bool fileExists(const char* name){assert(std::string(name)=="system/maps/env_brdf_lut.dds");return textureExists;}
+bool fileExists(const std::string& name){
+    if(name=="system/maps/env_brdf_lut.dds")return textureExists;
+    assert(name=="actual/pmrem.dds"||name=="system/maps/PMREM.dds"||name=="missing/pmrem.dds");
+    return name=="actual/pmrem.dds"||name=="system/maps/PMREM.dds"?pmremExists:false;
+}
 }
 std::vector<std::string> errors;
 void error(const char* format,...){char buffer[512];va_list args;va_start(args,format);std::vsnprintf(buffer,sizeof(buffer),format,args);va_end(args);errors.push_back(buffer);}
@@ -45,8 +59,8 @@ struct ID3DXEffect {
     bool fail=false;
     int SetValue(D3DXHANDLE,const void* data,unsigned bytes){
         if(fail)return -1;
-        assert(bytes==112);
-        uniform.resize(28);
+        assert(bytes==112||bytes==16);
+        uniform.resize(bytes/4);
         std::memcpy(uniform.data(),data,bytes);
         return 0;
     }
@@ -59,8 +73,9 @@ struct BaseTexture {
     void* gpu=reinterpret_cast<void*>(0x1513);
     void* pTexture(){return gpu;}
     Status status(){return state;}
+    unsigned width(){return 1024;}
+    unsigned format(){return D3DFMT_A8R8G8B8;}
 };
-using BaseTexturePtr=std::shared_ptr<BaseTexture>;
 struct EffectConstantValue {virtual ~EffectConstantValue(){};virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
 struct EffectVisualContext {
     enum Type {AUTO_CONSTANT_TYPE_PER_FRAME};
@@ -75,8 +90,8 @@ struct TextureManager {
     BaseTexturePtr source=std::make_shared<BaseTexture>();
     unsigned reads=0;
     static TextureManager* instance(){static TextureManager manager;return &manager;}
-    BaseTexturePtr get(const char* resource,bool animation,bool placeholder,bool load,const char* allocator){
-        assert(std::string(resource)=="system/maps/env_brdf_lut.dds"&&animation&&!placeholder&&load);
+    BaseTexturePtr get(const std::string& resource,bool animation,bool placeholder,bool load,const char* allocator){
+        assert((resource=="system/maps/env_brdf_lut.dds"||resource=="actual/pmrem.dds"||resource=="system/maps/PMREM.dds")&&animation&&!placeholder&&load);
         assert(std::string(allocator)=="Art/File Textures/");++reads;return source;
     }
 };
@@ -85,6 +100,7 @@ struct TextureManager {
 int main(){
     auto environment=std::make_shared<DataSection>();auto source=std::make_shared<DataSection>();
     environment->strings["PBS/DEFERRED/REM_SH"]="actual/one.xml";BWResource::resources["actual/one.xml"]=source;
+    environment->strings["PBS/DEFERRED/PMREM"]="actual/pmrem.dds";
     for(unsigned i=0;i<9;++i)source->vectors["sh"+std::to_string(i)]=Vector3(float(i),float(i+20),float(i+40));
     StockDeferredLightingSettings first,second;
     assert(!loadStockDeferredLightingSettings(NULL,first)&&!first.loaded&&!errors.empty());
@@ -98,31 +114,40 @@ int main(){
     manager->source->gpu=reinterpret_cast<void*>(0x1513);
     assert(initialiseStockDeferredLightingConstants()&&initialiseStockDeferredLightingConstants());
     auto& context=Moo::rc().context;
-    assert(context.constants.size()==2&&context.registrations==2&&!context.constants.count("SpeedTreeMaterials"));
+    assert(context.constants.size()==4&&context.registrations==4&&!context.constants.count("SpeedTreeMaterials"));
     ID3DXEffect effect;
     auto sh=context.constants["REM_SH9"],brdf=context.constants["EnvBRDFLut"];
+    auto pmrem=context.constants["PMREM"],mips=context.constants["PMREMMipsNumber"];
+    assert(!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));
     assert(!(*sh)(&effect,"SH"));
     activateStockDeferredLightingSettings(first);assert((*sh)(&effect,"SH"));
     assert(effect.uniform==std::vector<float>(first.sphericalHarmonics,first.sphericalHarmonics+28));
     assert((*brdf)(&effect,"BRDF")&&effect.texture==manager->source->gpu);
+    assert((*pmrem)(&effect,"PMREM")&&effect.texture==first.pmrem->pTexture());
+    assert((*mips)(&effect,"MIPS")&&effect.uniform==std::vector<float>({7,1,0,0}));
     BWResource::textureExists=false;
-    assert(!initialiseStockDeferredLightingConstants()&&context.constants.size()==2&&!(*brdf)(&effect,"BRDF"));
+    assert(!initialiseStockDeferredLightingConstants()&&context.constants.size()==4&&!(*brdf)(&effect,"BRDF"));
     BWResource::textureExists=true;
-    assert(initialiseStockDeferredLightingConstants()&&context.registrations==2);
+    assert(initialiseStockDeferredLightingConstants()&&context.registrations==4);
     auto other=std::make_shared<DataSection>();other->vectors["sh0"]=Vector3(100,200,300);
     BWResource::resources["actual/two.xml"]=other;environment->strings["PBS/DEFERRED/REM_SH"]="actual/two.xml";
     assert(loadStockDeferredLightingSettings(environment,second)&&second.loaded);
     assert((*sh)(&effect,"SH")&&effect.uniform[0]==first.sphericalHarmonics[0]);
     activateStockDeferredLightingSettings(second);second.sphericalHarmonics[0]=999;
     assert((*sh)(&effect,"SH")&&effect.uniform[0]==100); // Publication owns its copy.
-    effect.fail=true;assert(!(*sh)(&effect,"SH")&&!(*brdf)(&effect,"BRDF"));effect.fail=false;
-    deactivateStockDeferredLightingSettings();assert(!(*sh)(&effect,"SH"));
+    effect.fail=true;assert(!(*sh)(&effect,"SH")&&!(*brdf)(&effect,"BRDF")&&!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));effect.fail=false;
+    deactivateStockDeferredLightingSettings();assert(!(*sh)(&effect,"SH")&&!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));
+    environment->strings["PBS/DEFERRED/PMREM"]="missing/pmrem.dds";
+    assert(loadStockDeferredLightingSettings(environment,second)&&second.pmremResource=="system/maps/PMREM.dds");
+    BWResource::pmremExists=false;
+    assert(!loadStockDeferredLightingSettings(environment,second)&&!second.loaded&&!second.pmrem);
+    BWResource::pmremExists=true;
     environment->strings.clear();assert(!loadStockDeferredLightingSettings(environment,second)&&!second.loaded);
     activateStockDeferredLightingSettings(second);assert(!(*sh)(&effect,"SH"));
     finaliseStockDeferredLightingConstants();finaliseStockDeferredLightingConstants();
-    assert(context.constants.empty()&&context.removals==2&&!brdfLut);
+    assert(context.constants.empty()&&context.removals==4&&!brdfLut);
     assert(!(*brdf)(&effect,"BRDF"));
     assert(initialiseStockDeferredLightingConstants());finaliseStockDeferredLightingConstants();
-    assert(context.registrations==4&&context.removals==4);
+    assert(context.registrations==8&&context.removals==8);
     std::cout<<"Production SH/BRDF load, publication, failures and repeated managed lifecycle passed"<<std::endl;
 }

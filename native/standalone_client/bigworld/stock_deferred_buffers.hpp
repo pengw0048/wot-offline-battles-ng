@@ -32,6 +32,8 @@ public:
     bool initialise();
     bool begin();
     bool prepare();
+    bool drawSpaceDecals();
+    bool drawSpaceDecalsAO();
     bool end();
     bool ready() const;
     void setLightingQuality(int option) { lightingSelection_.quality=option;depthQuality_.lighting=option; }
@@ -44,6 +46,7 @@ public:
     DX::BaseTexture* depthEffectsTexture() const;
     bool ambientOcclusionEnabled() const;
     bool contactShadowsEnabled() const;
+    bool depthEffectsHalfResolution() const { return depthQuality_.directHalfResolution(); }
     DX::BaseTexture* objectKindCopy();
     virtual void createManagedObjects();
     virtual void deleteManagedObjects();

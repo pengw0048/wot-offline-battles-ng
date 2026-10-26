@@ -31,6 +31,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_flares.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_water.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_water_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_space_decals.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_local_lighting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_file.cpp"

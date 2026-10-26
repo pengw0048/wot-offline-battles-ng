@@ -36,6 +36,9 @@ class DeferredOwnerPatchTests(unittest.TestCase):
 #include <cstddef>
 #define FAILED(hr) ((hr)<0)
 #define SUCCEEDED(hr) ((hr)>=0)
+unsigned decalBegins=0,decalEnds=0;
+void beginStockSpaceDecals(){++decalBegins;}
+void endStockSpaceDecals(){++decalEnds;}
 struct Surface{unsigned refs=1;void AddRef(){++refs;}void Release(){assert(refs);--refs;}};
 template<class T>struct ComObjectWrap{
 T* value=nullptr;~ComObjectWrap(){if(value)value->Release();}
@@ -72,7 +75,9 @@ owner.resourcesReady=true;device.failGet=true;assert(!owner.begin()&&!owner.prev
 device.failGet=false;device.failSet=true;assert(!owner.begin()&&!owner.previousDepth_.value);
 assert(original.refs==2&&depth.refs==2&&device.current==&original);
 device.failSet=false;assert(owner.begin()&&device.current==&depth&&original.refs==2&&depth.refs==3);
+assert(decalBegins==1&&decalEnds==0);
 const auto gets=device.gets;assert(owner.begin()&&device.gets==gets);
+assert(decalBegins==1);
 assert(owner.prepare()&&owner.prepared_&&owner.fills==1&&owner.conversions==1);
 owner.fillSuccess=false;assert(!owner.prepare()&&!owner.prepared_&&owner.conversions==1);
 owner.fillSuccess=true;owner.conversionSuccess=false;assert(!owner.prepare()&&!owner.prepared_&&owner.conversions==2);
@@ -81,6 +86,7 @@ owner.kindCopied_=true;assert(owner.end()&&device.current==&original);
 assert(!owner.frameActive_&&!owner.prepared_&&!owner.kindCopied_&&!owner.previousDepth_.value);
 assert(original.refs==2&&depth.refs==2);
 const auto sets=device.sets;assert(owner.end()&&device.sets==sets);
+assert(decalEnds==1);
 assert(owner.begin());device.failSet=true;assert(!owner.end()&&!owner.previousDepth_.value);
 assert(original.refs==1&&depth.refs==3);device.failSet=false;
 assert(device.SetDepthStencilSurface(&original)==0);
@@ -114,6 +120,7 @@ device.SetDepthStencilSurface(nullptr);assert(original.refs==1);
             'class TargetScope', 'Vector4 targetProjection(',
             'bool StockDeferredBuffers::select(', 'bool StockDeferredBuffers::draw(',
             'bool StockDeferredBuffers::blurDepthEffects(', 'bool StockDeferredBuffers::fillDepthEffects()',
+            'bool StockDeferredBuffers::drawSpaceDecals()', 'bool StockDeferredBuffers::drawSpaceDecalsAO()',
             'bool drawStockDeferredSunLight('))
         # The class extraction includes its closing brace, not its semicolon.
         production = production.replace('bool saved_;\n}', 'bool saved_;\n};')
@@ -203,11 +210,18 @@ bool Context::Quad::drawChecked(Material& m,uint width,uint height){return drawC
 enum{CONSTANTS_PER_SCREEN};
 }
 int setStockSceneViewport(DX::Viewport*,bool scene){if(!step())return -1;Moo::rc().scene=scene;return 0;}
+bool drawStockSpaceDecalsPhase(unsigned phase){
+assert((phase==0&&Moo::rc().target=="gbuffer0") || (phase==1&&(Moo::rc().target=="half"||Moo::rc().target=="full")));
+assert(Moo::rc().scene);
+if(!step())return false;
+passes.push_back({phase==1?"WGSD_AO":"WGSD_COLOR",Moo::rc().target,true,true,Moo::rc().w,Moo::rc().h,{},{}});return true;}
 struct Resolution{wot::StockDynamicResolution value;const wot::StockDynamicResolution& state()const{return value;}} resolution;
 Resolution* stockDynamicResolution(){return &resolution;}
 struct SSAOSettings{float m_radius=.1f,m_fade=2.f,m_amplify=1.f;};
 struct SSAO{SSAOSettings value;const SSAOSettings& settings()const{return value;}};
-struct Pipeline{SSAO ssao;SSAO* ssaoSupport(){return &ssao;}};
+struct Pipeline{SSAO ssao;SSAO* ssaoSupport(){return &ssao;}
+DX::Surface buffers[3]={{"gbuffer0"},{"gbuffer1"},{"gbuffer2"}};
+ComObjectWrap<DX::Surface> gbufferSurface(unsigned index){return {&buffers[index]};}};
 wot::StockScreenSpaceShadowSettings activeScreenShadows;
 struct StockDeferredBuffers{
 Pipeline pipeline_;wot::StockDepthEffectQuality depthQuality_;bool aoEnvironment=true;
@@ -232,6 +246,8 @@ bool contactShadowsEnabled()const{return activeScreenShadows.enabled&&depthQuali
 bool select(const Moo::EffectMaterialPtr&,const char*);bool draw(const Moo::EffectMaterialPtr&);
 bool blurDepthEffects(const Moo::RenderTargetPtr&,const Moo::RenderTargetPtr&,bool,bool,bool,float,float);
 bool fillDepthEffects();
+bool frameActive_=true,prepared_=true;
+bool drawSpaceDecals();bool drawSpaceDecalsAO();
 bool prepared()const{return true;}int lightingQuality()const{return depthQuality_.lighting;}
 };
 StockDeferredBuffers* owner=nullptr;
@@ -281,6 +297,22 @@ steps=0;failAt=failure;passes.clear();assert(!effectOwner.fillDepthEffects());
 assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene"&&Moo::rc().w==1279&&Moo::rc().h==719&&Moo::rc().scene);
 }
 failAt=0;owner=&effectOwner;
+for(int quality=0;quality!=5;++quality){
+effectOwner.depthQuality_.lighting=quality;passes.clear();assert(effectOwner.drawSpaceDecals());
+assert(passes.back().technique=="WGSD_COLOR"&&Moo::rc().stack.empty()&&Moo::rc().target=="scene");
+passes.clear();assert(effectOwner.drawSpaceDecalsAO());
+if(quality<3)assert(passes.size()==1&&passes[0].technique=="WGSD_AO"&&passes[0].target==(quality<2?"full":"half"));
+else assert(passes.empty());
+assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene");
+}
+effectOwner.depthQuality_.lighting=0;
+for(bool ao:{false,true}){
+steps=0;failAt=0;assert(ao?effectOwner.drawSpaceDecalsAO():effectOwner.drawSpaceDecals());const unsigned operations=steps;
+for(unsigned failure=1;failure<=operations;++failure){steps=0;failAt=failure;
+assert(!(ao?effectOwner.drawSpaceDecalsAO():effectOwner.drawSpaceDecals()));
+assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene"&&Moo::rc().w==1279&&Moo::rc().h==719);}
+}
+failAt=0;
 auto sun=std::make_shared<Moo::Material>();
 for(int quality=0;quality!=5;++quality)for(bool importance:{false,true}){
 effectOwner.depthQuality_.lighting=quality;sun->binding.importancePresent=importance;
