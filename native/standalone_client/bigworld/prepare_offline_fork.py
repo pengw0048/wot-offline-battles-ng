@@ -1,11 +1,17 @@
 """Prepare the pinned fork's native source without modifying the input tree."""
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import shutil
 import tempfile
 
-from patch_offline_math_bindings import METHODS, PINNED_COMMIT, SOURCES, patch
+_spec = importlib.util.spec_from_file_location(
+    'offline_math_bindings', Path(__file__).with_name('patch_offline_math_bindings.py'))
+_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bindings)
+METHODS, PINNED_COMMIT, SOURCES = _bindings.METHODS, _bindings.PINNED_COMMIT, _bindings.SOURCES
+patch = _bindings.patch
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 OLD_LOADER = '''    path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
