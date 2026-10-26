@@ -52,6 +52,25 @@ def sdk_edits(sdk_root, edit):
          'Date floating-point absolute value')
 
 
+def log_edits(engine_root, edit):
+    edit(engine_root / 'lib/scaleform/log.cpp',
+         '\tBW_GUARD;\n\tif ( messageId & Log_Warning )\n'
+         '\t\tWARNING_MSG( pfmt, argList );\n'
+         '\telse if ( messageId & Log_Message )\n'
+         '\t\tINFO_MSG( pfmt, argList );\n'
+         '\telse\n\t\tERROR_MSG( pfmt, argList );',
+         '\tBW_GUARD;\n'
+         '\t// A va_list cannot be forwarded as one variadic argument.\n'
+         '\tchar message[16384];\n'
+         '\tBW::LogMsg::formatMessage(message, sizeof(message), pfmt, argList);\n'
+         '\tif ( messageId & Log_Warning )\n'
+         '\t\tWARNING_MSG( "%s", message );\n'
+         '\telse if ( messageId & Log_Message )\n'
+         '\t\tINFO_MSG( "%s", message );\n'
+         '\telse\n\t\tERROR_MSG( "%s", message );',
+         'Scaleform variadic diagnostic forwarding')
+
+
 def patch_engine(engine_root, sdk_root):
     engine_root, sdk_root = Path(engine_root), Path(sdk_root)
     changes = {}
@@ -96,6 +115,7 @@ def patch_engine(engine_root, sdk_root):
          'SDK AMP header names')
 
     manager = engine_root / 'lib/scaleform/manager.cpp'
+    log_edits(engine_root, edit)
     edit(manager, '\t\tGFx::setRestrictFlashFilters(true);',
          '\t\t// SDK 4.2.22 uses its stock filter policy; the BW-specific\n'
          '\t\t// setRestrictFlashFilters extension is absent from this source SDK.',

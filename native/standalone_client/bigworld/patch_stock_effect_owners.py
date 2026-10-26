@@ -222,6 +222,7 @@ def patch(root):
     patch_context(root)
     patch_environment(root)
     patch_instancing(root)
+    patch_macro_settings(root)
     patch_resource_names(root)
 
 
@@ -461,6 +462,40 @@ def patch_instancing(root):
     new = "\t\tBW_GUARD;\n\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n\t\tif (instancedVB_.valid())"
     text = replace_once(text, old, new, "native index device teardown")
     path.write_text(text)
+
+
+def patch_macro_settings(root):
+    # 00941230 creates SHADER_DEBUG (release option 1) and
+    # WG_DEFERRED_SHADING (deferred 0, forward 1). setupSettings sorts by
+    # macro name, so the original packaged permutations are 10 and 11.
+    apply_file(root, Path("lib/moo/renderer.cpp"), [
+        ('#include "moo/effect_macro_setting.hpp"',
+         '#include "moo/effect_macro_setting.hpp"\n#include "moo/effect_compiler.hpp"',
+         "pipeline compiler macro owner"),
+        ('"RENDER_PIPELINE", "Render pipeline", "BW_DEFERRED_SHADING", &configureKeywordSetting',
+         '"RENDER_PIPELINE", "Render pipeline", "WG_DEFERRED_SHADING", &configureKeywordSetting',
+         "original pipeline macro name"),
+        ('                Moo::EffectMacroSetting::onOptionSelected(optionIndex);',
+         '                Moo::EffectMacroSetting::onOptionSelected(optionIndex);\n'
+         '                // Public engine FX sources use the old macro spelling.\n'
+         '                Moo::EffectCompiler::setMacroDefinition(\n'
+         '                    "BW_DEFERRED_SHADING", optionIndex == 0 ? "1" : "0");',
+         "public source pipeline macro consumer"),
+        ('    //-- For now there will be only one EffectMacroSetting called RENDER_PIPELINE and it gives us',
+         '    void configureStockShaderDebug(Moo::EffectMacroSetting& setting)\n'
+         '    {\n'
+         '        setting.addOption("DEBUG", "Shader debug on", false, "1");\n'
+         '        setting.addOption("RELEASE", "Shader debug off", true, "0");\n'
+         '    }\n'
+         '    Moo::EffectMacroSetting::EffectMacroSettingPtr g_stockShaderDebugSetting =\n'
+         '        new Moo::EffectMacroSetting("SHADER_DEBUG", "Debug Parameters",\n'
+         '            "SHADER_DEBUG", &configureStockShaderDebug);\n\n'
+         '    //-- The two original macro options select the packaged shader permutation and give us',
+         "original release shader setting"),
+        ('    g_pipelineMacroSetting = NULL;',
+         '    g_pipelineMacroSetting = NULL;\n    g_stockShaderDebugSetting = NULL;',
+         "shader debug setting teardown"),
+    ])
 
 
 def patch_resource_names(root):
