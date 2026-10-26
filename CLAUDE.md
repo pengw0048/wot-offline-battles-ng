@@ -179,12 +179,18 @@ temporary output and diff it before replacing tracked catalogs.
 - Every scheduled callback must validate battle, round, and entity identity.
   Cleanup must be harmless after partial startup and safe to call twice.
 
-## Current operating model
+## Target simulation ownership
 
-- Every room has one mandatory hidden native worker. The only simulation path
-  is `visible client -> LAN server -> hidden worker -> LAN server -> replicas`.
-  Visible clients submit player input and fire intent; they never become Bot or
-  projectile authority. Do not restore visible-client authority or the removed
+- The independent client's gameplay integration target is
+  `colorfulmeans/wot-0.9.22-offline-battles` release `v0.10.1`, commit
+  `144619f6eb2925f8da4b13637bf65b8550fc898f`. This is the offline mod version;
+  the native client contract remains Chinese HD `0.9.22.0.1 #1513`.
+- Every room has one mandatory hidden native worker. Each player's visible
+  client advances that player's projectiles; the LAN server confirms shared
+  damage and destruction. The hidden worker owns Bot movement and Bot
+  projectiles. This explicitly supersedes the former all-worker projectile
+  policy; existing paths must be migrated as part of gameplay integration.
+  Visible clients must not become Bot authority. Do not restore the removed
   pure-Python simulation fallback.
 - The launcher installs and starts the matching server and worker together.
   Do not build speculative compatibility machinery for combinations it never

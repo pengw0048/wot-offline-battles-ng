@@ -242,12 +242,16 @@ prototype connects terrain, vehicle driving, projectiles and stationary targets;
 its build and resource preparation are described below. The existing launcher
 still runs the mod.
 
-The intended LAN architecture is one authoritative server and one native
-client per player. The server owns player/Bot movement, collisions, projectiles,
-damage and battle state; clients send input and render replicated state. The
-host can run a server and client together. The current prototype runs locally
-in one process: the dedicated server, Bots and network synchronization are not
-implemented in this new runtime yet.
+The gameplay integration target is
+[the colorfulmeans fork's v0.10.1 release](https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v0.10.1),
+fixed at commit `144619f6eb2925f8da4b13637bf65b8550fc898f`. Its mod version is
+separate from the unchanged #1513 game resource and native interface contract.
+Each player's visible client will advance that player's projectiles, with the
+LAN server confirming shared damage and destruction. A mandatory hidden native
+worker will own Bot movement and Bot projectiles. This integration is pending;
+the current independent runtime does not yet provide a complete offline battle.
+The fork's native extensions must be rebuilt or adapted from source because
+their original executable addresses are not valid in the rebuilt client.
 
 Build and test the native core with CMake 3.16+ and a C++17 compiler:
 
