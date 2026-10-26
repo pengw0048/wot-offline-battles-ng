@@ -24,6 +24,7 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_suspension.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_authority.cpp")
 set(WOT_STOCK_ADAPTER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/stock_space_data.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_compiled_space_mapping.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_static_model_scene.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
