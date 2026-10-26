@@ -36,6 +36,7 @@ expect(TypeError, lambda: BigWorldIPC.Mutex(1), 'PyMutex() takes no arguments.')
 mutex = BigWorldIPC.Mutex(ignored=True)
 assert type(mutex) is BigWorldIPC.Mutex
 assert (type(mutex).__name__, type(mutex).__module__) == ('Mutex', 'BigWorldIPC')
+# Registration order only: the host's __members__/__methods__ are fixtures.
 assert mutex.__methods__[:4] == ['create', 'close', 'acquire', 'release']
 assert mutex.__members__ == []
 assert calls() == []
