@@ -242,6 +242,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-xmpp-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_pinger.py"),
         $EngineRoot) "stock-pinger-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_replay_controller.py"),
+        $EngineRoot) "stock-replay-controller-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_display_modes.py"),
         $EngineRoot) "stock-display-modes-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings_consumers.py"),

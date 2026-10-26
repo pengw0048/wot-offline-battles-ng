@@ -24,6 +24,8 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_suspension.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_authority.cpp")
 set(WOT_STOCK_ADAPTER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_replay_file.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_scene_loader.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_tree_materials.cpp"
