@@ -46,6 +46,19 @@ def sdk_edits(sdk_root, edit):
          '// The native ZStream helper above has already used the prefixed API.\n'
          '#undef compress\n#undef uncompress\n#undef deflate\n#undef inflate\n'
          '//##protect##"methods"', 'zlib and ActionScript method names')
+    # The #1513 client runs Scaleform 4.6.34. Its currentScene (00dbb750)
+    # gives an unmatched timeline the sprite's own scene, as gui/flash/lobby.swf
+    # has no DefineSceneAndFrameLabelData; currentLabels (00dbb6d0) checks it.
+    movie_clip = sdk_root / 'Src/GFx/AS3/Obj/Display/AS3_Obj_Display_MovieClip.cpp'
+    edit(movie_clip,
+         '        currentSceneGet(scene);\n        scene->labelsGet(result);\n',
+         '        currentSceneGet(scene);\n        if (scene)\n            scene->labelsGet(result);\n'
+         '        else\n            result = NULL;\n', 'MovieClip currentLabels scene owner')
+    edit(movie_clip,
+         '        else\n            result = CreateFakeScene();\n'
+         '//##protect##"instance::MovieClip::currentSceneGet()"',
+         '        if (!result)\n            result = CreateFakeScene();\n'
+         '//##protect##"instance::MovieClip::currentSceneGet()"', 'MovieClip scene-less timeline')
     edit(sdk_root / 'Src/GFx/AS3/Obj/AS3_Obj_Date.cpp',
          'NumberUtil::IsNaNOrInfinity(time) || (abs(time) > 8.64e15)',
          'NumberUtil::IsNaNOrInfinity(time) || (fabs(time) > 8.64e15)',
