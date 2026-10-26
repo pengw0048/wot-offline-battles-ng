@@ -18,6 +18,12 @@ def patch_engine(root):
         '\t\tbindStockVehicleFilterOwner( pPyFilter_.get(), NULL );\n'
         '\t\tpPyFilter_->isAttached( false );')]
     for before, after in replacements:
+        if (before == '\tpEntity_->pFilter( pPyFilter_->getFilter() );' and
+                source.count('\tbindStockVehicleFilterOwner( expected.get(), this );\n'
+                             '\tFilter * candidate = expected->getFilter();\n'
+                             '\tif (!candidate) return;') == 1):
+            # The entity-filter patch retains this association in its guarded publication.
+            continue
         if source.count(after) == 1:
             continue
         if source.count(before) != 1:

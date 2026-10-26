@@ -9,6 +9,7 @@ class PyEntity;
 extern int StockVehicleFilter_token;
 void bindStockVehicleFilterOwner( PyFilter * filter, PyEntity * owner );
 void tickStockVehicleFilterLagDetection();
+void registerStockFilterLagDetection( PyFilter * filter, bool enabled );
 
 // The original TrackScroll callback consumes presentation speed and writes
 // only the overrides read by WGVehicleFilter::publishMotion (006eee00).

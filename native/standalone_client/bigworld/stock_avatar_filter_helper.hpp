@@ -6,6 +6,8 @@
 
 BW_BEGIN_NAMESPACE
 
+class Matrix;
+
 // The public eight-input/error-box history, with the #1513 Quaternion
 // waypoint/output contract. It is driven by FilterEnvironment and has no
 // independently integrated position or vehicle physics state.
@@ -27,6 +29,7 @@ public:
     void latency( float value ) { latency_ = value; }
     double lastOutputTime() const { return lastOutput_; }
     double previousWaypointTime() const { return previous_.time; }
+    const Position3D & nextWaypointPosition() const { return next_.position; }
     bool extrapolating() const { return extrapolating_; }
     double extrapolationStart() const { return extrapolationStart_; }
 
@@ -51,6 +54,14 @@ public:
         void changeCoordinates( FilterEnvironment & environment,
             SpaceID newSpace, EntityID newVehicle );
     };
+    const StoredInput & storedInput( uint relativeIndex ) const;
+    bool hasInput() const { return !reset_; }
+    // #1513 007eb820/007eb9e0 deliberately copy only stored inputs,
+    // waypoints, latency and reset state. They retain this helper's clock,
+    // input count, extrapolation state and listener.
+    void transferInputs( const StockAvatarFilterHelper & source, const Matrix & offset );
+    void transferInputsAsVehicle( const StockAvatarFilterHelper & source,
+        const Matrix & local, SpaceID spaceID, EntityID vehicleID );
     class Listener
     {
     public:

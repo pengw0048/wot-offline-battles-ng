@@ -3,6 +3,7 @@
 #include "wot/vehicle_dynamics.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <array>
 #include <string>
 #include <vector>
@@ -271,6 +272,10 @@ public:
     Vector3 angular_velocity() const { return body_.angular_velocity; }
     const VehicleTrackState& track_state() const { return tracks_; }
     const VehicleRigidBody& rigid_body() const { return body_; }
+    // Original f48905..f48928 initializes the physics-owned AABB inside-out.
+    // The complete configure producer has not yet been restored; consumers
+    // must preserve that state rather than substitute model/hull estimates.
+    const VehicleCollisionBounds& collision_bounds() const { return collision_bounds_; }
 
     // The original centerOfMass setter (0x00f542e0) only stores this offset;
     // the matrix setter and simulation publication consume it separately.
@@ -319,6 +324,11 @@ private:
     // this after body integration; it is not an integration/contact solver.
     void publish_entity_transform();
 
+    VehicleCollisionBounds collision_bounds_{
+        {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+         std::numeric_limits<float>::max()},
+        {-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
+         -std::numeric_limits<float>::max()}};
     VehicleRigidBody body_;
     VehicleMatrix entity_transform_;
     Vector3 center_of_mass_{};

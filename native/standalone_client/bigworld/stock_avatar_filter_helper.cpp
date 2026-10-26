@@ -42,6 +42,52 @@ Vector3 waypointLerp( const Vector3 & first, const Vector3 & second, float fract
         return second;
     return first * (1.f - fraction) + second * fraction;
 }
+
+Direction3D directionForTransferredPose( const Matrix & pose )
+{
+    // 007ebed0/007eb9e0 normalize each actual D3DX basis separately. The
+    // exported direction remains (roll,pitch,yaw), as in Direction3D's ABI.
+    Vector3 forward = pose[2];
+    D3DXVec3Normalize( &forward, &forward );
+    Direction3D direction;
+    direction.yaw = atan2f( forward.x, forward.z );
+    forward = pose[2];
+    D3DXVec3Normalize( &forward, &forward );
+    float sine = -1.f;
+    if (-1.f <= forward.y) sine = 1.f <= forward.y ? 1.f : forward.y;
+    direction.pitch = -asinf( sine );
+    Vector3 right = pose[0];
+    Vector3 up = pose[1];
+    D3DXVec3Normalize( &right, &right );
+    D3DXVec3Normalize( &up, &up );
+    direction.roll = atan2f( right.y, up.y );
+    return direction;
+}
+
+void transformTransferredInput( StockAvatarFilterHelper::StoredInput & input,
+    const Matrix & offset )
+{
+    Matrix pose;
+    D3DXMatrixRotationYawPitchRoll( &pose, input.direction.yaw,
+        input.direction.pitch, input.direction.roll );
+    pose.translation( input.position );
+    D3DXMatrixMultiply( &pose, &offset, &pose );
+    input.position = pose.applyToOrigin();
+    input.direction = directionForTransferredPose( pose );
+    // Original 007ebed0 retains the authored error and on-ground flag.
+}
+
+void transformTransferredWaypoint( StockAvatarFilterHelper::Waypoint & waypoint,
+    const Matrix & offset )
+{
+    Matrix pose;
+    D3DXMatrixRotationQuaternion( &pose, &waypoint.orientation );
+    pose.translation( waypoint.position );
+    D3DXMatrixMultiply( &pose, &offset, &pose );
+    waypoint.position = pose.applyToOrigin();
+    D3DXQuaternionRotationMatrix( &waypoint.orientation, &pose );
+    transformTransferredInput( waypoint.input, offset );
+}
 }
 
 StockAvatarFilterHelper::StockAvatarFilterHelper( FilterEnvironment & environment ) :
@@ -64,6 +110,75 @@ StockAvatarFilterHelper::StoredInput & StockAvatarFilterHelper::stored( uint ind
 const StockAvatarFilterHelper::StoredInput & StockAvatarFilterHelper::stored( uint index ) const
 {
     return storedInputs_[(current_ + index) & 7];
+}
+
+const StockAvatarFilterHelper::StoredInput & StockAvatarFilterHelper::storedInput(
+    uint relativeIndex ) const
+{
+    MF_ASSERT( relativeIndex < NUM_STORED_INPUTS );
+    return this->stored( relativeIndex );
+}
+
+void StockAvatarFilterHelper::transferInputs( const StockAvatarFilterHelper & source,
+    const Matrix & offset )
+{
+    StoredInput inputs[NUM_STORED_INPUTS];
+    for (uint index = 0; index < NUM_STORED_INPUTS; ++index)
+        inputs[index] = source.stored( index );
+    Waypoint next = source.next_;
+    Waypoint previous = source.previous_;
+    const float latency = source.latency_;
+    const bool reset = source.reset_;
+    for (uint index = 0; index < NUM_STORED_INPUTS; ++index)
+    {
+        transformTransferredInput( inputs[index], offset );
+        this->stored( index ) = inputs[index];
+    }
+    transformTransferredWaypoint( next, offset );
+    transformTransferredWaypoint( previous, offset );
+    next_ = next;
+    previous_ = previous;
+    latency_ = latency;
+    reset_ = reset;
+}
+
+void StockAvatarFilterHelper::transferInputsAsVehicle(
+    const StockAvatarFilterHelper & source, const Matrix & local,
+    SpaceID spaceID, EntityID vehicleID )
+{
+    double times[NUM_STORED_INPUTS];
+    for (uint index = 0; index < NUM_STORED_INPUTS; ++index)
+        times[index] = source.stored( index ).time;
+    const double nextTime = source.next_.time;
+    const double previousTime = source.previous_.time;
+    const float latency = source.latency_;
+    const bool reset = source.reset_;
+    StoredInput input;
+    input.time = -2000.0;
+    input.spaceID = spaceID;
+    input.vehicleID = vehicleID;
+    input.position = local.applyToOrigin();
+    input.error = Vector3::zero();
+    input.direction = directionForTransferredPose( local );
+    input.onGround = false;
+    for (uint index = 0; index < NUM_STORED_INPUTS; ++index)
+    {
+        this->stored( index ) = input;
+        this->stored( index ).time = times[index];
+    }
+    Waypoint waypoint;
+    waypoint.time = nextTime;
+    waypoint.spaceID = spaceID;
+    waypoint.vehicleID = vehicleID;
+    waypoint.position = input.position;
+    waypoint.orientation = quaternionFor( input.direction );
+    waypoint.input = input;
+    next_ = waypoint;
+    next_.time = nextTime;
+    previous_ = waypoint;
+    previous_.time = previousTime;
+    latency_ = latency;
+    reset_ = reset;
 }
 
 void StockAvatarFilterHelper::resetInputs( double time, SpaceID spaceID,

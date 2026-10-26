@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_vehicle_filter.hpp"
+#include "stock_entity_filter.hpp"
 #include "vehicle_physics_binding.hpp"
 #include "stock_avatar_filter_helper.hpp"
 #include "vehicle_appearance.hpp"
@@ -11,6 +12,7 @@
 #include "py_entity.hpp"
 #include "script_player.hpp"
 #include "connection_control.hpp"
+#include "connection_model/bw_connection.hpp"
 #include "space/entity_embodiment.hpp"
 #include "stock_scene_prediction.hpp"
 #include "pyscript/script_math.hpp"
@@ -40,94 +42,45 @@ wot::Vector3 coreVector( const Vector3 & value )
     return { value.x, value.y, value.z };
 }
 
+// #1513 00648be0 uses a float multiply before the floor reduction.
+float normaliseFilterAngle( float value )
+{
+    const float pi = 3.1415927410125732f;
+    const float threePi = 9.4247779846191406f;
+    const float twoPi = 6.2831854820251465f;
+    if (value > pi)
+    {
+        if (value <= threePi) return value - twoPi;
+    }
+    else if (value <= -pi)
+    {
+        if (value > -threePi) return value + twoPi;
+    }
+    else return value;
+    const float scaled = value * 0.15915493667125702f + 0.5f;
+    return value - floorf( scaled ) * twoPi;
+}
+
+bool filterInputClock( double & time )
+{
+    BWConnection * connection = ConnectionControl::instance().pConnection();
+    if (!connection)
+    {
+        PyErr_SetString( PyExc_RuntimeError, "Vehicle filter has no active connection clock" );
+        return false;
+    }
+    // Original BWConnection slot +0x24; serverTime is separately at +0x30.
+    time = connection->lastMessageTime();
+    return true;
+}
+
 struct ChassisOrientationSample
 {
     Vector3 angles;
     double time;
 };
 
-struct StockVehicleFilterGeometry
-{
-    float radius = -1.f;
-    float planarRadiusSquared = -1.f;
-    float verticalRadius = 0.f;
-    float minimumY = 0.f;
-    float maximumY = 0.f;
-    float boundsAge = 1.4f;
-    Vector3 local[7];
-    Vector3 points[7];
-    Vector3 edges[6][2];
-    PyObjectPtr model;
-
-    bool load( Entity & owner )
-    {
-        IEntityEmbodiment * embodiment = owner.pPrimaryEmbodiment();
-        if (!embodiment)
-            return false;
-        PyObject * object = embodiment->scriptObject().get();
-        BoundingBox bounds;
-        if (!stockVehicleModelBounds( object, bounds ) || bounds.insideOut())
-            return false;
-        model = object;
-        const Vector3 minimum = bounds.minBounds();
-        const Vector3 maximum = bounds.maxBounds();
-        const float width = std::max( maximum.x - minimum.x, maximum.z - minimum.z );
-        planarRadiusSquared = width * 0.5f * width;
-        radius = sqrtf( planarRadiusSquared );
-        const float supportY = (maximum.y - minimum.y) * 0.8f + minimum.y;
-        minimumY = minimum.y - supportY;
-        maximumY = maximum.y - supportY;
-        local[0].set( minimum.x - 0.09f, supportY, maximum.z + 0.09f );
-        local[1].set( maximum.x + 0.09f, supportY, maximum.z + 0.09f );
-        local[2].set( minimum.x - 0.09f, supportY, minimum.z - 0.09f );
-        local[3].set( maximum.x + 0.09f, supportY, minimum.z - 0.09f );
-        const Vector3 center = (minimum + maximum) * 0.5f;
-        local[4].set( center.x, minimum.y - 0.09f, center.z );
-        local[5].set( center.x, maximum.y + 0.09f, center.z );
-        local[6] = center;
-        boundsAge = 1.4f;
-        return true;
-    }
-    void update( const Matrix & pose, float elapsed )
-    {
-        for (unsigned index = 0; index < 7; ++index)
-            points[index] = pose.applyPoint( local[index] );
-        const unsigned segments[4][2] = { {0,1}, {1,3}, {2,3}, {0,2} };
-        for (unsigned index = 0; index < 4; ++index)
-        {
-            edges[index][0] = points[segments[index][0]];
-            edges[index][1] = points[segments[index][1]];
-        }
-        edges[4][0] = (points[0] + points[1]) * 0.5f;
-        edges[4][1] = (points[2] + points[3]) * 0.5f;
-        edges[5][0] = (points[0] + points[2]) * 0.5f;
-        edges[5][1] = (points[1] + points[3]) * 0.5f;
-        if (model && boundsAge > 0.4f)
-        {
-            PyAttachment * attachment = static_cast<PyAttachment *>( model.get() );
-            BoundingBox bounds;
-            attachment->worldBoundingBox( bounds, attachment->worldTransform() );
-            boundsAge = 0.f;
-            if (!bounds.insideOut())
-            {
-                const Vector3 minimum = bounds.minBounds();
-                const Vector3 maximum = bounds.maxBounds();
-                const Vector3 center = points[6];
-                const float radiusX = std::max( fabsf( center.x - minimum.x ),
-                    fabsf( maximum.x - center.x ) );
-                const float radiusZ = std::max( fabsf( center.z - minimum.z ),
-                    fabsf( maximum.z - center.z ) );
-                const float radiusY = std::max( fabsf( center.y - minimum.y ),
-                    fabsf( maximum.y - center.y ) );
-                const float horizontal = std::max( radiusX, radiusZ );
-                planarRadiusSquared = horizontal * horizontal;
-                verticalRadius = std::max( radiusY, horizontal * 0.5f );
-            }
-        }
-        else
-            boundsAge += elapsed;
-    }
-};
+using StockVehicleFilterGeometry = StockEntityFilterGeometry;
 
 bool stockSegmentIntersection( const Vector3 & firstStart, const Vector3 & firstEnd,
     const Vector3 & secondStart, const Vector3 & secondEnd,
@@ -164,7 +117,7 @@ bool stockSegmentIntersection( const Vector3 & firstStart, const Vector3 & first
     return true;
 }
 
-struct StockVehicleFilterState
+struct StockVehicleFilterState : StockEntityFilterMotion
 {
     float width = 0.f;
     float minimumNormalY = 0.f;
@@ -173,10 +126,6 @@ struct StockVehicleFilterState
     Vector3 hullLocalPosition = Vector3::zero();
     Vector3 velocity = Vector3::zero();
     Vector3 acceleration = Vector3::zero();
-    Vector3 predictedVelocity = Vector3::zero();
-    Vector3 predictedAngularVelocity = Vector3::zero();
-    Vector3 predictedAcceleration = Vector3::zero();
-    Vector3 predictedAngularAcceleration = Vector3::zero();
     Vector3 position = Vector3::zero();
     Vector3 leftPosition = Vector3::zero();
     Vector3 rightPosition = Vector3::zero();
@@ -224,12 +173,8 @@ struct StockVehicleFilterState
     Matrix gun = Matrix::identity;
     PyObjectPtr physics;
     PyObjectPtr collisionCallback;
-    WeakPyPtr<PyEntity> owner;
-    float maxMove = FLT_MAX;
-    float maxTime = 2.f;
     wot::StockGunAngleHistory gunHistory;
     std::vector<ChassisOrientationSample> chassisHistory;
-    StockVehicleFilterGeometry geometry;
     float traveledSinceCollision = 0.f;
     bool collidingWithEntity = false;
 
@@ -237,7 +182,7 @@ struct StockVehicleFilterState
     // distance to the viewer, without changing any physics body or input.
     void compensateStrafe( Vector3 & point, float yaw, float elapsed )
     {
-        if (!allowStrafeCompensation)
+        if (!StockEntityFilterGlobals::enableClientFilters || !allowStrafeCompensation)
         {
             strafePosition = point;
             strafeYaw = yaw;
@@ -434,6 +379,47 @@ struct StockVehicleFilterState
         return true;
     }
 
+    float groundDeformationRate() const
+    {
+        // 006eaa40 uses this physics owner's authored AABB, never the model bounds.
+        Vector3 angular = predictedAngularVelocity;
+        const float angularSquared = angular.y * angular.y + angular.x * angular.x +
+            angular.z * angular.z;
+        D3DXVec3Normalize( &angular, &angular );
+        float rate = fabsf( sqrtf( angularSquared ) *
+            (body[1].y * angular.y + body[1].x * angular.x + body[1].z * angular.z) );
+        float extent = 4.f;
+        if (physics)
+        {
+            const wot::VehiclePhysics * core = unwrapStockVehiclePhysics( physics.get() );
+            if (!core) return 0.f;
+            const auto & bounds = core->collision_bounds();
+            const bool insideOut = bounds.minimum.x > bounds.maximum.x ||
+                bounds.minimum.y > bounds.maximum.y || bounds.minimum.z > bounds.maximum.z;
+            extent = (insideOut ? 0.f : bounds.maximum.z - bounds.minimum.z) * 0.8f;
+        }
+        const float lateral = fabsf( body[0].y * velocity.y + body[0].x * velocity.x +
+            body[0].z * velocity.z );
+        rate *= 0.25f;
+        rate *= extent;
+        rate += rate;
+        return (rate + (lateral + lateral)) * extent;
+    }
+
+    void syncChassisOrientation( Vector3 angles, double time )
+    {
+        angles.x = normaliseFilterAngle( angles.x );
+        angles.y = normaliseFilterAngle( angles.y );
+        angles.z = normaliseFilterAngle( angles.z );
+        // 006ef520 removes every overlapping receipt, then caps to the last eight.
+        while (!chassisHistory.empty() &&
+            time - chassisHistory.back().time < 0.010000000000000002)
+            chassisHistory.pop_back();
+        chassisHistory.push_back( { angles, time } );
+        if (chassisHistory.size() > 24)
+            chassisHistory.erase( chassisHistory.begin(), chassisHistory.end() - 8 );
+    }
+
     // #1513 006ec880: retain the candidate translation and sample only the
     // chassis orientation history over the original .1-second window.
     Matrix sampleChassisOrientation( double time, const Matrix & candidate ) const
@@ -453,8 +439,8 @@ struct StockVehicleFilterState
                 const double fraction = std::max( 0.0,
                     std::min( 1.0, (time - (next.time - 0.1)) * 10.0 ) );
                 for (unsigned axis = 0; axis < 3; ++axis)
-                    angles[axis] = Angle::normalise( angles[axis] + Angle::normalise(
-                        static_cast<float>( Angle::normalise( next.angles[axis] -
+                    angles[axis] = normaliseFilterAngle( angles[axis] + normaliseFilterAngle(
+                        static_cast<float>( normaliseFilterAngle( next.angles[axis] -
                             angles[axis] ) * fraction ) ) );
             }
             break;
@@ -525,16 +511,14 @@ struct StockVehicleFilterState
 
 class StockVehicleFilter;
 class PyWGVehicleFilter;
-static void setStockLagDetection( PyWGVehicleFilter * filter, bool enabled );
 
-class PyWGVehicleFilter : public PyFilter
+class PyWGVehicleFilter : public PyWGEntityFilter
 {
-    Py_Header( PyWGVehicleFilter, PyFilter )
+    Py_Header( PyWGVehicleFilter, PyWGEntityFilter )
 public:
-    PyWGVehicleFilter() : PyFilter( &s_type_ ), state_( new StockVehicleFilterState() ) {}
-    virtual ~PyWGVehicleFilter() { setStockLagDetection( this, false ); }
+    PyWGVehicleFilter() : PyWGEntityFilter( &s_type_ ), state_( new StockVehicleFilterState() ) {}
+    virtual ~PyWGVehicleFilter() {}
     const std::shared_ptr<StockVehicleFilterState> & state() const { return state_; }
-    void owner( PyEntity * value ) { state_->owner = WeakPyPtr<PyEntity>( value ); }
     bool attached() const { return this->pAttachedFilter() != NULL; }
     MatrixProviderPtr matrixProvider( unsigned kind );
     Vector4ProviderPtr vectorProvider( unsigned kind );
@@ -554,8 +538,9 @@ public:
     PY_RW_ATTRIBUTE_DECLARE( state_->velocityErrorCompensation, velocityErrorCompensation )
     PY_RW_ATTRIBUTE_DECLARE( state_->hullLocalPosition, hullLocalPosition )
     PY_RW_ATTRIBUTE_DECLARE( state_->placingOnGround, placingOnGround )
-    PY_RW_ATTRIBUTE_DECLARE( state_->maxMove, maxMove )
-    PY_RW_ATTRIBUTE_DECLARE( state_->maxTime, maxTime )
+    float maxTime() const { return this->maxTimeBetweenInputs(); }
+    void maxTime( float value ) { this->maxTimeBetweenInputs( value ); }
+    PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( float, maxTime, maxTime )
     PY_RW_ATTRIBUTE_DECLARE( state_->collisionCallback, vehicleCollisionCallback )
     PY_RO_ATTRIBUTE_DECLARE( state_->velocity, velocity )
     PY_RO_ATTRIBUTE_DECLARE( state_->acceleration, acceleration )
@@ -607,6 +592,15 @@ public:
     }
     PY_AUTO_METHOD_DECLARE( RETVOID, addTriangle,
         ARG( Vector3, ARG( Vector3, ARG( Vector3, END ) ) ) )
+    void clearTriangles()
+    {
+        // Original 006e2bf0 validates zero arguments and has no stored triangle list.
+    }
+    PY_AUTO_METHOD_DECLARE( RETVOID, clearTriangles, END )
+    PY_METHOD_DECLARE( py_setTracksSpeed )
+    PY_METHOD_DECLARE( py_syncStabilisedYPR )
+    PyObject * pyGet_groundDeformationRate();
+    PY_RO_ATTRIBUTE_SET( groundDeformationRate )
     PY_METHOD_DECLARE( py_syncGunAngles )
     PY_METHOD_DECLARE( py_interpolateStabilisedMatrix )
     bool enableStabilisedMatrix( bool value )
@@ -636,8 +630,6 @@ public:
     }
     PY_AUTO_METHOD_DECLARE( RETOK, notifyInputKeysDown,
         ARG( float, ARG( float, END ) ) )
-    void enableLagDetection( bool enabled ) { setStockLagDetection( this, enabled ); }
-    PY_AUTO_METHOD_DECLARE( RETVOID, enableLagDetection, ARG( bool, END ) )
     static PyWGVehicleFilter * New() { return new PyWGVehicleFilter(); }
     PY_AUTO_FACTORY_DECLARE( PyWGVehicleFilter, END )
 protected:
@@ -646,10 +638,9 @@ private:
     std::shared_ptr<StockVehicleFilterState> state_;
 };
 
-class StockVehicleFilter : public Filter, public StockAvatarFilterHelper::Listener
+class StockVehicleFilter : public StockEntityFilter
 {
 public:
-    struct Lifetime { bool alive = true; };
     struct CollisionReceipt
     {
         PyObjectPtr callback;
@@ -660,7 +651,7 @@ public:
     };
     StockVehicleFilter( PyWGVehicleFilter * owner,
         const std::shared_ptr<StockVehicleFilterState> & state ) :
-        Filter( owner ), state_( state ), helper_( std::make_shared<StockAvatarFilterHelper>( this->environment() ) )
+        StockEntityFilter( owner, state ), state_( state )
     {
         helper_->listener( this );
         // 006e9ed0 transfers the sampled matrices, but starts a new gun
@@ -669,8 +660,7 @@ public:
     }
     virtual ~StockVehicleFilter()
     {
-        lifetime_->alive = false;
-        helper_->listener( NULL );
+        this->retire();
     }
     StockAvatarFilterHelper & helper() { return *helper_; }
     const StockAvatarFilterHelper & helper() const { return *helper_; }
@@ -679,7 +669,6 @@ public:
         const PyEntity * owner = state_->owner.get();
         return owner && !owner->isDestroyed() ? owner->pEntity().get() : NULL;
     }
-    virtual void reset( double time ) { helper_->reset( time ); }
     virtual bool getLastInput( double & time, SpaceID & spaceID, EntityID & vehicleID,
         Position3D & position, Vector3 & error, Direction3D & direction ) const
     {
@@ -688,8 +677,8 @@ public:
     virtual void input( double time, SpaceID spaceID, EntityID vehicleID,
         const Position3D & position, const Vector3 & error, const Direction3D & direction )
     {
+        if (this->settings().ignoreInputs) return;
         std::shared_ptr<Lifetime> lifetime = lifetime_;
-        std::shared_ptr<StockAvatarFilterHelper> activeHistory = helper_;
         std::shared_ptr<StockVehicleFilterState> state = state_;
         Entity * player = ScriptPlayer::entity();
         float distance = -1.f;
@@ -712,22 +701,13 @@ public:
         }
         if (!lifetime->alive)
             return;
-        if (this->entity() != ownVehicle && state->viewerDistance != -1.f &&
+        if (StockEntityFilterGlobals::allowCustomResets &&
+            this->entity() != ownVehicle && state->viewerDistance != -1.f &&
             distance <= 50.f && state->viewerDistance - distance >= 50.f &&
             state->predictedVelocity.lengthSquared() < 1.f)
-            activeHistory->reset( time );
+            this->reset( time );
         state->viewerDistance = distance;
-        double oldTime;
-        SpaceID oldSpace;
-        EntityID oldVehicle;
-        Position3D oldPosition;
-        Vector3 oldError;
-        Direction3D oldDirection;
-        if (activeHistory->getLastInput( oldTime, oldSpace, oldVehicle, oldPosition, oldError, oldDirection ) &&
-            (time - oldTime > static_cast<double>( state->maxTime ) ||
-             (position - oldPosition).length() - error.length() >= state->maxMove))
-            activeHistory->reset( time );
-        activeHistory->input( time, spaceID, vehicleID, position, error, direction );
+        StockEntityFilter::input( time, spaceID, vehicleID, position, error, direction );
     }
     virtual void output( double time, MovementFilterTarget & target )
     {
@@ -904,13 +884,9 @@ public:
 protected:
     virtual bool tryCopyState( const MovementFilter & source )
     {
-        const StockVehicleFilter * other = dynamic_cast<const StockVehicleFilter *>( &source );
-        if (!other)
-            return false;
-        *helper_ = *other->helper_;
-        helper_->listener( this );
-        return true;
+        return StockEntityFilter::tryCopyState( source );
     }
+
 private:
     void updateVelocityReceipts( const StockAvatarFilterHelper::Waypoint & current,
         const StockAvatarFilterHelper::Waypoint & next );
@@ -919,9 +895,6 @@ private:
     void collideEntities( const StockAvatarFilterHelper::Waypoint & current,
         const StockAvatarFilterHelper::Waypoint & next );
     std::shared_ptr<StockVehicleFilterState> state_;
-    std::shared_ptr<StockAvatarFilterHelper> helper_;
-    bool failed_ = false;
-    std::shared_ptr<Lifetime> lifetime_ = std::make_shared<Lifetime>();
     std::vector<CollisionReceipt> collisionReceipts_;
 };
 
@@ -970,17 +943,24 @@ void StockVehicleFilter::updateVelocityReceipts(
 void StockVehicleFilter::collideEntities( const StockAvatarFilterHelper::Waypoint & current,
     const StockAvatarFilterHelper::Waypoint & next )
 {
+    const auto state = state_;
+    const auto lifetime = lifetime_;
+    state->collidingWithEntity = false;
     Entity * owner = this->entity();
     if (!owner)
         return;
-    StockVehicleFilterGeometry & geometry = state_->geometry;
+    StockVehicleFilterGeometry & geometry = state->geometry;
+    if (geometry.radius >= 0.f && !geometry.matches( *owner )) geometry.invalidate();
+    if (!lifetime->alive) return;
     if (geometry.radius < 0.f && !geometry.load( *owner ))
         return;
-    state_->traveledSinceCollision += (next.position - current.position).length();
+    if (!lifetime->alive) return;
+    state->traveledSinceCollision += (next.position - current.position).length();
     Matrix candidate;
     candidate.setRotate( next.orientation );
     candidate.translation( next.position );
     geometry.update( candidate, static_cast<float>( next.time - current.time ) );
+    if (!lifetime->alive || !(geometry.radius >= 0.f)) return;
     struct Gather : EntityVisitor
     {
         std::vector<EntityPtr> entities;
@@ -991,7 +971,6 @@ void StockVehicleFilter::collideEntities( const StockAvatarFilterHelper::Waypoin
         }
     } gather;
     ConnectionControl::instance().visitEntities( gather );
-    state_->collidingWithEntity = false;
     for (size_t index = 0; index < gather.entities.size(); ++index)
     {
         Entity * other = gather.entities[index].get();
@@ -1030,15 +1009,15 @@ void StockVehicleFilter::collideEntities( const StockAvatarFilterHelper::Waypoin
             }
         if (best == -1.f)
             continue;
-        state_->collidingWithEntity = true;
-        if (state_->traveledSinceCollision > 0.3f || otherState->traveledSinceCollision > 0.3f)
+        state->collidingWithEntity = true;
+        if (state->traveledSinceCollision > 0.3f || otherState->traveledSinceCollision > 0.3f)
         {
-            state_->traveledSinceCollision = 0.f;
+            state->traveledSinceCollision = 0.f;
             otherState->traveledSinceCollision = 0.f;
-            if (state_->collisionCallback && PyCallable_Check( state_->collisionCallback.get() ))
+            if (state->collisionCallback && PyCallable_Check( state->collisionCallback.get() ))
             {
                 CollisionReceipt receipt;
-                receipt.callback = state_->collisionCallback;
+                receipt.callback = state->collisionCallback;
                 receipt.first = owner->pPyEntity().get();
                 receipt.second = other->pPyEntity().get();
                 receipt.point = point;
@@ -1052,10 +1031,15 @@ void StockVehicleFilter::collideEntities( const StockAvatarFilterHelper::Waypoin
 void StockVehicleFilter::onWaypoint( double time,
     StockAvatarFilterHelper::Waypoint & current, StockAvatarFilterHelper::Waypoint & next )
 {
+    if (!StockEntityFilterGlobals::enableClientFilters) return;
+    const auto state = state_;
+    const auto history = helper_;
     std::shared_ptr<Lifetime> lifetime = lifetime_;
     this->collideEntities( current, next );
-    if (helper_->extrapolating())
+    if (!lifetime->alive) return;
+    if (history->extrapolating())
     {
+        if (!StockEntityFilterGlobals::canExtrapolateOnLag) return;
         const bool succeeded = this->predictWaypoints( time, current, next );
         if (lifetime->alive)
             failed_ = !succeeded;
@@ -1194,7 +1178,7 @@ bool StockVehicleFilter::predictWaypoints( double time,
     state_->predictedVelocity = predictedVelocity;
     next.position = point;
     next.orientation = orientation;
-    if (state_->geometry.radius >= 0.f)
+    if (StockEntityFilterGlobals::allowLagCollisions && state_->geometry.radius >= 0.f)
     {
         bool blocked = state_->collidingWithEntity;
         if (!blocked && grounded)
@@ -1290,13 +1274,13 @@ Vector4ProviderPtr PyWGVehicleFilter::vectorProvider( unsigned kind )
 
 void bindStockVehicleFilterOwner( PyFilter * filter, PyEntity * owner )
 {
-    if (filter && PyWGVehicleFilter::Check( filter ))
-        static_cast<PyWGVehicleFilter *>( filter )->owner( owner );
+    if (filter && PyWGEntityFilter::Check( filter ))
+        static_cast<PyWGEntityFilter *>( filter )->owner( owner );
 }
 
 namespace
 {
-std::vector<WeakPyPtr<PyWGVehicleFilter> > s_lagFilters;
+std::vector<WeakPyPtr<PyFilter> > s_lagFilters;
 bool s_lagDetected = false;
 class StockFilterScriptShutdown : public Script::FiniTimeJob
 {
@@ -1308,18 +1292,18 @@ class StockFilterScriptShutdown : public Script::FiniTimeJob
 } s_stockFilterScriptShutdown;
 }
 
-static void setStockLagDetection( PyWGVehicleFilter * filter, bool enabled )
+void registerStockFilterLagDetection( PyFilter * filter, bool enabled )
 {
     for (size_t index = 0; index < s_lagFilters.size(); )
     {
-        PyWGVehicleFilter * value = s_lagFilters[index].get();
+        PyFilter * value = s_lagFilters[index].get();
         if (!value || value == filter)
             s_lagFilters.erase( s_lagFilters.begin() + index );
         else
             ++index;
     }
     if (enabled)
-        s_lagFilters.push_back( WeakPyPtr<PyWGVehicleFilter>( filter ) );
+        s_lagFilters.push_back( WeakPyPtr<PyFilter>( filter ) );
 }
 
 void tickStockVehicleFilterLagDetection()
@@ -1330,15 +1314,13 @@ void tickStockVehicleFilterLagDetection()
     s_lagDetected = false;
     for (size_t index = 0; index < s_lagFilters.size(); )
     {
-        PyWGVehicleFilter * owner = s_lagFilters[index].get();
+        PyFilter * owner = s_lagFilters[index].get();
         if (!owner)
         {
             s_lagFilters.erase( s_lagFilters.begin() + index );
             continue;
         }
-        const StockVehicleFilter * filter =
-            static_cast<const StockVehicleFilter *>( owner->pAttachedFilter() );
-        if (filter && filter->helper().extrapolating())
+        if (owner->isLaggingNow())
             s_lagDetected = true;
         ++index;
     }
@@ -1349,8 +1331,11 @@ PY_AUTO_MODULE_FUNCTION( RETDATA, statLagDetected, END, BigWorld )
 
 Filter * PyWGVehicleFilter::getNewFilter()
 {
-    return new StockVehicleFilter( this, state_ );
+    StockVehicleFilter * filter = new StockVehicleFilter( this, state_ );
+    this->applySettings( *filter );
+    return filter;
 }
+
 
 float PyWGVehicleFilter::latency() const
 {
@@ -1377,7 +1362,61 @@ PyObject * PyWGVehicleFilter::py_syncGunAngles( PyObject * args )
         PyErr_SetString( PyExc_ValueError, "WGVehicleFilter is not attached to an entity" );
         return NULL;
     }
-    state_->gunHistory.sync( yaw, pitch, this->getTimeNow() );
+    double time;
+    if (!filterInputClock( time )) return NULL;
+    state_->gunHistory.sync( yaw, pitch, time );
+    Py_RETURN_NONE;
+}
+
+PyObject * PyWGVehicleFilter::pyGet_groundDeformationRate()
+{
+    if (!this->attached())
+    {
+        PyErr_SetString( PyExc_ValueError, "groundDeformationRate requires an attached WGVehicleFilter" );
+        return NULL;
+    }
+    const float result = state_->groundDeformationRate();
+    if (PyErr_Occurred()) return NULL;
+    return Script::getData( result );
+}
+
+PyObject * PyWGVehicleFilter::py_setTracksSpeed( PyObject * args )
+{
+    PyObject * values[4];
+    if (!PyArg_ParseTuple( args, "OOOO:setTracksSpeed", &values[0], &values[1],
+        &values[2], &values[3] )) return NULL;
+    float left, right;
+    bool leftLocked, rightLocked;
+    if (Script::setData( values[0], left, "setTracksSpeed argument 1" ) != 0 ||
+        Script::setData( values[1], leftLocked, "setTracksSpeed argument 2" ) != 0 ||
+        Script::setData( values[2], right, "setTracksSpeed argument 3" ) != 0 ||
+        Script::setData( values[3], rightLocked, "setTracksSpeed argument 4" ) != 0)
+        return NULL;
+    if (!this->attached())
+    {
+        ERROR_MSG( "WGVehicleFilter.setTracksSpeed requires an attached filter\n" );
+        Py_RETURN_NONE;
+    }
+    state_->leftTrackSpeed = left;
+    state_->rightTrackSpeed = right;
+    state_->leftTrackLocked = leftLocked;
+    state_->rightTrackLocked = rightLocked;
+    Py_RETURN_NONE;
+}
+
+PyObject * PyWGVehicleFilter::py_syncStabilisedYPR( PyObject * args )
+{
+    Vector3 angles;
+    if (!PyArg_ParseTuple( args, "fff:syncStabilisedYPR", &angles.x, &angles.y, &angles.z ))
+        return NULL;
+    if (!this->attached())
+    {
+        ERROR_MSG( "WGVehicleFilter.syncStabilisedYPR requires an attached filter\n" );
+        Py_RETURN_NONE;
+    }
+    double time;
+    if (!filterInputClock( time )) return NULL;
+    state_->syncChassisOrientation( angles, time );
     Py_RETURN_NONE;
 }
 
@@ -1397,6 +1436,9 @@ PyObject * PyWGVehicleFilter::py_interpolateStabilisedMatrix( PyObject * args )
 PY_TYPEOBJECT( PyWGVehicleFilter )
 PY_BEGIN_METHODS( PyWGVehicleFilter )
     PY_METHOD( addTriangle )
+    PY_METHOD( clearTriangles )
+    PY_METHOD( setTracksSpeed )
+    PY_METHOD( syncStabilisedYPR )
     PY_METHOD( setVehiclePhysics )
     PY_METHOD( getVehiclePhysics )
     PY_METHOD( forceGroundPlacingMatrix )
@@ -1404,7 +1446,6 @@ PY_BEGIN_METHODS( PyWGVehicleFilter )
     PY_METHOD( notifyInputKeysDown )
     PY_METHOD( enableStabilisedMatrix )
     PY_METHOD( interpolateStabilisedMatrix )
-    PY_METHOD( enableLagDetection )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyWGVehicleFilter )
     PY_ATTRIBUTE( bodyMatrix )
@@ -1424,7 +1465,6 @@ PY_BEGIN_ATTRIBUTES( PyWGVehicleFilter )
     PY_ATTRIBUTE( defaultVelocityErrorCompensation )
     PY_ATTRIBUTE( hullLocalPosition )
     PY_ATTRIBUTE( placingOnGround )
-    PY_ATTRIBUTE( maxMove )
     PY_ATTRIBUTE( maxTime )
     PY_ATTRIBUTE( vehicleCollisionCallback )
     PY_ATTRIBUTE( velocity )
@@ -1433,6 +1473,7 @@ PY_BEGIN_ATTRIBUTES( PyWGVehicleFilter )
     PY_ATTRIBUTE( longitudinalSpeed )
     PY_ATTRIBUTE( angularSpeed )
     PY_ATTRIBUTE( suspCompressionRate )
+    PY_ATTRIBUTE( groundDeformationRate )
     PY_ATTRIBUTE( numLeftTrackContacts )
     PY_ATTRIBUTE( numRightTrackContacts )
     PY_ATTRIBUTE( isStrafing )

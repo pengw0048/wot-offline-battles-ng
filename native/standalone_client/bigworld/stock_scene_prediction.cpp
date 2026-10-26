@@ -55,9 +55,9 @@ bool mayBreakDestructible(const PyEntity* owner,const StockObstacleIdentity& ite
 class PredictionEdgeHit : public CollisionCallback {
 public:
     PredictionEdgeHit(const PyEntity* owner,const EntityPtr& entity,const Vector3& velocity,
-                      const ClientSpacePtr& space):
+                      const ClientSpacePtr& space,bool mayBreak):
         owner_(owner),entity_(entity),filter_(entity->pFilter()),velocity_(velocity),space_(space),
-        nearest_(-1.f),unavailable_(false) {}
+        nearest_(-1.f),unavailable_(false),mayBreak_(mayBreak) {}
 
     int operator()(const CollisionObstacle& obstacle,const WorldTriangle& triangle,
                    float distance) override {
@@ -70,25 +70,27 @@ public:
             unavailable_=true;
             return COLLIDE_STOP;
         }
-        StockObstacleIdentity identity;
-        const bool identified=readStockObstacleIdentity(obstacle,identity);
-        if (PyErr_Occurred()) { unavailable_=true;return COLLIDE_STOP; }
-        if (identified) {
-            bool allowed=false;
-            if (!mayBreakDestructible(owner_,identity,material,velocity_,allowed)) {
-                unavailable_=true;return COLLIDE_STOP;
+        if (mayBreak_) {
+            StockObstacleIdentity identity;
+            const bool identified=readStockObstacleIdentity(obstacle,identity);
+            if (PyErr_Occurred()) { unavailable_=true;return COLLIDE_STOP; }
+            if (identified) {
+                bool allowed=false;
+                if (!mayBreakDestructible(owner_,identity,material,velocity_,allowed)) {
+                    unavailable_=true;return COLLIDE_STOP;
+                }
+                if (owner_->isDestroyed() || space_->cleared() || owner_->pEntity().get()!=entity_.get() ||
+                    entity_->spaceID()!=space_->id() || entity_->pFilter()!=filter_) {
+                    PyErr_SetString(PyExc_RuntimeError,"WGVehicleFilter owner changed during destruction query");
+                    unavailable_=true;return COLLIDE_STOP;
+                }
+                if (allowed) return COLLIDE_ALL;
+            } else if (material>=0x47u && material<=0x56u) {
+                // No original identity means no trustworthy destruction decision.
+                // The loader owns this metadata; do not substitute a BSP index.
+                unavailable_=true;
+                return COLLIDE_STOP;
             }
-            if (owner_->isDestroyed() || space_->cleared() || owner_->pEntity().get()!=entity_.get() ||
-                entity_->spaceID()!=space_->id() || entity_->pFilter()!=filter_) {
-                PyErr_SetString(PyExc_RuntimeError,"WGVehicleFilter owner changed during destruction query");
-                unavailable_=true;return COLLIDE_STOP;
-            }
-            if (allowed) return COLLIDE_ALL;
-        } else if (material>=0x47u && material<=0x56u) {
-            // No original identity means no trustworthy destruction decision.
-            // The loader owns this metadata; do not substitute a BSP index.
-            unavailable_=true;
-            return COLLIDE_STOP;
         }
         if (nearest_<0.f || distance<nearest_) nearest_=distance;
         return COLLIDE_BEFORE;
@@ -105,11 +107,13 @@ private:
     ClientSpacePtr space_;
     float nearest_;
     bool unavailable_;
+    bool mayBreak_;
 };
 }
 
-bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
-    const WeakPyPtr<PyEntity>& weakOwner,const Vector3& velocity,bool& blocked) {
+static bool queryPredictionEdges(SpaceID spaceID,const Vector3* endpoints,
+    const WeakPyPtr<PyEntity>& weakOwner,const Vector3& velocity,bool& blocked,
+    unsigned edgeCount,bool mayBreak) {
     if (PyErr_Occurred()) return false;
     const WeakPyPtr<PyEntity> ownerIdentity(weakOwner);
     const PyEntity* owner=ownerIdentity.get();
@@ -129,7 +133,7 @@ bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
         PyErr_SetString(PyExc_ValueError,"WGVehicleFilter prediction geometry is invalid");
         return false;
     }
-    for (unsigned i=0;i<8;++i) {
+    for (unsigned i=0;i<edgeCount*2;++i) {
         if (!finite(endpoints[i])) {
             PyErr_SetString(PyExc_ValueError,"WGVehicleFilter prediction edge is not finite");
             return false;
@@ -141,8 +145,8 @@ bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
         return false;
     }
     const MovementFilter* filter=entity->pFilter();
-    for (unsigned i=0;i<4;++i) {
-        PredictionEdgeHit query(owner,entity,velocity,space);
+    for (unsigned i=0;i<edgeCount;++i) {
+        PredictionEdgeHit query(owner,entity,velocity,space,mayBreak);
         space->collide(endpoints[i*2],endpoints[i*2+1],query);
         if (query.unavailable()) {
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError,
@@ -160,5 +164,15 @@ bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
     }
     blocked=false;
     return true;
+}
+
+bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
+    const WeakPyPtr<PyEntity>& owner,const Vector3& velocity,bool& blocked) {
+    return queryPredictionEdges(spaceID,endpoints,owner,velocity,blocked,4,true);
+}
+
+bool queryStockEntityLagScenePrediction(SpaceID spaceID,const Vector3* endpoints,
+    const WeakPyPtr<PyEntity>& owner,const Vector3& velocity,bool& blocked) {
+    return queryPredictionEdges(spaceID,endpoints,owner,velocity,blocked,3,false);
 }
 BW_END_NAMESPACE

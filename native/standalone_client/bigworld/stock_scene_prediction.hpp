@@ -16,4 +16,10 @@ class PyEntity;
 bool queryStockScenePrediction(SpaceID spaceID,const Vector3* endpoints,
     const WeakPyPtr<PyEntity>& owner,const Vector3& velocity,bool& blocked);
 
+// WGEntityFilter 006f0730 queries its three actual cross/vertical segments.
+// Its Ccb_ has no destructible-break callback; a solid obstacle stays solid.
+// Endpoints contains six vectors in the original geometry edge 4/5/6 order.
+bool queryStockEntityLagScenePrediction(SpaceID spaceID,const Vector3* endpoints,
+    const WeakPyPtr<PyEntity>& owner,const Vector3& velocity,bool& blocked);
+
 BW_END_NAMESPACE

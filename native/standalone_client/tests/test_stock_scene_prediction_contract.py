@@ -150,6 +150,35 @@ int main() {
     edges[7].z=0;pythonError=false;
     space->cleared_=true;
     assert(!queryStockScenePrediction(1,edges,owner,{},blocked));
+    // The ordinary entity filter has exactly three cross/vertical rays and
+    // no destructible callback. A breakable obstacle remains a solid hit.
+    pythonError=false;
+    space=std::make_shared<ClientSpace>();space->edges={ignored,ignored,ignored};
+    SpaceManager::instance().value=space;
+    const unsigned oldCallbacks=callbackCalls;
+    edges[7].z=INFINITY; // Not part of the base's six authored endpoints.
+    blocked=true;
+    assert(queryStockEntityLagScenePrediction(1,edges,owner,{},blocked));
+    assert(!blocked && space->calls==3 && callbackCalls==oldCallbacks);
+    edges[7].z=0;
+    for (bool identified:{false,true}) {
+        space->calls=0;space->edges={{{0,71,1,false,identified,true,true}}};
+        blocked=false;
+        assert(queryStockEntityLagScenePrediction(1,edges,owner,{},blocked));
+        assert(blocked && !pythonError && callbackCalls==oldCallbacks);
+    }
+    space->calls=0;space->edges={{},{},{{0,1,1}}};blocked=false;
+    assert(queryStockEntityLagScenePrediction(1,edges,owner,{},blocked));
+    assert(blocked && space->calls==3);
+    space->calls=0;space->edges={{}};space->during=[&]{entity.entity->filter=&replacement;};
+    blocked=true;
+    assert(!queryStockEntityLagScenePrediction(1,edges,owner,{},blocked));
+    assert(blocked && pythonError);
+    entity.entity->filter=nullptr;space->during={};pythonError=false;
+    edges[5].z=INFINITY;
+    assert(!queryStockEntityLagScenePrediction(1,edges,owner,{},blocked));
+    assert(blocked && pythonError);
+    edges[5].z=0;
     pythonError=false;owner.value=nullptr;
     assert(!queryStockScenePrediction(1,edges,owner,{},blocked));
 }
@@ -167,7 +196,7 @@ def main():
         subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-Wall', '-Wextra',
                         '-Werror', str(path / 'check.cpp'), '-o', executable], check=True)
         subprocess.run([executable], check=True)
-    print('Actual prediction bridge filtering, four-edge ordering and owner failure checks passed')
+    print('Actual vehicle four-edge and entity three-edge prediction, callback separation and owner guards passed')
 
 
 if __name__ == '__main__':

@@ -87,6 +87,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_collision.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_identity.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_prediction.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_entity_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_filter_helper.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio_io.cpp"
