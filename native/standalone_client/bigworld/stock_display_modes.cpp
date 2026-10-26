@@ -2,6 +2,7 @@
 #include "pch.hpp"
 #include "stock_display_modes.hpp"
 #include "moo/render_context.hpp"
+#include "moo/init.hpp"
 #include <wtsapi32.h>
 #endif
 
@@ -179,6 +180,12 @@ void stockRememberDisplayWindow()
 
 void stockDisplayWindowMessage( UINT message, WPARAM wParam, LPARAM lParam )
 {
+    // BWWndProc can receive final activation messages after Moo::fini().
+    if (!Moo::isInitialised())
+    {
+        windowPresentationActive = false;
+        return;
+    }
     // #1513 b0cff0 -> b0bfe0/b0be90: WM_SIZE and WM_ACTIVATE share
     // active/minimized state; the session-lock bit has a separate owner.
     switch (message)

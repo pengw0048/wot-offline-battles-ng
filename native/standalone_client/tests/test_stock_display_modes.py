@@ -82,6 +82,7 @@ struct D3DDISPLAYMODE { unsigned Width,Height,RefreshRate;D3DFORMAT Format; };
 struct IDirect3D9 { HMONITOR GetAdapterMonitor(unsigned i){return monitorHandle(i);}void Release(){++releases;} };
 struct Device { int GetDirect3D(IDirect3D9** out){static IDirect3D9 api;*out=&api;return 0;} };
 namespace Moo {
+bool initialized=true;bool isInitialised(){return initialized;}
 struct DeviceInfo { unsigned adapterID_;D3DDISPLAYMODE windowedDisplayMode_;std::vector<D3DDISPLAYMODE> displayModes_; };
 struct RenderContext {
     Device gpu;std::vector<DeviceInfo> adapters={
@@ -93,7 +94,7 @@ struct RenderContext {
     bool changeMode(unsigned index,bool target){++changes;if(!changeOK)return false;activeMode=index;::windowed=target;return true;}
     bool resetDevice(){++resets;return resetOK;}
 };
-RenderContext& rc(){static RenderContext value;return value;}
+RenderContext& rc(){assert(initialized);static RenderContext value;return value;}
 }
 #include "@PRODUCTION@"
 PyObject* modeIndex(PyObject*,PyObject*){return PyInt_FromLong(activeMode);}
@@ -164,6 +165,11 @@ int main(){
         deviceLost=true;run("assert B.isWindowVisible() is False");
         deviceLost=false;run("assert B.isWindowVisible() is True");
     }
+    Moo::initialized=false;
+    stockDisplayWindowMessage(WM_ACTIVATE,1,0);
+    stockDisplayWindowMessage(WM_SIZE,0,0x10001);
+    run("assert B.isWindowVisible() is False");
+    Moo::initialized=true;stockDisplayWindowMessage(WM_CREATE,0,0);
     windowed=true;
     // -1 must still apply the requested enum; it is not the public bool API.
     assert(stockChangeVideoMode(-1,BORDERLESS));assert(windowMode()==BORDERLESS);assert(resets==1);
