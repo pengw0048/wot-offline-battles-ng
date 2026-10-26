@@ -18,11 +18,14 @@ spec.loader.exec_module(patch)
 
 HARNESS = r'''
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <type_traits>
 #include <vector>
 #define MF_ASSERT(x) assert(x)
+#define BW_STATIC_ASSERT(x, reason) static_assert(x, #reason)
 #define ASSET_MSG(...) ((void)0)
 namespace BW {
 using uint32=std::uint32_t;
@@ -38,18 +41,22 @@ class BinaryFormat {
 public:
     unsigned opens=0,closes=0;
     class Stream {
-        const std::vector<unsigned char>& bytes_;size_t cursor_=0;
+        void* pBuffer_;size_t length_,cursor_;
     public:
-        explicit Stream(const std::vector<unsigned char>& b):bytes_(b){}
-        template<class T> bool read(T& value){if(sizeof(T)>bytes_.size()-cursor_)return false;
-            std::memcpy(&value,bytes_.data()+cursor_,sizeof(T));cursor_+=sizeof(T);return true;}
-        bool eof()const{return cursor_==bytes_.size();}
+        Stream();Stream(void*,size_t);Stream(Stream&);Stream& operator=(const Stream&)=default;
+        bool isValid()const;size_t length()const;bool eof()const;size_t size()const;
+        void reset();size_t tell()const;void seek(size_t);void* readRaw(size_t);
+        bool read(uint32&);
+        template<class T> bool read(T&);
+        template<class T> bool read(T*&);
     } stream;
-    explicit BinaryFormat(const std::vector<unsigned char>& bytes):stream(bytes){}
+    explicit BinaryFormat(const std::vector<unsigned char>& bytes):stream(){
+        if(!bytes.empty()){Stream input(const_cast<unsigned char*>(bytes.data()),bytes.size());stream=input;}}
     Stream* findAndOpenSection(int,int,const char*){++opens;return &stream;}
     void closeSection(Stream* p){assert(p==&stream);++closes;}
     const char* resourceID()const{return "fixture";}
 };
+@STREAM@
 class CompiledSpaceSettings {
     BinaryFormat* pReader_;BinaryFormat::Stream* pStream_;
     CompiledSpaceSettingsTypes::Header data_;
@@ -91,13 +98,25 @@ class SpaceSettingsTests(unittest.TestCase):
         with tarfile.open(archive) as source:
             member = next(p for p in source if p.name.endswith('/programming/bigworld/lib/compiled_space/compiled_space_settings.cpp'))
             path.write_bytes(source.extractfile(member).read())
+            def pinned(name):
+                entry = next(p for p in source.getmembers()
+                             if p.name.endswith('/programming/bigworld/lib/compiled_space/' + name))
+                return source.extractfile(entry).read().decode('utf-8-sig')
+            implementation = pinned('binary_format.cpp')
+            header = pinned('binary_format.hpp')
+        # Compile the pinned stream implementation and overloads. In particular,
+        # read(float&) uses a size-prefixed template, unlike read(uint32&).
+        stream = implementation[implementation.index('BinaryFormat::Stream::Stream()'):
+                                implementation.index('bool BinaryFormat::Stream::read( StaticLooseOctree& dest )')]
+        templates = header[header.index('template<class T>\nbool BinaryFormat::Stream::read( T& dest )'):
+                           header.index('template<class T>\nbool BinaryFormat::Stream::read( ExternalArray<T>& dest )')]
         patch.patch(cls.root)
         patched = path.read_text()
         patch.patch(cls.root)
         assert patched == path.read_text()
         source = '\n'.join(line for line in patched.splitlines() if not line.startswith('#include'))
         cls.source = cls.root / 'probe.cpp'
-        cls.source.write_text(HARNESS.replace('@SOURCE@', source))
+        cls.source.write_text(HARNESS.replace('@SOURCE@', source).replace('@STREAM@', stream + templates))
         cls.binary = cls.root / 'probe'
         subprocess.run(['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-unused-local-typedefs',
                         '-fsanitize=address,undefined', str(cls.source), '-o', str(cls.binary)], check=True)
@@ -128,6 +147,26 @@ class SpaceSettingsTests(unittest.TestCase):
         cases += [(struct.pack('<I', size) + raw[4:], False) for size in (0, 20, 28, 32, 0xffffffff)]
         cases += [(raw + b'x', False)]
         self.check_cases(cases)
+
+    def test_upgrade_previous_patch_and_reject_drift(self):
+        path = self.root / 'lib/compiled_space/compiled_space_settings.cpp'
+        current = path.read_text()
+        previous = current.replace(patch.READ, patch.PREVIOUS_READ).replace(
+            '    memcpy( bounds, raw, sizeof(bounds) );\n', '')
+        self.assertNotEqual(previous, current)
+        try:
+            path.write_text(previous)
+            patch.patch(self.root)
+            self.assertEqual(path.read_text(), current)
+            patch.patch(self.root)
+            self.assertEqual(path.read_text(), current)
+            drifted = current.replace('    memcpy( bounds, raw, sizeof(bounds) );\n', '')
+            path.write_text(drifted)
+            with self.assertRaises(ValueError):
+                patch.patch(self.root)
+            self.assertEqual(path.read_text(), drifted)
+        finally:
+            path.write_text(current)
 
     def test_every_original_map(self):
         client = os.environ.get('WOT_0922_CLIENT')

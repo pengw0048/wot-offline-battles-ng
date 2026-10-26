@@ -28,6 +28,10 @@ def patch(root):
     cpp = 'lib/compiled_space/compiled_space.cpp'
     edit(cpp, '#include "compiled_space.hpp"',
          '#include "compiled_space.hpp"\n#include "stock_compiled_space_mapping.hpp"')
+    # The original #1513 engine config has no public-engine spaceType switch.
+    # Its compiled maps must reach the native loaders without a diagnostic flag.
+    edit(cpp, 'pConfigDS->readString( CMD_PARAM_SPACETYPE ) == COMPILED_SPACE_TYPE_NAME;',
+         'pConfigDS->readString( CMD_PARAM_SPACETYPE, COMPILED_SPACE_TYPE_NAME ) == COMPILED_SPACE_TYPE_NAME;')
     edit(cpp, 'mappingCreator_( &DefaultCompiledSpaceMapping::create )',
          'mappingCreator_( &createStockCompiledSpaceMapping )')
     edit(cpp, '\tStaticSceneProvider::registerHandlers( this->scene() );',

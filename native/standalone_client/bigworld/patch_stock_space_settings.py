@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 
 
-READ = '''    // #1513 006b8a70 reads a 24-byte payload after its size word.
+PREVIOUS_READ = '''    // #1513 006b8a70 reads a 24-byte payload after its size word.
     // Native AABB alignment is not part of the original serialized format.
     uint32 bytes = 0;
     float bounds[6];
@@ -12,6 +12,15 @@ READ = '''    // #1513 006b8a70 reads a 24-byte payload after its size word.
         !pStream_->read( bounds[2] ) || !pStream_->read( bounds[3] ) ||
         !pStream_->read( bounds[4] ) || !pStream_->read( bounds[5] ) ||
         !pStream_->eof())
+'''
+
+READ = '''    // #1513 006b8a70 reads a 24-byte payload after its size word.
+    // Stream::read(float&) expects another size prefix; the six floats are raw.
+    uint32 bytes = 0;
+    float bounds[6];
+    const void * raw = NULL;
+    if (!pStream_->read( bytes ) || bytes != sizeof(bounds) ||
+        !(raw = pStream_->readRaw( sizeof(bounds) )) || !pStream_->eof())
 '''
 
 
@@ -25,10 +34,18 @@ def patch(root):
 
 '''
     anchor = '\t// No need to keep this in memory\n'
-    if READ not in source:
+    copied_assignment = '    memcpy( bounds, raw, sizeof(bounds) );\n' + assignment
+    if source.count(READ) == 1:
+        if source.count(copied_assignment) != 1:
+            raise ValueError('Unrecognized patched compiled-space bounds assignment')
+    elif source.count(PREVIOUS_READ) == 1:
+        if source.count(assignment) != 1:
+            raise ValueError('Unrecognized previous compiled-space bounds assignment')
+        source = source.replace(PREVIOUS_READ, READ).replace(assignment, copied_assignment)
+    else:
         if source.count(original) != 1 or source.count(anchor) != 1:
             raise ValueError('Unrecognized pinned compiled-space bounds reader')
-        source = source.replace(original, READ).replace(anchor, assignment + anchor)
+        source = source.replace(original, READ).replace(anchor, copied_assignment + anchor)
     path.write_text(source, encoding='utf-8')
 
 
