@@ -130,6 +130,11 @@ def start():
     BigWorld.callback(0., BigWorld.quit)
 
 
+def onChangeEnvironments(environment):
+    REPORT['environment'] = environment
+    save()
+
+
 def fini():
     REPORT['lifecycle'].append('fini')
     save()
