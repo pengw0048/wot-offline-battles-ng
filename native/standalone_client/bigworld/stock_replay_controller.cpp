@@ -342,6 +342,9 @@ struct State {
 struct PyController {PyObject_HEAD State* state;PyObject* callbacks[callbackCount];};
 PyTypeObject type={PyObject_HEAD_INIT(NULL) 0};
 std::set<PyController*> owners;
+// 6fd780 publishes the most recently constructed controller to native clock
+// consumers. This pointer does not retain the Python owner.
+PyController* currentController=NULL;
 bool registered=false;
 bool text(PyObject* object,std::string& result){
     PyObject* encoded=PyUnicode_Check(object)?PyUnicode_AsUTF8String(object):NULL;
@@ -381,14 +384,14 @@ int clear(PyController* self){
     }
     return 0;
 }
-void dealloc(PyController* self){PyObject_GC_UnTrack(self);owners.erase(self);clear(self);delete self->state;Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));}
+void dealloc(PyController* self){PyObject_GC_UnTrack(self);owners.erase(self);if(currentController==self)currentController=NULL;clear(self);delete self->state;Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));}
 PyObject* construct(PyTypeObject* cls,PyObject* args,PyObject* kwargs){
     if(PyTuple_Size(args)||(kwargs&&PyDict_Size(kwargs))){PyErr_SetString(PyExc_TypeError,"WGReplayController takes no arguments");return NULL;}
     auto* self=reinterpret_cast<PyController*>(cls->tp_alloc(cls,0));if(!self)return NULL;
     self->state=NULL;for(auto*& callback:self->callbacks)callback=NULL;
     try{self->state=new State;owners.insert(self);self->state->controller.onFinished=[self](){notify(self,0);};self->state->controller.onVersionDiffers=[self](){notify(self,4);};self->state->controller.onDataCallback=[self](const std::string& name,const std::string& payload){deliverDataCallback(self,name,payload);};}
     catch(const std::bad_alloc&){Py_DECREF(self);return PyErr_NoMemory();}
-    catch(const std::exception& exception){Py_DECREF(self);PyErr_SetString(PyExc_RuntimeError,exception.what());return NULL;}return reinterpret_cast<PyObject*>(self);
+    catch(const std::exception& exception){Py_DECREF(self);PyErr_SetString(PyExc_RuntimeError,exception.what());return NULL;}currentController=self;return reinterpret_cast<PyObject*>(self);
 }
 bool noArgs(PyObject* args,PyObject* kwargs){static char* names[]={NULL};return PyArg_ParseTupleAndKeywords(args,kwargs,"",names)!=0;}
 PyObject* unsupported(PyController*,PyObject*,PyObject*){PyErr_SetString(PyExc_NotImplementedError,"This replay operation requires packet owners that have not yet been recovered");return NULL;}
@@ -510,6 +513,7 @@ BWNullConnection* createStockReplayNativeConnection(BWEntityFactory& factory,BWS
 }
 bool initialiseStockReplayController(){using namespace StockReplayDetail;if(!prepare())return false;PyObject* module=PyImport_AddModule("BigWorld");return module&&PyObject_SetAttrString(module,"WGReplayController",reinterpret_cast<PyObject*>(&type))==0;}
 void tickStockReplayController(float delta){using namespace StockReplayDetail;std::vector<PyController*> snapshot(owners.begin(),owners.end());for(auto* owner:snapshot)Py_INCREF(owner);for(auto* owner:snapshot){std::string error;if(!owner->state->controller.tick(delta,error))ERROR_MSG("WGReplayController: %s\n",error.c_str());Py_DECREF(owner);}}
-void finiStockReplayController(){using namespace StockReplayDetail;std::vector<PyController*> snapshot(owners.begin(),owners.end());for(auto* owner:snapshot)Py_INCREF(owner);for(auto* owner:snapshot){clear(owner);Py_DECREF(owner);}}
+bool stockReplayPlaybackPaused(){using namespace StockReplayDetail;return currentController&&currentController->state&&currentController->state->controller.speed()==0.f;}
+void finiStockReplayController(){using namespace StockReplayDetail;currentController=NULL;std::vector<PyController*> snapshot(owners.begin(),owners.end());for(auto* owner:snapshot)Py_INCREF(owner);for(auto* owner:snapshot){clear(owner);Py_DECREF(owner);}}
 BW_END_NAMESPACE
 #endif

@@ -60,6 +60,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_presets.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_display_modes.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_math_providers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_wot_module.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battleground_elements.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_particle_quality.cpp"

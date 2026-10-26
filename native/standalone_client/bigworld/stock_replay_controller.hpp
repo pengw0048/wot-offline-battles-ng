@@ -80,6 +80,7 @@ BWNullConnection* createStockReplayNativeConnection(BWEntityFactory& factory,
     unsigned int space,const std::shared_ptr<wot::StockReplayClock>& clock);
 bool initialiseStockReplayController();
 void tickStockReplayController(float delta);
+bool stockReplayPlaybackPaused();
 void finiStockReplayController();
 BW_END_NAMESPACE
 #endif
