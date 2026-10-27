@@ -293,6 +293,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-resource-content-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_resources.py"),
         $EngineRoot) "stock-scaleform-resources-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_localization.py"),
+        $EngineRoot) "stock-scaleform-localization-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_script_paths.py"),
         $EngineRoot) "stock-script-paths-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_xmpp.py"),
@@ -558,6 +560,9 @@ subprocess.run([sys.argv[1], sys.argv[2]], check=True, timeout=60)
     Invoke-Checked "cmake" @("--build", $BuildRoot, "--config", "Hybrid",
         "--target", "probe_scaleform_lifecycle", "--parallel", "4") "scaleform-lifecycle-probe-compile.log"
     Invoke-Checked (Join-Path $BuildRoot "native-probes\Hybrid\probe_scaleform_lifecycle.exe") @() "scaleform-lifecycle-probe-run.log"
+    Invoke-Checked "cmake" @("--build", $BuildRoot, "--config", "Hybrid",
+        "--target", "probe_stock_scaleform_amf3", "--parallel", "4") "scaleform-amf3-probe-compile.log"
+    Invoke-Checked (Join-Path $BuildRoot "native-probes\Hybrid\probe_stock_scaleform_amf3.exe") @() "scaleform-amf3-probe-run.log"
     Invoke-Checked "cmake" @("--build", $BuildRoot, "--config", "Hybrid",
         "--target", "probe_stock_replay_file", "--parallel", "4") "replay-file-probe-compile.log"
     # CPython ships an independent, same-architecture OpenSSL DLL. The native

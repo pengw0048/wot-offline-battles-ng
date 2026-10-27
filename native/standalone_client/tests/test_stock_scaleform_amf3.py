@@ -1,7 +1,7 @@
 """ByteArray AMF3: the #1513 4.6.34 codec seams on SDK 4.2.22.
 
-The real SDK, the exact gui/flash/lobby.swf DataUtils.cloneObject consumer and
-the encoded bytes are exercised only by the Win32 probe.
+The optional Win32 HeapPT probe runs the production SDK ByteArray thunks on a
+minimal AS3 movie. Source and compile tests do not prove the retail GUI consumer.
 """
 from pathlib import Path
 import os
@@ -60,6 +60,35 @@ class ScaleformAMF3Test(unittest.TestCase):
         self.assertEqual([int(code) for code, unused in messages], mapping)
         self.assertEqual(messages[-1], ('2173', str(len(mapping) - 1)))
         self.assertIn('eReadExternalNotImplementedError                = 2173,', text['Src/GFx/AS3/AS3_VM.h'])
+
+    def test_stack_temporaries_use_global_heap_containers(self):
+        unused_files, text = patched(self)
+        source = text[BYTE_ARRAY_CPP]
+        codec = source[source.index('struct ByteArray::AMF3WriteScope'):
+                       source.index('static bool IsAMF3FunctionObject')]
+        # All ten scope tables and the self-write snapshot must support stack
+        # residency. LH infers a Scaleform allocation from the container address.
+        self.assertNotRegex(codec, r'\b(?:HashLH|ArrayLH)\s*<')
+        self.assertEqual(len(re.findall(r'\bHash\s*<', codec)), 2)
+        self.assertEqual(len(re.findall(r'\bArray\s*<', codec)), 8)
+        self.assertIn('ArrayPOD<UInt8> bytes;', source)
+        self.assertNotIn('ArrayLH_POD<UInt8> bytes;', source)
+
+    def test_real_heappt_sdk_bytearray_probe(self):
+        fixed = os.environ.get('WOT_SCALEFORM_AMF3_PROBE')
+        before = os.environ.get('WOT_SCALEFORM_AMF3_BEFORE_PROBE')
+        if not fixed:
+            self.skipTest('Set WOT_SCALEFORM_AMF3_PROBE to run the real SDK HeapPT probe')
+        # The executable owns its minimal AS3 MemoryFile fixture. The optional
+        # historical codec build is diagnostic-only; normal gates run the fix.
+        if before:
+            negative = subprocess.run([before], capture_output=True, timeout=60)
+            self.assertEqual(negative.returncode & 0xffffffff, 0xc0000005,
+                             negative.stdout.decode(errors='replace'))
+        positive = subprocess.run([fixed], capture_output=True, timeout=60)
+        self.assertEqual(positive.returncode, 0, positive.stdout.decode(errors='replace') +
+                         positive.stderr.decode(errors='replace'))
+        self.assertIn(b'PASS real SDK ByteArray scope cleanup', positive.stdout)
 
     def test_codec_compiles_against_the_patched_sdk(self):
         checkout = Path(os.environ.get('WOT_SCALEFORM_SDK_GIT',

@@ -99,6 +99,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio_io.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bigworld_ipc.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_glyph_cache.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_scaleform_localization.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_screener.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_ballistics_scene.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_ballistics_simulator.cpp"
@@ -176,6 +177,14 @@ add_executable(probe_scaleform_lifecycle
     "${CMAKE_CURRENT_LIST_DIR}/../tests/probe_scaleform_lifecycle.cpp")
 target_link_libraries(probe_scaleform_lifecycle PRIVATE wot_sf_gfx)
 set_target_properties(probe_scaleform_lifecycle PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native-probes")
+
+add_executable(probe_stock_scaleform_amf3
+    "${CMAKE_CURRENT_LIST_DIR}/../tests/stock_scaleform_amf3_sdk_probe.cpp")
+target_compile_features(probe_stock_scaleform_amf3 PRIVATE cxx_std_14)
+target_link_libraries(probe_stock_scaleform_amf3 PRIVATE
+    wot_sf_as3 wot_sf_expat user32 gdi32 advapi32)
+set_target_properties(probe_stock_scaleform_amf3 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native-probes")
 
 add_executable(probe_stock_battleground_elements

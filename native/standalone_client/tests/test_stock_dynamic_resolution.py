@@ -306,8 +306,10 @@ class DynamicResolutionTest(unittest.TestCase):
                 if member:
                     contents[name] = original.extractfile(member).read()
                 else:
+                    # These headers are emitted by the patchers, not shipped in the archive.
                     self.assertIn(name, {'lib/stock_dynamic_resolution.hpp',
-                                         'lib/wot/stock_dynamic_resolution.hpp'})
+                                         'lib/wot/stock_dynamic_resolution.hpp',
+                                         'lib/resmgr/stock_effect_cache.hpp'})
         orders = itertools.permutations(names[:4])
         for order in orders:
             for startup_first in (True, False):

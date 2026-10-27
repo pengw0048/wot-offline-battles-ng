@@ -3,26 +3,29 @@
     // readObject 00e1c140). Output is always AMF3 and big-endian; objectEncoding
     // is not consulted in either direction.
 
+    // These scopes live on the C++ stack. LH containers infer their heap from
+    // their own address, which must belong to a Scaleform allocation. Use GH
+    // containers so temporary reference tables have valid allocation ownership.
     struct ByteArray::AMF3WriteScope
     {
         // 4.6.34 writer scope: string and object tables. Its traits table is
         // only looked up (e745a3), never filled, so traits are always inline.
-        HashLH<ASStringNode*, UInt32> StringIndex;
-        ArrayLH<Ptr<ASStringNode> > Strings;
-        HashLH<AS3::Object*, UInt32> ObjectIndex;
-        ArrayLH<SPtr<AS3::Object> > Objects;
+        Hash<ASStringNode*, UInt32> StringIndex;
+        Array<Ptr<ASStringNode> > Strings;
+        Hash<AS3::Object*, UInt32> ObjectIndex;
+        Array<SPtr<AS3::Object> > Objects;
     };
 
     struct ByteArray::AMF3ReadScope
     {
         // 4.6.34 reader context: strings, objects, traits and sealed members.
         // A traits record pushes its members before its names, its traits after.
-        ArrayLH<Ptr<ASStringNode> > Strings;
-        ArrayLH<SPtr<AS3::Object> > Objects;
-        ArrayLH<SPtr<InstanceTraits::Traits> > Traits;
-        ArrayLH<UPInt> MemberStart;
-        ArrayLH<UPInt> MemberCount;
-        ArrayLH<const SlotInfo*> Members;
+        Array<Ptr<ASStringNode> > Strings;
+        Array<SPtr<AS3::Object> > Objects;
+        Array<SPtr<InstanceTraits::Traits> > Traits;
+        Array<UPInt> MemberStart;
+        Array<UPInt> MemberCount;
+        Array<const SlotInfo*> Members;
     };
 
     static bool IsAMF3FunctionObject(const Value& v)
@@ -336,7 +339,7 @@
                 return true;
             }
             // Write may grow (reallocate) or overlap the buffer it copies from.
-            ArrayLH_POD<UInt8> bytes;
+            ArrayPOD<UInt8> bytes;
             bytes.Resize(length);
             memcpy(bytes.GetDataPtr(), Data.GetDataPtr(), length);
             Write(bytes.GetDataPtr(), length);
