@@ -16,7 +16,9 @@ MOVIE_CLIP = 'Src/GFx/AS3/Obj/Display/AS3_Obj_Display_MovieClip.cpp'
 SDK_FILES = ('Src/GFx/AMP/Amp_Server.h', '3rdParty/libpng-1.5.13/png.h', 'Src/Kernel/SF_SIMD_SSE.h',
              'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.cpp', 'Src/GFx/AS3/Obj/AS3_Obj_Date.cpp',
              MOVIE_CLIP, 'Src/GFx/AS3/Obj/AS3_Obj_Global.h', 'Src/GFx/AS3/Obj/AS3_Obj_Global.cpp',
-             'Src/GFx/AS3/AS3_VM.h', 'Src/GFx/AS3/AS3_VM.cpp')
+             'Src/GFx/AS3/AS3_VM.h', 'Src/GFx/AS3/AS3_VM.cpp',
+             'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.h', 'Src/GFx/AS3/Obj/AS3_Obj_Date.h',
+             'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_Dictionary.h')
 BODIES = (('    void MovieClip::currentLabelsGet(', '    void MovieClip::enabledGet('),
           ('    void MovieClip::scenesGet(', '    void MovieClip::totalFramesGet('),
           ('    SPtr<Instances::fl_display::Scene> MovieClip::CreateFakeScene()',

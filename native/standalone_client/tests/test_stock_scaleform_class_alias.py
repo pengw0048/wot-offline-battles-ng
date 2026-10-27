@@ -12,36 +12,49 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_stock_scaleform_scene import ROOT, REVISION, load_patch
+from test_stock_scaleform_scene import ROOT, REVISION, SDK_FILES, load_patch
 
 GLOBAL_H = 'Src/GFx/AS3/Obj/AS3_Obj_Global.h'
 GLOBAL_CPP = 'Src/GFx/AS3/Obj/AS3_Obj_Global.cpp'
 VM_H = 'Src/GFx/AS3/AS3_VM.h'
 VM_CPP = 'Src/GFx/AS3/AS3_VM.cpp'
-SDK_FILES = ('Src/GFx/AMP/Amp_Server.h', '3rdParty/libpng-1.5.13/png.h', 'Src/Kernel/SF_SIMD_SSE.h',
-             'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.cpp', 'Src/GFx/AS3/Obj/AS3_Obj_Date.cpp',
-             'Src/GFx/AS3/Obj/Display/AS3_Obj_Display_MovieClip.cpp', GLOBAL_H, GLOBAL_CPP, VM_H, VM_CPP)
 ALIAS = 'net.wg.gui.components.controls.VO.ActionPriceVO'
-# 00d99f10/00e59350 resolve; 00e59390 moves an alias between files; 00e4fa20
-# drops a destroyed file's aliases. Builtin classes have no file.
+# 00d99f10/00e59350 resolve; 00e59390 moves an alias between files and keeps
+# the latest alias of each class (00e592a0); 00e4fa20 drops a destroyed file's
+# aliases with their reverse entries. Builtin classes have no file.
 EXPECTED = '''unknown {0} -> ReferenceError #1014 {0}
 registered {0} -> ActionPriceVO
+registered ActionPriceVO <- '{0}'
+unaliased TankmanVO <- ''
   lobby.swf: {0}
 second-alias second -> ActionPriceVO
+second-alias ActionPriceVO <- 'second'
 moved tankman -> SettingsControlProp
+moved TankmanVO <- ''
+moved SettingsControlProp <- 'tankman'
   lobby.swf: {0} second
   settings: tankman
 null-class ignored -> ReferenceError #1014 ignored
+null-class ignored -> ReferenceError #1014 ignored
+non-class -> TypeError #1034 notAClass to Class
+non-class coerced -> ReferenceError #1014 coerced
+pending pending -> ReferenceError #1014 pending
 null-alias null -> TankmanVO
+null-alias TankmanVO <- 'null'
 text-null null -> ReferenceError #1014 null
   lobby.swf: {0} null second
 settings-gone tankman -> ReferenceError #1014 tankman
 settings-gone second -> ActionPriceVO
+settings-gone SettingsControlProp <- ''
+settings-gone ActionPriceVO <- 'second'
 lobby-gone {0} -> ReferenceError #1014 {0}
 lobby-gone second -> ReferenceError #1014 second
 lobby-gone null -> ReferenceError #1014 null
 lobby-gone builtin -> Object
-remaining 1
+lobby-gone ActionPriceVO <- ''
+lobby-gone TankmanVO <- ''
+lobby-gone Object <- 'builtin'
+remaining 1 reverse 1
 '''.format(ALIAS)
 
 

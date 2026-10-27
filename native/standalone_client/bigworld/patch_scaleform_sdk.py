@@ -21,6 +21,14 @@ def source_encoding(path):
         return 'latin-1'
 
 
+def upgrade(edit, path, previous, after, label):
+    # Replaces the text an earlier revision of an edit produced, when present.
+    try:
+        edit(path, previous, after, label)
+    except ValueError:
+        pass
+
+
 def read_source(path):
     encoding = source_encoding(path)
     return path.read_text(encoding='utf-8-sig' if encoding == 'utf-8' else encoding)
@@ -78,6 +86,7 @@ def sdk_edits(sdk_root, edit):
          'NumberUtil::IsNaNOrInfinity(time) || (fabs(time) > 8.64e15)',
          'Date floating-point absolute value')
     class_alias_edits(sdk_root, edit)
+    amf3_edits(sdk_root, edit)
 
 
 def class_alias_edits(sdk_root, edit):
@@ -85,28 +94,39 @@ def class_alias_edits(sdk_root, edit):
     # registerClassAlias (2, 2) after navigateToURL; gui/flash/lobby.swf's
     # LobbyApp constructor registers its VO aliases through the latter.
     global_h = sdk_root / 'Src/GFx/AS3/Obj/AS3_Obj_Global.h'
-    edit(global_h,
-         '            navigateToURL(Value::GetUndefined(), request, window);\n        }\n',
-         '            navigateToURL(Value::GetUndefined(), request, window);\n        }\n'
-         '        void getClassByAlias(SPtr<Class>& result, const ASString& aliasName);\n'
-         '        void registerClassAlias(const Value& result, const ASString& aliasName, Class* classObject);\n',
+    # 4.2.22's ThunkFunc2 coercion passes a non-Class through as a pointer, so
+    # registerClassAlias takes the Value and applies 4.6.34's Class coercion.
+    navigate = '            navigateToURL(Value::GetUndefined(), request, window);\n        }\n'
+    get_declaration = '        void getClassByAlias(SPtr<Class>& result, const ASString& aliasName);\n'
+    upgrade(edit, global_h,
+            navigate + get_declaration +
+            '        void registerClassAlias(const Value& result, const ASString& aliasName, Class* classObject);\n',
+            navigate + get_declaration +
+            '        void registerClassAlias(const Value& result, const ASString& aliasName, const Value& classObject);\n',
+            'flash.net class alias declarations')
+    edit(global_h, navigate,
+         navigate + get_declaration +
+         '        void registerClassAlias(const Value& result, const ASString& aliasName, const Value& classObject);\n',
          'flash.net class alias declarations')
     global_cpp = sdk_root / 'Src/GFx/AS3/Obj/AS3_Obj_Global.cpp'
-    edit(global_cpp,
-         'TFunc_Instances_GlobalObjectCPP_navigateToURL::Method = '
-         '&Instances::fl::GlobalObjectCPP::navigateToURL;\n',
-         'TFunc_Instances_GlobalObjectCPP_navigateToURL::Method = '
-         '&Instances::fl::GlobalObjectCPP::navigateToURL;\n'
-         'typedef ThunkFunc1<Instances::fl::GlobalObjectCPP, __LINE__, SPtr<Class>, const ASString&> '
-         'TFunc_Instances_GlobalObjectCPP_getClassByAlias;\n'
-         'typedef ThunkFunc2<Instances::fl::GlobalObjectCPP, __LINE__, const Value, const ASString&, Class*> '
-         'TFunc_Instances_GlobalObjectCPP_registerClassAlias;\n'
-         'template <> const TFunc_Instances_GlobalObjectCPP_getClassByAlias::TMethod '
-         'TFunc_Instances_GlobalObjectCPP_getClassByAlias::Method = '
-         '&Instances::fl::GlobalObjectCPP::getClassByAlias;\n'
-         'template <> const TFunc_Instances_GlobalObjectCPP_registerClassAlias::TMethod '
-         'TFunc_Instances_GlobalObjectCPP_registerClassAlias::Method = '
-         '&Instances::fl::GlobalObjectCPP::registerClassAlias;\n',
+    navigate_method = ('TFunc_Instances_GlobalObjectCPP_navigateToURL::Method = '
+                       '&Instances::fl::GlobalObjectCPP::navigateToURL;\n')
+    get_thunk = ('typedef ThunkFunc1<Instances::fl::GlobalObjectCPP, __LINE__, SPtr<Class>, const ASString&> '
+                 'TFunc_Instances_GlobalObjectCPP_getClassByAlias;\n')
+    methods = ('template <> const TFunc_Instances_GlobalObjectCPP_getClassByAlias::TMethod '
+               'TFunc_Instances_GlobalObjectCPP_getClassByAlias::Method = '
+               '&Instances::fl::GlobalObjectCPP::getClassByAlias;\n'
+               'template <> const TFunc_Instances_GlobalObjectCPP_registerClassAlias::TMethod '
+               'TFunc_Instances_GlobalObjectCPP_registerClassAlias::Method = '
+               '&Instances::fl::GlobalObjectCPP::registerClassAlias;\n')
+    register_thunk = ('typedef ThunkFunc2<Instances::fl::GlobalObjectCPP, __LINE__, const Value, const ASString&, '
+                      'const Value&> TFunc_Instances_GlobalObjectCPP_registerClassAlias;\n')
+    upgrade(edit, global_cpp,
+            navigate_method + get_thunk +
+            'typedef ThunkFunc2<Instances::fl::GlobalObjectCPP, __LINE__, const Value, const ASString&, Class*> '
+            'TFunc_Instances_GlobalObjectCPP_registerClassAlias;\n' + methods,
+            navigate_method + get_thunk + register_thunk + methods, 'flash.net class alias thunks')
+    edit(global_cpp, navigate_method, navigate_method + get_thunk + register_thunk + methods,
          'flash.net class alias thunks')
     edit(global_cpp,
          '"navigateToURL", NULL, Abc::NS_Public, CT_Method, 1, 2},\n',
@@ -116,29 +136,66 @@ def class_alias_edits(sdk_root, edit):
          '                {TFunc_Instances_GlobalObjectCPP_registerClassAlias::Func, NULL, '
          '"registerClassAlias", NULL, Abc::NS_Public, CT_Method, 2, 2},\n',
          'flash.net class alias registration')
-    edit(global_cpp,
-         '//##protect##"instance::::navigateToURL()"\n    }\n',
-         '//##protect##"instance::::navigateToURL()"\n    }\n'
-         '    // 00d99f10: an unregistered alias is ReferenceError #1014.\n'
-         '    void GlobalObjectCPP::getClassByAlias(SPtr<Class>& result, const ASString& aliasName)\n'
-         '    {\n'
-         '        VM& vm = GetVM();\n'
-         '        Class* registered = vm.GetClassByAlias(aliasName);\n'
-         '        if (registered)\n'
-         '        {\n'
-         '            result = registered;\n'
-         '            return;\n'
-         '        }\n'
-         '        vm.ThrowReferenceError(VM::Error(VM::eClassNotFoundError, vm SF_DEBUG_ARG(Value(aliasName))));\n'
-         '    }\n'
-         '    // 00d99fa0: a null class is ignored; the argument coercion rejects a non-Class.\n'
-         '    void GlobalObjectCPP::registerClassAlias(const Value& result, const ASString& aliasName, '
-         'Class* classObject)\n'
-         '    {\n'
-         '        SF_UNUSED1(result);\n'
-         '        if (classObject)\n'
-         '            GetVM().RegisterClassAlias(aliasName, *classObject);\n'
-         '    }\n',
+    # 4.6.34's thunks (00da4320, 00da5690) stop on an exception left by the
+    # argument coercion; SDK 4.2.22's ThunkFunc2 calls the method with the
+    # uncoerced value, so the bodies check first.
+    implementations_previous = (
+        '//##protect##"instance::::navigateToURL()"\n    }\n'
+        '    // 00d99f10: an unregistered alias is ReferenceError #1014.\n'
+        '    void GlobalObjectCPP::getClassByAlias(SPtr<Class>& result, const ASString& aliasName)\n'
+        '    {\n'
+        '        VM& vm = GetVM();\n'
+        '        Class* registered = vm.GetClassByAlias(aliasName);\n'
+        '        if (registered)\n'
+        '        {\n'
+        '            result = registered;\n'
+        '            return;\n'
+        '        }\n'
+        '        vm.ThrowReferenceError(VM::Error(VM::eClassNotFoundError, vm SF_DEBUG_ARG(Value(aliasName))));\n'
+        '    }\n'
+        '    // 00d99fa0: a null class is ignored; the argument coercion rejects a non-Class.\n'
+        '    void GlobalObjectCPP::registerClassAlias(const Value& result, const ASString& aliasName, '
+        'Class* classObject)\n'
+        '    {\n'
+        '        SF_UNUSED1(result);\n'
+        '        if (classObject)\n'
+        '            GetVM().RegisterClassAlias(aliasName, *classObject);\n'
+        '    }\n')
+    implementations = (
+        '//##protect##"instance::::navigateToURL()"\n    }\n'
+        '    // 00d99f10: an unregistered alias is ReferenceError #1014.\n'
+        '    void GlobalObjectCPP::getClassByAlias(SPtr<Class>& result, const ASString& aliasName)\n'
+        '    {\n'
+        '        VM& vm = GetVM();\n'
+        '        if (vm.IsException())\n'
+        '            return;\n'
+        '        Class* registered = vm.GetClassByAlias(aliasName);\n'
+        '        if (registered)\n'
+        '        {\n'
+        '            result = registered;\n'
+        '            return;\n'
+        '        }\n'
+        '        vm.ThrowReferenceError(VM::Error(VM::eClassNotFoundError, vm SF_DEBUG_ARG(Value(aliasName))));\n'
+        '    }\n'
+        '    // 00d99fa0 behind the Class coercion of its argument: null and undefined\n'
+        '    // are ignored, any other non-Class is TypeError #1034.\n'
+        '    void GlobalObjectCPP::registerClassAlias(const Value& result, const ASString& aliasName, '
+        'const Value& classObject)\n'
+        '    {\n'
+        '        SF_UNUSED1(result);\n'
+        '        VM& vm = GetVM();\n'
+        '        if (vm.IsException() || classObject.IsNullOrUndefined())\n'
+        '            return;\n'
+        '        if (!classObject.IsClass())\n'
+        '        {\n'
+        '            vm.ThrowTypeError(VM::Error(VM::eCheckTypeFailedError, vm\n'
+        '                SF_DEBUG_ARG(classObject) SF_DEBUG_ARG("Class")));\n'
+        '            return;\n'
+        '        }\n'
+        '        vm.RegisterClassAlias(aliasName, const_cast<Class&>(classObject.AsClass()));\n'
+        '    }\n')
+    upgrade(edit, global_cpp, implementations_previous, implementations, 'flash.net class alias implementations')
+    edit(global_cpp, '//##protect##"instance::::navigateToURL()"\n    }\n', implementations,
          'flash.net class alias implementations')
 
     vm_h = sdk_root / 'Src/GFx/AS3/AS3_VM.h'
@@ -157,22 +214,39 @@ def class_alias_edits(sdk_root, edit):
          'StatMV_VM_VMAbcFile_Mem> ClassAliases;\n'
          '}; // class VMFile\n',
          'VMFile class alias set')
-    edit(vm_h,
-         '    void AddVMAbcFileWeak(VMAbcFile* f);\n',
-         '    // flash.net class aliases (4.6.34 00e59390 and 00e59350).\n'
-         '    void RegisterClassAlias(const ASString& alias, Class& cls);\n'
-         '    Class* GetClassByAlias(const ASString& alias) const;\n'
-         '    void RemoveClassAlias(const ASString& alias);\n\n'
-         '    void AddVMAbcFileWeak(VMAbcFile* f);\n',
-         'VM class alias API')
+    # Revision dbb0e3e0 integrated these three edits without the reverse map
+    # (vm+0x1b0); upgrade(...) moves an SDK patched by it to the current text.
+    api_previous = (
+        '    // flash.net class aliases (4.6.34 00e59390 and 00e59350).\n'
+        '    void RegisterClassAlias(const ASString& alias, Class& cls);\n'
+        '    Class* GetClassByAlias(const ASString& alias) const;\n'
+        '    void RemoveClassAlias(const ASString& alias);\n\n'
+        '    void AddVMAbcFileWeak(VMAbcFile* f);\n')
+    api = (
+        '    // flash.net class aliases (4.6.34 00e59390, 00e59350 and 00e592a0).\n'
+        '    void RegisterClassAlias(const ASString& alias, Class& cls);\n'
+        '    Class* GetClassByAlias(const ASString& alias) const;\n'
+        '    ASString GetAliasByClass(Class& cls);\n'
+        '    void RemoveClassAlias(const ASString& alias);\n\n'
+        '    void AddVMAbcFileWeak(VMAbcFile* f);\n')
+    upgrade(edit, vm_h, api_previous, api, 'VM class alias API')
+    edit(vm_h, '    void AddVMAbcFileWeak(VMAbcFile* f);\n', api, 'VM class alias API')
+    map_previous = (
+        '    // Raw like 4.6.34: each class\'s file removes its aliases when destroyed.\n'
+        '    ASStringHash<Class*> ClassAliases;\n\n'
+        '    ///////////////////////////////////////////////////////////////////////\n'
+        '    VMAppDomain* SystemDomain;\n')
+    alias_map = (
+        '    // Raw like 4.6.34: each class\'s file removes its aliases when destroyed.\n'
+        '    ASStringHash<Class*> ClassAliases;\n'
+        '    // The latest alias of each class (4.6.34 vm+0x1b0), read by the AMF3 writer.\n'
+        '    HashLH<Class*, ASString, FixedSizeHash<Class*>, StatMV_VM_VM_Mem> ClassAliasNames;\n\n'
+        '    ///////////////////////////////////////////////////////////////////////\n'
+        '    VMAppDomain* SystemDomain;\n')
+    upgrade(edit, vm_h, map_previous, alias_map, 'VM class alias map')
     edit(vm_h,
          '    ///////////////////////////////////////////////////////////////////////\n'
-         '    VMAppDomain* SystemDomain;\n',
-         '    // Raw like 4.6.34: each class\'s file removes its aliases when destroyed.\n'
-         '    ASStringHash<Class*> ClassAliases;\n\n'
-         '    ///////////////////////////////////////////////////////////////////////\n'
-         '    VMAppDomain* SystemDomain;\n',
-         'VM class alias map')
+         '    VMAppDomain* SystemDomain;\n', alias_map, 'VM class alias map')
     vm_cpp = sdk_root / 'Src/GFx/AS3/AS3_VM.cpp'
     edit(vm_cpp,
          'VMFile::~VMFile()\n{\n}\n',
@@ -184,33 +258,198 @@ def class_alias_edits(sdk_root, edit):
          '        VMRef.RemoveClassAlias(*it);\n'
          '}\n',
          'VMFile class alias teardown')
-    edit(vm_cpp,
-         'void VM::AddVMAbcFileWeak(VMAbcFile* f)\n',
-         'void VM::RegisterClassAlias(const ASString& alias, Class& cls)\n{\n'
-         '    // 00e59390: the same pair is unchanged; a moved alias leaves its old file.\n'
-         '    Class** registered = ClassAliases.Get(alias);\n'
-         '    if (registered)\n'
-         '    {\n'
-         '        if (*registered == &cls)\n'
+    register_head = (
+        'void VM::RegisterClassAlias(const ASString& alias, Class& cls)\n{\n'
+        '    // 00e59390: the same pair is unchanged; a moved alias leaves its old file.\n'
+        '    Class** registered = ClassAliases.Get(alias);\n'
+        '    if (registered)\n'
+        '    {\n'
+        '        if (*registered == &cls)\n'
+        '            return;\n'
+        '        VMFile* previous = (*registered)->GetTraits().GetFilePtr();\n'
+        '        if (previous)\n'
+        '            previous->RemoveClassAlias(alias);\n')
+    lookup = (
+        'Class* VM::GetClassByAlias(const ASString& alias) const\n{\n'
+        '    Class* const* registered = ClassAliases.Get(alias);\n'
+        '    return registered ? *registered : NULL;\n'
+        '}\n\n')
+    implementation_previous = (
+        register_head +
+        '    }\n'
+        '    VMFile* file = cls.GetTraits().GetFilePtr();\n'
+        '    if (file)\n'
+        '        file->AddClassAlias(alias);\n'
+        '    ClassAliases.Set(alias, &cls);\n'
+        '}\n\n' + lookup +
+        'void VM::RemoveClassAlias(const ASString& alias)\n{\n'
+        '    ClassAliases.Remove(alias);\n'
+        '}\n\n'
+        'void VM::AddVMAbcFileWeak(VMAbcFile* f)\n')
+    implementation = (
+        register_head +
+        '        ClassAliasNames.Remove(*registered);\n'
+        '    }\n'
+        '    VMFile* file = cls.GetTraits().GetFilePtr();\n'
+        '    if (file)\n'
+        '        file->AddClassAlias(alias);\n'
+        '    ClassAliases.Set(alias, &cls);\n'
+        '    ClassAliasNames.Set(&cls, alias);\n'
+        '}\n\n' + lookup +
+        'ASString VM::GetAliasByClass(Class& cls)\n{\n'
+        '    // 00e592a0: an unaliased class has the empty name.\n'
+        '    const ASString* name = ClassAliasNames.Get(&cls);\n'
+        '    return name ? *name : GetStringManager().CreateEmptyString();\n'
+        '}\n\n'
+        'void VM::RemoveClassAlias(const ASString& alias)\n{\n'
+        '    // 00e4fa20 also drops the reverse entry of the class the alias names.\n'
+        '    Class** registered = ClassAliases.Get(alias);\n'
+        '    if (!registered)\n'
+        '        return;\n'
+        '    ClassAliasNames.Remove(*registered);\n'
+        '    ClassAliases.Remove(alias);\n'
+        '}\n\n'
+        'void VM::AddVMAbcFileWeak(VMAbcFile* f)\n')
+    upgrade(edit, vm_cpp, implementation_previous, implementation, 'VM class alias implementation')
+    edit(vm_cpp, 'void VM::AddVMAbcFileWeak(VMAbcFile* f)\n', implementation, 'VM class alias implementation')
+
+
+
+AMF3_SOURCE = Path(__file__).resolve().parent / 'scaleform_amf3.inc'
+
+
+def amf3_edits(sdk_root, edit):
+    # #1513's 4.6.34 ByteArray.readObject (00e1c140) and writeObject (00e1c860)
+    # run its AMF3 codec; SDK 4.2.22 reports both as not implemented, and
+    # gui/flash/lobby.swf DataUtils.cloneObject needs them.
+    byte_array_h = sdk_root / 'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.h'
+    edit(byte_array_h,
+         '        CheckResult ReadUTFBytes(ASString& result, UInt32 len);\n',
+         '        CheckResult ReadUTFBytes(ASString& result, UInt32 len);\n\n'
+         '        // #1513 4.6.34 AMF3 codec.\n'
+         '        struct AMF3WriteScope;\n'
+         '        struct AMF3ReadScope;\n'
+         '        void AMF3WriteByte(UInt8 v);\n'
+         '        void AMF3WriteU29(UInt32 v);\n'
+         '        void AMF3WriteU32(UInt32 v);\n'
+         '        void AMF3WriteDouble(Value::Number v);\n'
+         '        void AMF3WriteString(AMF3WriteScope& scope, const ASString& s);\n'
+         '        bool AMF3WriteObjectRef(AMF3WriteScope& scope, UInt8 marker, AS3::Object& o);\n'
+         '        bool AMF3WriteGeneric(AMF3WriteScope& scope, AS3::Object& o);\n'
+         '        bool AMF3WriteArray(AMF3WriteScope& scope, Instances::fl::Array& a);\n'
+         '        bool AMF3WriteObject(AMF3WriteScope& scope, AS3::Object& o);\n'
+         '        bool AMF3WriteValue(AMF3WriteScope& scope, const Value& v);\n'
+         '        bool AMF3ReadByte(UInt8& v);\n'
+         '        UInt32 AMF3ReadU29();\n'
+         '        UInt32 AMF3ReadU32();\n'
+         '        Value::Number AMF3ReadDouble();\n'
+         '        ASString AMF3ReadString(AMF3ReadScope& scope);\n'
+         '        bool AMF3ReadObjectRef(AMF3ReadScope& scope, UInt32 u, Value& result);\n'
+         '        void AMF3ReadObject(AMF3ReadScope& scope, Value& result);\n'
+         '        void AMF3ReadArray(AMF3ReadScope& scope, Value& result);\n'
+         '        void AMF3ReadVector(AMF3ReadScope& scope, UInt8 marker, Value& result);\n'
+         '        void AMF3ReadDictionary(AMF3ReadScope& scope, Value& result);\n'
+         '        bool AMF3ReadValue(AMF3ReadScope& scope, Value& result);\n',
+         'ByteArray AMF3 declarations')
+    edit(byte_array_h,
+         '        ArrayLH_POD<UInt8> Data;\n//##protect##"instance$data"\n',
+         '        ArrayLH_POD<UInt8> Data;\n'
+         '        // The active AMF3 scopes; readExternal and writeExternal share them.\n'
+         '        AMF3ReadScope* AMF3Reader;\n'
+         '        AMF3WriteScope* AMF3Writer;\n'
+         '        bool AMF3InReadExternal;\n'
+         '        bool AMF3InWriteExternal;\n'
+         '//##protect##"instance$data"\n',
+         'ByteArray AMF3 state')
+
+    byte_array = sdk_root / 'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.cpp'
+    edit(byte_array, '#include "../../AS3_Marshalling.h"\n',
+         '#include "../../AS3_Marshalling.h"\n'
+         '#include "../AS3_Obj_Array.h"\n#include "../AS3_Obj_Date.h"\n#include "../AS3_Obj_XML.h"\n'
+         '#include "AS3_Obj_Utils_Dictionary.h"\n#include "AS3_Obj_Utils_IExternalizable.h"\n'
+         '#include "../Vec/AS3_Obj_Vec_Vector_int.h"\n#include "../Vec/AS3_Obj_Vec_Vector_uint.h"\n'
+         '#include "../Vec/AS3_Obj_Vec_Vector_double.h"\n#include "../Vec/AS3_Obj_Vec_Vector_String.h"\n'
+         '#include "../Vec/AS3_Obj_Vec_Vector_object.h"\n#include "../Vec/AS3_Obj_Vec_Vector.h"\n',
+         'ByteArray AMF3 includes')
+    edit(byte_array,
+         '    , Length(0)\n//##protect##"instance::ByteArray::ByteArray()$data"\n',
+         '    , Length(0)\n    , AMF3Reader(NULL)\n    , AMF3Writer(NULL)\n'
+         '    , AMF3InReadExternal(false)\n    , AMF3InWriteExternal(false)\n'
+         '//##protect##"instance::ByteArray::ByteArray()$data"\n',
+         'ByteArray AMF3 state initialization')
+    edit(byte_array,
+         '    , Endian(Instances::fl_utils::ByteArray::GetDefaultEndian())\n    , Position(0)\n    {\n    }\n',
+         '    , Endian(Instances::fl_utils::ByteArray::GetDefaultEndian())\n    , Position(0)\n'
+         '    , AMF3Reader(NULL)\n    , AMF3Writer(NULL)\n'
+         '    , AMF3InReadExternal(false)\n    , AMF3InWriteExternal(false)\n    {\n    }\n',
+         'ByteArray encoding constructor AMF3 state')
+    edit(byte_array,
+         '        SF_UNUSED1(result);\n        NOT_IMPLEMENTED("ByteArray::readObject()");\n',
+         '        // 00e1c140: a fresh reference context unless readExternal is running.\n'
+         '        if (AMF3InReadExternal && AMF3Reader)\n'
+         '        {\n'
+         '            AMF3ReadValue(*AMF3Reader, result);\n'
          '            return;\n'
-         '        VMFile* previous = (*registered)->GetTraits().GetFilePtr();\n'
-         '        if (previous)\n'
-         '            previous->RemoveClassAlias(alias);\n'
-         '    }\n'
-         '    VMFile* file = cls.GetTraits().GetFilePtr();\n'
-         '    if (file)\n'
-         '        file->AddClassAlias(alias);\n'
-         '    ClassAliases.Set(alias, &cls);\n'
-         '}\n\n'
-         'Class* VM::GetClassByAlias(const ASString& alias) const\n{\n'
-         '    Class* const* registered = ClassAliases.Get(alias);\n'
-         '    return registered ? *registered : NULL;\n'
-         '}\n\n'
-         'void VM::RemoveClassAlias(const ASString& alias)\n{\n'
-         '    ClassAliases.Remove(alias);\n'
-         '}\n\n'
-         'void VM::AddVMAbcFileWeak(VMAbcFile* f)\n',
-         'VM class alias implementation')
+         '        }\n'
+         '        AMF3ReadScope scope;\n'
+         '        AMF3ReadScope* const outer = AMF3Reader;\n'
+         '        AMF3Reader = &scope;\n'
+         '        AMF3ReadValue(scope, result);\n'
+         '        AMF3Reader = outer;\n',
+         'ByteArray readObject')
+    edit(byte_array,
+         '        SF_UNUSED2(result, object);\n        NOT_IMPLEMENTED("ByteArray::writeObject()");\n',
+         '        SF_UNUSED1(result);\n'
+         '        // 00e1c860: a fresh reference scope unless writeExternal is running.\n'
+         '        if (AMF3InWriteExternal && AMF3Writer)\n'
+         '        {\n'
+         '            AMF3WriteValue(*AMF3Writer, object);\n'
+         '            return;\n'
+         '        }\n'
+         '        AMF3WriteScope scope;\n'
+         '        AMF3WriteScope* const outer = AMF3Writer;\n'
+         '        AMF3Writer = &scope;\n'
+         '        AMF3WriteValue(scope, object);\n'
+         '        AMF3Writer = outer;\n',
+         'ByteArray writeObject')
+    edit(byte_array, 'namespace Instances { namespace fl_utils\n{\n    ByteArray::ByteArray(InstanceTraits::Traits& t)\n',
+         'namespace Instances { namespace fl_utils\n{\n' + read_source(AMF3_SOURCE) +
+         '\n    ByteArray::ByteArray(InstanceTraits::Traits& t)\n', 'ByteArray AMF3 codec')
+
+    vm_h = sdk_root / 'Src/GFx/AS3/AS3_VM.h'
+    edit(vm_h, '    friend class Instances::Function; // Because of ExecuteCode().\n',
+         '    friend class Instances::Function; // Because of ExecuteCode().\n'
+         '    friend class Instances::fl_utils::ByteArray; // Because of ExecuteCode() in AMF3 readObject.\n',
+         'VM AMF3 constructor execution')
+    edit(vm_h, 'namespace Instances { namespace fl\n',
+         'namespace Instances { namespace fl_utils\n{\n    class ByteArray;\n}}\n\n'
+         'namespace Instances { namespace fl\n', 'VM ByteArray declaration')
+    edit(vm_h, '        eSWFHasInvalidData                              = 2136,\n',
+         '        eSWFHasInvalidData                              = 2136,\n'
+         '        eReadExternalNotImplementedError                = 2173,\n',
+         'AMF3 externalizable error id')
+    vm_cpp = sdk_root / 'Src/GFx/AS3/AS3_VM.cpp'
+    edit(vm_cpp, '        2136,\n    };\n', '        2136,\n        2173,\n    };\n', 'AMF3 error mapping')
+    edit(vm_cpp, '        /* 2136,145*/ "The SWF file {0} contains invalid data.",\n',
+         '        /* 2136,145*/ "The SWF file {0} contains invalid data.",\n'
+         '        /* 2173,146*/ "Unable to read object in stream.  The class {0} does not implement '
+         'flash.utils.IExternalizable but is aliased to an externalizable class.",\n',
+         'AMF3 error message')
+
+    date_h = sdk_root / 'Src/GFx/AS3/Obj/AS3_Obj_Date.h'
+    edit(date_h, '//##protect##"forward_declaration"\n//##protect##"forward_declaration"\n',
+         '//##protect##"forward_declaration"\n'
+         'namespace Instances { namespace fl_utils\n{\n    class ByteArray;\n}}\n'
+         '//##protect##"forward_declaration"\n', 'Date AMF3 owner declaration')
+    edit(date_h, '        friend class Classes::fl::Date;\n',
+         '        friend class Classes::fl::Date;\n'
+         '        friend class Instances::fl_utils::ByteArray; // AMF3 time value.\n',
+         'Date AMF3 owner')
+    dictionary_h = sdk_root / 'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_Dictionary.h'
+    edit(dictionary_h, '        friend class InstanceTraits::fl_utils::Dictionary;\n',
+         '        friend class InstanceTraits::fl_utils::Dictionary;\n'
+         '        friend class ByteArray; // AMF3 weak keys and entries.\n',
+         'Dictionary AMF3 owner')
 
 
 def log_edits(engine_root, edit):
