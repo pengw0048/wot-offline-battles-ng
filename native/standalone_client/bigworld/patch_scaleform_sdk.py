@@ -90,6 +90,26 @@ def sdk_edits(sdk_root, edit):
     text_selection_edits(sdk_root, edit)
     translator_edits(sdk_root, edit)
     drop_shadow_edits(sdk_root, edit)
+    bitmap_lifetime_edits(sdk_root, edit)
+
+
+def bitmap_lifetime_edits(sdk_root, edit):
+    source = sdk_root / 'Src/GFx/AS3/Obj/Display/AS3_Obj_Display_BitmapData.cpp'
+    # Image data can allocate strings/buffers on its MovieData heap. The
+    # declaration order would otherwise release that heap before the image.
+    edit(source,
+         '    BitmapData::~BitmapData()\n    {\n\n    }',
+         '    BitmapData::~BitmapData()\n    {\n'
+         '        pImage.Clear();\n'
+         '        pImageResource.Clear();\n'
+         '        pDefImpl.Clear();\n    }',
+         'BitmapData image before MovieData heap teardown')
+    # A clone delegates to the original image until rendering materializes
+    # independent pixels. Retain its heap owner across source/clone lifetimes.
+    clone = ('        result->pImage = *SF_NEW DrawableImage(Transparent, '
+             '(Render::Image*)pImage.GetPtr(), dicontext);')
+    edit(source, clone, '        result->pDefImpl = pDefImpl;\n' + clone,
+         'BitmapData clone delegate heap owner')
 
 
 def drop_shadow_edits(sdk_root, edit):

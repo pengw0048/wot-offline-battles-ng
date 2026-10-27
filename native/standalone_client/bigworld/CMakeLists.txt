@@ -187,6 +187,14 @@ target_link_libraries(probe_stock_scaleform_amf3 PRIVATE
 set_target_properties(probe_stock_scaleform_amf3 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native-probes")
 
+add_executable(probe_stock_scaleform_bitmap
+    "${CMAKE_CURRENT_LIST_DIR}/../tests/stock_scaleform_bitmap_sdk_probe.cpp")
+target_compile_features(probe_stock_scaleform_bitmap PRIVATE cxx_std_14)
+target_link_libraries(probe_stock_scaleform_bitmap PRIVATE
+    wot_sf_as3 wot_sf_expat user32 gdi32 advapi32)
+set_target_properties(probe_stock_scaleform_bitmap PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native-probes")
+
 add_executable(probe_stock_battleground_elements
     "${CMAKE_CURRENT_LIST_DIR}/../tests/probe_stock_battleground_elements.cpp")
 target_compile_features(probe_stock_battleground_elements PRIVATE cxx_std_14)

@@ -564,6 +564,9 @@ subprocess.run([sys.argv[1], sys.argv[2]], check=True, timeout=60)
         "--target", "probe_stock_scaleform_amf3", "--parallel", "4") "scaleform-amf3-probe-compile.log"
     Invoke-Checked (Join-Path $BuildRoot "native-probes\Hybrid\probe_stock_scaleform_amf3.exe") @() "scaleform-amf3-probe-run.log"
     Invoke-Checked "cmake" @("--build", $BuildRoot, "--config", "Hybrid",
+        "--target", "probe_stock_scaleform_bitmap", "--parallel", "4") "scaleform-bitmap-probe-compile.log"
+    Invoke-Checked (Join-Path $BuildRoot "native-probes\Hybrid\probe_stock_scaleform_bitmap.exe") @() "scaleform-bitmap-probe-run.log"
+    Invoke-Checked "cmake" @("--build", $BuildRoot, "--config", "Hybrid",
         "--target", "probe_stock_replay_file", "--parallel", "4") "replay-file-probe-compile.log"
     # CPython ships an independent, same-architecture OpenSSL DLL. The native
     # Win32 probe below uses Mercury's separately linked bundled block cipher.
