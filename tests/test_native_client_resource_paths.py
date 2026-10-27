@@ -35,7 +35,8 @@ class NativeClientResourcePaths(unittest.TestCase):
         </Paths></root>''')
         (self.client / 'app_type.xml').write_bytes(b'<protocol><app_type>hd</app_type><switch_to_type>sd</switch_to_type></protocol>\r\n')
         for name in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml',
-                     'offline-res/scripts/client/OfflineGarageEntry.py'):
+                     'offline-res/scripts/client/OfflineGarageEntry.py',
+                     'offline-res/scripts/client/OfflineOptionalServices.py'):
             path = self.package / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()

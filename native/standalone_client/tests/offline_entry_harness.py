@@ -296,6 +296,26 @@ def case_mods():
         raise AssertionError('a service policy failure must fail the entry')
     assert personality.guiModsInit is mods.init and entry_dir not in mods.__path__
     assert entry._installed is None and entry._route is None
+    # Route imports can fail after optional policies have been bound. Roll
+    # them back before propagating the error; uninstall must remain harmless.
+    services.install = lambda: record('services.install', None)
+    original_route = entry.install_route
+    entry.install_route = lambda: 1 / 0
+    del LOG[:]
+    try:
+        entry.install()
+    except ZeroDivisionError:
+        pass
+    else:
+        raise AssertionError('a route failure must fail the entry')
+    finally:
+        entry.install_route = original_route
+    entry.uninstall()
+    entry.uninstall()
+    assert calls('services.install', 'services.uninstall') == [
+        ('services.install', None), ('services.uninstall', None)], LOG
+    assert personality.guiModsInit is mods.init and entry_dir not in mods.__path__
+    assert entry._installed is None and entry._route is None
     personality.guiModsInit = mods.init
     print('Exact #1513 gui.mods: explicit offline mod init/sendEvent/fini at guiModsInit PASS')
 

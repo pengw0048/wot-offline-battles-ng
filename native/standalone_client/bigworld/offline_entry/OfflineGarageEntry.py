@@ -37,7 +37,11 @@ def install():
         raise RuntimeError('The original guiModsInit binding has changed')
     import OfflineOptionalServices
     OfflineOptionalServices.install()
-    install_route()
+    try:
+        install_route()
+    except Exception:
+        OfflineOptionalServices.uninstall()
+        raise
 
     def gui_mods_init():
         original()

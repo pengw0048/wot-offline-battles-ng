@@ -446,6 +446,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
             "Load original processed effects through the restored native shader runtime"
             "Disable the upstream vendor crash uploader for this independent build"
             "Enter the pinned offline Account at guiModsInit without retail login or WGC"
+            "Offline optional services: no credential or chat-cache IO, no lobby chat or voice, no-device vibration"
         )
     } | ConvertTo-Json | Set-Content -LiteralPath `
         (Join-Path $ArtifactRoot "build-inputs.json") -Encoding utf8

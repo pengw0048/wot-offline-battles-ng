@@ -127,7 +127,8 @@ def prepare(client, package):
     package = package.expanduser().resolve()
     identity = inspect_client(client)
     for required in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml',
-                     'offline-res.json', 'offline-res/scripts/client/OfflineGarageEntry.py'):
+                     'offline-res.json', 'offline-res/scripts/client/OfflineGarageEntry.py',
+                     'offline-res/scripts/client/OfflineOptionalServices.py'):
         if not (package / required).is_file():
             raise ValueError('Independent client package is missing ' + required)
     originals = original_resource_paths(client)
