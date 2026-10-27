@@ -579,56 +579,70 @@ def ramp_matches(gamma):
     return actual
 
 
-# Before createDevice the swap-chain owner holds the default 1.0 and a
-# devicePreferences value is stored without a device ramp.
+# 00925250 stores the raw float and marks it dirty; present (or createDevice)
+# clamps it to 0.5..6, stores that back and applies the ramp (00929250).
 host.detachDevice()
 check(gamma_get(None), 1.0)
-BigWorld.setGammaCorrection(1.25)
+BigWorld.setGammaCorrection(0.25)  # before a device: stored raw
+check(BigWorld.getGammaCorrection(), 0.25)
 check(host.calls(), [])
+BigWorld.setGammaCorrection(1.25)  # the devicePreferences seed
 host.applyDeviceGamma()  # createDevice applies the stored value
 check(len(host.calls()), 1)
 ramp_matches(1.25)
+check(gamma_get(None), 1.25)
+host.presentFrame()  # nothing dirty: no ramp
+check(host.calls(), [])
+for raw, applied in ((0.25, 0.5), (7, 6.0), (1.1, 1.1), (0.5, 0.5), (6.0, 6.0)):
+    BigWorld.setGammaCorrection(raw)
+    check(BigWorld.getGammaCorrection(), float32(raw))
+    check(host.calls(), [])
+    host.presentFrame()
+    check(len(host.calls()), 1)
+    check(BigWorld.getGammaCorrection(), float32(applied))
+    ramp_matches(float32(applied))
 # GammaSetting clamps the UI value to 0.5..2.0 before the native setter.
 for ui, native in ((-3, 0.5), (0.5, 0.5), (1.0, 1.0), (1.37, 1.37), (2.0, 2.0), (4, 2.0)):
     gamma_set(None, ui)
     check(gamma_get(None), float32(native))
+    check(host.calls(), [])
+    host.presentFrame()
     check(len(host.calls()), 1)
     ramp_matches(float32(native))
 gamma_set(None, 0.5)
+host.presentFrame()
 host.calls()
 low = ramp_matches(0.5)
 gamma_set(None, 2.0)
+host.presentFrame()
 host.calls()
 high = ramp_matches(2.0)
 assert high[64] > low[64]  # a higher gamma brightens the mid-tones
-# Apply then cancel restores the previous value and its ramp.
+# Apply then cancel before the next frame restores the previous value.
 previous = gamma_get(None)
 gamma_set(None, 0.8)
 gamma_set(None, previous)
 check(gamma_get(None), previous)
-host.calls()
+host.presentFrame()
+check(len(host.calls()), 1)
 ramp_matches(previous)
-# A reset (and a later frame, which no longer writes gamma) keeps the user value.
-host.applyDeviceGamma()
+# A reset marks the value dirty; the next present reapplies the user value.
+host.resetDeviceGamma()
+check(host.calls(), [])
+host.presentFrame()
 check(len(host.calls()), 1)
 check(gamma_get(None), previous)
 ramp_matches(previous)
-# The native setter keeps float precision; the owner clamps to 0.5..6 when applied.
-BigWorld.setGammaCorrection(1.1)
-check(BigWorld.getGammaCorrection(), float32(1.1))
-BigWorld.setGammaCorrection(7)
-check(BigWorld.getGammaCorrection(), 6.0)
-BigWorld.setGammaCorrection(0.1)
-check(BigWorld.getGammaCorrection(), 0.5)
-host.calls()
+host.presentFrame()
+check(host.calls(), [])
 for function, args in ((BigWorld.getGammaCorrection, (1,)), (BigWorld.setGammaCorrection, ()),
                        (BigWorld.setGammaCorrection, ('bright',)), (BigWorld.setGammaCorrection, (1.0, 2.0)),
                        (BigWorld.getColorGradingStrength, (0,)), (BigWorld.setColorGradingStrength, ()),
                        (BigWorld.setColorGradingStrength, (None,)), (BigWorld.setColorGradingStrength, (1, 2))):
     print 'settings contract:', expect_type_error(function, *args)
-check(BigWorld.getGammaCorrection(), 0.5)
+check(BigWorld.getGammaCorrection(), previous)
 check(host.calls(), [])
-print 'gamma: devicePreferences seed, GammaSetting values, cancel and reset reach the device ramp'
+print 'gamma: raw dirty store, present/create clamp and ramp, GammaSetting, cancel and reset'
 
 # The absent ColorGrading owner: 0.0 reads back as the UI minimum 25, and a
 # converted setter value is not retained.

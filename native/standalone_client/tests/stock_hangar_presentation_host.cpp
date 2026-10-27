@@ -345,8 +345,8 @@ struct Device
         return 0;
     }
 };
-// Public lib/moo RenderContext gamma owner: the render_context.ipp accessors
-// and the patched render_context.cpp setGammaCorrection run unchanged.
+// Public lib/moo RenderContext gamma owner: the patched render_context.ipp
+// accessors, setGammaCorrection and the present/reset insertions run unchanged.
 class RenderContext
 {
 public:
@@ -357,14 +357,24 @@ public:
     float gammaCorrection() const;
     void gammaCorrection(float gammaCorrection);
     void setGammaCorrection();
+    void present();
+    void reset();
     Device * device_;  // NULL before createDevice.
 private:
     float gammaCorrection_;
+    bool gammaCorrectionDirty_ = true;
 };
 using std::max;
 using std::min;
 @RC_GAMMA_ACCESSORS@
 @RC_SET_GAMMA@
+// RenderContext::present before device_->Present, and changeModePriv after Reset.
+void RenderContext::present()
+{
+@RC_PRESENT_GAMMA@}
+void RenderContext::reset()
+{
+@RC_RESET_GAMMA@}
 RenderContext & rc() { static RenderContext context; return context; }
 
 class RenderTarget
@@ -686,6 +696,18 @@ PyObject * applyDeviceGamma(PyObject *, PyObject *)
     Py_RETURN_NONE;
 }
 
+PyObject * presentFrame(PyObject *, PyObject *)
+{
+    BW::Moo::rc().present();
+    Py_RETURN_NONE;
+}
+
+PyObject * resetDeviceGamma(PyObject *, PyObject *)
+{
+    BW::Moo::rc().reset();
+    Py_RETURN_NONE;
+}
+
 PyObject * detachDevice(PyObject *, PyObject *)
 {
     BW::Moo::rc().device_ = NULL;
@@ -761,6 +783,8 @@ PyMethodDef hostMethods[] = {
     {"resetDevice", resetDevice, METH_NOARGS, NULL},
     {"applyDeviceGamma", applyDeviceGamma, METH_NOARGS, NULL},
     {"detachDevice", detachDevice, METH_NOARGS, NULL},
+    {"presentFrame", presentFrame, METH_NOARGS, NULL},
+    {"resetDeviceGamma", resetDeviceGamma, METH_NOARGS, NULL},
     {"gammaRamps", gammaRamps, METH_VARARGS, NULL},
     {"makeEntity", makeEntity, METH_VARARGS, NULL},
     {"setEntity", setEntity, METH_VARARGS, NULL},

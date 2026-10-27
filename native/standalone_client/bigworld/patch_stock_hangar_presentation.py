@@ -48,10 +48,18 @@ EDITS = (
     ('client/device_app.cpp',
      '        devPref->writeFloat("aspectRatio", Moo::rc().fullScreenAspectRatio());\n',
      '        devPref->writeFloat("gammaCorrection", Moo::rc().gammaCorrection());\n', False),
+    # SwapChain +0x1b0/+0x1b4: the raw float and its dirty flag, dirty from
+    # construction (00926bdb/00926be5).
+    ('lib/moo/render_context.hpp', '\t\tvoid\t\t\t\t\t\tsetGammaCorrection();\n',
+     '\t\tbool\t\t\t\t\t\tgammaCorrectionDirty_ = true;\n', False),
     # 00923059 marks the swap-chain gamma dirty when the device is reset.
     ('lib/moo/render_context.cpp', '    s_lost = false;\n',
-     '    // A reset device has lost its ramp; reapply the owner value.\n'
-     '    setGammaCorrection();\n', False),
+     '    // The reset device has lost its ramp; the next present reapplies it.\n'
+     '    gammaCorrectionDirty_ = true;\n', False),
+    # 00927e78: RenderSystem::present applies a dirty gamma before Present.
+    ('lib/moo/render_context.cpp', '        PROFILER_SCOPED( GPU_Wait );\n',
+     '        if (gammaCorrectionDirty_)\n'
+     '            setGammaCorrection();\n', False),
 )
 # (file, pristine text, final text): #1513 has no CanvasApp gamma writer
 # (00925250 callers are 00621573 and the Python wrapper only), and 00b2cd50
@@ -73,6 +81,15 @@ REPLACEMENTS = (
      '\t// #1513 CanvasApp::draw (00630c80) does not interpolate the user gamma.\n'),
     ('lib/moo/render_context.cpp', '            float f = /*1.f -*/ (float(i) / 255.f);\n',
      '            float f = float(i) * (1.f / 255.f);\n'),
+    # 00929250 clamps and stores back, applies the ramp, then clears dirty.
+    ('lib/moo/render_context.cpp',
+     '        device_->SetGammaRamp( 0, D3DSGR_CALIBRATE, &ramp );\n    }\n}\n',
+     '        device_->SetGammaRamp( 0, D3DSGR_CALIBRATE, &ramp );\n    }\n'
+     '    gammaCorrectionDirty_ = false;\n}\n'),
+    # 00925250 stores the converted float unclamped and marks it dirty.
+    ('lib/moo/render_context.ipp',
+     '\tgammaCorrection_ = gammaCorrection;\n\tsetGammaCorrection();\n',
+     '\tgammaCorrection_ = gammaCorrection;\n\tgammaCorrectionDirty_ = true;\n'),
 )
 # Each final token occurs only in its own edit.
 TOKENS = (('lib/ashes/mouse_cursor.hpp', 's_inFocus_', 2),
@@ -84,12 +101,17 @@ TOKENS = (('lib/ashes/mouse_cursor.hpp', 's_inFocus_', 2),
           ('client/lens_app.cpp', 'StockEdgeDetection', 1),
           ('client/device_app.cpp', 'gammaCorrection', 8),
           ('client/canvas_app.cpp', 'Moo::rc().gammaCorrection(', 0),
-          ('lib/moo/render_context.cpp', 'setGammaCorrection();', 2))
+          ('lib/moo/render_context.cpp', 'setGammaCorrection();', 2),
+          ('lib/moo/render_context.cpp', 'gammaCorrectionDirty_', 3),
+          ('lib/moo/render_context.hpp', 'gammaCorrectionDirty_', 1),
+          ('lib/moo/render_context.ipp', 'gammaCorrectionDirty_', 1),
+          ('lib/moo/render_context.ipp', 'setGammaCorrection();', 0))
 FILES = tuple(sorted({path for path, unused, unused, unused in EDITS} |
                      {path for path, unused, unused in REPLACEMENTS}))
 # Token counts in the pristine sources; every other token starts absent.
 PRISTINE_TOKENS = {('client/canvas_app.cpp', 'Moo::rc().gammaCorrection('): 3,
-                   ('lib/moo/render_context.cpp', 'setGammaCorrection();'): 1}
+                   ('lib/moo/render_context.cpp', 'setGammaCorrection();'): 1,
+                   ('lib/moo/render_context.ipp', 'setGammaCorrection();'): 1}
 
 
 def joined(anchor, insertion, before):

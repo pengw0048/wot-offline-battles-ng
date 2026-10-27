@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 ENGINE_FILES = ('lib/pyscript/script.hpp', 'lib/pyscript/script.cpp', 'lib/ashes/mouse_cursor.hpp',
                 'lib/ashes/mouse_cursor.cpp', 'client/gui_app.cpp', 'client/lens_app.cpp',
                 'client/canvas_app.cpp', 'client/device_app.cpp', 'lib/moo/render_context.cpp',
-                'lib/moo/render_context.ipp', 'lib/pyscript/pyobject_plus.hpp')
+                'lib/moo/render_context.hpp', 'lib/moo/render_context.ipp', 'lib/pyscript/pyobject_plus.hpp')
 SET_DATA = ('bool & rBool,', 'float & rFloat,', 'double & rDouble,', 'BW::string & rString,')
 
 
@@ -60,8 +60,11 @@ def engine_sources(test):
 
 def generated_source(sources):
     script_hpp, script_cpp = sources['lib/pyscript/script.hpp'], sources['lib/pyscript/script.cpp']
-    patched = load_patch().patch_sources({path: sources[path] for path in load_patch().FILES})
-    accessors = sources['lib/moo/render_context.ipp']
+    patch = load_patch()
+    patched = patch.patch_sources({path: sources[path] for path in patch.FILES})
+    accessors = patched['lib/moo/render_context.ipp']
+    inserted = dict((anchor, insertion) for path, anchor, insertion, unused in patch.EDITS
+                    if path == 'lib/moo/render_context.cpp')
     bodies = ''.join(between(script_cpp, 'int Script::setData( PyObject * pObject, ' + name, '\n}\n')
                      for name in SET_DATA)
     replacements = {
@@ -73,6 +76,8 @@ def generated_source(sources):
         between(accessors, 'float RenderContext::gammaCorrection( ) const', '\n}\n'),
         '@RC_SET_GAMMA@': between(patched['lib/moo/render_context.cpp'], 'void RenderContext::setGammaCorrection()',
                                   '\n}\n'),
+        '@RC_PRESENT_GAMMA@': inserted['        PROFILER_SCOPED( GPU_Wait );\n'],
+        '@RC_RESET_GAMMA@': inserted['    s_lost = false;\n'],
         '@PYAUTO_MACROS@': between(script_hpp, '// Section: Macros: Module Links', '// Section: Macros: Enums',
                                    False) +
         between(script_hpp, '// Section: Macros: Recursion utilities', '// Section: PyModuleLink', False),
@@ -149,7 +154,16 @@ class StockHangarPresentationTest(unittest.TestCase):
         self.assertIn('devPref->writeFloat("gammaCorrection", Moo::rc().gammaCorrection());', device)
         render = patched['lib/moo/render_context.cpp']
         reset = between(render, 'bool RenderContext::changeModePriv(', '\n}\n')
-        self.assertLess(reset.index('ResetEx('), reset.index('setGammaCorrection();'))
+        self.assertLess(reset.index('ResetEx('), reset.index('gammaCorrectionDirty_ = true;'))
+        present = between(render, 'HRESULT RenderContext::present()', '\n}\n')
+        self.assertLess(present.index('setGammaCorrection();'), present.index('device_->Present('))
+        # The public clamp and immediate SetGammaRamp no longer run in the setter.
+        setter = between(patched['lib/moo/render_context.ipp'],
+                         'void RenderContext::gammaCorrection( float gammaCorrection )', '\n}\n')
+        self.assertEqual(setter.split('{', 1)[1].split(),
+                         ['gammaCorrection_', '=', 'gammaCorrection;', 'gammaCorrectionDirty_', '=', 'true;', '}'])
+        apply = between(render, 'void RenderContext::setGammaCorrection()', '\n}\n')
+        self.assertTrue(apply.endswith('    gammaCorrectionDirty_ = false;\n}\n'), apply)
         self.assertIn('float f = float(i) * (1.f / 255.f);', render)
 
         mutations = {}
