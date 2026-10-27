@@ -712,6 +712,12 @@ PyObject* newStockVehicleStickerGeometry(const std::shared_ptr<StockVehicleStick
     return new PyVehicleStickerGeometry(geometry);
 }
 
+std::shared_ptr<StockVehicleStickerGeometry> stockVehicleStickerGeometry(PyObject* link)
+{
+    if (!link || !PyVehicleStickerGeometry::Check(link)) return std::shared_ptr<StockVehicleStickerGeometry>();
+    return static_cast<PyVehicleStickerGeometry*>(link)->source();
+}
+
 int registerStockDamageSticker(const BW::string& name, const BW::string& texture,
     const BW::string& bumpTexture, const Vector2& size, float variation, bool randomYaw)
 {

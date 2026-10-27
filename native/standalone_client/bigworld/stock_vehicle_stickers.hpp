@@ -25,6 +25,8 @@ public:
 
 PyObject* newStockVehicleStickerGeometry(
     const std::shared_ptr<StockVehicleStickerGeometry>& geometry);
+// The link held by a getPartGeometryLink result, or null for any other object.
+std::shared_ptr<StockVehicleStickerGeometry> stockVehicleStickerGeometry(PyObject* link);
 
 bool initialiseStockVehicleStickers();
 void finiStockVehicleStickers();
