@@ -51,7 +51,8 @@ def state(source, edits, tokens):
     old = [source.count(before) for before, unused in edits]
     new = [source.count(after) for unused, after in edits]
     found = [source.count(token) for token, unused in tokens]
-    if new == [1] * len(edits) and found == [count for unused, count in tokens]:
+    # Each insertion retains its anchor, so a final anchor also occurs exactly once.
+    if old == new == [1] * len(edits) and found == [count for unused, count in tokens]:
         return 'final'
     if old == [1] * len(edits) and not any(found):
         return 'pristine'

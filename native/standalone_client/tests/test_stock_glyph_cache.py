@@ -172,6 +172,10 @@ class StockGlyphCacheTest(unittest.TestCase):
                     mutations['duplicated anchor %d' % index] = pristine + before
                     mutations['reverted final %d' % index] = patched.replace(after, before, 1)
                     mutations['duplicated final %d' % index] = patched + after
+                    # A retained anchor repeated in place (a second BeginFrame) or elsewhere.
+                    mutations['final with anchor %d repeated in place' % index] = patched.replace(
+                        before, before + before, 1)
+                    mutations['final with anchor %d appended' % index] = patched + before
                 for token, unused in patch.TOKENS[relative]:
                     mutations['extra ' + token] = patched + '// ' + token + '\n'
                     mutations['pristine with ' + token] = pristine + '// ' + token + '\n'
@@ -180,20 +184,25 @@ class StockGlyphCacheTest(unittest.TestCase):
                     self.assertNotIn(source, (pristine, patched), name)
                     with self.assertRaises(ValueError, msg=name):
                         patch.patch_source(relative, source)
-                    # A damaged file stops both writes.
-                    (root / relative).write_text(source, encoding='utf-8')
-                    (root / other).write_text(sources[other], encoding='utf-8')
-                    with self.assertRaises(ValueError, msg=name):
-                        patch.patch(root)
-                    self.assertEqual((root / relative).read_text(encoding='utf-8'), source, name)
-                    self.assertEqual((root / other).read_text(encoding='utf-8'), sources[other], name)
-                    checked += 1
-            for relative, unused in patch.FILES:
-                (root / relative).write_text(sources[relative], encoding='utf-8')
-            patch.patch(root)
-            patch.patch(root)
-            for relative, unused in patch.FILES:
-                self.assertEqual((root / relative).read_text(encoding='utf-8'), final[relative])
+                    # A damaged file stops both writes, whether the other file is pristine or final.
+                    for companion in (sources[other], final[other]):
+                        (root / relative).write_text(source, encoding='utf-8')
+                        (root / other).write_text(companion, encoding='utf-8')
+                        with self.assertRaises(ValueError, msg=name):
+                            patch.patch(root)
+                        self.assertEqual((root / relative).read_text(encoding='utf-8'), source, name)
+                        self.assertEqual((root / other).read_text(encoding='utf-8'), companion, name)
+                        checked += 1
+            # Every valid pair (each file pristine or final) reaches the final pair and stays there.
+            for states in ((sources, sources), (final, final), (sources, final), (final, sources)):
+                for (relative, unused), state in zip(patch.FILES, states):
+                    (root / relative).write_text(state[relative], encoding='utf-8')
+                patch.patch(root)
+                for relative, unused in patch.FILES:
+                    self.assertEqual((root / relative).read_text(encoding='utf-8'), final[relative])
+                patch.patch(root)
+                for relative, unused in patch.FILES:
+                    self.assertEqual((root / relative).read_text(encoding='utf-8'), final[relative])
             print('Rejected glyph-cache patch states:', checked)
 
     def test_original_call_sites_reach_the_glyph_cache_through_the_real_binding(self):
