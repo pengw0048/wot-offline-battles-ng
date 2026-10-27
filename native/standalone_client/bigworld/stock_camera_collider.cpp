@@ -19,6 +19,7 @@
 #include "space/client_space.hpp"
 #include "space/deprecated_space_helpers.hpp"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 

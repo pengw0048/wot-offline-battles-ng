@@ -59,8 +59,6 @@ public:
             SmartPointer< Vector4Basic >::STEAL_REFERENCE ),
         collider_( true ) {}
 
-    // #1513 0079fd10 ignores its arguments.
-    static PyObject * pyNew( PyObject * ) { return new ThirdPersonProvider(); }
     PY_FACTORY_DECLARE()
 
     void update( bool collide );
@@ -109,6 +107,13 @@ private:
     // #1513 constructs this collider with the advanced flag set.
     StockCameraCollider collider_;
 };
+
+
+PyObject * ThirdPersonProvider::pyNew( PyObject * )
+{
+    // #1513 0079fd10 ignores its arguments.
+    return new ThirdPersonProvider();
+}
 
 
 void ThirdPersonProvider::update( bool collide )
@@ -266,7 +271,6 @@ public:
         setStockTreeCameraTarget( NULL );
     }
 
-    static PyObject * pyNew( PyObject * args );
     PY_FACTORY_DECLARE()
 
     void set( const Matrix & ) override {}
