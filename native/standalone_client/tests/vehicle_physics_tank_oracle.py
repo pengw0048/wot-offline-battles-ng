@@ -16,6 +16,15 @@ IAT = {0x1492120: 'inverse', 0x149214c: 'normal', 0x1492154: 'normalize',
        0x149215c: 'scaling', 0x1492164: 'translation', 0x149216c: 'coordinate',
        0x1491e00: 'tan'}
 IDENTITY = [0x3f800000, 0, 0, 0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000]
+# Probe config word index -> (settings object, native offset). Index 41 is
+# the useComplexForm byte; the others are words.
+CONFIG = dict([(index, ('tank', 4 * index)) for index in range(14)] +
+              list(zip(range(14, 21), [('tank', o) for o in (0xb0, 0xac, 0xa4, 0xa8, 0xa0, 0x9c, 0x98)])) +
+              list(zip((21, 22, 23, 24, 25, 26, 27, 28, 29),
+                       [('chassis', o) for o in (0x64, 0x68, 0x6c, 0, 0x60, 0xa4, 0xa8, 0x7c, 0x80)])) +
+              [(31 + i, ('chassis', 4 + 4 * i)) for i in range(5)] +
+              [(36 + i, ('chassis', 0x2c + 4 * i)) for i in range(5)] +
+              [(30, ('engine', 0x18)), (41, ('tank', 0x94)), (42, ('chassis', 0x74))])
 
 
 def f32(value):
@@ -32,6 +41,8 @@ def parse_state(text):
             cases.append(case)
         elif name == 'config':
             case['config'] = tokens
+        elif name == 'defaults':
+            case['defaults'] = tokens
         elif name == 'pose':
             case['pose'] = tokens
             case['sections'].append({})
@@ -138,6 +149,9 @@ class OriginalTankGraphOracle:
             uc.reg_write(UC_X86_REG_ESP, stack + 4 + cleanup)
         self.uc.hook_add(UC_HOOK_CODE, hook, begin=0x3000c000, end=0x3000cfff)
         self.words = words
+        from vehicle_physics_defaults_oracle import OriginalSettingsOracle
+        self.settings = OriginalSettingsOracle(self, executable)
+        self.defaults_checked = 0
 
     def prepare(self):
         """Restore the image, then the TLS slot and IAT entries it reverts."""
@@ -161,8 +175,11 @@ class OriginalTankGraphOracle:
     def put(self, address, *values):
         self.uc.mem_write(address, struct.pack('<%uI' % len(values), *values))
 
-    def build(self, config, force, seed):
-        """Construct Tank, TrackChassis and Engine as f4fd30/f900a0 do."""
+    def build(self, config, force, seed, defaults=()):
+        """Construct Tank, TrackChassis and Engine as f4fd30/f900a0 do.
+
+        Settings objects come from the original constructor instructions;
+        a config word the probe marks as a default must equal that word."""
         o, put = self.oracle, self.put
         self.random = seed
         tank = o.allocate(0xaf4)
@@ -180,37 +197,26 @@ class OriginalTankGraphOracle:
         put(tank + 0x1b8, chassis, 0, engine, 0)
         put(chassis + 0x60, tank)
         put(chassis + 0x8, 0)
-        # Tank::Settings with constructor values, then the probe's fields.
-        settings = o.allocate(0xe0)
-        self.uc.mem_write(settings, bytes(0xe0))
-        put(settings + 0x88, 1)
-        put(settings + 0x8c, f32(1.0), f32(1.0))
-        put(settings + 0xb8, f32(0.2), f32(1.0), f32(1.0), f32(1.0), f32(0.1), 0, f32(0.8))
-        c = config
-        put(settings, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9],
-            c[10], c[11], c[12], c[13])
-        self.uc.mem_write(settings + 0x94, bytes([c[41]]))
-        put(settings + 0x98, c[20], c[19], c[18], c[16], c[17], c[15], c[14])
+        objects = {'tank': self.settings.tank_settings(), 'chassis': self.settings.chassis_settings(),
+                   'engine': self.settings.engine_settings()}
+        for index in defaults:
+            target, offset = CONFIG[index]
+            width = 1 if index == 41 else 4
+            original = int.from_bytes(bytes(self.uc.mem_read(objects[target] + offset, width)), 'little')
+            assert original == config[index], ('constructor default', index, hex(original), hex(config[index]))
+            self.defaults_checked += 1
+        for index, (target, offset) in CONFIG.items():
+            if index == 41:
+                self.uc.mem_write(objects[target] + offset, bytes([config[index]]))
+            else:
+                put(objects[target] + offset, config[index])
+        settings, chassis_settings, engine_settings = objects['tank'], objects['chassis'], objects['engine']
         vector = o.allocate(8)
         put(vector, settings, 0)
         put(tank + 0x638, 0, vector, vector + 8, vector + 8)
-        # Chassis::Settings (f814d0 constructor values) plus probe fields.
-        chassis_settings = o.allocate(0x1d4)
-        self.uc.mem_write(chassis_settings, bytes(0x1d4))
-        o.call(0xf814d0, ecx=chassis_settings)
-        put(chassis_settings, c[24])
-        put(chassis_settings + 4, *c[31:36])
-        put(chassis_settings + 0x2c, *c[36:41])
-        put(chassis_settings + 0x60, c[25], c[21], c[22], c[23])
-        put(chassis_settings + 0x74, c[42])  # wheelPenetration
-        put(chassis_settings + 0x7c, c[28], c[29])
-        put(chassis_settings + 0xa4, c[26], c[27])
         vector = o.allocate(8)
         put(vector, chassis_settings, 0)
         put(chassis + 0xc0, 0, vector, vector + 8, vector + 8)
-        engine_settings = o.allocate(0x50)
-        self.uc.mem_write(engine_settings, bytes(0x50))
-        put(engine_settings + 0x18, c[30])
         vector = o.allocate(8)
         put(vector, engine_settings, 0)
         put(engine + 0x32c, 0, vector, vector + 8, vector + 8)
@@ -305,7 +311,8 @@ class OriginalTankGraphOracle:
     def run(self, case, calls):
         self.prepare()
         self.calls = calls
-        tank, chassis, engine = self.build(case['config'], 0, case['seed'])
+        tank, chassis, engine = self.build(case['config'], 0, case['seed'],
+                                           [int(index) for index in case.get('defaults', ())])
         self.vertical_force(tank)
         self.oracle.call(0xf8b8a0, ecx=tank)
         before = self.state(tank, chassis, engine)
@@ -326,6 +333,17 @@ def compare(executable, state_path, calls_path):
     cases = parse_state(Path(state_path).read_text(encoding='utf-8', errors='strict'))
     calls = parse_calls(Path(calls_path).read_text())
     oracle = OriginalTankGraphOracle(executable)
+    # The config mapping must agree with the original Reader stores.
+    stores = oracle.settings.offsets
+    for (group, key), index in (
+            (('body', 'gravity'), 0), (('body', 'hullSize'), 5), (('body', 'turretTopWidth'), 13),
+            (('shape', 'auxClearance'), 14), (('shape', 'terrAftChamferFraction'), 20),
+            (('shape', 'useComplexForm'), 41), (('chassis', 'chassisMass'), 21),
+            (('chassis', 'trackGaugeFactor'), 24), (('chassis', 'wheelRadius'), 25),
+            (('chassis', 'stiffness1'), 29), (('chassis', 'roadWheelPositions'), 31),
+            (('chassis', 'stiffnessFactors'), 36), (('chassis', 'wheelPenetration'), 42),
+            (('engine', 'engineInertia'), 30)):
+        assert stores[(group, key)][0] == CONFIG[index][1], (group, key, stores[(group, key)], CONFIG[index])
     sections = 0
     for case in cases:
         before, after, again, bounds = oracle.run(case, calls[case['seed']])
@@ -343,8 +361,10 @@ def compare(executable, state_path, calls_path):
                          (len(original), len(production))))
                 sections += 1
         assert bounds == case['bounds'], (case['seed'], bounds, case['bounds'])
-    print('Original #1513 Tank graph replay matched %u production sections across %u cases'
-          % (sections, len(cases)))
+    fallback = sum(1 for case in cases if case.get('defaults'))
+    print('Original #1513 Tank graph replay matched %u production sections across %u cases '
+          '(%u with Reader fallback settings; %u defaulted config words equal the original constructors)'
+          % (sections, len(cases), fallback, oracle.defaults_checked))
 
 
 if __name__ == '__main__':

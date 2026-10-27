@@ -3,6 +3,9 @@
 // "inverse" records D3DXMatrixInverse failure semantics; "configure" runs the
 // production configure/setTransform/publication path and records every SDK
 // call so an original-instruction replay can consume identical SDK results.
+// "defaults" dumps the constructor value behind every Reader key and "grounds"
+// the GroundSettings install/lookup results for the same replay.
+#include "wot/vehicle_drive.hpp"
 #include "wot/vehicle_physics.hpp"
 #include "stock_vehicle_native_math.hpp"
 
@@ -12,6 +15,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -137,6 +141,25 @@ wot::VehiclePhysicsModeConfiguration make_mode(unsigned seed, std::int32_t index
     return mode;
 }
 
+// A caught Reader region leaves these fields at constructor values.
+wot::VehiclePhysicsModeConfiguration fallback_mode(unsigned seed, std::int32_t index, bool prefix) {
+    const auto parsed = make_mode(seed, index, false);
+    wot::VehiclePhysicsModeConfiguration mode{};
+    mode.mode_index = index;
+    if (prefix) {
+        // f846c0 failed at hullCOMShiftY, f822a0 at wheelRadius; shape skipped.
+        mode.body.gravity = parsed.body.gravity;
+        mode.body.full_mass = parsed.body.full_mass;
+        mode.body.hull_inertia_factors = parsed.body.hull_inertia_factors;
+        mode.body.hull_size = parsed.body.hull_size;
+        mode.chassis.chassis_mass = parsed.chassis.chassis_mass;
+        mode.chassis.chassis_mass_fraction = parsed.chassis.chassis_mass_fraction;
+        mode.chassis.clearance = parsed.chassis.clearance;
+        mode.chassis.track_gauge_factor = parsed.chassis.track_gauge_factor;
+    }
+    mode.chassis.grounds.assign(1, wot::VehicleGroundSettings());
+    return mode;
+}
 void dump_body(std::ostream& out, const char* name, const wot::VehicleBodyInertia& inertia,
                const wot::VehicleRigidBody& body) {
     out << name << ".mass " << bits(inertia.mass) << ' ' << bits(body.inverse_mass) << '\n';
@@ -272,11 +295,18 @@ int run_configure(unsigned first, unsigned count) {
     const wot::VehicleNativeMath services{&logged_tangent, &logged_normalize, &logged_coordinate,
                                           &logged_normal, &logged_inverse};
     for (unsigned seed = first; seed != first + count; ++seed) {
-        const bool complex = seed % 2 == 0;
+        // seed % 5: 3 = parsed-prefix fallback, 4 = every region failed.
+        const unsigned variant = seed % 5;
+        const bool complex = seed % 2 == 0 && variant < 3;
         wot::VehiclePhysicsConfiguration configuration{};
         configuration.vehicle_type = 0;
-        configuration.modes.push_back(make_mode(seed, 0, complex));
-        configuration.modes.push_back(make_mode(seed + 7919u, 1, complex));
+        if (variant < 3) {
+            configuration.modes.push_back(make_mode(seed, 0, complex));
+            configuration.modes.push_back(make_mode(seed + 7919u, 1, complex));
+        } else {
+            configuration.modes.push_back(fallback_mode(seed, 0, variant == 3));
+            configuration.modes.push_back(fallback_mode(seed + 7919u, 1, variant == 3));
+        }
         std::srand(seed);
         std::cout << "case " << seed << '\n' << "config";
         const auto& mode = configuration.modes[0];
@@ -297,6 +327,15 @@ int run_configure(unsigned first, unsigned count) {
         words(std::cout, mode.chassis.road_wheel_positions.data(), 5);
         words(std::cout, mode.chassis.stiffness_factors.data(), 5);
         std::cout << ' ' << int(complex) << ' ' << bits(mode.chassis.wheel_penetration) << '\n';
+        // Config word indices whose value is a constructor default.
+        std::cout << "defaults";
+        if (variant == 3)
+            for (unsigned index : {8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u, 17u, 18u, 19u, 20u, 25u, 26u, 27u,
+                                   28u, 29u, 30u, 31u, 32u, 33u, 34u, 35u, 36u, 37u, 38u, 39u, 40u, 41u, 42u})
+                std::cout << ' ' << index;
+        if (variant == 4)
+            for (unsigned index = 0; index != 43; ++index) std::cout << ' ' << index;
+        std::cout << '\n';
         std::cerr << "case " << seed << '\n';
         wot::VehiclePhysics physics;
         physics.configure(configuration, services);
@@ -326,6 +365,128 @@ int run_configure(unsigned first, unsigned count) {
     return 0;
 }
 
+void field_values(std::ostream& out, float value) { out << ' ' << bits(value); }
+void field_values(std::ostream& out, bool value) { out << ' ' << unsigned(value); }
+void field_values(std::ostream& out, wot::Vector3 value) { vector(out, value); }
+template <std::size_t N>
+void field_values(std::ostream& out, const std::array<float, N>& value) { words(out, value.data(), N); }
+template <class T>
+void field_values(std::ostream& out, const std::optional<T>& value) {
+    if (value) field_values(out, *value);
+    else out << " none";
+}
+template <class T>
+void dump_field(const char* group, const char* key, const T& value) {
+    std::cout << "field " << group << ' ' << key;
+    field_values(std::cout, value);
+    std::cout << '\n';
+}
+// reader_fields.inc is generated from the production Reader: FIELD(group, key, member).
+struct SurfaceField {
+    const char* key;
+    float wot::VehicleGroundSurfaceConfiguration::* member;
+};
+#define FIELD(group, key, member) FIELD_##group(key, member)
+#define FIELD_body(key, member)
+#define FIELD_shape(key, member)
+#define FIELD_chassis(key, member)
+#define FIELD_aiming(key, member)
+#define FIELD_engine(key, member)
+#define FIELD_surface(key, member) {key, &wot::VehicleGroundSurfaceConfiguration::member},
+const SurfaceField surface_fields[] = {
+#include "reader_fields.inc"
+};
+#undef FIELD_surface
+#undef FIELD
+int run_defaults() {
+    const wot::VehicleBodyConfiguration body{};
+    const wot::VehicleShapeConfiguration shape{};
+    const wot::VehicleChassisConfiguration chassis{};
+    const wot::VehicleChassisConfiguration& aiming = chassis;
+    const wot::VehicleGroundSurfaceConfiguration surface{};
+    const wot::VehicleEngineConfiguration engine{};
+#define FIELD(group, key, member) dump_field(#group, key, group.member);
+#include "reader_fields.inc"
+#undef FIELD
+    std::cout << "angular min " << bits(wot::vehicle_engine_minimum_angular_velocity(engine)) << '\n';
+    std::cout << "angular start " << bits(wot::vehicle_engine_start_angular_velocity(engine)) << '\n';
+    const auto torque = wot::build_vehicle_engine_torque_settings(engine);
+    std::cout << "torque";
+    for (const auto& point : torque.losses) std::cout << ' ' << bits(point.angular_velocity) << ' ' << bits(point.torque);
+    std::cout << ' ' << bits(torque.power) << ' ' << bits(torque.start_angular_velocity) << '\n';
+    for (unsigned seed = 0; seed != 64; ++seed) {
+        wot::VehicleEngineConfiguration read{};
+        read.losses = std::array<float, 2>{{value(seed, 0, -5, 5), value(seed, 1, -5, 50)}};
+        const auto losses = wot::build_vehicle_engine_torque_settings(read);
+        std::cout << "losses " << bits((*read.losses)[0]) << ' ' << bits((*read.losses)[1]);
+        for (const auto& point : losses.losses)
+            std::cout << ' ' << bits(point.angular_velocity) << ' ' << bits(point.torque);
+        std::cout << '\n';
+    }
+    return 0;
+}
+void dump_surface(std::ostream& out, const wot::VehicleGroundSurfaceConfiguration& surface) {
+    for (const auto& field : surface_fields) out << ' ' << bits(surface.*field.member);
+}
+int run_grounds() {
+    std::cout << "surface_order";
+    for (const auto& field : surface_fields) std::cout << ' ' << field.key;
+    std::cout << '\n';
+    for (unsigned scenario = 0; scenario != 3; ++scenario) {
+        wot::VehicleGroundMaterialRegistry registry;  // stock: count 1, zero map
+        if (scenario == 1) {
+            registry.count = 7;
+            registry.groups.fill(-1);
+            for (unsigned kind = 0; kind != 256; ++kind)
+                if (kind % 3) registry.groups[kind] = std::int32_t(kind * 5 % 9) - 1;
+        } else if (scenario == 2) {
+            registry.count = 3;
+            registry.groups.fill(-1);
+            registry.groups[0] = 2;
+            registry.groups[17] = 0;
+            registry.groups[255] = 1;
+        }
+        std::cout << "registry " << registry.count;
+        for (auto group : registry.groups) std::cout << ' ' << std::uint32_t(group);
+        std::cout << '\n';
+        std::vector<wot::VehicleGroundSettings> table(registry.count);
+        const std::int32_t count = std::int32_t(registry.count);
+        const std::int32_t kinds[] = {0, -1, -2, count - 1, count, 0x7fffffff,
+                                      INT32_MIN, 1, 1, 2};
+        unsigned item = 0;
+        for (std::int32_t kind : kinds) {
+            wot::VehicleGroundSurfaceConfiguration surfaces[3];
+            for (unsigned j = 0; j != 3; ++j)
+                for (unsigned f = 0; f != 10; ++f)
+                    surfaces[j].*surface_fields[f].member = value(scenario * 1000 + item, j * 10 + f, -10, 10);
+            const bool installed = wot::install_vehicle_ground_settings(table, kind, surfaces[0], surfaces[1], surfaces[2]);
+            std::cout << "item " << std::uint32_t(kind) << ' ' << unsigned(installed);
+            for (const auto& surface : surfaces) dump_surface(std::cout, surface);
+            std::cout << '\n';
+            ++item;
+        }
+        std::cout << "table";
+        for (const auto& entry : table) {
+            dump_surface(std::cout, entry.soft);
+            dump_surface(std::cout, entry.medium);
+            dump_surface(std::cout, entry.firm);
+        }
+        std::cout << '\n';
+        const std::int32_t probes[] = {INT32_MIN, -1, 0, 1, 2, 16, 17, 100,
+                                       254, 255, 256, 0x7fffffff};
+        for (std::int32_t kind : probes)
+            for (std::int32_t strength = -1; strength != 5; ++strength) {
+                const auto& surface = wot::lookup_vehicle_ground_surface(table, registry, kind, strength);
+                const auto offset = std::size_t(reinterpret_cast<const char*>(&surface) -
+                                                reinterpret_cast<const char*>(table.data()));
+                std::cout << "lookup " << std::uint32_t(kind) << ' ' << std::uint32_t(strength) << ' '
+                          << offset / sizeof(wot::VehicleGroundSettings) << ' '
+                          << offset % sizeof(wot::VehicleGroundSettings) / sizeof(wot::VehicleGroundSurfaceConfiguration)
+                          << '\n';
+            }
+    }
+    return 0;
+}
 int run_tangent() {
     // The configure argument is degrees * 0.017453292f; sweep that domain and
     // a dense bit-pattern band across +/-pi/2.
@@ -394,6 +555,8 @@ int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "tangent") return run_tangent();
     if (mode == "inverse") return run_inverse();
+    if (mode == "defaults") return run_defaults();
+    if (mode == "grounds") return run_grounds();
     if (mode == "configure" && argc == 4)
         return run_configure(unsigned(std::strtoul(argv[2], nullptr, 10)),
                              unsigned(std::strtoul(argv[3], nullptr, 10)));

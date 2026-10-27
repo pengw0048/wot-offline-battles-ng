@@ -105,6 +105,17 @@ assert state['curves'] == (0, 0, 0) and state['gears'] == -1 and state['curve_po
 assert state['anchor'] == (0.5, 0.0, 0.0) and state['rail'] == 0.0
 assert state['gimlet']['on_spot_fixed_period'] == model.f32(0.2)
 native.destroy(blank)
+# Every region caught: the smallest input #1513 accepts builds a Tank from
+# constructor words alone.
+minimal = {'vehicleType': 0, 'modes': {'normal': {'mode_index': 0}}}
+blank = native.create()
+assert native.configure(blank, minimal) is True
+state = native.summary(blank)
+expected = by_name(model.read(minimal, 1))
+assert state['body'] == expected['body'] == model.defaults(model.BODY)
+assert state['shape'] == model.defaults(model.SHAPE) and state['engine'] == model.defaults(model.ENGINE)
+assert state['chassis'] == expected['chassis'] and state['curves'] == (0, 0, 0) and state['wheels'] == 10
+native.destroy(blank)
 print('Caught-region defaults, global prefix retention and previous gearbox passed')
 
 # f84e80 reads the root as a discarded Vehicle::Settings only when the Tank
