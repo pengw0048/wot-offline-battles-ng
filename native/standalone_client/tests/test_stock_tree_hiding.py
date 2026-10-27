@@ -1615,7 +1615,7 @@ class UnrestoredFocusConsumerGraphTests(unittest.TestCase):
         # WG CSM split (9cb010) runs from the shadow update; ASM (986220) per atlas.
         self.assertEqual(callers[0x9cb010], [0x96e415])
         self.assertEqual(callers[0x986220], [0x9852c8, 0x9852e2, 0x9852fc])
-        # SRT: writers 748150/748190/7481d0 and the 74cb9c constructor; readers
+        # SRT: writers 748150/748190/7481d0 and the 74c9a0 constructor; readers
         # 74e510 (per frame) and 74f150 (per SRT instance) only.
         writers = {0x748178, 0x7481b8, 0x7481fa, 0x748206, 0x748213}
         constructor = {0x74cdda, 0x74cde4, 0x74cdf9, 0x74ce03, 0x74ce0d}
