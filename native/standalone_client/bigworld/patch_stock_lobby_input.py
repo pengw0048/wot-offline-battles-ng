@@ -29,6 +29,27 @@ TABLES = (
 )
 
 
+# Per-table rows of TABLES: the default table holds RShift/RCtrl, the redefine table all three.
+BLOCKS = (('static TableEntry defaultKeyTable[] =', (1, 1, 0)),
+          ('static TableEntry redefineKeyModeTable[] =', (1, 1, 1)))
+
+
+def table_rows(source, final):
+    rows = []
+    for header, unused in BLOCKS:
+        if source.count(header) != 1:
+            return None
+        start = source.index(header)
+        end = source.find('\n\t\t};', start)
+        if end < 0:
+            return None
+        rows.append(tuple(source[start:end].count(row[1 if final else 0]) for row in TABLES))
+    return rows
+
+
+EXPECTED_ROWS = [rows for unused, rows in BLOCKS]
+
+
 # Each final token occurs only in its own declaration, registration or table entry.
 TOKENS = (('wg_setRedefineKeysMode', 2), ('wg_isCapsLockOn', 2), ('wg_isNumLockOn', 2),
           ('wg_isScrollLockOn', 2), ('SF::Key::RightShift', 2), ('SF::Key::RightControl', 2),
@@ -46,16 +67,17 @@ def counts(source):
 def patched_state(source):
     old, new, tokens, expected = counts(source)
     return (not any(old) and new == expected and
-            tokens == [count for unused, count in TOKENS])
+            tokens == [count for unused, count in TOKENS] and table_rows(source, True) == EXPECTED_ROWS)
 
 
 def patch_source(source):
     if patched_state(source):
         return source
     old, new, tokens, expected = counts(source)
-    if old != expected or any(new) or any(tokens):
+    if old != expected or any(new) or any(tokens) or table_rows(source, False) != EXPECTED_ROWS:
         raise ValueError('Pinned Scaleform key-state seam is partial, duplicated or changed: '
-                         'old %r new %r tokens %r' % (old, new, tokens))
+                         'old %r new %r tokens %r rows %r' %
+                         (old, new, tokens, table_rows(source, False)))
     for before, after in NAMES:
         source = source.replace(before, after, 1)
     for before, after, unused in TABLES:

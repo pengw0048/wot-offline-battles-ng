@@ -106,6 +106,23 @@ def build_host(test, directory, sources, util):
     return binary
 
 
+def table_span(source, header):
+    start = source.index(header)
+    return start, source.index('\n\t\t};', start)
+
+
+def move_row(source, row, origin, target):
+    """Remove row from one table block and add it to another, or after both when target is None."""
+    start, end = table_span(source, origin)
+    at = source.index(row, start, end)
+    source = source[:at] + source[at + len(row):]
+    if target is None:
+        at = table_span(source, 'static TableEntry redefineKeyModeTable[] =')[1] + len('\n\t\t};\n')
+    else:
+        at = source.index('{\n', source.index(target)) + 2
+    return source[:at] + row + source[at:]
+
+
 def scripts_package(test):
     client = os.environ.get('WOT_0922_CLIENT')
     if not client:
@@ -158,6 +175,20 @@ class StockLobbyInputTest(unittest.TestCase):
             'pristine with one new entry': pristine.replace(patch.TABLES[2][0], tables[2]),
             'duplicate pristine entry': pristine + patch.TABLES[0][0],
         }
+        default, redefine = (header for header, unused in patch.BLOCKS)
+        for state, rows in (('final', tables), ('pristine', [before for before, unused, unused in patch.TABLES])):
+            source = patched if state == 'final' else pristine
+            for name, row in zip(('RightShift', 'RightControl', 'RightAlt'), rows):
+                mutations[state + ' ' + name + ' redefine->default'] = move_row(source, row, redefine, default)
+                mutations[state + ' ' + name + ' redefine->outside'] = move_row(source, row, redefine, None)
+                if name != 'RightAlt':
+                    mutations[state + ' ' + name + ' default->redefine'] = move_row(source, row, default, redefine)
+                    mutations[state + ' ' + name + ' default->outside'] = move_row(source, row, default, None)
+        mutations['duplicate default table header'] = patched + default + '\n'
+        for name, source in list(mutations.items()):
+            if 'redefine->' in name or 'default->' in name:
+                self.assertEqual(patch.counts(source), patch.counts(patched if name.startswith('final') else pristine),
+                                 name)
         for index, line in enumerate(names + tables):
             mutations['deleted final %d' % index] = patched.replace(line, '', 1)
             mutations['duplicated final %d' % index] = patched + line
