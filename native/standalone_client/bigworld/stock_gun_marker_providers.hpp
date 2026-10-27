@@ -5,12 +5,9 @@
 #include "pyscript/script_math.hpp"
 #include "math/vector2.hpp"
 #include "stock_battle_gui_data.hpp"
+#include "stock_gun_marker_collision.hpp"
 
 BW_BEGIN_NAMESPACE
-
-// Nearest Ccb_(0x80, 0) camera-space hit distance along start->end, negative on
-// a miss (#1513 f5d160/f5d1c0). The scene-query owner provides it.
-float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end );
 
 wot::stock_battle_gui::Mat4 stockBattleGuiMatrix( const Matrix & matrix );
 

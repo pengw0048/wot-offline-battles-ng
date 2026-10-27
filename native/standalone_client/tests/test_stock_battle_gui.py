@@ -73,7 +73,8 @@ def build_core(directory):
 
 ENGINE_FILES = ('lib/pyscript/script.hpp', 'lib/pyscript/script.cpp', 'lib/pyscript/pyobject_plus.hpp')
 FIXTURE_HEADERS = ('pch.hpp', 'pyscript/pyobject_plus.hpp', 'pyscript/script.hpp', 'pyscript/script_math.hpp',
-                   'math/vector2.hpp', 'moo/render_context.hpp', 'scaleform/flash_gui_component.hpp')
+                   'math/vector2.hpp', 'math/vector3.hpp', 'moo/render_context.hpp',
+                   'scaleform/flash_gui_component.hpp')
 
 
 def between(text, begin, end, include_end=True):

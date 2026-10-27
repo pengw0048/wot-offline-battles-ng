@@ -10,9 +10,9 @@
 #include <functional>
 #include <vector>
 
-// The Windows client binds the D3DX calls the original makes; host tests
-// define WOT_STOCK_BATTLE_GUI_HOST_MATH to use the portable forms below.
-#if defined(WOT_STOCK_BATTLE_GUI_D3DX) && !defined(WOT_STOCK_BATTLE_GUI_HOST_MATH)
+// Every Windows TU binds the D3DX calls the original makes, so the inline
+// bodies agree across the client; host builds use the portable forms below.
+#if defined(_WIN32) && !defined(WOT_STOCK_BATTLE_GUI_HOST_MATH)
 #define WOT_STOCK_BATTLE_GUI_USE_D3DX
 #include <d3dx9math.h>
 #endif

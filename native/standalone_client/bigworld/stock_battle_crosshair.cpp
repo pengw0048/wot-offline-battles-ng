@@ -1,5 +1,4 @@
 #include "pch.hpp"
-#define WOT_STOCK_BATTLE_GUI_D3DX
 #include "stock_battle_crosshair.hpp"
 #include "moo/render_context.hpp"
 
