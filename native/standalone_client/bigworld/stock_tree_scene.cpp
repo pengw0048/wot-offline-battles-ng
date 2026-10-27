@@ -904,6 +904,10 @@ struct TreeHidingState
     MatrixProviderPtr target;
     wot::StockTreeHidingFrame frame;
     wot::StockTreeHidingSettings settings;
+    // Each target change is a generation; the frame belongs to one of them.
+    uint32 generation = 0, frameGeneration = ~0u;
+    // Closed between script fini and the next script init.
+    bool open = true;
 };
 
 TreeHidingState & treeHiding()
@@ -941,7 +945,7 @@ bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & 
 {
     const TreeHidingState & hiding = treeHiding();
     const wot::StockTreeFade fade = wot::computeStockTreeFade<TreeHidingD3DX>(
-        hiding.settings, hiding.target ? &hiding.frame : NULL, input );
+        hiding.settings, hiding.target && hiding.frameGeneration == hiding.generation ? &hiding.frame : NULL, input );
     instance.leavesAlpha = fade.leaves;
     instance.branchAlpha = fade.branches;
     return fade.faded();
@@ -1181,15 +1185,21 @@ bool initialiseStockTreeSceneRendering()
 void tickStockTreeSceneRendering( float dTime )
 {
     // b035a0 snapshots the target first. matrix() may run Python, so the
-    // provider stays referenced even if the camera replaces it meanwhile.
+    // provider stays referenced; a result for a replaced or closed target
+    // is dropped, and the fade waits for the next tick.
     TreeHidingState & hiding = treeHiding();
     if (MatrixProviderPtr target = hiding.target)
     {
+        const uint32 generation = hiding.generation;
         Matrix world;
         target->matrix( world );
-        const Vector3 camera = Moo::rc().invView().applyToOrigin();
-        const float eye[3] = { camera.x, camera.y, camera.z };
-        wot::captureStockTreeHiding( reinterpret_cast<const float *>( &world ), eye, hiding.frame );
+        if (hiding.generation == generation)
+        {
+            const Vector3 camera = Moo::rc().invView().applyToOrigin();
+            const float eye[3] = { camera.x, camera.y, camera.z };
+            wot::captureStockTreeHiding( reinterpret_cast<const float *>( &world ), eye, hiding.frame );
+            hiding.frameGeneration = generation;
+        }
     }
     auto owner = currentRenderingOwner();
     if (owner && owner->active)
@@ -1198,9 +1208,26 @@ void tickStockTreeSceneRendering( float dTime )
 
 void setStockTreeCameraTarget( MatrixProvider * target )
 {
-    // b030b0 publishes the new target before the old one can be released.
+    TreeHidingState & hiding = treeHiding();
+    // b030b0 keeps an unchanged target. A closed owner accepts only release.
+    if (hiding.target.get() == target || (target && !hiding.open)) return;
+    // The new target is published before the old one can be released.
     MatrixProviderPtr previous( target );
-    std::swap( treeHiding().target, previous );
+    std::swap( hiding.target, previous );
+    ++hiding.generation;
+}
+
+void closeStockTreeCameraTarget()
+{
+    // A release may run a destructor that publishes again; closing first
+    // refuses it, so nothing stays retained across script teardown.
+    treeHiding().open = false;
+    setStockTreeCameraTarget( NULL );
+}
+
+void openStockTreeCameraTarget()
+{
+    treeHiding().open = true;
 }
 
 namespace

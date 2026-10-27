@@ -173,9 +173,15 @@ void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )
 }
 
 
+void initStockCursorCameraHiding()
+{
+    openStockTreeCameraTarget();
+}
+
+
 void finiStockCursorCameraHiding()
 {
-    setStockTreeCameraTarget( NULL );
+    closeStockTreeCameraTarget();
 }
 
 BW_END_NAMESPACE

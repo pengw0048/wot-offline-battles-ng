@@ -118,6 +118,10 @@ class CursorCameraPatchTests(unittest.TestCase):
             self.assertEqual(script.count('finiStockCursorCameraHiding();'), 1)
             self.assertLess(script.index('finiStockCursorCameraHiding();'),
                             script.index('BigWorldClientScript::fini();'))
+            # The closed target owner reopens only before the script layer starts.
+            self.assertEqual(script.count('initStockCursorCameraHiding();'), 1)
+            self.assertLess(script.index('initStockCursorCameraHiding();'),
+                            script.index('if (!BigWorldClientScript::init( AppConfig::instance().pRoot() ))'))
             methods = function(source, 'PY_BEGIN_METHODS( CursorCamera )')
             # The original method table at 01a13678 lists exactly these three.
             self.assertEqual([line.strip() for line in methods.splitlines() if 'PY_METHOD(' in line],
@@ -963,6 +967,7 @@ public:
 private:
 	MatrixProvider * p_;
 };
+typedef unsigned uint32;
 namespace wot { struct StockTreeHidingFrame {}; struct StockTreeHidingSettings {}; }
 @STATE@
 @PRODUCTION@
@@ -1054,10 +1059,12 @@ print(json.dumps(out))
         state = scene[scene.index('struct TreeHidingState'):]
         state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
         source = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
-        production = function(scene, 'void setStockTreeCameraTarget( MatrixProvider * target )') + '\n' + \
+        production = '\n'.join(function(scene, signature) for signature in (
+            'void setStockTreeCameraTarget( MatrixProvider * target )', 'void closeStockTreeCameraTarget()',
+            'void openStockTreeCameraTarget()')) + '\n' + \
             '\n'.join(function(source, signature) for signature in (
                 'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )',
-                'void finiStockCursorCameraHiding()'))
+                'void initStockCursorCameraHiding()', 'void finiStockCursorCameraHiding()'))
         with tempfile.TemporaryDirectory() as folder:
             binary = compile_host(Path(folder), HIDING_HOST.replace('@STATE@', state)
                                   .replace('@PRODUCTION@', production), 'hiding_host')

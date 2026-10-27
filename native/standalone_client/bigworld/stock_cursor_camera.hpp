@@ -24,5 +24,7 @@ bool collideStockCursorCameraModels( const BW::vector< PyObjectPtr > & owners,
 // target while sptHiding is set. The SRT owner (00748150) and the deferred
 // shadow focus (0096ea70) are not restored, so nothing else is published.
 void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled );
+// Script init opens and script fini closes the published camera target.
+void initStockCursorCameraHiding();
 void finiStockCursorCameraHiding();
 BW_END_NAMESPACE

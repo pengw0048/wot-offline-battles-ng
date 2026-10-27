@@ -270,6 +270,7 @@ LIFECYCLE_HOST = r'''
 std::vector<std::string> events;
 static void event( const std::string & text ) { events.push_back( text ); }
 
+typedef unsigned uint32;
 struct Matrix
 {
     float m[16];
@@ -428,6 +429,9 @@ public:
 @TREE_FUNCTIONS@
 @CAMERA_FUNCTIONS@
 
+// Script init between teardown and reuse (absent before the close barrier).
+#define REINIT() @REINIT@
+
 // The patched CursorCamera members that publish (production text).
 class CursorCamera
 {
@@ -496,6 +500,7 @@ int main()
     finiStockCursorCameraHiding();
     finiStockCursorCameraHiding();
     dump( "fini-twice", first, second, tree );
+    REINIT();
 
     renderingOwner = std::make_shared<TreeRenderingOwner>();
     Setting leaves;
@@ -566,10 +571,42 @@ int main()
         delete dynamic;
         finiStockCursorCameraHiding();
         dump( "reentrant-fini", first, second, tree );
+        REINIT();
     }
 
+    // Root repro 1: A.matrix() replaces the target with B during the tick.
+    {
+        first.onMatrix = [&second] { publishStockCursorCameraHiding( &second, true ); };
+        publishStockCursorCameraHiding( &first, true );
+        tickStockTreeSceneRendering( .016f );
+        first.onMatrix = nullptr;
+        colourPass( tree );
+        dump( "replaced-in-matrix", first, second, tree );
+        tickStockTreeSceneRendering( .016f );
+        colourPass( tree );
+        dump( "replaced-next-tick", first, second, tree );
+        publishStockCursorCameraHiding( nullptr, true );
+        dump( "replaced-cleared", first, second, tree );
+    }
+
+    // Root repro 2: fini releases the last A reference; A's destructor
+    // republishes B. Nothing may stay retained across Python teardown.
+    {
+        auto * dynamic = new MatrixProvider;
+        dynamic->label = 4;
+        dynamic->dynamic = true;
+        dynamic->onDestroy = [&second] { publishStockCursorCameraHiding( &second, true ); };
+        publishStockCursorCameraHiding( dynamic, true );
+        finiStockCursorCameraHiding();
+        dump( "fini-republish", first, second, tree );
+        delete dynamic;
+        finiStockCursorCameraHiding();
+        dump( "fini-cleanup", first, second, tree );
+    }
+@REOPEN@
     // Space teardown drops only that space's queued trees; device loss drains.
     {
+        renderingOwner->semitransparent.clear();
         CompiledSpace::StockTreeSceneHandler space;
         space.implementation_->instances.resize( 2 );
         space.implementation_->instances[0].label = 11;
@@ -594,6 +631,40 @@ int main()
 '''
 
 
+REOPEN = r"""
+    // Repeated fini stays closed: stale callbacks cannot reopen the owner.
+    publishStockCursorCameraHiding( &first, true );
+    dump( "closed-publish", first, second, tree );
+    // Script init reopens legitimately; a later fini closes again.
+    initStockCursorCameraHiding();
+    publishStockCursorCameraHiding( &first, true );
+    tickStockTreeSceneRendering( .016f );
+    colourPass( tree );
+    dump( "reopened", first, second, tree );
+    first.onMatrix = [] { finiStockCursorCameraHiding(); };
+    tickStockTreeSceneRendering( .016f );
+    first.onMatrix = nullptr;
+    colourPass( tree );
+    dump( "fini-in-matrix", first, second, tree );
+    initStockCursorCameraHiding();
+    first.onMatrix = [&first, &second] {
+        publishStockCursorCameraHiding( &second, true );
+        publishStockCursorCameraHiding( nullptr, true );
+        publishStockCursorCameraHiding( &first, true );
+    };
+    publishStockCursorCameraHiding( &first, true );
+    tickStockTreeSceneRendering( .016f );
+    first.onMatrix = nullptr;
+    colourPass( tree );
+    dump( "nested-aba", first, second, tree );
+    tickStockTreeSceneRendering( .016f );
+    colourPass( tree );
+    dump( "nested-aba-next", first, second, tree );
+    finiStockCursorCameraHiding();
+    initStockCursorCameraHiding();
+"""
+
+
 def lifecycle_source(engine_root):
     scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
     state = scene[scene.index('struct TreeHidingState'):]
@@ -602,6 +673,7 @@ def lifecycle_source(engine_root):
         'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )',
         'void tickStockTreeSceneRendering( float dTime )',
         'void setStockTreeCameraTarget( MatrixProvider * target )',
+        'void closeStockTreeCameraTarget()', 'void openStockTreeCameraTarget()',
         'void drawStockTreeSemitransparent( bool skipDrawing )',
         'void StockTreeSceneHandler::unload()'))
     tree = tree.replace('void StockTreeSceneHandler::unload()',
@@ -609,7 +681,7 @@ def lifecycle_source(engine_root):
     camera = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
     published = '\n'.join(function(camera, signature) for signature in (
         'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )',
-        'void finiStockCursorCameraHiding()'))
+        'void initStockCursorCameraHiding()', 'void finiStockCursorCameraHiding()'))
     patched = (engine_root / 'lib/camera/cursor_camera.cpp').read_text()
     members = '\n'.join(function(patched, signature) for signature in (
         'CursorCamera::~CursorCamera()', 'void CursorCamera::sptHiding( bool value )'))
@@ -620,7 +692,10 @@ def lifecycle_source(engine_root):
     return (LIFECYCLE_HOST.replace('#include "stock_tree_hiding.hpp"', header)
             .replace('@TREE_STATE@', state).replace('@TREE_FUNCTIONS@', tree)
             .replace('@CAMERA_FUNCTIONS@', published)
-            .replace('@CAMERA_MEMBERS@', members).replace('@UPDATE_PUBLISH@', statement))
+            .replace('@CAMERA_MEMBERS@', members).replace('@UPDATE_PUBLISH@', statement)
+            .replace('@REOPEN@', REOPEN if 'void initStockCursorCameraHiding()' in camera else '')
+            .replace('@REINIT@', 'initStockCursorCameraHiding()' if 'void initStockCursorCameraHiding()' in camera
+                     else '(void)0'))
 
 
 class ProductionHidingLifecycleTests(unittest.TestCase):
@@ -662,6 +737,20 @@ class ProductionHidingLifecycleTests(unittest.TestCase):
         self.assertEqual(rows['reentrant-matrix'], 'target=0 refs=1,0 %s events=[matrix 1]' % clear)
         self.assertEqual(rows['reentrant-destroy'], 'target=2 refs=0,1 %s events=[destroy 3]' % clear)
         self.assertEqual(rows['reentrant-fini'], 'target=0 refs=0,0 %s events=' % clear)
+        # A.matrix() replacing the target must not publish A's frame for B.
+        self.assertEqual(rows['replaced-in-matrix'], 'target=2 refs=0,1 %s events=[matrix 1]' % clear)
+        self.assertEqual(rows['replaced-next-tick'], 'target=2 refs=0,1 %s events=[matrix 2]' % clear)
+        self.assertEqual(rows['replaced-cleared'], 'target=0 refs=0,0 %s events=' % clear)
+        # fini closes before releasing; A's destructor cannot install B.
+        self.assertEqual(rows['fini-republish'], 'target=0 refs=0,0 %s events=[destroy 4]' % clear)
+        self.assertEqual(rows['fini-cleanup'], 'target=0 refs=0,0 %s events=' % clear)
+        self.assertEqual(rows['closed-publish'], 'target=0 refs=0,0 %s events=' % clear)
+        # Script init reopens; fini during matrix() drops that tick's frame.
+        self.assertEqual(rows['reopened'], 'target=1 refs=1,0 %s events=[matrix 1]' % hidden)
+        self.assertEqual(rows['fini-in-matrix'], 'target=0 refs=0,0 %s events=[matrix 1]' % clear)
+        # A->B->NULL->A inside matrix(): the same pointer, a new generation.
+        self.assertEqual(rows['nested-aba'], 'target=1 refs=1,0 %s events=[matrix 1]' % clear)
+        self.assertEqual(rows['nested-aba-next'], 'target=1 refs=1,0 %s events=[matrix 1]' % hidden)
         self.assertEqual(rows['unload'], 'queued=1 first=12')
         self.assertEqual(rows['device-lost'], 'queued=0 events=0')
         self.assertEqual(rows['no-owner'], 'events=0')
@@ -741,6 +830,7 @@ API_HOST = r"""
 #define BW_END_NAMESPACE
 #define BW_STATIC_ASSERT( condition, message ) static_assert( condition, #message )
 typedef long Py_ssize_t;
+typedef unsigned uint32;
 
 // Python objects: tag 1 bool, 2 float, 3 other; raw is the bool or binary32.
 struct PyObject { unsigned tag, raw; long references; std::vector<PyObject *> items; };
@@ -851,6 +941,7 @@ int main()
             state.target = MatrixProviderPtr( u[0] ? &provider : nullptr );
             for (int i = 0; i < 3; ++i) { state.frame.camera[i] = f( u[1 + i] ); state.frame.target[i] = f( u[4 + i] ); }
             state.frame.distance = f( u[7] );
+            state.frameGeneration = state.generation;
             float world[16];
             for (int i = 0; i < 16; ++i) world[i] = f( u[8 + i] );
             wot::StockTreeFadeInput input = {};
@@ -1359,7 +1450,7 @@ class HidingConsumerReachabilityTests(unittest.TestCase):
             if 'treeHiding()' in function(scene, signature)]
         self.assertEqual(len(readers), 2)
         fade = function(scene, 'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )')
-        self.assertIn('hiding.settings, hiding.target ? &hiding.frame : NULL, input', fade)
+        self.assertIn('hiding.settings, hiding.target && hiding.frameGeneration == hiding.generation ? &hiding.frame : NULL, input', fade)
         self.assertNotIn('StockTreeHidingSettings()', scene)
         draw = function(scene, 'virtual void doDraw( const SceneDrawContext & context, const SceneObject * objects, size_t count )')
         self.assertIn('fadeTreeInstance( *instance, input )', draw)

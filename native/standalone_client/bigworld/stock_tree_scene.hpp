@@ -17,6 +17,9 @@ void finaliseStockTreeSceneRendering();
 // #1513 00b030b0: trees between the camera and this target fade in the
 // colour pass and are drawn by drawStockTreeSemitransparent (00afef30).
 void setStockTreeCameraTarget( MatrixProvider * target );
+// Script teardown closes the target owner; the next script init reopens it.
+void closeStockTreeCameraTarget();
+void openStockTreeCameraTarget();
 void drawStockTreeSemitransparent( bool skipDrawing );
 // #1513 009c4ed0: the deferred stage, with the near-camera optimizer path.
 void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur );

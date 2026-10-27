@@ -503,6 +503,9 @@ def patch(root):
          '#include "stock_ground_effects.hpp"\n#include "stock_cursor_camera.hpp"')
     edit(SCRIPT_APP, '\tfiniStockGroundEffects();',
          '\tfiniStockCursorCameraHiding();\n\tfiniStockGroundEffects();')
+    # A closed target owner reopens only when the script layer starts again.
+    edit(SCRIPT_APP, '\tif (!BigWorldClientScript::init( AppConfig::instance().pRoot() ))',
+         '\tinitStockCursorCameraHiding();\n\tif (!BigWorldClientScript::init( AppConfig::instance().pRoot() ))')
 
     edit(HEADER, 'class WorldTriangle;\n', 'class WorldTriangle;\nclass BSPTree;\n', 'class BSPTree;\n')
     edit(HEADER, '\tvirtual void update( float deltaTime );\n\t//@}',
