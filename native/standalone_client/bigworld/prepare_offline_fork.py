@@ -112,6 +112,19 @@ def adapt_bootstrap(source):
          "            '[Offline LAN 0.9.22] enabled another independent offline client\\n')"),
         ("'[Offline LAN 0.9.22] client guard release failed: %s\\n'",
          "'[Offline LAN 0.9.22] independent runtime setup failed: %s\\n'"),
+        ("        if _client_mode == port_config.SIMULATION_WORKER_MODE:\n"
+         "            # The worker needs a native lobby only as a safe map-lifecycle\n"
+         "            # bridge. It owns no Battle button, announcement or preference\n"
+         "            # profile and therefore cannot mutate the player's UI settings.\n",
+         "        # Both roles create a stock lobby. Disable its automatic CN\n"
+         "        # announcement before either Account can fire LOBBY_VIEW_LOADED;\n"
+         "        # the worker has no browser service or interactive first-run UI.\n"
+         "        _install_announcement_ui()\n"
+         "        if _client_mode == port_config.SIMULATION_WORKER_MODE:\n"
+         "            # The worker owns no Battle button or preference profile.\n"),
+        ("            _install_announcement_ui()\n"
+         "            _install_lan_session()\n",
+         "            _install_lan_session()\n"),
     )
     for before, after in replacements:
         if source.count(before) != 1:

@@ -131,6 +131,94 @@ class OfflineForkPreparationTests(unittest.TestCase):
         end = source.index('    def restore_lobby_account(self):')
         self.assertEqual(ACCOUNT_ATTEMPT.read_text(), source[begin:end])
 
+    def test_both_roles_suppress_automatic_announcement_before_connect_and_restore(self):
+        runtime = self.runtime()
+        package = 'gui.mods.offline_lan_0922'
+        lobby_ui = types.ModuleType(package + '.lobby_ui')
+        exec(compile((runtime / 'scripts/client/gui/mods/offline_lan_0922/lobby_ui.py')
+                     .read_text(), 'lobby_ui.py', 'exec'), lobby_ui.__dict__)
+        calls = []
+
+        class ChinaController:
+            gameSession = types.SimpleNamespace(battlesCount=0)
+
+            def showBrowser(self):
+                raise AttributeError('BigWorld.createBrowser is unavailable')
+
+            def onLobbyInited(self, event):
+                if self.gameSession.battlesCount % 999 == 0:
+                    self.showBrowser()
+
+        original = ChinaController.onLobbyInited
+        manual_browser = ChinaController.showBrowser
+        modules = {name: types.ModuleType(name) for name in (
+            'gui', 'gui.mods', package, package + '.compat',
+            package + '.offline_services_ui', package + '.engine_audio',
+            'gui.game_control', 'gui.game_control.ChinaController')}
+        modules[lobby_ui.__name__] = lobby_ui
+        for name, module in list(modules.items()):
+            if '.' in name:
+                parent, child = name.rsplit('.', 1)
+                setattr(modules[parent], child, module)
+        modules['gui.game_control.ChinaController'].ChinaController = ChinaController
+        modules['gui.game_control'].gc_constants = types.SimpleNamespace(
+            BROWSER=types.SimpleNamespace(CHINA_BROWSER_COUNT=999))
+        compat = modules[package + '.compat']
+        compat.pin_dossier_cache = lambda career: calls.append('dossier')
+        compat.pin_account_settings = lambda: calls.append('preferences')
+        services = modules[package + '.offline_services_ui']
+        services.install = lambda: calls.append('services')
+        services.uninstall = lambda: None
+        modules[package + '.engine_audio'].uninstall = lambda: None
+
+        def connect(**kwargs):
+            ChinaController().onLobbyInited('lobby')
+            calls.append('connected')
+
+        raw = (self.original / BOOTSTRAP_PATH).read_text()
+        generated = (runtime / BOOTSTRAP_PATH.relative_to(PINNED_RESOURCES)).read_text()
+        for source, role, succeeds in ((raw, 'worker', False), (raw, 'player', True),
+                                       (generated, 'worker', True),
+                                       (generated, 'player', True)):
+            with self.subTest(prepared=source is generated, role=role), \
+                    patch.dict(sys.modules, modules):
+                namespace = dict(
+                    sys=sys, port_config=types.SimpleNamespace(SIMULATION_WORKER_MODE='worker'),
+                    _login_space_is_ready=lambda: True, _dossier_cache_career=lambda: 'slot',
+                    _install_worker_session=lambda: calls.append('worker'),
+                    _install_lan_session=lambda: calls.append('player'),
+                    _wait_for_lobby=lambda: None, _remove_lobby_listener=lambda: None,
+                    _schedule=lambda *args: calls.append('scheduled'),
+                    _fail_startup=lambda error: calls.append(type(error).__name__),
+                    g_compatibility=types.SimpleNamespace(connect=connect, fini=lambda: None))
+                for code in compile(source, 'bootstrap.py', 'exec').co_consts:
+                    if isinstance(code, types.CodeType) and code.co_name in (
+                            '_wait_for_login_space', '_install_announcement_ui',
+                            '_cleanup_runtime'):
+                        namespace[code.co_name] = types.FunctionType(code, namespace)
+                for unused in range(2):
+                    calls[:] = []
+                    namespace.update(_login_space_seen=True, _client_mode=role,
+                                     _announcement_ui=None, _account_context=None,
+                                     _callback_id=None, _session=None,
+                                     _worker_presentation=None, _intro_skip=None,
+                                     _lobby_view_loaded=False)
+                    namespace['_wait_for_login_space']()
+                    self.assertEqual(succeeds, 'connected' in calls, calls)
+                    self.assertEqual(succeeds, 'scheduled' in calls, calls)
+                    self.assertEqual(not succeeds, 'AttributeError' in calls, calls)
+                    self.assertEqual(role == 'player', 'preferences' in calls)
+                    self.assertEqual(role == 'player', 'services' in calls)
+                    self.assertFalse(namespace['_lobby_view_loaded'])
+                    if succeeds:
+                        installed = ChinaController.onLobbyInited
+                        namespace['_install_announcement_ui']()
+                        self.assertIs(installed, ChinaController.onLobbyInited)
+                    self.assertIs(manual_browser, ChinaController.showBrowser)
+                    self.assertIsNone(namespace['_cleanup_runtime']())
+                    self.assertIsNone(namespace['_cleanup_runtime']())
+                    self.assertIs(original, ChinaController.onLobbyInited)
+
     def test_runtime_compiles_and_package_imports_resolve_on_python27(self):
         if not PY27.is_file():
             self.skipTest('CPython 2.7 is required')
@@ -183,6 +271,7 @@ print(count)
     def test_changed_entry_seams_publish_nothing(self):
         mutations = (
             (BOOTSTRAP_PATH, 'GUI_GLOBAL_SPACE_ID.LOGIN:', 'GUI_GLOBAL_SPACE_ID.LOBBY:'),
+            (BOOTSTRAP_PATH, '            _install_announcement_ui()\n', ''),
             (COMPAT_PATH, "progress(1, runtime.login_status.LOGGED_ON, '{}')", 'progress()'),
             (COMPAT_PATH, '            clear_all_spaces()\n', '            pass\n'))
         for relative, before, after in mutations:
