@@ -8,6 +8,9 @@ import math
 import random
 import struct
 
+import pefile  # noqa: F401  Missing oracle tooling skips the instruction tests.
+import unicorn  # noqa: F401
+
 from stock_cursor_camera_oracle import OriginalCursorCamera, f32
 
 WATER_DISTANCE = 0xa302e0      # Water::a302e0(start, end, edgeAlpha)
