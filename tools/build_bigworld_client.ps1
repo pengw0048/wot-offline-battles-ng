@@ -176,6 +176,11 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # Edits only lib/scaleform/util.cpp, which patch_scaleform_sdk.py does not touch.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_lobby_input.py"),
         $EngineRoot) "stock-lobby-input-patch.log"
+    # Both adaptations use Scaleform source seams separate from the SDK patch.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_input_mode.py"),
+        $EngineRoot) "stock-flash-input-mode-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_glyph_cache.py"),
+        $EngineRoot) "stock-glyph-cache-patch.log"
 
     $GlooxArchive = Join-Path $WorkRoot "gloox.tar.bz2"
     $GlooxRoot = Join-Path $WorkRoot "gloox"
