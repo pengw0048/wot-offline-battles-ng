@@ -997,6 +997,353 @@ class TreeHidingApiTests(unittest.TestCase):
         self.assertEqual(flat[15:18], [hidden, opaque, opaque])
 
 
+STAGE_HOST = r"""
+#include "wot/stock_dynamic_resolution.hpp"
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
+
+#define NULL nullptr
+typedef long HRESULT;
+#define FAILED( h ) ((h) < 0)
+#define SUCCEEDED( h ) ((h) >= 0)
+enum { D3DCLEAR_TARGET = 1, D3DCLEAR_ZBUFFER = 2, D3DCLEAR_STENCIL = 4 };
+typedef unsigned long DWORD;
+typedef unsigned uint;
+std::vector<std::string> events;
+static void event( const std::string & text ) { events.push_back( text ); }
+static std::string number( float v ) { char b[32]; std::snprintf( b, sizeof( b ), "%g", v ); return b; }
+struct Vector4 { float x, y, z, w; Vector4( float a, float b, float c, float d ) : x( a ), y( b ), z( c ), w( d ) {} };
+namespace DX
+{
+struct Surface { int label; };
+struct Viewport { DWORD X, Y, Width, Height; float MinZ, MaxZ; };
+struct Texture { int label; };
+}
+template <class T> struct ComObjectWrap
+{
+    T * p = nullptr;
+    T * pComObject() const { return p; }
+    operator T * () const { return p; }
+};
+int failBind = 0, failClear = 0, failBlur = 0;
+struct Device
+{
+    HRESULT SetDepthStencilSurface( DX::Surface * depth )
+    { event( "depth " + std::to_string( depth ? depth->label : 0 ) ); return failBind ? -1 : 0; }
+    HRESULT Clear( DWORD, const void *, DWORD flags, DWORD colour, float z, DWORD stencil )
+    {
+        event( "clear " + std::to_string( flags ) + " " + std::to_string( colour ) + " " + number( z ) + " " +
+            std::to_string( stencil ) );
+        return failClear ? -1 : 0;
+    }
+};
+struct ID3DXEffect
+{
+    HRESULT SetBool( const char * name, int v ) { event( std::string( "bool " ) + name + " " + std::to_string( v ) ); return 0; }
+    HRESULT SetInt( const char * name, int v ) { event( std::string( "int " ) + name + " " + std::to_string( v ) ); return 0; }
+    HRESULT SetFloat( const char * name, float v ) { event( std::string( "float " ) + name + " " + number( v ) ); return 0; }
+    HRESULT SetVector( const char * name, const Vector4 * v )
+    {
+        event( std::string( "vector " ) + name + " " + number( v->x ) + " " + number( v->y ) + " " + number( v->z ) + " " + number( v->w ) );
+        return 0;
+    }
+    HRESULT SetTexture( const char * name, DX::Texture * t )
+    { event( std::string( "texture " ) + name + " " + std::to_string( t ? t->label : 0 ) ); return 0; }
+};
+struct ManagedEffect { ID3DXEffect effect; ID3DXEffect * pEffect() { return &effect; } };
+namespace Moo
+{
+enum { CONSTANTS_PER_SCREEN = 2 };
+struct EffectMaterial
+{
+    std::string name;
+    std::unique_ptr<ManagedEffect> managed{ new ManagedEffect };
+    ManagedEffect * pEffect() { return managed.get(); }
+    bool hTechnique( const char * technique ) { event( "technique " + name + " " + technique ); return true; }
+};
+typedef std::shared_ptr<EffectMaterial> EffectMaterialPtr;
+struct RenderTarget
+{
+    int label; uint w, h;
+    DX::Surface surface, depth;
+    DX::Texture texture;
+    HRESULT pSurface( ComObjectWrap<DX::Surface> & out ) { out.p = &surface; return 0; }
+    DX::Surface * depthBuffer() { return &depth; }
+    uint width() const { return w; }
+    uint height() const { return h; }
+    DX::Texture * pTexture() { return &texture; }
+};
+typedef std::shared_ptr<RenderTarget> RenderTargetPtr;
+struct EffectVisualContext { void updateSharedConstants( int ) {} };
+struct FullscreenQuad
+{
+    bool drawChecked( EffectMaterial & material, uint w, uint h )
+    { event( "quad " + material.name + " " + std::to_string( w ) + " " + std::to_string( h ) ); return !failBlur || material.name != "blur"; }
+};
+struct RenderContext
+{
+    Device device_;
+    EffectVisualContext context_;
+    FullscreenQuad quad_;
+    float width_ = 1600, height_ = 900;
+    Device * device() { return &device_; }
+    std::vector<std::pair<float, float>> saved;
+    // RenderTargetStack::pop restores the saved viewport and screen size.
+    bool pushRenderTarget() { event( "push" ); saved.emplace_back( width_, height_ ); return true; }
+    void popRenderTarget() { event( "pop" ); width_ = saved.back().first; height_ = saved.back().second; saved.pop_back(); }
+    HRESULT setRenderTarget( int index, DX::Surface * s )
+    { if (s) event( "target " + std::to_string( index ) + " " + std::to_string( s->label ) ); return 0; }
+    float screenWidth() const { return width_; }
+    float screenHeight() const { return height_; }
+    void screenWidth( float v ) { width_ = v; }
+    void screenHeight( float v ) { height_ = v; }
+    EffectVisualContext & effectVisualContext() { return context_; }
+    FullscreenQuad & fsQuad() { return quad_; }
+};
+inline RenderContext & rc() { static RenderContext value; return value; }
+}
+HRESULT setStockSceneViewport( DX::Viewport * v, bool scene )
+{ event( "viewport " + std::to_string( v->Width ) + " " + std::to_string( v->Height ) + " " + std::to_string( int( scene ) ) ); return 0; }
+struct StockDynamicResolutionSupport { wot::StockDynamicResolution value; const wot::StockDynamicResolution & state() const { return value; } };
+StockDynamicResolutionSupport * stockDynamicResolution() { return nullptr; }
+
+struct Settings { bool hideClosest = false; };
+struct TreeHidingState { Settings settings; };
+TreeHidingState & treeHiding() { static TreeHidingState state; return state; }
+struct TreeRenderingOwner
+{
+    std::array<Moo::RenderTargetPtr, 2> hidingTargets;
+    Moo::EffectMaterialPtr upsampleMaterial, blurMaterial;
+    std::array<std::array<Moo::EffectMaterialPtr, 4>, 2> semitransparentMaterials;
+    bool fail( const std::string & error ) { event( "fail " + error.substr( 0, 24 ) ); return false; }
+};
+std::shared_ptr<TreeRenderingOwner> owner;
+std::shared_ptr<TreeRenderingOwner> currentRenderingOwner() { return owner; }
+void drawStockTreeSemitransparent( bool skip ) { event( "trees " + std::to_string( int( skip ) ) ); }
+@PRODUCTION@
+
+int main()
+{
+    char line[256];
+    while (std::fgets( line, sizeof( line ), stdin ))
+    {
+        int hide, optimiser, draw, blur, hasOwner, resources;
+        std::sscanf( line, "%d %d %d %d %d %d %d %d %d", &hide, &optimiser, &draw, &blur, &hasOwner, &resources,
+            &failBind, &failClear, &failBlur );
+        treeHiding().settings.hideClosest = hide != 0;
+        owner.reset();
+        if (hasOwner)
+        {
+            owner = std::make_shared<TreeRenderingOwner>();
+            for (int i = 0; i < 2 && resources; ++i)
+            {
+                owner->hidingTargets[i] = std::make_shared<Moo::RenderTarget>();
+                owner->hidingTargets[i]->label = 10 + i;
+                owner->hidingTargets[i]->w = 400;
+                owner->hidingTargets[i]->h = 225;
+                owner->hidingTargets[i]->surface.label = 20 + i;
+                owner->hidingTargets[i]->depth.label = 30 + i;
+                owner->hidingTargets[i]->texture.label = 40 + i;
+            }
+            if (resources)
+            {
+                owner->upsampleMaterial = std::make_shared<Moo::EffectMaterial>();
+                owner->upsampleMaterial->name = "upsample";
+                owner->blurMaterial = std::make_shared<Moo::EffectMaterial>();
+                owner->blurMaterial->name = "blur";
+            }
+            for (auto & state : owner->semitransparentMaterials)
+                for (auto & m : state) { m = std::make_shared<Moo::EffectMaterial>(); m->name = "tree"; }
+        }
+        events.clear();
+        Moo::rc().width_ = 1600;
+        Moo::rc().height_ = 900;
+        drawStockTreeSemitransparentStage( !draw, optimiser != 0, blur != 0 );
+        std::printf( "S" );
+        for (const auto & e : events) std::printf( "|%s", e.c_str() );
+        std::printf( "\n" );
+    }
+    return 0;
+}
+"""
+
+
+def stage_host_source():
+    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+    start = scene.index('namespace\n{\nclass HidingTargetScope')
+    helpers = scene[start:scene.index('// #1513 009c4ed0. Near-camera')]
+    stage = function(scene, 'void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur )')
+    return STAGE_HOST.replace('@PRODUCTION@', helpers + stage)
+
+
+STAGE_ORACLE = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from stock_tree_hiding_oracle import OptimiserStage
+oracle = OptimiserStage(sys.argv[2])
+print(json.dumps([oracle.stage(**case) for case in json.loads(sys.stdin.read())]))
+"""
+
+
+def normalise_original(trace):
+    """The original stage in production terms (see HANDOFF for each delta)."""
+    out = []
+    for item in trace:
+        kind = item[0]
+        if kind in ('acquire', 'release', 'stencil', 'srt'):
+            continue  # pool lifetime, unmapped stencil mode 2, absent SRT owner
+        if kind == 'scope':
+            out.append('bind')
+        elif kind == 'colour':
+            out.append('clear colour %d' % item[1])
+        elif kind == 'depth':
+            out.append('clear depth %g %d %d' % tuple(item[2:5]))
+        elif kind == 'bool':
+            out.append('alpha %d' % item[2])
+        elif kind == 'trees':
+            out.append('trees %d' % item[1])
+        elif kind == 'end':
+            out.append('end')
+        elif kind == 'blur':
+            out.append('blur')
+        elif kind == 'technique':
+            out.append('upsample')
+        elif kind in ('bind', 'quad'):
+            out.append(kind if kind == 'quad' else 'source')
+    return out
+
+
+def normalise_production(row):
+    out, alpha, bound = [], None, False
+    for item in row.split('|')[1:]:
+        if item == 'push' and not bound:
+            out.append('bind')
+            bound = True
+        elif item == 'pop' and 'end' not in out:
+            out.append('end')
+        elif item.startswith('clear '):
+            flags, colour, z, stencil = item.split()[1:]
+            # D3D9 TARGET|ZBUFFER|STENCIL is the original colour clear plus
+            # 998a20's depth|stencil flags 3.
+            assert flags == '7', item
+            out += ['clear colour %s' % colour, 'clear depth %s %s 3' % (z, stencil)]
+        elif item.startswith('bool g_useAlpha'):
+            if item.split()[-1] != alpha:
+                alpha = item.split()[-1]
+                out.append('alpha %s' % alpha)
+        elif item.startswith('trees') or item.startswith('fail'):
+            out.append(item.split()[0] if item.startswith('fail') else item)
+        elif item == 'technique blur HORIZONTAL_PASS':
+            out.append('blur')
+        elif item == 'technique upsample UPSAMPLE_RT':
+            out.append('upsample')
+        elif item == 'texture g_srcMap 40' and out and out[-1] == 'upsample':
+            out.append('source')
+        elif item.startswith('quad upsample'):
+            out.append('quad')
+    return out
+
+
+class OptimiserStageTests(unittest.TestCase):
+    def test_deferred_stage_matches_the_original_paths(self):
+        requirements(self)
+        cases = [dict(hide=False), dict(hide=True), dict(hide=True, optimiser=False), dict(hide=True, blur=False),
+                 dict(hide=True, draw=False), dict(hide=False, draw=False), dict(hide=True, bound=False)]
+        run = subprocess.run([str(ORACLE_PYTHON), '-c', STAGE_ORACLE, str(TESTS), str(CLIENT / 'WorldOfTanks.exe')],
+                             input=json.dumps(cases), capture_output=True, text=True,
+                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        original = json.loads(run.stdout)
+        rows = []
+        for case in cases + [dict(hide=True, owner=False), dict(hide=True, resources=False),
+                             dict(hide=True, clear=False), dict(hide=True, blurred=False)]:
+            rows.append('%d %d %d %d %d %d %d %d %d' % (
+                case['hide'], case.get('optimiser', True), case.get('draw', True), case.get('blur', True),
+                case.get('owner', True), case.get('resources', True), not case.get('bound', True),
+                not case.get('clear', True), not case.get('blurred', True)))
+        with tempfile.TemporaryDirectory() as folder:
+            source = stage_host_source().replace('#include "wot/stock_dynamic_resolution.hpp"',
+                                                 (ROOT / 'include/wot/stock_dynamic_resolution.hpp').read_text())
+            binary = compile_host(Path(folder), '#include <array>\n' + source, 'tree_hiding_stage')
+            result = subprocess.run([str(binary)], input='\n'.join(rows) + '\n', capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        produced = result.stdout.splitlines()
+        # Every legal path, including skip and blur off, has the original order.
+        for index in range(6):
+            self.assertEqual(normalise_production(produced[index]), normalise_original(original[index]),
+                             '%r\n%s' % (cases[index], produced[index]))
+        quarter = produced[1].split('|')
+        # The quarter pass binds the first target with its depth over the
+        # scene-resolution viewport; the blur binds none and uses its DRR source.
+        self.assertEqual(quarter[1:5], ['push', 'depth 30', 'target 0 20', 'viewport 400 225 1'])
+        self.assertEqual([e for e in quarter if e.startswith('bool g_useAlpha')], ['bool g_useAlpha 1'] * 8 + ['bool g_useAlpha 0'] * 8)
+        blur = quarter[quarter.index('technique blur HORIZONTAL_PASS') - 4:quarter.index('quad upsample 1600 900') + 1]
+        self.assertIn('depth 0', blur)
+        for expected in ('int g_depthMode 2', 'bool g_useMaskRT 0', 'bool g_useBilateralFilter 0', 'float g_blurMip 0',
+                         'vector g_blurScreen 400 225 0.0025 0.00444444', 'texture g_srcMap 40', 'texture g_srcMap 41',
+                         'technique blur VERTICAL_PASS', 'texture g_srcMap 40', 'quad upsample 1600 900'):
+            self.assertIn(expected, blur)
+        # The original blur struct is local lighting's (a69bb7) plus +0x28 DRR.
+        self.assertEqual(original[1][11][:9], ['blur', 0x703, 0x704, 0, 0.5, 1.0, 2, 9, 0])
+        # Deliberate containment: the original still blurs and composites stale
+        # data after a failed bind; production drains and stops.
+        self.assertIn('blur', normalise_original(original[6]))
+        self.assertEqual(normalise_production(produced[6]), ['bind', 'fail', 'trees 1', 'end'])
+        self.assertEqual(normalise_production(produced[7]), ['trees 0'])
+        self.assertEqual(normalise_production(produced[8]), ['fail', 'trees 1'])
+        self.assertEqual(normalise_production(produced[9]),
+                         ['bind', 'clear colour 0', 'clear depth 1 0 3', 'fail', 'trees 1', 'end'])
+        self.assertEqual(normalise_production(produced[10]), normalise_original(original[1])[:8] + ['fail'])
+
+
+QUARTER_HOST = r"""
+#include <cstdio>
+typedef unsigned uint;
+float mulTreeScalar( float a, float b ) { volatile float result = a * b; return result; }
+struct Size { uint Width, Height; } size;
+int main()
+{
+    while (std::scanf( "%u %u", &size.Width, &size.Height ) == 2)
+    {
+@SIZE@
+        std::printf( "%u %u\n", width, height );
+    }
+}
+"""
+
+
+class HidingTargetSizeTests(unittest.TestCase):
+    def test_quarter_targets_match_the_original_resolution(self):
+        requirements(self)
+        sizes = [(1600, 900), (1366, 768), (1921, 1081), (3, 7), (2560, 1440), (1023, 767)]
+        script = ('import json, sys\nsys.path.insert(0, sys.argv[1])\n'
+                  'from stock_tree_hiding_oracle import OptimiserStage\n'
+                  'o = OptimiserStage(sys.argv[2])\n'
+                  'print(json.dumps([o.quarter(w, h) for w, h in %r]))' % sizes)
+        original = json.loads(run_oracle_script(script))
+        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        body = function(scene, 'void createHidingTargets()')
+        lines = [line for line in body.splitlines() if 'const uint width' in line or 'const uint height' in line]
+        self.assertEqual(len(lines), 2)
+        with tempfile.TemporaryDirectory() as folder:
+            binary = compile_host(Path(folder), QUARTER_HOST.replace('@SIZE@', '\n'.join(lines)), 'quarter')
+            result = subprocess.run([str(binary)], input=''.join('%d %d\n' % s for s in sizes),
+                                    capture_output=True, text=True)
+        self.assertEqual([list(map(int, line.split())) for line in result.stdout.splitlines()], original)
+        self.assertEqual(original[0], [400, 225])
+
+
+def run_oracle_script(script):
+    run = subprocess.run([str(ORACLE_PYTHON), '-c', script, str(TESTS), str(CLIENT / 'WorldOfTanks.exe')],
+                         capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+    if run.returncode:
+        raise AssertionError(run.stdout + run.stderr)
+    return run.stdout
+
+
 class HidingConsumerReachabilityTests(unittest.TestCase):
     def test_every_published_target_has_a_production_reader(self):
         """The base adapter stored targets that no production code read."""
@@ -1018,7 +1365,8 @@ class HidingConsumerReachabilityTests(unittest.TestCase):
         self.assertIn('fadeTreeInstance( *instance, input )', draw)
         self.assertIn('owner->semitransparent.push_back( item )', draw)
         trees = (ROOT / 'bigworld/patch_stock_space_trees.py').read_text()
-        self.assertEqual(trees.count('drawStockTreeSemitransparent('), 2)
+        self.assertEqual(trees.count('drawStockTreeSemitransparent( false )'), 1)
+        self.assertEqual(trees.count('drawStockTreeSemitransparentStage('), 1)
 
 
 if __name__ == '__main__':

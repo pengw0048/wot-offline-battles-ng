@@ -52,9 +52,9 @@ def patch(root):
 {
     BW_GUARD;
 
-    // #1513 009c4ed0 draws the faded old-ST4 trees directly unless near-camera
-    // tree hiding is on; that mode's half-resolution path is not restored.
-    drawStockTreeSemitransparent( !g_drawSemiTransparentTrees );
+    // #1513 009c4ed0: direct, or the near-camera quarter-resolution path.
+    drawStockTreeSemitransparentStage( !g_drawSemiTransparentTrees, g_useSpeedTreeOptimizer,
+        g_blurSemiTransparentTrees );
 
 #if 0''')
     forward_path = root / 'lib/moo/forward_pipeline.cpp'

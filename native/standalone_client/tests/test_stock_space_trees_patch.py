@@ -55,10 +55,11 @@ class StockSpaceTreesPatchTests(unittest.TestCase):
         self.assertNotIn('lib/compiled_space/compiled_space_mapping.cpp', first)
         self.assertNotIn('#define SPEEDTREE_SUPPORT', chunk)
         # 009c4ed0/009c69c0: both pipelines drain the faded trees in their
-        # semitransparent stage; only the deferred one honours its watcher.
+        # semitransparent stage; only the deferred one has the optimizer path.
         deferred = (self.root / self.paths[2]).read_text()
         stage = deferred[deferred.index('void SpeedTreeOptimizer::draw()'):]
-        self.assertLess(stage.index('drawStockTreeSemitransparent( !g_drawSemiTransparentTrees );'),
+        self.assertLess(stage.index('drawStockTreeSemitransparentStage( !g_drawSemiTransparentTrees, '
+                                    'g_useSpeedTreeOptimizer,\n        g_blurSemiTransparentTrees );'),
                         stage.index('#if 0'))
         forward = (self.root / self.paths[3]).read_text()
         self.assertIn('void ForwardPipeline::endSemitransparentDraw()\n{\n    BW_GUARD;\n'

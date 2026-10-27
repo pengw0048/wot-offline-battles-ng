@@ -18,6 +18,8 @@ void finaliseStockTreeSceneRendering();
 // colour pass and are drawn by drawStockTreeSemitransparent (00afef30).
 void setStockTreeCameraTarget( MatrixProvider * target );
 void drawStockTreeSemitransparent( bool skipDrawing );
+// #1513 009c4ed0: the deferred stage, with the near-camera optimizer path.
+void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur );
 
 namespace CompiledSpace
 {

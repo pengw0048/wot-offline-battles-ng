@@ -187,3 +187,119 @@ class TreeHidingOracle(OriginalCursorCamera):
             if not byte:
                 return out.decode()
             out.append(byte)
+
+
+SEMITRANSPARENT_STAGE = 0x9c4ed0
+OPTIMISER, DRAW_TREES, BLUR_TREES = 0x1a1ad9c, 0x1a1ad9d, 0x1a1ad9e
+RENDERER = 0x1d20620
+
+
+class OptimiserStage(TreeHidingOracle):
+    """009c4ed0 with its WG render-target, effect and pipeline calls as boundaries."""
+
+    def stage(self, hide, optimiser=True, draw=True, blur=True, bound=True):
+        e = self
+        self.trace = []
+        record = lambda item: self.trace.append(item)
+        if not getattr(self, 'stage_ready', False):
+            self.stage_ready = True
+
+            def ret(value=0, cleanup=0):
+                return lambda x, v=value, c=cleanup: x._return(v, c)
+
+            def acquire(x):
+                record(['acquire', x._arg(1)])
+                x.put_word(x._arg(0), 0x700 + x._arg(1))
+                x._return(x._arg(0), 8)
+
+            def effect(x):
+                x._return(self.effect_object, 4)
+
+            def name(x):
+                x.put_word(x.uc.reg_read(x.x86.UC_X86_REG_ECX), x._arg(0))
+                x._return(x.uc.reg_read(x.x86.UC_X86_REG_ECX), 4)
+
+            def scope(x):
+                desc = x._arg(2)
+                record(['scope', x.uc.reg_read(x.x86.UC_X86_REG_ECX)] + x.floats(desc, 9))
+                x.uc.mem_write(x._arg(0) + 8, bytes([int(self.bound)]))
+                x._return(x._arg(0), 16)
+
+            def viewport_colour(x):
+                record(['colour', x.word(x._arg(1))])
+                x._return(0, 8)
+
+            def clear_depth(x):
+                record(['depth', x.uc.reg_read(x.x86.UC_X86_REG_ECX), x.floats(x.uc.reg_read(x.x86.UC_X86_REG_ESP) + 8, 1)[0],
+                        x._arg(2), x._arg(3)])
+                x._return(0, 16)
+
+            def blur_call(x):
+                params = x._arg(1)
+                words = [x.word(params + 4 * i) for i in range(12)]
+                record(['blur', words[0], words[1], words[2]] + x.floats(params + 12, 2) + words[5:7] +
+                       list(x.uc.mem_read(params + 0x1c, 16)) + [words[11]])
+                x._return(0, 8)
+            for address, handler in (
+                    (0x999f50, acquire), (0x99ad70, effect), (0xb0fba0, name), (0x999130, scope),
+                    (0x998ad0, viewport_colour), (0x998a20, clear_depth),
+                    (0xafef30, lambda x: (record(['trees', x._arg(1)]), x._return())),
+                    (0x753d80, lambda x: (record(['srt', x._arg(1)]), x._return(0, 8))),
+                    (0x997fb0, lambda x: (record(['end']), x._return())),
+                    (0x9d62e0, blur_call),
+                    (0x99b8e0, lambda x: (record(['bind', self.text(x._arg(1)), x._arg(2)]), x._return(0, 12))),
+                    (0x9251e0, ret(0x5000)),
+                    (0x99bd70, lambda x: (record(['quad']), x._return())),
+                    (0x999dc0, lambda x: (record(['release', x.word(x.uc.reg_read(x.x86.UC_X86_REG_ECX))]), x._return()))):
+                self.handle(address, handler)
+            stencil = self.entry()
+            self.handle(stencil, lambda x: (record(['stencil', x._arg(0)]), x._return(0, 4)))
+            self.context = self.alloc(0x100)
+            stencil_object = self.alloc(16)
+            self.put_word(stencil_object, self.vtable(*([0] * 5 + [stencil])))
+            self.put_word(self.context + 4, self.vtable(0, 0, 0, 0, 0, stencil))
+            # ctx+4 is the object itself; its vtable slot +0x14 records the mode.
+            self.put_word(self.context + 4, stencil_object)
+            self.put_word(self.context + 4, self.vtable(0, 0, 0, 0, 0, stencil))
+            effect_vtable = [0] * 16
+            for slot, kind in ((2, 'bool'), (14, 'technique')):
+                entry = self.entry()
+                effect_vtable[slot] = entry
+                cleanup = 8 if kind == 'bool' else 4
+                self.handle(entry, lambda x, k=kind, c=cleanup: (
+                    record([k, self.text(x._arg(0))] + ([x._arg(1) & 255] if k == 'bool' else [])), x._return(0, c)))
+            self.effect_object = self.alloc(16)
+            self.put_word(self.effect_object, self.vtable(*effect_vtable))
+            holder = self.alloc(0x20)
+            self.optimiser = self.alloc(0x20)
+            self.uc.mem_write(self.optimiser + 4, bytes([3, 4]))
+            self.put_word(self.optimiser + 8, holder)
+            pipeline_vtable = [0] * 0x30
+            for slot, value in ((0xa4, 0x6000), (0xac, 0x6100)):
+                entry = self.entry()
+                pipeline_vtable[slot // 4] = entry
+                self.handle(entry, lambda x, v=value: x._return(v, 0))
+            pipeline = self.alloc(16)
+            self.put_word(pipeline, self.vtable(*pipeline_vtable))
+            renderer = self.alloc(0x20)
+            self.put_word(renderer + 0x10, pipeline)
+            self.put_word(RENDERER, renderer)
+            self.put_word(RENDER_CONTEXT, self.alloc(0x1000))
+        self.bound = bound
+        self.uc.mem_write(HIDE_CLOSEST, bytes([int(hide)]))
+        for address, value in ((OPTIMISER, optimiser), (DRAW_TREES, draw), (BLUR_TREES, blur)):
+            self.uc.mem_write(address, bytes([int(value)]))
+        self.run(SEMITRANSPARENT_STAGE, (self.context,), ecx=self.optimiser)
+        return self.trace
+
+    def quarter(self, width, height):
+        """998990 resolving the optimizer's (-2, -2) against a back buffer."""
+        context = self.alloc(0x1000)
+        self.put_word(RENDER_CONTEXT, context)
+        device = self.alloc(0x200)
+        self.put_word(context + 0x310, device)
+        self.put_word(device + 0x100 + 0x1c, width)
+        self.put_word(device + 0x100 + 0x20, height)
+        size = self.alloc(8, struct.pack('<2i', -2, -2))
+        self.run(0x998990, (size, size + 4))
+        return list(struct.unpack('<2i', self.uc.mem_read(size, 8)))

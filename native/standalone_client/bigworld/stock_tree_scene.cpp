@@ -2,6 +2,7 @@
 #include "stock_tree_scene.hpp"
 #include "stock_scene_settings.hpp"
 #include "stock_deferred_buffers.hpp"
+#include "stock_dynamic_resolution.hpp"
 #include "stock_tree_geometry.hpp"
 #include "stock_tree_hiding.hpp"
 #include "stock_tree_scene_data.hpp"
@@ -18,9 +19,12 @@
 #include "moo/draw_context.hpp"
 #include "moo/effect_material.hpp"
 #include "moo/effect_visual_context.hpp"
+#include "moo/fullscreen_quad.hpp"
 #include "moo/graphics_settings.hpp"
 #include "moo/index_buffer.hpp"
+#include "moo/moo_utilities.hpp"
 #include "moo/render_context.hpp"
+#include "moo/render_target.hpp"
 #include "moo/renderer.hpp"
 #include "moo/texture_manager.hpp"
 #include "moo/vertex_buffer.hpp"
@@ -391,6 +395,7 @@ public:
                 bushes.push_back( name );
             }
         createManagedObjects();
+        createHidingTargets();
         return gpuReady;
     }
 
@@ -511,6 +516,8 @@ public:
         for (auto & material : materials) material = NULL;
         for (auto & state : semitransparentMaterials)
             for (auto & material : state) material = NULL;
+        upsampleMaterial = NULL;
+        blurMaterial = NULL;
     }
 
     void deleteGpuObjects()
@@ -530,11 +537,34 @@ public:
         // D3D9Ex patches MANAGED buffers/textures to DEFAULT. They must be
         // released before ResetEx, while the logical type IDs remain owned.
         if (Moo::rc().usingD3DDeviceEx()) deleteGpuObjects();
+        for (auto & target : hidingTargets) target = NULL;
     }
 
     virtual void createUnmanagedObjects()
     {
         if (Moo::rc().usingD3DDeviceEx() && !gpuReady && active) createGpuObjects();
+        if (active) createHidingTargets();
+    }
+
+    // 9c4c20 registers two A16B16G16R16F targets of size -2: 998990 halves
+    // the back buffer twice and truncates. Only the first carries the depth
+    // that 9c4ed0 clears.
+    void createHidingTargets()
+    {
+        const auto & size = Moo::rc().backBufferDesc();
+        const uint width = static_cast<uint>( mulTreeScalar( mulTreeScalar( float( size.Width ), .5f ), .5f ) );
+        const uint height = static_cast<uint>( mulTreeScalar( mulTreeScalar( float( size.Height ), .5f ), .5f ) );
+        const char * names[] = { "SpeedTree/hiding", "SpeedTree/hiding scratch" };
+        for (unsigned i = 0; i < 2; ++i)
+        {
+            hidingTargets[i] = new Moo::RenderTarget( names[i] );
+            if (!width || !height || !hidingTargets[i]->create( width, height, false, D3DFMT_A16B16G16R16F, NULL,
+                i ? D3DFMT_UNKNOWN : D3DFMT_D24S8, false ))
+            {
+                hidingTargets[i] = NULL;
+                fail( "Cannot create the original tree-hiding target" );
+            }
+        }
     }
 
     virtual void createManagedObjects()
@@ -570,6 +600,20 @@ public:
                     return;
                 }
             }
+        // 9c4680 and 9d62e0: the optimizer's own owners. Their absence stops
+        // only the near-camera hiding path, never the tree renderer.
+        upsampleMaterial = new Moo::EffectMaterial;
+        if (!upsampleMaterial->initFromEffect( "shaders/speedtree/semitransparent.fx" ) ||
+            !upsampleMaterial->hTechnique( "UPSAMPLE_RT" ))
+        {
+            upsampleMaterial = NULL;
+            fail( "Cannot load the original tree-hiding upsample technique" );
+        }
+        if (!Moo::createEffect( blurMaterial, "shaders/auxiliary/bilateral_blur.fx" ))
+        {
+            blurMaterial = NULL;
+            fail( "Cannot load the original tree-hiding blur" );
+        }
         createGpuObjects();
     }
 
@@ -600,6 +644,7 @@ public:
     {
         active = false;
         semitransparent.clear();
+        for (auto & target : hidingTargets) target = NULL;
         deleteManagedObjects();
         std::lock_guard<std::mutex> lock( mutex );
         pending.clear();
@@ -612,6 +657,8 @@ public:
     std::shared_ptr<TreeWindOwner> defaultWind;
     std::array<SmartPointer<Moo::ComplexEffectMaterial>, 4> materials;
     std::array<std::array<Moo::EffectMaterialPtr, 4>, 2> semitransparentMaterials;
+    Moo::EffectMaterialPtr upsampleMaterial, blurMaterial;
+    std::array<Moo::RenderTargetPtr, 2> hidingTargets;
     // afde73 keeps the colour pass camera; afef60 drains the faded trees.
     Matrix alphaPassView = Matrix::identity, alphaPassProjection = Matrix::identity;
     std::vector<TreeDrawItem> semitransparent;
@@ -1154,6 +1201,147 @@ void setStockTreeCameraTarget( MatrixProvider * target )
     // b030b0 publishes the new target before the old one can be released.
     MatrixProviderPtr previous( target );
     std::swap( treeHiding().target, previous );
+}
+
+namespace
+{
+class HidingTargetScope
+{
+public:
+    HidingTargetScope() : saved_( Moo::rc().pushRenderTarget() ) {}
+    ~HidingTargetScope()
+    {
+        if (!saved_) return;
+        Moo::rc().popRenderTarget();
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+    }
+    bool bind( const Moo::RenderTargetPtr & target, bool depth )
+    {
+        ComObjectWrap<DX::Surface> surface;
+        if (!saved_ || !target || FAILED( target->pSurface( surface ) ) ||
+            FAILED( Moo::rc().device()->SetDepthStencilSurface( depth ? target->depthBuffer() : NULL ) ) ||
+            FAILED( Moo::rc().setRenderTarget( 0, surface ) )) return false;
+        for (unsigned i = 1; i < 4; ++i)
+            if (FAILED( Moo::rc().setRenderTarget( i, NULL ) )) return false;
+        // 998ad0: the pool target's viewport follows the scene resolution.
+        DX::Viewport viewport = { 0, 0, static_cast<DWORD>( target->width() ), static_cast<DWORD>( target->height() ), 0.f, 1.f };
+        if (FAILED( setStockSceneViewport( &viewport, true ) )) return false;
+        Moo::rc().screenWidth( target->width() );
+        Moo::rc().screenHeight( target->height() );
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+        return true;
+    }
+private:
+    bool saved_;
+};
+
+Vector4 hidingTargetProjection( const Moo::RenderTargetPtr & target )
+{
+    // 998e30: the DRR projection of the pool target, as targetProjection.
+    const auto * resolution = stockDynamicResolution();
+    const auto value = resolution ? resolution->state().project( target->width(), target->height() ) :
+        wot::StockDynamicResolution().project( target->width(), target->height() );
+    return Vector4( value.parameters[0], value.parameters[1], value.parameters[2], value.parameters[3] );
+}
+
+void setHidingAlpha( TreeRenderingOwner & owner, bool value )
+{
+    for (auto & state : owner.semitransparentMaterials)
+        for (auto & material : state)
+            if (material && material->pEffect()) material->pEffect()->pEffect()->SetBool( "g_useAlpha", value );
+}
+
+// 9d62e0 with 9c5080's parameters: identical to a69bb7's Gaussian except
+// +0x28, which takes the DRR source projection instead of (1,1,0,0).
+bool blurHidingTarget( TreeRenderingOwner & owner )
+{
+    const Moo::RenderTargetPtr inputs[] = { owner.hidingTargets[0], owner.hidingTargets[1] };
+    const Moo::RenderTargetPtr outputs[] = { owner.hidingTargets[1], owner.hidingTargets[0] };
+    const char * techniques[] = { "HORIZONTAL_PASS", "VERTICAL_PASS" };
+    auto & material = owner.blurMaterial;
+    for (unsigned pass = 0; pass < 2; ++pass)
+    {
+        const uint width = outputs[pass]->width(), height = outputs[pass]->height();
+        HidingTargetScope target;
+        // a69bb7's blur binds no depth; this pass has no depth test either.
+        if (!target.bind( outputs[pass], false ) || !material->hTechnique( techniques[pass] )) return false;
+        ID3DXEffect * effect = material->pEffect()->pEffect();
+        const Vector4 screen( float( width ), float( height ), 1.f / width, 1.f / height );
+        const Vector4 projection = hidingTargetProjection( inputs[pass] );
+        const bool success = !(FAILED( effect->SetInt( "g_depthMode", 2 ) ) ||
+            FAILED( effect->SetBool( "g_useMaskRT", false ) ) ||
+            FAILED( effect->SetBool( "g_useBilateralFilter", false ) ) ||
+            FAILED( effect->SetBool( "g_bilateralFilterLowQuality", false ) ) ||
+            FAILED( effect->SetBool( "g_bilateralFilterConsiderSurfacePlane", false ) ) ||
+            FAILED( effect->SetBool( "g_processOnlyOpaque", false ) ) ||
+            FAILED( effect->SetFloat( "g_blurMip", 0.f ) ) ||
+            FAILED( effect->SetVector( "g_blurScreen", &screen ) ) ||
+            FAILED( effect->SetVector( "g_srcMapDRRParams", &projection ) ) ||
+            FAILED( effect->SetTexture( "g_srcMap", inputs[pass]->pTexture() ) ) ||
+            !Moo::rc().fsQuad().drawChecked( *material, width, height ));
+        effect->SetTexture( "g_srcMap", NULL );
+        if (!success) return false;
+    }
+    return true;
+}
+}
+
+// #1513 009c4ed0. Near-camera hiding renders the faded trees into a quarter
+// target, optionally blurs it and composites it with UPSAMPLE_RT.
+void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur )
+{
+    auto owner = currentRenderingOwner();
+    if (!owner || !treeHiding().settings.hideClosest || !optimiser)
+    {
+        drawStockTreeSemitransparent( skipDrawing );
+        return;
+    }
+    const auto & targets = owner->hidingTargets;
+    if (!targets[0] || !targets[1] || !owner->upsampleMaterial || !owner->blurMaterial)
+    {
+        // The original asserts its owners exist. Contain their absence here.
+        owner->fail( "Original tree-hiding resources are unavailable; faded trees were not drawn" );
+        drawStockTreeSemitransparent( true );
+        return;
+    }
+    {
+        HidingTargetScope target;
+        if (!target.bind( targets[0], true ))
+        {
+            owner->fail( "Cannot bind the original tree-hiding target; faded trees were not drawn" );
+            drawStockTreeSemitransparent( true );
+            return;
+        }
+        // 998ad0 clears the colour to 99daa0's packed zero; 998a20 clears the
+        // depth target with flags 3 (depth and stencil) to 1 and 0.
+        if (FAILED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
+            0x00000000, 1.f, 0 ) ))
+        {
+            owner->fail( "Cannot clear the original tree-hiding target; faded trees were not drawn" );
+            drawStockTreeSemitransparent( true );
+            return;
+        }
+        setHidingAlpha( *owner, true );
+        drawStockTreeSemitransparent( skipDrawing );
+        setHidingAlpha( *owner, false );
+    }
+    if (blur && !blurHidingTarget( *owner ))
+    {
+        owner->fail( "Cannot blur the original tree-hiding target" );
+        return;
+    }
+    // 9c512b: UPSAMPLE_RT samples the quarter target (99b8e0 also binds its
+    // DRR parameters) over the scene target restored above.
+    auto & material = owner->upsampleMaterial;
+    ID3DXEffect * effect = material->pEffect()->pEffect();
+    const Vector4 projection = hidingTargetProjection( targets[0] );
+    const bool success = material->hTechnique( "UPSAMPLE_RT" ) &&
+        SUCCEEDED( effect->SetTexture( "g_srcMap", targets[0]->pTexture() ) ) &&
+        SUCCEEDED( effect->SetVector( "g_srcMapDRRParams", &projection ) ) &&
+        Moo::rc().fsQuad().drawChecked( *material, static_cast<uint>( Moo::rc().screenWidth() ),
+            static_cast<uint>( Moo::rc().screenHeight() ) );
+    effect->SetTexture( "g_srcMap", NULL );
+    if (!success) owner->fail( "Cannot composite the original tree-hiding target" );
 }
 
 // #1513 006b1800, 006b3d00 and 006b1880. Each also forwards to the SRT
