@@ -851,6 +851,33 @@ public:
         world = state_->nodes[index].world;
         return true;
     }
+    // Svarog managers read the stored node-local array without evaluating.
+    bool readNodeLocal( const BW::string & name, Matrix & local ) const
+    {
+        if (!state_->active)
+            return false;
+        const std::map<BW::string, size_t>::const_iterator found = state_->names.find( name );
+        const size_t index = name.empty() ? 0 :
+            (found == state_->names.end() ? state_->nodes.size() : found->second);
+        if (index >= state_->nodes.size())
+            return false;
+        local = state_->nodes[index].local;
+        return true;
+    }
+    // Node-array identity: the node index and its resolved parent index.
+    bool readNodeIdentity( const BW::string & name, int & index, int & parent ) const
+    {
+        if (!state_->active)
+            return false;
+        const std::map<BW::string, size_t>::const_iterator found = state_->names.find( name );
+        const size_t node = name.empty() ? 0 :
+            (found == state_->names.end() ? state_->nodes.size() : found->second);
+        if (node >= state_->nodes.size())
+            return false;
+        index = static_cast<int>( node );
+        parent = state_->nodes[node].parent;
+        return true;
+    }
     bool writeNodeLocal( const BW::string & name, const Matrix & local )
     {
         if (!state_->active)
@@ -1471,16 +1498,16 @@ PyObject * py_loadStockVehicleResourcesBG( PyObject * args )
             request.id = assembler->resourceID();
             request.operations = assembler->operations();
         }
-        else if (PyString_Check( object ))
+        else if (PyString_Check( object ) && PyString_GET_SIZE( object ) > 0)
         {
             if (Script::setData( object, request.id ) != 0)
                 return NULL;
         }
         else
         {
-            PyErr_SetString( PyExc_TypeError,
-                "loadResourceListBG requires resource strings or CompoundAssembler objects" );
-            return NULL;
+            // #1513 00a14090 silently skips None, empty strings and other
+            // objects. The Hangar appends an absent segment2 model as None.
+            continue;
         }
         requests.push_back( request );
     }
@@ -1635,6 +1662,19 @@ bool stockVehicleCompoundNode( PyObject * compound, const BW::string & name,
 {
     return compound && PyCompoundModel::Check( compound ) &&
         static_cast<PyCompoundModel *>( compound )->readNode( name, authoredLocal, parentWorld, world );
+}
+
+bool stockVehicleCompoundNodeLocal( PyObject * compound, const BW::string & name, Matrix & local )
+{
+    return compound && PyCompoundModel::Check( compound ) &&
+        static_cast<PyCompoundModel *>( compound )->readNodeLocal( name, local );
+}
+
+bool stockVehicleCompoundNodeIdentity( PyObject * compound, const BW::string & name,
+    int & index, int & parent )
+{
+    return compound && PyCompoundModel::Check( compound ) &&
+        static_cast<PyCompoundModel *>( compound )->readNodeIdentity( name, index, parent );
 }
 
 bool writeStockVehicleCompoundNodeLocal( PyObject * compound,

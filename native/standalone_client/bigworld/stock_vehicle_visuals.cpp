@@ -3,6 +3,8 @@
 #include "stock_vehicle_filter.hpp"
 #include "stock_vehicle_components.hpp"
 #include "stock_vehicle_animators.hpp"
+#include "stock_vehicle_wheels.hpp"
+#include "stock_vehicle_track_nodes.hpp"
 #include "stock_vehicle_audio.hpp"
 #include "stock_vehicle_terrain_sensor.hpp"
 #include "stock_vehicle_water_sensor.hpp"
@@ -772,9 +774,14 @@ PyObject * Suspension::py_setLodLink( PyObject * args )
 }
 PyObject * Suspension::py_setLodSettings( PyObject * args )
 {
+    PyObject * object;
+    if (!PyArg_ParseTuple( args, "O:setLodSettings", &object ))
+        return NULL;
+    // model_assembler passes LodSettings(lodDist, DEFAULT_MAX_LOD_PRIORITY),
+    // whose priority is None; 0077efe0 keeps the UINT32_MAX default.
     float distance;
-    unsigned priority;
-    if (!PyArg_ParseTuple( args, "(fI):setLodSettings", &distance, &priority ))
+    uint32 priority;
+    if (!readStockLodSettings( object, distance, priority ))
         return NULL;
     std::shared_ptr<SuspensionState> value = this->requireState();
     if (!value)
@@ -1172,9 +1179,14 @@ void tickStockVehicleComponents( float frameTime )
     tickStockDetailedEngineStates( frameTime );
     tickStockTerrainMatKindSensors( frameTime );
     // Original static factory order: LOD 01493100, Recoil 01493104,
-    // Suspension 0149328c. Recoil and Suspension both register phase 2.
+    // Suspension 0149328c, LeveredSuspension 014932bc, LinkedNodesPitch
+    // 014932dc, Wheels 014932f4, TrackNodes 0149330c; all phase 2.
+    // TrackNodes reads the wheel poses. The battle-animation managers, when
+    // integrated, belong between updateSuspensions and the wheels.
     tickStockVehicleRecoil( frameTime );
     updateSuspensions( frameTime );
+    tickStockVehicleWheels( frameTime );
+    tickStockVehicleTrackNodes( frameTime );
     tickStockVehicleAuditions( frameTime );
 }
 

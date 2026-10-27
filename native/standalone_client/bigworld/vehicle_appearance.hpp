@@ -27,6 +27,10 @@ bool stockVehicleCompoundContext( PyObject * compound, uint32 & spaceID,
     BoundingBox & worldBounds );
 bool stockVehicleCompoundNode( PyObject * compound, const BW::string & name,
     Matrix & authoredLocal, Matrix & parentWorld, Matrix & world );
+bool stockVehicleCompoundNodeLocal( PyObject * compound, const BW::string & name, Matrix & local );
+// Node index and parent index (-1 for the compound root); aliases share an index.
+bool stockVehicleCompoundNodeIdentity( PyObject * compound, const BW::string & name,
+    int & index, int & parent );
 bool writeStockVehicleCompoundNodeLocal( PyObject * compound,
     const BW::string & name, const Matrix & local );
 
