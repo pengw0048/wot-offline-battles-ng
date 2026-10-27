@@ -136,6 +136,7 @@ def text_selection_edits(sdk_root, edit):
         '        }\n'
         '        AS3::Object* object = textField.IsObject() ? textField.GetObject() : NULL;\n'
         '        if (!object || !AreDisplayObjectTraits(object) ||\n'
+        '            !static_cast<Instances::fl_display::DisplayObject*>(object)->pDispObj ||\n'
         '            static_cast<Instances::fl_display::DisplayObject*>(object)->pDispObj->GetType() !=\n'
         '                CharacterDef::TextField)\n'
         '        {\n'

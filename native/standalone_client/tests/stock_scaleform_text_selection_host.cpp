@@ -260,6 +260,11 @@ int main()
     sprite.pDispObj = &spriteNative;
     ex.setInactiveSelectionTextColor(none, Value(Value::ObjectKind, &sprite), 1u);
     vm.exception = false;
+    // SDK DisplayObject starts without a native character. Reject its type
+    // before reading the native character; a wrong argument must not crash.
+    Instances::fl_display::DisplayObject baseDisplay;
+    ex.setSelectionBkgColor(none, Value(Value::ObjectKind, &baseDisplay), 1u);
+    vm.exception = false;
     Instances::fl_text::TextField plainObject;
     plainObject.display = false;
     ex.setInactiveSelectionBkgColor(none, Value(Value::ObjectKind, &plainObject), 1u);
