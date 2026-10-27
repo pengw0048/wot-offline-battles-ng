@@ -232,6 +232,112 @@ def log_edits(engine_root, edit):
          'Scaleform variadic diagnostic forwarding')
 
 
+def movie_view_edits(engine_root, edit):
+    # #1513 keeps the IME focus owner (00aa47a0/00aa4750) without the optional
+    # Win32 IME manager, which this SDK lacks; IME::init and the message hooks
+    # stay behind SCALEFORM_IME.
+    ime_h = engine_root / 'lib/scaleform/ime.hpp'
+    edit(ime_h, '#include "config.hpp"\n\n#if SCALEFORM_IME\n\nBW_BEGIN_NAMESPACE\n',
+         '#include "config.hpp"\n#include "cstdmf/bw_string.hpp"\n\nBW_BEGIN_NAMESPACE\n',
+         'IME focus owner declaration guard')
+    edit(ime_h,
+         'public:\n\tstatic bool init( const BW::string& imeMovie );\n'
+         '\tstatic bool handleIMMMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );\n'
+         '\tstatic bool handleIMEMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );\n',
+         'public:\n#if SCALEFORM_IME\n\tstatic bool init( const BW::string& imeMovie );\n'
+         '\tstatic bool handleIMMMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );\n'
+         '\tstatic bool handleIMEMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );\n#endif\n',
+         'IME manager declarations')
+    edit(ime_h, '\tstatic void setFocussedMovie(class PyMovieView *m);\n',
+         '\tstatic void setFocussedMovie( class PyMovieView * m, const BW::string & imePath );\n',
+         'IME focus path argument')
+    edit(ime_h, 'BW_END_NAMESPACE\n\n#endif\n\n#endif', 'BW_END_NAMESPACE\n\n#endif // SCALEFORM_IME_HPP',
+         'IME focus owner declaration end')
+    ime_cpp = engine_root / 'lib/scaleform/ime.cpp'
+    edit(ime_cpp,
+         '#include "ime.hpp"\n\n#if SCALEFORM_IME\n\n#include "manager.hpp"\n'
+         '#include "resmgr/bwresource.hpp"\n#include "moo/render_context.hpp"\n'
+         '#include "cstdmf/bw_util.hpp"\n#include <GFx_IMEManagerWin32.h>\n\n'
+         'BW_BEGIN_NAMESPACE\n\nnamespace ScaleformBW\n{\n'
+         '\tint IME_token = 0;\n\tPyMovieView * IME::s_pFocussed = NULL;\n',
+         '#include "ime.hpp"\n#include "manager.hpp"\n#include "py_movie_view.hpp"\n'
+         '#include "resmgr/bwresource.hpp"\n#include "GFx/IME/GFx_IMEManager.h"\n\n'
+         '#if SCALEFORM_IME\n#include "moo/render_context.hpp"\n'
+         '#include "cstdmf/bw_util.hpp"\n#include <GFx_IMEManagerWin32.h>\n#endif\n\n'
+         'BW_BEGIN_NAMESPACE\n\nnamespace ScaleformBW\n{\n'
+         '\tPyMovieView * IME::s_pFocussed = NULL;\n\n#if SCALEFORM_IME\n\tint IME_token = 0;\n',
+         'IME focus owner definition guard')
+    edit(ime_cpp,
+         '\tvoid IME::setFocussedMovie(class PyMovieView *m)\n\t{\n'
+         '\t\tif (m != s_pFocussed)\n\t\t{\n'
+         '\t\t\tif (s_pFocussed != NULL)\n'
+         '\t\t\t\ts_pFocussed->pMovieView()->HandleEvent(GFx::Event::KillFocus);\n\n'
+         '\t\t\ts_pFocussed = m;\n\n'
+         '\t\t\tif (s_pFocussed != NULL)\n'
+         '\t\t\t\ts_pFocussed->pMovieView()->HandleEvent(GFx::Event::SetFocus);\n'
+         '\t\t}\n\t}\n',
+         '#endif // SCALEFORM_IME\n\n'
+         '\t// 00aa47a0. SDK 4.2.22 reads SetFocusEvent key states, so pass that type.\n'
+         '\tvoid IME::setFocussedMovie( PyMovieView * m, const BW::string & imePath )\n\t{\n'
+         '\t\tif (m == s_pFocussed)\n\t\t\treturn;\n'
+         '\t\tif (s_pFocussed != NULL)\n'
+         '\t\t\ts_pFocussed->pMovieView()->HandleEvent( GFx::Event( GFx::Event::KillFocus ) );\n'
+         '\t\ts_pFocussed = m;\n'
+         '\t\tif (s_pFocussed == NULL)\n\t\t\treturn;\n\n'
+         '\t\t// 00aa4820: an installed IME manager loads <imePath>/IME.swf.\n'
+         '\t\tPtr<GFx::IMEManagerBase> imeManager = Manager::instance().pLoader()->GetIMEManager();\n'
+         '\t\tif (imeManager)\n\t\t{\n'
+         '\t\t\tBW::string moviePath = imePath;\n'
+         '\t\t\tif (!moviePath.empty() && moviePath[moviePath.size() - 1] != \'\\\\\' &&\n'
+         '\t\t\t\t\tmoviePath[moviePath.size() - 1] != \'/\')\n'
+         '\t\t\t\tmoviePath += \'/\';\n'
+         '\t\t\tmoviePath += "IME.swf";\n'
+         '\t\t\timeManager->SetIMEMoviePath( BWResolver::resolveFilename( moviePath ).c_str() );\n'
+         '\t\t}\n'
+         '\t\ts_pFocussed->pMovieView()->HandleEvent( GFx::SetFocusEvent() );\n\t}\n',
+         'IME focus owner transition')
+    edit(ime_cpp, 'BW_END_NAMESPACE\n\n#endif // SCALEFORM_IME\n#endif //#if SCALEFORM_SUPPORT',
+         'BW_END_NAMESPACE\n\n#endif //#if SCALEFORM_SUPPORT', 'IME focus owner definition end')
+
+    view_h = engine_root / 'lib/scaleform/py_movie_view.hpp'
+    edit(view_h, '\t\tvoid setFocussed();\n\t\tPY_AUTO_METHOD_DECLARE( RETVOID, setFocussed, END );\n',
+         '\t\tvoid setFocussed( const BW::string & imePath );\n'
+         '\t\tPY_AUTO_METHOD_DECLARE( RETVOID, setFocussed, ARG( BW::string, END ) );\n',
+         'PyMovieView.setFocussed path argument')
+    view_cpp = engine_root / 'lib/scaleform/py_movie_view.cpp'
+    edit(view_cpp, '#include "moo/render_context.hpp"\n\n#if SCALEFORM_IME\n#include "ime.hpp"\n#endif\n',
+         '#include "moo/render_context.hpp"\n#include "ime.hpp"\n', 'PyMovieView focus owner include')
+    edit(view_cpp,
+         '\t\tManager::instance().removeMovieView(this);\n#if SCALEFORM_IME\n'
+         '\t\tIME::onDeleteMovieView(this);\n#endif\n',
+         '\t\tManager::instance().removeMovieView(this);\n\t\tIME::onDeleteMovieView(this);\n',
+         'PyMovieView focus owner teardown')
+    edit(view_cpp,
+         '\tvoid PyMovieView::setFocussed()\n\t{\n\t\tBW_GUARD;\n#if SCALEFORM_IME\n'
+         '\t\tIME::setFocussedMovie(this);\n#endif\n\t}\n',
+         '\t// 00aa5ab0 takes exactly one BW::string; 00aa47a0 owns the focus.\n'
+         '\tvoid PyMovieView::setFocussed( const BW::string & imePath )\n\t{\n\t\tBW_GUARD;\n'
+         '\t\tIME::setFocussedMovie( this, imePath );\n\t}\n',
+         'PyMovieView.setFocussed focus owner')
+    # 00aa5d80 offers an AS3 root variable only for a name the Python object
+    # rejects, so a native attribute such as backgroundAlpha is not also set
+    # on the document class.
+    edit(view_cpp,
+         '\t\tbool res = PyObjectPlus::pySetAttribute( attrObj, value );\n\n'
+         '\t\tGFx::Value gfxValue = PyGFxValue::convertValueToGFx( \n'
+         '\t\t\tvalue.get(), this );\n'
+         '\t\tif (pMovieView_->SetVariable( attrObj.c_str(),\n'
+         '\t\t\t\tgfxValue, GFx::Movie::SV_Normal ))\n'
+         '\t\t{\n\t\t\tres = true;\n\t\t}\n\n\t\treturn res;\n',
+         '\t\tif (PyObjectPlus::pySetAttribute( attrObj, value ))\n\t\t\treturn true;\n\n'
+         '\t\tGFx::Value gfxValue = PyGFxValue::convertValueToGFx( \n'
+         '\t\t\tvalue.get(), this );\n'
+         '\t\tif (!pMovieView_->SetVariable( attrObj.c_str(),\n'
+         '\t\t\t\tgfxValue, GFx::Movie::SV_Normal ))\n'
+         '\t\t{\n\t\t\treturn false;\n\t\t}\n\n\t\tPyErr_Clear();\n\t\treturn true;\n',
+         'PyMovieView native attribute before AS3 root variable')
+
+
 def patch_engine(engine_root, sdk_root):
     engine_root, sdk_root = Path(engine_root), Path(sdk_root)
     changes = {}
@@ -277,6 +383,7 @@ def patch_engine(engine_root, sdk_root):
 
     manager = engine_root / 'lib/scaleform/manager.cpp'
     log_edits(engine_root, edit)
+    movie_view_edits(engine_root, edit)
     edit(manager, '\t\tGFx::setRestrictFlashFilters(true);',
          '\t\t// SDK 4.2.22 uses its stock filter policy; the BW-specific\n'
          '\t\t// setRestrictFlashFilters extension is absent from this source SDK.',
