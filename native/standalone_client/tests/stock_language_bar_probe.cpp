@@ -14,6 +14,8 @@
 #include <GFx/AS3/AS3_AvmDisplayObjContainer.h>
 #include <GFx/AS3/Obj/AS3_Obj_Global.h>
 #include <Kernel/HeapPT/HeapPT_SysAllocWinAPI.h>
+// Defines ClassRegistrationTable, which libgfx_as3 expects from exactly one TU.
+#include <AS3/AS3_Global.h>
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
