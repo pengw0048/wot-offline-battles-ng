@@ -105,7 +105,7 @@ class StockCatalogIdentityTest(unittest.TestCase):
         self.assertEqual(foliage['fallen_trees'], [[9, 1, 1.5, None], [7, 0, 2.0, 3]])
 
     def test_committed_table_binds_every_catalog_space(self):
-        table, unused_digest = identity.load_table()
+        table = identity.load_table()
         manifest = json.loads((REPOSITORY / 'destructibles/manifest.json').read_text(encoding='utf-8'))
         spaces = dict((record['map'], record['space_bin_sha256']) for record in manifest['maps'])
         self.assertEqual(set(spaces), set(table['maps']))
@@ -127,7 +127,7 @@ class StockCatalogIdentityTest(unittest.TestCase):
         from space_bin_0922 import CompiledSpace as RawSpace
         from test_stock_battle_scene_queries import IDENTITY_PROBE
         from wot_space_bin_utils import CompiledSpace
-        self.assertEqual(identity.load_table()[0], baker.bake_empty_rows(client))
+        self.assertEqual(identity.load_table(), baker.bake_empty_rows(client))
         with tempfile.TemporaryDirectory(prefix='catalog-identity-') as directory:
             path = Path(directory)
             (path / 'probe.cpp').write_text(IDENTITY_PROBE)
@@ -151,7 +151,7 @@ class StockCatalogIdentityTest(unittest.TestCase):
                         native[index] = (chunk, row)
                 # The catalog baker and the compiled scene owner give one identity per BSMI row.
                 self.assertEqual(rows, native, name)
-                table = identity.load_table()[0]['maps'][name]['empty_rows']
+                table = identity.load_table()['maps'][name]['empty_rows']
                 shifted += sum(1 for chunk, row in rows.values()
                                if any(empty < row for empty in table.get(str(chunk), ())))
             self.assertGreater(shifted, 0)

@@ -35,6 +35,8 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.source = self.root / 'input'
         shutil.copytree(self.original / 'native', self.source / 'native')
         shutil.copytree(self.original / 'src', self.source / 'src')
+        for dataset in ('destructibles', 'foliage', 'navgraphs'):
+            shutil.copytree(self.original / dataset, self.source / dataset)
         (self.source / 'fork-source.json').write_text('{"revision":"' + PINNED_COMMIT + '"}')
         self.output = self.root / 'output'
 
@@ -52,6 +54,19 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.assertEqual(outputs, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in outputs})
         self.assertEqual(inputs, {p.relative_to(self.source): p.read_bytes()
                                  for p in self.source.rglob('*') if p.is_file()})
+
+    def test_pinned_catalogs_are_staged_at_the_runtime_config_root(self):
+        prepare(self.source, self.output)
+        config = self.output / 'mods/configs/offline_lan_0922'
+        for dataset in ('destructibles', 'foliage', 'navgraphs'):
+            self.assertEqual(42, len(list((config / dataset).iterdir())), dataset)
+        manifest = json.loads((config / 'destructibles/manifest.json').read_text())
+        self.assertEqual('wgde-raw-row', manifest['identity']['rule'])
+        lakeville = json.loads((config / 'destructibles/07_lakeville.json').read_text())
+        self.assertIn([33149, 189], [row[14:16] for row in lakeville['instances']
+                                     if row[12].endswith('env420_OldGLightVan_02.model')])
+        self.assertEqual((self.source / 'navgraphs/01_karelia.json').read_bytes(),
+                         (config / 'navgraphs/01_karelia.json').read_bytes())
 
     def test_wrong_revision_and_changed_consumer_publish_nothing(self):
         identity = self.source / 'fork-source.json'

@@ -219,7 +219,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
     }
     Invoke-Checked "tar" @("-xzf", $OfflineForkArchive, "-C", $OfflineForkRoot,
         "--strip-components", "1", "$OfflineForkPrefix/native",
-        "$OfflineForkPrefix/src", "$OfflineForkPrefix/LICENSE") "offline-fork-source-extract.log"
+        "$OfflineForkPrefix/src", "$OfflineForkPrefix/LICENSE",
+        "$OfflineForkPrefix/destructibles", "$OfflineForkPrefix/foliage",
+        "$OfflineForkPrefix/navgraphs") "offline-fork-source-extract.log"
     @{ revision = $OfflineForkRevision } | ConvertTo-Json | Set-Content -LiteralPath `
         (Join-Path $OfflineForkRoot "fork-source.json") -Encoding utf8NoBOM
 
@@ -604,6 +606,9 @@ raise RuntimeError('The build Python must ship libcrypto with real Blowfish expo
         -Destination (Join-Path $ClientOutput "offline-res") -Recurse
     Copy-Item -LiteralPath (Join-Path $OfflineRuntime "offline-res.json") `
         -Destination $ClientOutput
+    # The pinned gameplay reads its catalogs from ./mods/configs beside the EXE.
+    Copy-Item -LiteralPath (Join-Path $OfflineRuntime "mods") `
+        -Destination (Join-Path $ClientOutput "mods") -Recurse
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "fetch_resources.py"),
         (Join-Path $ClientOutput "engine-res"), "--overlay-resources",
         (Join-Path $ClientOutput "res\resources.xml")) "runtime-resources.log"

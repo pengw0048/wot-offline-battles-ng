@@ -16,6 +16,10 @@ _bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bindings)
 METHODS, PINNED_COMMIT, SOURCES = _bindings.METHODS, _bindings.PINNED_COMMIT, _bindings.SOURCES
 patch = _bindings.patch
+_spec = importlib.util.spec_from_file_location(
+    'stock_catalog_identity', Path(__file__).with_name('stock_catalog_identity.py'))
+stock_catalog_identity = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stock_catalog_identity)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -225,6 +229,8 @@ def prepare(source, destination):
                 raise ValueError('Missing pinned numerical source: ' + name)
         patch(staged)
         stage_runtime(source, staged)
+        # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().
+        stock_catalog_identity.stage(source, staged)
         names = '\n'.join('    "' + name + '",' for name in METHODS)
         (staged / 'offline_fork_methods.hpp').write_text(
             '// Generated from the validated v0.10.1 method table.\n'
@@ -241,11 +247,12 @@ def prepare(source, destination):
             if not output.exists() or output.read_bytes() != content:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(content)
-        # The runtime tree is shipped as a whole; drop files it no longer has.
-        published = destination / RUNTIME_ROOT
-        for path in sorted(published.rglob('*'), reverse=True):
-            if not (staged / path.relative_to(destination)).exists():
-                path.unlink() if path.is_file() else path.rmdir()
+        # The runtime and catalog trees are shipped whole; drop stale files.
+        for published in (destination / RUNTIME_ROOT,
+                          destination / stock_catalog_identity.CONFIG_ROOT):
+            for path in sorted(published.rglob('*'), reverse=True):
+                if not (staged / path.relative_to(destination)).exists():
+                    path.unlink() if path.is_file() else path.rmdir()
 
 
 if __name__ == '__main__':

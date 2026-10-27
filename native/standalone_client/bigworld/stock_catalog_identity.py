@@ -57,7 +57,7 @@ def load_table(path=TABLE):
     table = json.loads(payload.decode('utf-8'))
     if table.get('format') != TABLE_FORMAT or table.get('version') != 1:
         raise ValueError('Unrecognized WGDE empty-row table')
-    return table, hashlib.sha256(payload).hexdigest()
+    return table
 
 
 def _manifest(directory):
@@ -67,7 +67,7 @@ def _manifest(directory):
 def stage(source, destination, table_path=TABLE):
     """Write navgraphs, foliage and destructibles under destination/CONFIG_ROOT."""
     source, destination = Path(source), Path(destination)
-    table, table_digest = load_table(table_path)
+    table = load_table(table_path)
     output = destination / CONFIG_ROOT
     destructibles = _manifest(source / 'destructibles')
     spaces = dict((record['map'], record['space_bin_sha256'])
@@ -91,7 +91,7 @@ def stage(source, destination, table_path=TABLE):
                 payload = encode(rewire(data, entry['empty_rows']))
             (output / name / record['file']).write_bytes(payload)
             record['sha256'] = hashlib.sha256(payload).hexdigest()
-        manifest['identity'] = {'rule': IDENTITY_RULE, 'empty_rows_sha256': table_digest}
+        manifest['identity'] = {'rule': IDENTITY_RULE}
         (output / name / 'manifest.json').write_bytes(encode(manifest))
     (output / 'navgraphs').mkdir(parents=True, exist_ok=True)
     for path in sorted((source / 'navgraphs').iterdir()):
