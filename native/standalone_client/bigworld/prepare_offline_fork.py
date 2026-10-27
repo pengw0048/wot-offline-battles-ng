@@ -1,4 +1,8 @@
-"""Prepare the pinned fork's native source without modifying the input tree."""
+"""Prepare the pinned fork's native source and offline runtime payload.
+
+The input tree is never modified. The offline package is staged complete under
+offline-res with only the reviewed independent-client seams adapted.
+"""
 import argparse
 import importlib.util
 import json
@@ -16,6 +20,13 @@ patch = _bindings.patch
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
 BOOTSTRAP_PATH = NATIVE_MATH_PATH.with_name('bootstrap.py')
+COMPAT_PATH = NATIVE_MATH_PATH.with_name('compat.py')
+PINNED_RESOURCES = Path('src/res')
+RUNTIME_ROOT = Path('offline-res')
+ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.py'
+ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
+ACCOUNT_ATTEMPT = (Path(__file__).with_name('offline_entry') /
+                   'compat_account_attempt.txt')
 OLD_LOADER = '''    path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
                         'mods', '0.9.22.0.1', MODULE_NAME + '.pyd')
     try:
@@ -100,7 +111,98 @@ def adapt_bootstrap(source):
         if source.count(before) != 1:
             raise ValueError('The pinned bootstrap process policy changed')
         source = source.replace(before, after, 1)
-    return source
+    # No LoginView exists here: only the view-less entry state may own LOGIN.
+    return replace_function(source, '_login_space_is_ready', '_native_lobby_is_ready', '''
+def _login_space_is_ready():
+    """Whether the independent entry state owns a stable LOGIN space."""
+    from gui.app_loader import g_appLoader
+    import OfflineGarageEntry
+    return OfflineGarageEntry.login_space_ready(g_appLoader)
+''', ('if g_appLoader.getSpaceID() != GUI_GLOBAL_SPACE_ID.LOGIN:',
+       'lobby = g_appLoader.getDefLobbyApp()'))
+
+
+OLD_LOGGED_ON = '''            try:
+                # The progress callback mutates connection state and invokes
+                # arbitrary native listeners.  It belongs to the same
+                # transaction as Account construction, not before rollback.
+                progress(1, runtime.login_status.LOGGED_ON, '{}')
+                compatibility._create_account_player()
+'''
+NEW_LOGGED_ON = '''            try:
+                # No retail login or WGC owner exists here. Publish LOGGED_ON
+                # to the retained connection consumers in the same transaction
+                # as Account construction, before rollback.
+                import OfflineGarageEntry
+                OfflineGarageEntry.publish_logged_on(
+                    runtime.connection_manager, runtime.login_status)
+                compatibility._create_account_player()
+'''
+
+
+def replace_method(source, name, following, replacement, expected):
+    begin = source.index('\n    def ' + name + '(self') + 1
+    end = source.index('\n    def ' + following + '(self', begin) + 1
+    original = source[begin:end]
+    if any(original.count(fragment) != 1 for fragment in expected):
+        raise ValueError('The pinned runtime consumer changed: ' + name)
+    return source[:begin] + replacement + source[end:]
+
+
+def adapt_compat(source):
+    if source.count(OLD_LOGGED_ON) != 1:
+        raise ValueError('The pinned offline connection seam changed')
+    source = source.replace(OLD_LOGGED_ON, NEW_LOGGED_ON, 1)
+    # Root's reviewed rollback: release only what the failed attempt owns.
+    return replace_method(
+        source, '_discard_partial_account', 'restore_lobby_account',
+        ACCOUNT_ATTEMPT.read_text(encoding='utf-8'),
+        ('def _discard_partial_account(self):\n',
+         'clear_all_spaces()\n',
+         'space_id = runtime.bigworld.createSpace()',
+         'self._discard_partial_account()\n'))
+
+
+ADAPTERS = {
+    NATIVE_MATH_PATH: adapt_native_math,
+    INSTANCE_GUARD_PATH: adapt_instance_guard,
+    BOOTSTRAP_PATH: adapt_bootstrap,
+    COMPAT_PATH: adapt_compat,
+}
+
+
+def stage_runtime(source, staged):
+    """Copy the complete pinned payload and adapt only the reviewed seams."""
+    resources = source / PINNED_RESOURCES
+    runtime = staged / RUNTIME_ROOT
+    files = sorted(path for path in resources.rglob('*') if path.is_file())
+    adapted = []
+    for path in files:
+        if path.suffix.lower() in ('.pyc', '.pyo', '.pyd', '.dll'):
+            raise ValueError('The pinned payload contains a binary module: ' + str(path))
+        relative = path.relative_to(source)
+        output = runtime / path.relative_to(resources)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if relative in ADAPTERS:
+            # Bytes, so a Windows build keeps the archive's LF line endings.
+            output.write_bytes(ADAPTERS[relative](
+                path.read_bytes().decode('utf-8')).encode('utf-8'))
+            adapted.append(relative.as_posix())
+        else:
+            shutil.copyfile(path, output)
+    if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
+        raise ValueError('The pinned payload is missing an adapted consumer')
+    entry = runtime / ENTRY_PATH
+    if entry.exists():
+        raise ValueError('The pinned payload already owns the independent entry')
+    shutil.copyfile(ENTRY_SOURCE, entry)
+    (staged / 'offline-res.json').write_text(json.dumps({
+        'revision': PINNED_COMMIT,
+        'source': PINNED_RESOURCES.as_posix(),
+        'adapted': sorted(adapted),
+        'entry': ENTRY_PATH.as_posix(),
+        'files': len(files) + 1,
+    }, indent=2, sort_keys=True) + '\n')
 
 
 def prepare(source, destination):
@@ -119,12 +221,7 @@ def prepare(source, destination):
             if not (native / name).is_file():
                 raise ValueError('Missing pinned numerical source: ' + name)
         patch(staged)
-        for relative, adapt in ((NATIVE_MATH_PATH, adapt_native_math),
-                                (INSTANCE_GUARD_PATH, adapt_instance_guard),
-                                (BOOTSTRAP_PATH, adapt_bootstrap)):
-            consumer = staged / relative
-            consumer.parent.mkdir(parents=True, exist_ok=True)
-            consumer.write_text(adapt((source / relative).read_text()), encoding='utf-8')
+        stage_runtime(source, staged)
         names = '\n'.join('    "' + name + '",' for name in METHODS)
         (staged / 'offline_fork_methods.hpp').write_text(
             '// Generated from the validated v0.10.1 method table.\n'
@@ -141,6 +238,11 @@ def prepare(source, destination):
             if not output.exists() or output.read_bytes() != content:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(content)
+        # The runtime tree is shipped as a whole; drop files it no longer has.
+        published = destination / RUNTIME_ROOT
+        for path in sorted(published.rglob('*'), reverse=True):
+            if not (staged / path.relative_to(destination)).exists():
+                path.unlink() if path.is_file() else path.rmdir()
 
 
 if __name__ == '__main__':

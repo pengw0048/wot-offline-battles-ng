@@ -4,6 +4,7 @@ import importlib.util
 import itertools
 import os
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -633,6 +634,32 @@ class SpaceLifecycleTests(unittest.TestCase):
 
     def test_public_entity_player_bodies_and_account_transaction(self):
         compat = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+        client = os.environ.get('WOT_0922_CLIENT')
+        package = str(Path(client) / 'res/packages/scripts.pkg') if client else ''
+        self.execute('COMPAT=%r\nPACKAGE=%r\n' % (str(compat), package) + ENTITY_SEQUENCES)
+
+    def generated_compat(self):
+        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        if not fork:
+            self.skipTest('WOT_FORK_0101_SOURCE required for the pinned compat')
+        spec = importlib.util.spec_from_file_location('prepare_offline_fork', ROOT / 'bigworld/prepare_offline_fork.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        source = self.directory / 'fork'
+        if not source.exists():
+            for name in ('native', 'src'):
+                shutil.copytree(Path(fork) / name, source / name)
+            (source / 'fork-source.json').write_text('{"revision":"%s"}' % module.PINNED_COMMIT)
+            module.prepare(source, self.directory / 'generated')
+        return self.directory / 'generated/offline-res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+
+    def test_generated_pinned_compat_producer_sequences(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client: self.skipTest('WOT_0922_CLIENT required for original scripts.pkg')
+        compat = self.generated_compat()
+        self.execute('PACKAGE=%r\nCOMPAT=%r\n' % (str(Path(client) / 'res/packages/scripts.pkg'), str(compat)) + PYC_SEQUENCES)
+
+    def test_generated_pinned_compat_account_transaction(self):
+        compat = self.generated_compat()
         client = os.environ.get('WOT_0922_CLIENT')
         package = str(Path(client) / 'res/packages/scripts.pkg') if client else ''
         self.execute('COMPAT=%r\nPACKAGE=%r\n' % (str(compat), package) + ENTITY_SEQUENCES)

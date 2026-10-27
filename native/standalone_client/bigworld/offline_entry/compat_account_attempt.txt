@@ -1,0 +1,132 @@
+    def _live_entities(self):
+        try:
+            return list(self._runtime.bigworld.entities.values())
+        except Exception:
+            return []
+
+    def _discard_partial_account(self, attempt):
+        """Release only what a failed Account construction still owns.
+
+        Every step can re-enter scripts, so ownership is re-read after each
+        one: a replacement player, entity, space or repository published by a
+        callback, or one that existed before the attempt, is left alone.
+        """
+        runtime = self._runtime
+        bigworld = runtime.bigworld
+        account = attempt.get('account')
+        try:
+            player = bigworld.player()
+        except Exception:
+            player = None
+        if account is not None and player is account:
+            # Detach stock owners before the native destroy empties the dict.
+            try:
+                self.retire_current_player()
+            except Exception:
+                pass
+
+        account_id = attempt.get('account_id')
+        space_id = attempt.get('space_id')
+        try:
+            owned_entity = (account is not None and
+                            bigworld.entities.get(account_id) is account)
+        except Exception:
+            owned_entity = False
+        try:
+            held = (space_id is not None and
+                    bool(bigworld.isClientSpace(space_id)))
+        except Exception:
+            held = False
+        if held:
+            # #1513 clearAllSpaces only clears geometry. Release the space
+            # only while no other entity lives in it; otherwise destroy just
+            # this attempt's Account and leave the space to its successor.
+            others = []
+            for entity in self._live_entities():
+                if entity is account:
+                    continue
+                try:
+                    if entity.spaceID == space_id:
+                        others.append(entity)
+                except Exception:
+                    pass
+            try:
+                if not others:
+                    bigworld.releaseSpace(space_id)
+                elif owned_entity:
+                    bigworld.destroyEntity(account_id)
+            except Exception:
+                pass
+
+        # Exact Account.__init__ creates, reuses or replaces the global
+        # repository and _delAccountRepository closes whichever is current.
+        # Delete only the one this constructor published, while it is still
+        # current and no other live Account of that class can share it.
+        module = runtime.account_module
+        repository = attempt.get('repository')
+        account_class = attempt.get('account_class')
+        if (repository is None or
+                getattr(module, 'g_accountRepository', None) is not
+                repository):
+            return
+        class_name = getattr(repository, 'className', None)
+        for entity in self._live_entities():
+            if entity is account:
+                continue
+            if ((account_class is not None and
+                    isinstance(entity, account_class)) or
+                    type(entity).__name__ == class_name):
+                return
+        delete_repository = getattr(module, '_delAccountRepository', None)
+        try:
+            if callable(delete_repository):
+                delete_repository()
+        except Exception:
+            pass
+        finally:
+            if getattr(module, 'g_accountRepository', None) is repository:
+                module.g_accountRepository = None
+
+    def _create_account_player(self):
+        runtime = self._runtime
+        bigworld = runtime.bigworld
+        module = runtime.account_module
+        was_connecting = self._connecting
+        # The login screen can call the patched low-level BigWorld.connect
+        # directly after the first-run EULA.  Keep every client-only Account
+        # construction inside the same property-injection scope, rather than
+        # relying on connect() having been entered through our public helper.
+        self._connecting = True
+        # What this attempt acquired; rollback never touches anything else.
+        attempt = {}
+        previous_repository = getattr(module, 'g_accountRepository', None)
+        try:
+            try:
+                attempt['space_id'] = bigworld.createSpace()
+                try:
+                    attempt['account_id'] = bigworld.createEntity(
+                        'Account', attempt['space_id'], 0, (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0), {})
+                finally:
+                    # The constructor window is the only place this attempt
+                    # can publish a repository of its own.
+                    repository = getattr(module, 'g_accountRepository', None)
+                    if repository is not previous_repository:
+                        attempt['repository'] = repository
+                account = bigworld.entities[attempt['account_id']]
+                attempt['account'] = account
+                attempt['account_class'] = type(account)
+                if not getattr(account, _OFFLINE_INIT_COMPLETE, False):
+                    raise RuntimeError(
+                        'BigWorld returned a partial offline Account')
+                bigworld.player(account)
+                if not getattr(account, _OFFLINE_PLAYER_READY, False):
+                    raise RuntimeError(
+                        'BigWorld did not promote the offline Account')
+                return account
+            except Exception:
+                self._discard_partial_account(attempt)
+                raise
+        finally:
+            self._connecting = was_connecting
+
