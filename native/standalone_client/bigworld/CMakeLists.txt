@@ -67,6 +67,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_display_modes.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math_providers.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_math_oscillators.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_wot_module.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battleground_elements.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_particle_quality.cpp"
@@ -99,6 +100,9 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_screener.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_runtime_services.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_hangar_presentation.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_flash.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_marker_canvas.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_minimap.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_light_fx.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_lobby_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_components.cpp"
@@ -113,6 +117,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_terrain_sensor.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_cursor_camera.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_camera_collider.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_camera.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bsp_collision_model.cpp")
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})
