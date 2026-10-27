@@ -328,6 +328,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-preferences-callbacks-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_resolution.py"),
         $EngineRoot) "stock-dynamic-resolution-patch.log"
+    # Starts the generated offline mod at the original guiModsInit seam.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_offline_entry.py"),
+        $EngineRoot) "stock-offline-entry-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_decals.py"),
         $EngineRoot) "stock-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_screenshots.py"),
@@ -439,6 +442,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
             "Link the restored stock client adapters and startup diagnostics",
             "Load original processed effects through the restored native shader runtime"
             "Disable the upstream vendor crash uploader for this independent build"
+            "Enter the pinned offline Account at guiModsInit without retail login or WGC"
         )
     } | ConvertTo-Json | Set-Content -LiteralPath `
         (Join-Path $ArtifactRoot "build-inputs.json") -Encoding utf8
@@ -572,6 +576,18 @@ raise RuntimeError('The build Python must ship libcrypto with real Blowfish expo
     Copy-Item -Path (Join-Path $UpstreamOutput "*") -Destination $ClientOutput -Recurse
     Copy-Item -LiteralPath (Join-Path $StandaloneRoot "res") `
         -Destination (Join-Path $ClientOutput "res") -Recurse
+    # The pinned offline package mounts ahead of the original resources, like
+    # the retail mod path; prepare_offline_fork.py generated it at configure.
+    $OfflineRuntime = Join-Path $BuildRoot "generated\offline-fork"
+    $OfflineManifest = Get-Content -LiteralPath (Join-Path $OfflineRuntime "offline-res.json") `
+        -Raw | ConvertFrom-Json
+    if ($OfflineManifest.revision -ne $OfflineForkRevision) {
+        throw "The generated offline runtime is not the pinned gameplay source."
+    }
+    Copy-Item -LiteralPath (Join-Path $OfflineRuntime "offline-res") `
+        -Destination (Join-Path $ClientOutput "offline-res") -Recurse
+    Copy-Item -LiteralPath (Join-Path $OfflineRuntime "offline-res.json") `
+        -Destination $ClientOutput
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "fetch_resources.py"),
         (Join-Path $ClientOutput "engine-res"), "--overlay-resources",
         (Join-Path $ClientOutput "res\resources.xml")) "runtime-resources.log"
@@ -632,7 +648,7 @@ https://visualstudio.microsoft.com/license-terms/
     Copy-Item -LiteralPath (Join-Path $OfflineForkRoot "LICENSE") `
         -Destination (Join-Path $ClientOutput "offline-fork-LICENSE.txt")
     Write-Host "Built standalone BigWorld engine binary: $ClientOutput"
-    Write-Host "Includes the standalone bootstrap and public engine resources; no WoT game resources are included."
+    Write-Host "Includes the pinned offline gameplay and public engine resources; original WoT client resources are connected at preparation."
 }
 catch {
     Write-Host ($_ | Out-String)

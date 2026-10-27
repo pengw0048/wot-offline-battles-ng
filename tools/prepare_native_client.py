@@ -126,7 +126,8 @@ def prepare(client, package):
     client = client.expanduser().resolve()
     package = package.expanduser().resolve()
     identity = inspect_client(client)
-    for required in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml'):
+    for required in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml',
+                     'offline-res.json', 'offline-res/scripts/client/OfflineGarageEntry.py'):
         if not (package / required).is_file():
             raise ValueError('Independent client package is missing ' + required)
     originals = original_resource_paths(client)
@@ -139,7 +140,11 @@ def prepare(client, package):
     # native-space overlay has no replacement personality or entity table.
     native_resources = package / 'native-res'
     native_resources.mkdir(exist_ok=True)
-    for path in [native_resources] + originals + [package / 'res', package / 'engine-res']:
+    # The pinned offline package precedes the originals like the retail mods
+    # path; it owns no game.pyc or entity table.
+    offline = json.loads((package / 'offline-res.json').read_text(encoding='utf-8'))
+    for path in ([native_resources, package / 'offline-res'] + originals +
+                 [package / 'res', package / 'engine-res']):
         ET.SubElement(paths, 'Path').text = path.as_posix()
     atomic_write(package / 'app_type.xml', content_metadata)
     atomic_write(package / 'paths.xml', ET.tostring(root, encoding='utf-8',
@@ -151,6 +156,7 @@ def prepare(client, package):
         'resources_copied': False,
         'original_executable_used_at_runtime': False,
         'personality': 'game',
+        'offline_runtime_revision': offline['revision'],
     }
     atomic_write(package / 'original-client.json',
                  (json.dumps(record, indent=2) + '\n').encode('utf-8'))

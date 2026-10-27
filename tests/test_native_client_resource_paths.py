@@ -34,16 +34,18 @@ class NativeClientResourcePaths(unittest.TestCase):
           <Path>res</Path>
         </Paths></root>''')
         (self.client / 'app_type.xml').write_bytes(b'<protocol><app_type>hd</app_type><switch_to_type>sd</switch_to_type></protocol>\r\n')
-        for name in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml'):
+        for name in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml',
+                     'offline-res/scripts/client/OfflineGarageEntry.py'):
             path = self.package / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
+        (self.package / 'offline-res.json').write_text('{"revision": "pinned"}')
 
     def test_original_startup_wins_over_bootstrap(self):
         with patch.object(prepare, 'inspect_client', return_value={'version': '0.9.22.0.1', 'build': '1513'}):
             prepare.prepare(self.client, self.package)
         paths = [Path(node.text) for node in ET.parse(self.package / 'paths.xml').findall('Paths/Path')]
-        self.assertEqual(paths, [self.package / 'native-res',
+        self.assertEqual(paths, [self.package / 'native-res', self.package / 'offline-res',
                                 self.client / 'res/packages/scripts.pkg',
                                 self.client / 'res/packages/hd.pkg',
                                 self.client / 'res', self.package / 'res',
@@ -60,6 +62,7 @@ class NativeClientResourcePaths(unittest.TestCase):
         self.assertEqual(selected.read_text(), '<Avatar/><Vehicle/>')
         state = json.loads((self.package / 'original-client.json').read_text())
         self.assertEqual(state['personality'], 'game')
+        self.assertEqual(state['offline_runtime_revision'], 'pinned')
         self.assertFalse(state['original_executable_used_at_runtime'])
         self.assertEqual((self.package / 'app_type.xml').read_bytes(), (self.client / 'app_type.xml').read_bytes())
 
