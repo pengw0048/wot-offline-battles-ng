@@ -75,6 +75,8 @@ if WORKER:
     report('shown-after-visible-restore', fake_desktop.shown())
     fake_desktop.lock(1, 0)
     report('confirm-busy', native.confirm_hidden_worker_window())
+    # A native hide error is never replaced by the hidden-window proof.
+    activate('activate-hide-busy', presentation())
     fake_desktop.lock(0, 0)
     fake_desktop.destroy(main)
     report('confirm-destroyed', native.confirm_hidden_worker_window())

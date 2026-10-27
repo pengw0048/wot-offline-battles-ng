@@ -72,11 +72,6 @@ static HWND makeWindow()
 
 static void checkWindows()
 {
-    WNDCLASSW cls = {};
-    cls.hInstance = GetModuleHandleW(NULL);
-    cls.lpfnWndProc = windowProcedure;
-    cls.lpszClassName = L"WotOfflinePlatformProbe";
-    CHECK(RegisterClassW(&cls) != 0);
     const HWND foreground = GetForegroundWindow();
     HWND first = makeWindow();
     HWND hidden = makeWindow();
@@ -302,6 +297,11 @@ int main(int argc, char **argv)
         Py_XDECREF(result); PyErr_Clear();
     }
     CHECK(methodCount == 4);
+    WNDCLASSW cls = {};
+    cls.hInstance = GetModuleHandleW(NULL);
+    cls.lpfnWndProc = windowProcedure;
+    cls.lpszClassName = L"WotOfflinePlatformProbe";
+    CHECK(RegisterClassW(&cls) != 0);
     if (!wot::stockSimulationWorker()) checkWindows();
     checkWorkerWindows();
     WCHAR folder[MAX_PATH], path[MAX_PATH];

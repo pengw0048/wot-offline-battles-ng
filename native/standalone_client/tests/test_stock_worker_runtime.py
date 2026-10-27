@@ -525,6 +525,7 @@ class WorkerRuntimeHostTest(unittest.TestCase):
             'activate-visible': 'True', 'window-hidden-flag-visible': 'True', 'deactivate-visible': 'True',
             'main-visible-after-visible-restore': 'False', 'shown-after-visible-restore': '0',
             'confirm-with-foreign-mark-value': '-1400', 'confirm-two-marked': '-1400', 'confirm-busy': '-170',
+            'activate-hide-busy': refused,
             'confirm-destroyed': '-1400', 'activate-destroyed': refused, 'confirm-closed': '-995'})
         self.assertEqual(player, {
             'role': '0', 'confirm-without-window': '-50', 'confirm-foreign-only': '-50',
