@@ -217,7 +217,8 @@ class VehicleWheelsTest(unittest.TestCase):
         source = SOURCE.read_text()
         for name, arity in (('addWheel', 'OOOOO'), ('addWheelGroup', 'OOO'),
                             ('setLodLink', 'O'), ('setLodSettings', 'O'),
-                            ('setMovementInfo', 'O'), ('stopAnimatingWheels', 'OO')):
+                            ('setMovementInfo', 'O'), ('stopAnimatingWheels', 'OO'),
+                            ('setSplineTrackMovementData', 'OO')):
             self.assertIn('"%s:%s"' % (arity, name), source)
             self.assertIn('PY_METHOD( %s )' % name, source)
         self.assertIn('PY_FACTORY( WheelsAnimator, Vehicular )', source)

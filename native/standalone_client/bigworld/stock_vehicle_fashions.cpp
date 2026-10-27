@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_vehicle_fashions.hpp"
+#include "stock_vehicle_spline_tracks.hpp"
 #include "app.hpp"
 
 #include "duplo/py_material_fashion.hpp"
@@ -657,6 +658,7 @@ public:
     PY_METHOD_DECLARE( py_setLods )
     PY_METHOD_DECLARE( py_hideTracks )
     PY_METHOD_DECLARE( py_setCrashEffectCoeff )
+    PY_METHOD_DECLARE( py_setSplineTrack )
     PY_FACTORY_DECLARE()
 };
 PyObject * WGVehicleFashion::pyNew( PyObject * args )
@@ -736,12 +738,30 @@ PyObject * WGVehicleFashion::py_setCrashEffectCoeff( PyObject * args )
         state_->authoredCrashCoefficient[1] : coefficient;
     Py_RETURN_NONE;
 }
+PyObject * WGVehicleFashion::py_setSplineTrack( PyObject * args )
+{
+    PyObject * tracks[2];
+    if (!PyArg_ParseTuple( args, "OO:setSplineTrack", &tracks[0], &tracks[1] ))
+        return NULL;
+    // 00aedfb0 converts None to NULL; 00af1dc0 then binds the tracks'
+    // segment materials only when one is present. Without the spline-track
+    // manager only (None, None) is valid and the baked tracks stay visible.
+    for (int side = 0; side < 2; ++side)
+        if (tracks[side] != Py_None && !isStockSplineTrack( tracks[side] ))
+        {
+            PyErr_Format( PyExc_TypeError,
+                "() argument %d must be set to a WGSplineTrack or None", side + 1 );
+            return NULL;
+        }
+    Py_RETURN_NONE;
+}
 PY_TYPEOBJECT( WGVehicleFashion )
 PY_BEGIN_METHODS( WGVehicleFashion )
     PY_METHOD( setTracks )
     PY_METHOD( setLods )
     PY_METHOD( hideTracks )
     PY_METHOD( setCrashEffectCoeff )
+    PY_METHOD( setSplineTrack )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( WGVehicleFashion )
     PY_ATTRIBUTE( movementInfo )

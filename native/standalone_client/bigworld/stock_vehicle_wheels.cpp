@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_vehicle_wheels.hpp"
 #include "stock_vehicle_components.hpp"
+#include "stock_vehicle_spline_tracks.hpp"
 #include "stock_vehicle_visuals.hpp"
 #include "vehicle_appearance.hpp"
 
@@ -265,6 +266,7 @@ public:
     PY_METHOD_DECLARE( py_setLodLink )
     PY_METHOD_DECLARE( py_setLodSettings )
     PY_METHOD_DECLARE( py_setMovementInfo )
+    PY_METHOD_DECLARE( py_setSplineTrackMovementData )
     PY_METHOD_DECLARE( py_stopAnimatingWheels )
     PY_FACTORY_DECLARE()
 };
@@ -420,6 +422,27 @@ PyObject * WheelsAnimator::py_setMovementInfo( PyObject * args )
     Py_RETURN_NONE;
 }
 
+PyObject * WheelsAnimator::py_setSplineTrackMovementData( PyObject * args )
+{
+    PyObject * tracks[2];
+    if (!PyArg_ParseTuple( args, "OO:setSplineTrackMovementData", &tracks[0], &tracks[1] ))
+        return NULL;
+    // 00af9890 accepts None or a WGSplineTrack; none exists without the
+    // spline-track manager, so both functors are cleared (0078d790).
+    for (int side = 0; side < 2; ++side)
+        if (tracks[side] != Py_None && !isStockSplineTrack( tracks[side] ))
+        {
+            PyErr_Format( PyExc_TypeError,
+                "() argument %d must be set to a WGSplineTrack or None", side + 1 );
+            return NULL;
+        }
+    std::shared_ptr<WheelsState> value = this->state();
+    if (!value)
+        return NULL;
+    value->spline[0] = value->spline[1] = StockSplineMovementReader();
+    Py_RETURN_NONE;
+}
+
 PyObject * WheelsAnimator::py_stopAnimatingWheels( PyObject * args )
 {
     PyObject * leftObject;
@@ -445,6 +468,7 @@ PY_BEGIN_METHODS( WheelsAnimator )
     PY_METHOD( setLodLink )
     PY_METHOD( setLodSettings )
     PY_METHOD( setMovementInfo )
+    PY_METHOD( setSplineTrackMovementData )
     PY_METHOD( stopAnimatingWheels )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( WheelsAnimator )

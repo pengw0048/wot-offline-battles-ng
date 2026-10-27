@@ -28,8 +28,7 @@ bool readStockLodSettings( PyObject * object, float & maxDistance, uint32 & maxP
 // Svarog phase 2 WheelsAnimatorManager (005ae520, vft slot 0 0078c3b0).
 void tickStockVehicleWheels( float frameTime );
 
-// A WGSplineTrack publishes the float functor setSplineTrackMovementData
-// installs for leading wheels (lambda 8811d2af).
+// A loaded WGSplineTrack's phase (track+0x100 * track+0x44, lambda 8811d2af)
+// drives leading wheels after setSplineTrackMovementData.
 typedef std::function<bool(float &)> StockSplineMovementReader;
-bool stockSplineTrackMovementReader( PyObject * track, StockSplineMovementReader & reader );
 BW_END_NAMESPACE
