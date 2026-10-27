@@ -128,9 +128,9 @@ VehiclePhysicsModeConfiguration make_mode(unsigned seed, std::int32_t index, boo
         c.road_wheel_positions[i] = -2.0f + float(i) + v(-0.2f, 0.2f);
         c.stiffness_factors[i] = v(0.5f, 1.5f);
     }
-    c.grounds.push_back({0, {}, {}, {}});
+    c.grounds.assign(1, VehicleGroundSettings());
     auto& e = mode.engine;
-    e.losses = {{v(0, 1), v(0, 1)}};
+    e.losses = std::array<float, 2>{{v(0, 1), v(0, 1)}};
     e.simple_engine_power = v(50, 900);
     e.engine_inertia = v(0.001f, 0.02f);
     e.simple_min_rpm = v(500, 900);
@@ -148,14 +148,14 @@ VehiclePhysicsConfiguration make(unsigned seed, bool complex,
     result.vehicle_type = 0;
     for (std::size_t i = 0; i != indices.size(); ++i)
         result.modes.push_back(make_mode(seed + unsigned(i) * 7919u, indices[i], complex));
-    result.anchor_maximum_reaction_factor = 0.5f;
-    result.anchor_constant_fraction = 0.25f;
-    result.anchor_velocity_factor = 0.125f;
+    result.anchor = VehicleAnchorConfiguration{0.5f, 0.25f, 0.125f};
     result.rail_factor_in_contact = 0.75f;
     result.gimlet = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    result.gimlet_fields = 16;
+    result.gears = VehicleFakeGearboxConfiguration{};
     for (unsigned i = 0; i != gears; ++i) {
-        result.forward_gears.push_back({2.0f + 3 * i, 1.0f + i, 0.2f + 0.1f * i, 0.9f - 0.1f * i});
-        result.backward_gears.push_back({1.0f + i, 0.5f + i, 0.3f, 0.8f});
+        result.gears->forward.push_back({2.0f + 3 * i, 1.0f + i, 0.2f + 0.1f * i, 0.9f - 0.1f * i});
+        result.gears->backward.push_back({1.0f + i, 0.5f + i, 0.3f, 0.8f});
     }
     return result;
 }
@@ -224,13 +224,13 @@ void check_fresh(const VehiclePhysics& physics, const VehiclePhysicsConfiguratio
     assert(tank->anchor.velocity_factor == 0.125f && tank->rail.factor_in_contact == 0.75f);
     assert(tank->gimlet.settings.maximum_velocity_scale == 16);
     const auto& curves = tank->fake_gearbox.curves;
-    assert(curves.size() == 3 && curves[0].size() == cfg.forward_gears.size() + 1);
-    assert(curves[0][0].previous_speed == 0 && curves[0][0].speed == cfg.forward_gears[0].switch_speed);
-    assert(curves[0][1].previous_low_rpm == cfg.forward_gears[0].low_rpm);
+    assert(curves.size() == 3 && curves[0].size() == cfg.gears->forward.size() + 1);
+    assert(curves[0][0].previous_speed == 0 && curves[0][0].speed == cfg.gears->forward[0].switch_speed);
+    assert(curves[0][1].previous_low_rpm == cfg.gears->forward[0].low_rpm);
     assert(curves[0].back().speed == mode.body.simple_forward_max_speed);
     assert(curves[0].back().high_rpm == 1.0f && curves[0].back().hysteresis == 0.0f);
     assert(curves[2].size() == 1 && curves[2][0].speed == mode.engine.rotation_angular_velocity);
-    assert(curves[2][0].previous_speed == mode.engine.simple_min_rpm * 0.10471976f);
+    assert(curves[2][0].previous_speed == *mode.engine.simple_min_rpm * 0.10471976f);
     // f8b8d0 shapes at the identity pose.
     const auto geometry = build_vehicle_tank_geometry(mode.body, mode.shape, mode.chassis, math);
     for (int i = 0; i != 2; ++i) {
@@ -383,6 +383,72 @@ int main() {
         assert(physics.frozen() && same(physics.linear_velocity(), {}));
         physics.set_frozen(false);
         assert(!physics.frozen() && !physics.frozen_during_frame());
+    }
+
+    // Caught global regions keep the Tank's previous values (f85c70/f84e80).
+    {
+        VehiclePhysics physics;
+        auto first = make(5, false, {0});
+        physics.configure(first, math);
+        auto partial = make(6, false, {0});
+        partial.anchor.reset();
+        partial.rail_factor_in_contact.reset();
+        partial.gimlet = {101, 102, 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        partial.gimlet_fields = 3;
+        partial.gears.reset();
+        const auto curves = physics.tank()->fake_gearbox.curves;
+        physics.configure(partial, math);
+        const VehicleTank& tank = *physics.tank();
+        assert(tank.anchor.velocity_factor == 0.125f && tank.rail.factor_in_contact == 0.75f);
+        assert(tank.gimlet.settings.pushed_handbrake_weight == 103 && tank.gimlet.settings.push_in_contact == 4);
+        assert(tank.fake_gearbox.curves.size() == curves.size() &&
+               tank.fake_gearbox.curves[0].size() == curves[0].size() &&
+               tank.fake_gearbox.curves[0][0].speed == curves[0][0].speed);
+        // A fresh Tank whose gearbox region failed has no curves (f97a60 never ran).
+        VehiclePhysics fresh;
+        fresh.configure(partial, math);
+        assert(fresh.tank()->fake_gearbox.curves.empty());
+        assert(fresh.tank()->gimlet.settings.on_spot_fixed_period == 0.2f);
+        // Constructor-default engine values when f7ecd0's region failed early.
+        auto engine = make(7, false, {0});
+        engine.modes[0].engine = VehicleEngineConfiguration{};
+        VehiclePhysics defaults;
+        defaults.configure(engine, math);
+        assert(defaults.tank()->fake_gearbox.curves[2][0].previous_speed == 52.35988f);
+        assert(defaults.tank()->engine.inertia.inertia.rows[0][0] == 0.006f);
+    }
+
+    // GroundSettings (f968d0 install, f96860 lookup) with the registry.
+    {
+        VehicleGroundMaterialRegistry registry;
+        std::vector<VehicleGroundSettings> table(3);
+        VehicleGroundSurfaceConfiguration firm, medium, soft;
+        firm.rolling_friction = 1; medium.rolling_friction = 2; soft.rolling_friction = 3;
+        assert(install_vehicle_ground_settings(table, 2, firm, medium, soft));
+        assert(!install_vehicle_ground_settings(table, 3, firm, medium, soft));
+        assert(!install_vehicle_ground_settings(table, -1, firm, medium, soft));
+        assert(!install_vehicle_ground_settings(table, -2, firm, medium, soft));
+        assert(table[0].firm.rolling_friction == 0.07f && table[2].soft.rolling_friction == 3);
+        // Before any setup every matKind maps to group 0.
+        assert(&lookup_vehicle_ground_surface(table, registry, 77, 1) == &table[0].firm);
+        registry.groups.fill(-1);
+        registry.groups[9] = 2;
+        registry.groups[10] = 5;
+        assert(&lookup_vehicle_ground_surface(table, registry, 9, 1) == &table[2].firm);
+        assert(&lookup_vehicle_ground_surface(table, registry, 9, 2) == &table[2].medium);
+        assert(&lookup_vehicle_ground_surface(table, registry, 9, 3) == &table[2].soft);
+        assert(&lookup_vehicle_ground_surface(table, registry, 9, 0) == &table[2].firm);
+        assert(&lookup_vehicle_ground_surface(table, registry, 9, 7) == &table[2].firm);
+        assert(&lookup_vehicle_ground_surface(table, registry, 10, 2) == &table[0].medium);
+        assert(&lookup_vehicle_ground_surface(table, registry, 11, 3) == &table[0].soft);
+        assert(&lookup_vehicle_ground_surface(table, registry, 256, 1) == &table[0].firm);
+        assert(&lookup_vehicle_ground_surface(table, registry, -5, 1) == &table[0].firm);
+        std::vector<VehicleGroundSettings> empty;
+        bool threw = false;
+        try { (void)lookup_vehicle_ground_surface(empty, registry, 0, 1); }
+        catch (const std::out_of_range&) { threw = true; }
+        assert(threw);
+        assert(vehicle_ground_material_registry().count == 1);
     }
 
     // An empty fake gearbox duplicates its terminal point.

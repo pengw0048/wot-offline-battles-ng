@@ -24,14 +24,15 @@ def probe_source():
     reader = source[begin:end]
     header = (ROOT / 'include/wot/vehicle_physics.hpp').read_text()
     kinds = ['VehicleBodyConfiguration', 'VehicleShapeConfiguration', 'VehicleGroundSurfaceConfiguration',
-             'VehicleGroundConfiguration', 'VehicleChassisConfiguration', 'VehicleEngineConfiguration',
+             'VehicleGroundSettings', 'VehicleChassisConfiguration', 'VehicleEngineConfiguration',
              'VehiclePhysicsModeConfiguration', 'VehicleFakeGearConfiguration', 'VehicleGimletConfiguration',
-             'VehiclePhysicsConfiguration']
+             'VehicleAnchorConfiguration', 'VehicleFakeGearboxConfiguration', 'VehiclePhysicsConfiguration']
     declarations = '\n'.join('PyObject*pack(const wot::%s&);' % name for name in kinds)
     definitions = []
     for name in kinds:
         body = re.search(r'struct ' + name + r'\s*\{(.*?)\n\};', header, re.S).group(1)
-        fields = re.findall(r'^\s*(?:float|bool|std::int32_t|std::string|Vector3|Vehicle\w+|std::array<[^>]+>|std::vector<[^>]+>)\s+(\w+)\s*;', body, re.M)
+        fields = re.findall(r'^\s*(?:float|bool|std::u?int32_t|std::string|Vector3|Vehicle\w+|std::array<[^>]+>|'
+                            r'std::vector<[^>]+>|std::optional<[^;=]+>)\s+(\w+)\s*(?:=[^;]*|\{[^;]*\})?;', body, re.M)
         assert fields, name
         definitions.append('PyObject*pack(const wot::%s&value){PyObjectPtr result(PyDict_New(),PyObjectPtr::STEAL_REFERENCE);' % name +
                            ''.join('if(!put(result.get(),"%s",pack(value.%s)))return NULL;' % (field, field) for field in fields) +
@@ -48,6 +49,7 @@ def probe_source():
 #include <cstdio>
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <vector>
 class PyObjectPtr {
  PyObject*value_=NULL;
@@ -66,10 +68,14 @@ public:
 PyObject*pack(float value){return PyFloat_FromDouble(value);}
 PyObject*pack(bool value){return PyBool_FromLong(value);}
 PyObject*pack(std::int32_t value){return PyInt_FromLong(value);}
+PyObject*pack(std::uint32_t value){return PyInt_FromLong(long(value));}
 PyObject*pack(const std::string&value){return PyString_FromStringAndSize(value.data(),value.size());}
 PyObject*pack(const wot::Vector3&value){return Py_BuildValue("(fff)",value.x,value.y,value.z);}
 template<class T,std::size_t N>PyObject*pack(const std::array<T,N>&value){
  PyObject*result=PyList_New(N);for(std::size_t i=0;i<N;++i)PyList_SET_ITEM(result,i,pack(value[i]));return result;
+}
+template<class T>PyObject*pack(const std::optional<T>&value){
+ if(!value){Py_INCREF(Py_None);return Py_None;}return pack(*value);
 }
 template<class T>PyObject*pack(const std::vector<T>&value){
  PyObject*result=PyList_New(value.size());for(std::size_t i=0;i<value.size();++i)PyList_SET_ITEM(result,i,pack(value[i]));return result;
@@ -81,7 +87,7 @@ bool put(PyObject*object,const char*key,PyObject*value){
 wot::VehiclePhysicsConfiguration stored;
 PyObject*parse(PyObject*,PyObject*arguments){
  PyObject*value;if(!PyArg_ParseTuple(arguments,"O",&value))return NULL;
- if(!readStockVehiclePhysicsConfiguration(value,stored))return NULL;
+ if(!readStockVehiclePhysicsConfiguration(value,stored,true))return NULL;
  return pack(stored);
 }
 PyObject*current(PyObject*,PyObject*){return pack(stored);}
@@ -142,8 +148,30 @@ PyObject*summary(PyObject*,PyObject*arguments){
   put(result.get(),"polyhedra",Py_BuildValue("(ii)",int(tank->collections[0].polyhedra.size()),
       int(tank->collections[1].polyhedra.size())));
   put(result.get(),"vertical_force",PyFloat_FromDouble(tank->chassis.vertical_force));
-  put(result.get(),"gears",PyInt_FromLong(long(tank->fake_gearbox.curves.at(0).size())));
-  put(result.get(),"grounds",PyInt_FromLong(long(tank->current_chassis().grounds.size())));
+  put(result.get(),"gears",PyInt_FromLong(tank->fake_gearbox.curves.empty()?-1:long(tank->fake_gearbox.curves[0].size())));
+  put(result.get(),"grounds",pack(tank->current_chassis().grounds));
+  put(result.get(),"grounds_complete",PyBool_FromLong(tank->current_chassis().grounds_complete));
+  put(result.get(),"chassis",pack(tank->current_chassis()));
+  put(result.get(),"engine",pack(tank->current_engine()));
+  put(result.get(),"body",pack(tank->current_settings().body));
+  put(result.get(),"shape",pack(tank->current_settings().shape));
+  put(result.get(),"siege",PyBool_FromLong(tank->current_settings().siege_mode_available));
+  put(result.get(),"anchor",Py_BuildValue("(fff)",tank->anchor.maximum_reaction_factor,
+      tank->anchor.constant_fraction,tank->anchor.velocity_factor));
+  put(result.get(),"rail",PyFloat_FromDouble(tank->rail.factor_in_contact));
+  put(result.get(),"gimlet",pack(tank->gimlet.settings));
+  put(result.get(),"curves",Py_BuildValue("(iii)",int(tank->fake_gearbox.curves.size()),
+      tank->fake_gearbox.curves.empty()?0:int(tank->fake_gearbox.curves[0].size()),
+      tank->fake_gearbox.curves.size()<2?0:int(tank->fake_gearbox.curves[1].size())));
+  {
+   PyObjectPtr points(PyList_New(0),PyObjectPtr::STEAL_REFERENCE);
+   for(const auto&curve:tank->fake_gearbox.curves)for(const auto&p:curve){
+    PyObjectPtr item(Py_BuildValue("(fffff)",p.previous_speed,p.speed,p.previous_low_rpm,p.high_rpm,p.hysteresis),
+                     PyObjectPtr::STEAL_REFERENCE);
+    PyList_Append(points.get(),item.get());
+   }
+   Py_INCREF(points.get());put(result.get(),"curve_points",points.get());
+  }
   put(result.get(),"hull_com_z",PyFloat_FromDouble(target->hull_com_z()));
  }
  Py_INCREF(result.get());return result.get();
@@ -159,7 +187,32 @@ PyObject*hull_com_z(PyObject*,PyObject*arguments){
  if(!target->tank()){PyErr_SetString(PyExc_ValueError,"hullCOMZ requires a configured WGVehiclePhysics");return NULL;}
  return PyFloat_FromDouble(target->hull_com_z());
 }
-PyMethodDef methods[]={{"parse",parse,METH_VARARGS,NULL},{"current",current,METH_NOARGS,NULL},
+PyObject*setup_materials(PyObject*,PyObject*arguments){
+ PyObject*value;if(!PyArg_ParseTuple(arguments,"O",&value))return NULL;
+ if(!setupStockGroundMaterialsMap(value))return NULL;
+ Py_RETURN_NONE;
+}
+PyObject*registry(PyObject*,PyObject*){
+ const auto&state=wot::vehicle_ground_material_registry();
+ return Py_BuildValue("(kN)",(unsigned long)state.count,pack(state.groups));
+}
+PyObject*reset_registry(PyObject*,PyObject*){
+ wot::vehicle_ground_material_registry()=wot::VehicleGroundMaterialRegistry{};Py_RETURN_NONE;
+}
+PyObject*lookup(PyObject*,PyObject*arguments){
+ int handle,kind,strength;if(!PyArg_ParseTuple(arguments,"iii",&handle,&kind,&strength))return NULL;
+ if(handle<0||size_t(handle)>=cores.size()||!cores[size_t(handle)]||!cores[size_t(handle)]->tank()){
+  PyErr_SetString(PyExc_KeyError,"no tank");return NULL;}
+ const auto&table=cores[size_t(handle)]->tank()->current_chassis().grounds;
+ try{
+  const auto&surface=wot::lookup_vehicle_ground_surface(table,wot::vehicle_ground_material_registry(),kind,strength);
+  const auto offset=reinterpret_cast<const char*>(&surface)-reinterpret_cast<const char*>(table.data());
+  return Py_BuildValue("(ii)",int(offset/sizeof(wot::VehicleGroundSettings)),
+                       int(offset%sizeof(wot::VehicleGroundSettings)/sizeof(wot::VehicleGroundSurfaceConfiguration)));
+ }catch(const std::out_of_range&error){PyErr_SetString(PyExc_IndexError,error.what());return NULL;}
+}
+PyMethodDef methods[]={{"setup_materials",setup_materials,METH_VARARGS,NULL},{"registry",registry,METH_NOARGS,NULL},
+ {"reset_registry",reset_registry,METH_NOARGS,NULL},{"lookup",lookup,METH_VARARGS,NULL},{"parse",parse,METH_VARARGS,NULL},{"current",current,METH_NOARGS,NULL},
  {"create",create,METH_NOARGS,NULL},{"destroy",destroy,METH_VARARGS,NULL},
  {"configure",configure,METH_VARARGS,NULL},{"summary",summary,METH_VARARGS,NULL},
  {"set_frozen",set_frozen,METH_VARARGS,NULL},{"hull_com_z",hull_com_z,METH_VARARGS,NULL},

@@ -50,11 +50,18 @@ VehicleEngineTorqueSettings build_vehicle_engine_torque_settings(
     // 0x43517084. The reader builds this curve before overwriting min/max RPM.
     const float initial_minimum = 52.3598785400390625f;
     const float initial_maximum = 209.43951416015625f;
-    return {{{{initial_minimum, configuration.losses[0]},
-               {initial_maximum, configuration.losses[1]},
-               {initial_maximum * 3.0f, configuration.losses[1] * 6.0f}}},
-             configuration.simple_engine_power,
-             configuration.start_rpm * 0.10471976f};
+    const float start = vehicle_engine_start_angular_velocity(configuration);
+    if (!configuration.losses) {
+        // f90a3b constructor curve, kept when engineLoses was not read.
+        return {{{{initial_minimum, 0.5f}, {initial_maximum, 0.8f},
+                   {initial_maximum * 2.5f, 3.0f}}},
+                 configuration.simple_engine_power, start};
+    }
+    const auto& losses = *configuration.losses;
+    return {{{{initial_minimum, losses[0]},
+               {initial_maximum, losses[1]},
+               {initial_maximum * 3.0f, losses[1] * 6.0f}}},
+             configuration.simple_engine_power, start};
 }
 
 VehicleEngineTorque prepare_vehicle_engine_torque(

@@ -344,6 +344,57 @@ VehicleMatrix multiply_vehicle_matrices(const VehicleMatrix& left,
     return result;
 }
 
+float vehicle_engine_minimum_angular_velocity(const VehicleEngineConfiguration& engine) {
+    // f90a3b constructor value 0x42517084 unless f7ecd0 read smplMinRPM.
+    return engine.simple_min_rpm ? *engine.simple_min_rpm * 0.10471976f : 52.35988f;
+}
+
+float vehicle_engine_start_angular_velocity(const VehicleEngineConfiguration& engine) {
+    // Constructor value 0x431d1463 unless f7ecd0 read startRPM.
+    return engine.start_rpm ? *engine.start_rpm * 0.10471976f : 157.07964f;
+}
+
+const std::array<float VehicleGimletConfiguration::*, 16> vehicle_gimlet_fields{{
+    &VehicleGimletConfiguration::pushed_diagonal_weight, &VehicleGimletConfiguration::pushed_rotation_weight,
+    &VehicleGimletConfiguration::pushed_handbrake_weight, &VehicleGimletConfiguration::push_in_contact,
+    &VehicleGimletConfiguration::push_handbrake, &VehicleGimletConfiguration::push_stop,
+    &VehicleGimletConfiguration::on_spot_fixed_period, &VehicleGimletConfiguration::on_spot_grow_period,
+    &VehicleGimletConfiguration::on_spot_initial_push, &VehicleGimletConfiguration::on_spot_final_push,
+    &VehicleGimletConfiguration::on_move_fixed_period, &VehicleGimletConfiguration::on_move_grow_period,
+    &VehicleGimletConfiguration::on_move_initial_push, &VehicleGimletConfiguration::on_move_final_push,
+    &VehicleGimletConfiguration::minimum_velocity_scale, &VehicleGimletConfiguration::maximum_velocity_scale}};
+
+VehicleGroundMaterialRegistry& vehicle_ground_material_registry() {
+    static VehicleGroundMaterialRegistry registry;
+    return registry;
+}
+
+bool install_vehicle_ground_settings(std::vector<VehicleGroundSettings>& table,
+    std::int32_t group, const VehicleGroundSurfaceConfiguration& firm,
+    const VehicleGroundSurfaceConfiguration& medium,
+    const VehicleGroundSurfaceConfiguration& soft) {
+    // f968f5 compares unsigned, so every negative group is out of range.
+    const auto index = static_cast<std::uint32_t>(group);
+    if (index >= table.size()) return false;
+    table[index].firm = firm;
+    table[index].medium = medium;
+    table[index].soft = soft;
+    return true;
+}
+
+const VehicleGroundSurfaceConfiguration& lookup_vehicle_ground_surface(
+    const std::vector<VehicleGroundSettings>& table,
+    const VehicleGroundMaterialRegistry& registry,
+    std::int32_t material_kind, std::int32_t strength) {
+    std::int32_t group = static_cast<std::uint32_t>(material_kind) > 0xff ? -1 :
+        registry.groups[static_cast<std::size_t>(material_kind)];
+    if (group < 0 || static_cast<std::size_t>(group) >= table.size()) group = 0;
+    // The original reads entry 0 of an empty table out of bounds.
+    if (table.empty()) throw std::out_of_range("GroundSettings table is empty");
+    const auto& entry = table[static_cast<std::size_t>(group)];
+    return strength == 2 ? entry.medium : strength == 3 ? entry.soft : entry.firm;
+}
+
 VehicleRigidBody make_vehicle_rigid_body() {
     // #1513 0x00f6f800. D3DX inverts the identity inertia; mass is one.
     VehicleRigidBody body;
@@ -437,7 +488,7 @@ void set_tank_input(VehicleTank& tank, std::uint32_t signals) {
     // #1513 Tank::setInput 0x00f85a30.
     auto& input = tank.input;
     if (input.signals != signals) {
-        const float start = tank.current_engine().start_rpm * 0.10471976f;
+        const float start = vehicle_engine_start_angular_velocity(tank.current_engine());
         if (start > tank.engine.body.linear_velocity.x)
             reset_engine_speed(tank.engine, start);
     }
@@ -464,8 +515,9 @@ void set_tank_input(VehicleTank& tank, std::uint32_t signals) {
 }
 
 void install_fake_gearbox(VehicleTankFakeGearBox& gearbox, const VehicleTank& tank,
-                          const std::vector<VehicleFakeGearConfiguration>& forward,
-                          const std::vector<VehicleFakeGearConfiguration>& backward) {
+                          const VehicleFakeGearboxConfiguration& gears) {
+    const auto& forward = gears.forward;
+    const auto& backward = gears.backward;
     // #1513 FakeGearBox::install 0x00f97a60. Each curve carries the previous
     // gear's speed and low RPM; a single terminal point is duplicated.
     const auto& body = tank.current_settings().body;
@@ -491,7 +543,7 @@ void install_fake_gearbox(VehicleTankFakeGearBox& gearbox, const VehicleTank& ta
     build(gearbox.curves[0], forward, body.simple_forward_max_speed);
     build(gearbox.curves[1], backward, body.simple_backward_max_speed);
     gearbox.curves[2].clear();
-    gearbox.curves[2].push_back({engine.simple_min_rpm * 0.10471976f,
+    gearbox.curves[2].push_back({vehicle_engine_minimum_angular_velocity(engine),
                                  engine.rotation_angular_velocity, 0.0f, 1.0f, 0.0f});
 }
 
@@ -743,6 +795,8 @@ void VehiclePhysics::configure(const VehiclePhysicsConfiguration& configuration,
                                const VehicleNativeMath& math) {
     if (configuration.vehicle_type != 0)
         throw std::invalid_argument("WGVehiclePhysics.configure requires Tank vehicleType 0");
+    if (configuration.gimlet_fields > 16)
+        throw std::invalid_argument("Gimlet has sixteen fields");
     for (const auto& mode : configuration.modes) {
         if (mode.mode_index < -1)
             throw std::invalid_argument("mode_index below -1 has no native slot");
@@ -775,15 +829,21 @@ void VehiclePhysics::configure(const VehiclePhysicsConfiguration& configuration,
         install_mode(tank.chassis.settings, tank.chassis.mode, mode.mode_index, mode.chassis);
         install_mode(tank.engine.settings, tank.engine.mode, mode.mode_index, mode.engine);
     }
-    // f85c70: modes.normal anchor, rail and gimlet.
-    tank.anchor.velocity_factor = configuration.anchor_velocity_factor;
-    tank.anchor.constant_fraction = configuration.anchor_constant_fraction;
-    tank.anchor.maximum_reaction_factor = configuration.anchor_maximum_reaction_factor;
-    tank.rail.factor_in_contact = configuration.rail_factor_in_contact;
-    tank.gimlet.settings = configuration.gimlet;
-    // f84e80: fake gearbox, then the chassis load consumed by f82200.
-    install_fake_gearbox(tank.fake_gearbox, tank, configuration.forward_gears,
-                         configuration.backward_gears);
+    // f85c70: modes.normal anchor, rail and gimlet. A caught failure keeps
+    // the Tank's previous values for everything not yet installed.
+    if (configuration.anchor) {
+        tank.anchor.velocity_factor = configuration.anchor->velocity_factor;
+        tank.anchor.constant_fraction = configuration.anchor->constant_fraction;
+        tank.anchor.maximum_reaction_factor = configuration.anchor->maximum_reaction_factor;
+    }
+    if (configuration.rail_factor_in_contact)
+        tank.rail.factor_in_contact = *configuration.rail_factor_in_contact;
+    for (std::uint32_t field = 0; field != configuration.gimlet_fields; ++field)
+        tank.gimlet.settings.*vehicle_gimlet_fields[field] =
+            configuration.gimlet.*vehicle_gimlet_fields[field];
+    // f84e80: fake gearbox (all or nothing), then the load used by f82200.
+    if (configuration.gears)
+        install_fake_gearbox(tank.fake_gearbox, tank, *configuration.gears);
     const auto& settings = tank.current_settings().body;
     tank.chassis.vertical_force = ((1.0f - tank.current_chassis().chassis_mass_fraction) *
                                    settings.full_mass) * settings.gravity;

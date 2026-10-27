@@ -13,10 +13,16 @@ BW_BEGIN_NAMESPACE
 
 extern int StockVehiclePhysics_token;
 
-// Strict source-side Reader for the native Tank configuration pipeline.
-// Failure leaves output unchanged and preserves the Python exception.
+// Source-side Reader with the #1513 catch regions: a missing or mistyped
+// field inside one keeps constructor or previous values. A failure outside
+// every region, or a CPython error from a conversion callback, returns false
+// with a Python exception and leaves output unchanged. configured says whether
+// the target Tank already holds mode settings (f84e80 reads differently).
 bool readStockVehiclePhysicsConfiguration( PyObject * object,
-    wot::VehiclePhysicsConfiguration & output );
+    wot::VehiclePhysicsConfiguration & output, bool configured = true );
+
+// BigWorld.wg_setupGroundMaterialsMap without the Python function shell.
+bool setupStockGroundMaterialsMap( PyObject * groups );
 
 // WGVehiclePhysics.configure without the Python method shell. On failure a
 // Python exception is set and the previous Tank graph remains live.

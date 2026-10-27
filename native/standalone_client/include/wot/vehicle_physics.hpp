@@ -51,147 +51,175 @@ public:
                             VehicleCollisionRayHit& hit) = 0;
 };
 
-// Typed source-side mode fields read by #1513 Vehicle::Settings (0x00f846c0).
-// These have no substitute vehicle tunings; the original configuration
-// producer must supply each required value before native construction.
+// #1513 Vehicle::Settings (0x00f846c0) fields of Tank::Settings. Members
+// start at the f900a0 constructor values; a caught Reader failure keeps the
+// values of the fields after it, exactly as the native settings object does.
 struct VehicleBodyConfiguration {
-    float gravity;
-    float full_mass;
-    Vector3 hull_inertia_factors;
-    Vector3 hull_size;
-    float hull_com_shift_y;
-    float hull_box_offset_z;
-    Vector3 turret_top_position;
-    float turret_top_width;
-    float simple_forward_max_speed;
-    float simple_backward_max_speed;
-    float simple_rotation_speed;
-    float angular_velocity_factor;
-    float allowed_rpm_excess;
-    float overspeed_resistance_factor;
-    bool rotation_around_center;
-    float center_rotation_forward_speed;
-    float movement_revert_speed;
-    float com_friction_y_offset;
-    float com_side_friction;
-    bool stabilization_enabled;
-    float gimlet_pushed_rotation;
-    float gimlet_pushed_handbrake;
+    float gravity = 9.81f;
+    float full_mass = 36.0f;
+    Vector3 hull_inertia_factors{1.0f, 0.0f, 0.0f};
+    Vector3 hull_size{2.5f, 1.1f, 6.0f};
+    float hull_com_shift_y = -0.3f;
+    float hull_box_offset_z = 0.0f;
+    Vector3 turret_top_position{0.0f, 1.1f, -0.4f};
+    float turret_top_width = 1.5f;
+    float simple_forward_max_speed = 10.0f;
+    float simple_backward_max_speed = 5.0f;
+    float simple_rotation_speed = 1.0f;
+    float angular_velocity_factor = 0.3f;
+    float allowed_rpm_excess = 1.3f;
+    float overspeed_resistance_factor = 1.0f;
+    bool rotation_around_center = false;
+    float center_rotation_forward_speed = 4.0f;
+    float movement_revert_speed = 0.5f;
+    float com_friction_y_offset = 0.7f;
+    float com_side_friction = 0.5f;
+    bool stabilization_enabled = true;
+    float gimlet_pushed_rotation = 1.0f;
+    float gimlet_pushed_handbrake = 1.0f;
 };
 
-// #1513 Tank::Shape::Settings (0x00f8fe40).
+// #1513 Tank::Shape::Settings (0x00f8fe40), constructor values zero.
 struct VehicleShapeConfiguration {
-    bool use_complex_form;
-    float auxiliary_clearance;
-    float tank_board_angle;
-    float tank_aft_chamfer_fraction;
-    float tank_front_chamfer_fraction;
-    float terrain_board_angle;
-    float terrain_front_chamfer_fraction;
-    float terrain_aft_chamfer_fraction;
+    bool use_complex_form = false;
+    float auxiliary_clearance = 0.0f;
+    float tank_board_angle = 0.0f;
+    float tank_aft_chamfer_fraction = 0.0f;
+    float tank_front_chamfer_fraction = 0.0f;
+    float terrain_board_angle = 0.0f;
+    float terrain_front_chamfer_fraction = 0.0f;
+    float terrain_aft_chamfer_fraction = 0.0f;
 };
 
-// #1513 ground record (0x00f830d0), in its native field order.
+// #1513 ground record (0x00f830d0) in its native field order, with the
+// f81150 table-entry and f83340 temporary constructor values.
 struct VehicleGroundSurfaceConfiguration {
-    float dirt_cumulation_rate;
-    float dirt_release_rate;
-    float dirt_side_velocity;
-    float max_dirt;
-    float handbrake_com_side_friction;
-    float side_friction;
-    float forward_friction;
-    float rolling_friction;
-    float handbrake_side_friction_addition;
-    float rotation_factor;
+    float dirt_cumulation_rate = 1.0f;
+    float dirt_release_rate = 0.5f;
+    float dirt_side_velocity = 2.5f;
+    float max_dirt = 2.0f;
+    float handbrake_com_side_friction = 0.0f;
+    float side_friction = 1.0f;
+    float forward_friction = 1.0f;
+    float rolling_friction = 0.07f;
+    float handbrake_side_friction_addition = 0.0f;
+    float rotation_factor = 1.0f;
 };
 
-struct VehicleGroundConfiguration {
-    std::int32_t material_kind;
-    // The original dictionary reads these three named entries in this order.
-    VehicleGroundSurfaceConfiguration firm;
-    VehicleGroundSurfaceConfiguration medium;
+// GroundSettings table entry (0x78): soft +0x00, medium +0x28, firm +0x50.
+struct VehicleGroundSettings {
     VehicleGroundSurfaceConfiguration soft;
+    VehicleGroundSurfaceConfiguration medium;
+    VehicleGroundSurfaceConfiguration firm;
 };
+
+// BigWorld.wg_setupGroundMaterialsMap (0x00f5fde0) state: the group count
+// at 0x01a5b968 (static 1) and the matKind -> group map at 0x021316f8
+// (zero until the first call, which resets it to -1).
+struct VehicleGroundMaterialRegistry {
+    std::uint32_t count = 1;
+    std::array<std::int32_t, 256> groups{};
+};
+VehicleGroundMaterialRegistry& vehicle_ground_material_registry();
+// f968d0: unsigned bound check against the table, then firm/medium/soft.
+bool install_vehicle_ground_settings(std::vector<VehicleGroundSettings>& table,
+    std::int32_t group, const VehicleGroundSurfaceConfiguration& firm,
+    const VehicleGroundSurfaceConfiguration& medium,
+    const VehicleGroundSurfaceConfiguration& soft);
+// f96860 -> f600d0: matKind to group (out of range -> group 0), then strength
+// 2 medium, 3 soft, anything else firm. An empty table has no entry to return.
+const VehicleGroundSurfaceConfiguration& lookup_vehicle_ground_surface(
+    const std::vector<VehicleGroundSettings>& table,
+    const VehicleGroundMaterialRegistry& registry,
+    std::int32_t material_kind, std::int32_t strength);
 
 // #1513 Chassis::Settings (0x00f822a0), followed by TrackChassis::Settings
-// (0x00f88700). Slope tuples retain their source values until the matching
-// native curve builders consume them; they are not guessed angle cutoffs.
+// (0x00f88700), with the f814d0/f900a0 constructor values. A slope tuple
+// absent here keeps its constructor curve; each tuple installs atomically.
 struct VehicleChassisConfiguration {
-    float chassis_mass;
-    float chassis_mass_fraction;
-    float clearance;
-    float track_gauge_factor;
-    bool wheel_detach_on_roll;
-    float track_to_be_locked_delay;
-    float wheel_radius;
-    float wheel_inertia_factor;
-    float wheel_forward_inertia_factor;
-    float stiffness_zero;
-    float stiffness_one;
-    float damping;
-    float wheel_restitution;
-    float wheel_penetration;
-    bool wheel_use_pseudo_contacts;
-    float brake;
-    float rotation_brake;
-    float wheel_sinkage_resistance_factor;
-    float wheel_dry_friction_factor;
-    float side_friction_constant_ratio;
-    std::array<float, 5> road_wheel_positions;
-    std::array<float, 5> stiffness_factors;
-    std::array<float, 3> slope_resistance_terrain;
-    std::array<float, 3> slope_resistance_static_object;
-    std::array<float, 3> slope_resistance_dynamic_object;
-    std::array<float, 4> slope_grip_forward_terrain;
-    std::array<float, 4> slope_grip_side_terrain;
-    std::array<float, 4> slope_grip_forward_static_object;
-    std::array<float, 4> slope_grip_side_static_object;
-    std::array<float, 4> slope_grip_forward_dynamic_object;
-    std::array<float, 4> slope_grip_side_dynamic_object;
-    bool flat_side_friction;
-    std::vector<VehicleGroundConfiguration> grounds;
-    float pitch_correction_center_z;
-    float pitch_correction_speed;
-    float pitch_min;
-    float pitch_max;
-    float pitch_correction_stiffness;
-    float pitch_correction_damping;
-    float pitch_correction_scale;
-    float yaw_gimlet_force;
-    float yaw_stiffness;
-    float yaw_damping;
-    float yaw_precise_restitution;
-    float yaw_damping_distance;
-    float yaw_precise_distance;
+    float chassis_mass = 0.0f;
+    float chassis_mass_fraction = 0.15f;
+    float clearance = 0.8f;
+    float track_gauge_factor = 1.0f;
+    bool wheel_detach_on_roll = false;
+    float track_to_be_locked_delay = 0.3f;
+    float wheel_radius = 0.4f;
+    float wheel_inertia_factor = 1.0f;
+    float wheel_forward_inertia_factor = 1.0f;
+    float stiffness_zero = 265.65f;
+    float stiffness_one = 1.0f;
+    float damping = 2.3908498f;
+    float wheel_restitution = 0.2f;
+    float wheel_penetration = 0.02f;
+    bool wheel_use_pseudo_contacts = false;
+    float brake = 10.0f;
+    float rotation_brake = 10.0f;
+    float wheel_sinkage_resistance_factor = 0.0f;
+    float wheel_dry_friction_factor = 1.0f;
+    float side_friction_constant_ratio = 0.0f;
+    std::array<float, 5> road_wheel_positions{};
+    std::array<float, 5> stiffness_factors{{1.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
+    std::optional<std::array<float, 3>> slope_resistance_terrain;
+    std::optional<std::array<float, 3>> slope_resistance_static_object;
+    std::optional<std::array<float, 3>> slope_resistance_dynamic_object;
+    std::optional<std::array<float, 4>> slope_grip_forward_terrain;
+    std::optional<std::array<float, 4>> slope_grip_side_terrain;
+    std::optional<std::array<float, 4>> slope_grip_forward_static_object;
+    std::optional<std::array<float, 4>> slope_grip_side_static_object;
+    std::optional<std::array<float, 4>> slope_grip_forward_dynamic_object;
+    std::optional<std::array<float, 4>> slope_grip_side_dynamic_object;
+    bool flat_side_friction = true;
+    // +0x54, sized from the registry count when the settings are constructed.
+    std::vector<VehicleGroundSettings> grounds;
+    // f83340 result: every item installed and one per table entry. f900a0
+    // ignores it; it is kept for diagnostics.
+    bool grounds_complete = false;
+    float pitch_correction_center_z = 0.0f;
+    float pitch_correction_speed = 0.5f;
+    float pitch_min = -0.17453294f;
+    float pitch_max = 0.17453294f;
+    float pitch_correction_stiffness = 50.0f;
+    float pitch_correction_damping = 0.2f;
+    float pitch_correction_scale = 0.5f;
+    float yaw_gimlet_force = 4.0f;
+    float yaw_stiffness = 10000.0f;
+    float yaw_damping = 900.0f;
+    float yaw_precise_restitution = 0.3f;
+    float yaw_damping_distance = 0.03f;
+    float yaw_precise_distance = 0.006f;
 };
 
-// #1513 Engine::Settings (0x00f7ecd0). RPM inputs are retained here in the
-// original dictionary's units; the native settings builder converts them.
+// #1513 Engine::Settings (0x00f7ecd0) with the f90a3b constructor values.
+// RPM inputs keep the source units; absent ones mean the constructor angular
+// speeds. Absent losses keep the constructor PointCurve.
 struct VehicleEngineConfiguration {
-    std::array<float, 2> losses;
-    float simple_engine_power;
-    float engine_inertia;
-    float simple_engine_join_ratio;
-    float idle_choker;
-    float rotation_choker;
-    float rotation_by_lock_choker;
-    float simple_min_rpm;
-    float idle_rpm;
-    float start_rpm;
-    float maximum_forward_angular_velocity;
-    float maximum_backward_angular_velocity;
-    float rotation_angular_velocity;
+    std::optional<std::array<float, 2>> losses;
+    float simple_engine_power = 1000.0f;
+    float engine_inertia = 0.006f;
+    float simple_engine_join_ratio = 0.0f;
+    float idle_choker = 0.1f;
+    float rotation_choker = 1.0f;
+    float rotation_by_lock_choker = 1.0f;
+    std::optional<float> simple_min_rpm;
+    std::optional<float> idle_rpm;
+    std::optional<float> start_rpm;
+    float maximum_forward_angular_velocity = 209.43951f;
+    float maximum_backward_angular_velocity = 183.25958f;
+    float rotation_angular_velocity = 183.25958f;
 };
+// Engine::Settings +0x00/+0x04/+0x08 angular speeds (rpm * 0.10471976f).
+float vehicle_engine_minimum_angular_velocity(const VehicleEngineConfiguration& engine);
+float vehicle_engine_start_angular_velocity(const VehicleEngineConfiguration& engine);
 
 struct VehiclePhysicsModeConfiguration {
     // Optional byte-string key metadata; native dispatch uses mode_index.
     // Global helpers separately read the original modes.normal dictionary.
     std::string name;
     // Native mode_index=-1 means the current mode when replacing a setting.
-    std::int32_t mode_index;
+    std::int32_t mode_index = 0;
     VehicleBodyConfiguration body;
     VehicleShapeConfiguration shape;
-    bool siege_mode_available;
+    bool siege_mode_available = false;
     VehicleChassisConfiguration chassis;
     VehicleEngineConfiguration engine;
 };
@@ -225,20 +253,33 @@ struct VehicleGimletConfiguration {
     float minimum_velocity_scale;
     float maximum_velocity_scale;
 };
+// f97d30 read order of the gimlet fields.
+extern const std::array<float VehicleGimletConfiguration::*, 16> vehicle_gimlet_fields;
 
-// Full source-side configure input. All numeric members above are values from
-// the original Python producer, with no local fallback coefficients. Native
-// configuration supports Tank vehicleType=0 and keeps settings by mode_index.
+// f85c70 calls f97a30 only after all three anchor reads succeed.
+struct VehicleAnchorConfiguration {
+    float maximum_reaction_factor;
+    float constant_fraction;
+    float velocity_factor;
+};
+
+struct VehicleFakeGearboxConfiguration {
+    std::vector<VehicleFakeGearConfiguration> forward;
+    std::vector<VehicleFakeGearConfiguration> backward;
+};
+
+// Full source-side configure input. Per-mode settings are fresh native
+// objects, so unread fields hold constructor values. The globals live on the
+// Tank: an absent anchor, rail or gearbox and the unread gimlet suffix keep
+// the Tank's previous values (f85c70 and f84e80 catch regions).
 struct VehiclePhysicsConfiguration {
-    std::int32_t vehicle_type;
+    std::int32_t vehicle_type = 0;
     std::vector<VehiclePhysicsModeConfiguration> modes;
-    float anchor_maximum_reaction_factor;
-    float anchor_constant_fraction;
-    float anchor_velocity_factor;
-    float rail_factor_in_contact;
-    VehicleGimletConfiguration gimlet;
-    std::vector<VehicleFakeGearConfiguration> forward_gears;
-    std::vector<VehicleFakeGearConfiguration> backward_gears;
+    std::optional<VehicleAnchorConfiguration> anchor;
+    std::optional<float> rail_factor_in_contact;
+    VehicleGimletConfiguration gimlet{};
+    std::uint32_t gimlet_fields = 0;  // f97d30 fields read, in member order
+    std::optional<VehicleFakeGearboxConfiguration> gears;
 };
 
 // Hull portion of f84370, before the real D3DX inertia-matrix boundary.

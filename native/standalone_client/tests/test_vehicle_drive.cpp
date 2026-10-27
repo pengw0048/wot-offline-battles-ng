@@ -107,7 +107,7 @@ bool native_min_and_constraint_bounds() {
 
 bool native_engine_torque_and_body() {
     wot::VehicleEngineConfiguration configuration{};
-    configuration.losses = {1, 2};
+    configuration.losses = std::array<float, 2>{{1, 2}};
     configuration.simple_engine_power = 1000;
     configuration.simple_min_rpm = 900;
     configuration.start_rpm = 600;

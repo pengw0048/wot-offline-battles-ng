@@ -39,6 +39,24 @@ namespace
 // The original Reader (f49860/f7e600/f81a60/f81c30) accepts dictionary
 // subclasses, numeric slots and exact bools. Each borrowed value is pinned
 // before conversions can reenter Python or mutate its source dictionary.
+//
+// A missing or mistyped field throws WGPhysics::PyProxyException, which
+// sets no Python error; the readers below catch it exactly where #1513
+// does. A CPython error raised by a conversion callback is different: the
+// original keeps a garbage value with the exception pending and returns
+// True, so the port stops the transaction and surfaces that exception.
+struct StockPhysicsProxyFailure
+{
+    PyObject * type;
+    std::string message;
+};
+struct StockPhysicsPythonFailure {};
+
+void stockPhysicsCheckPython()
+{
+    if (PyErr_Occurred()) throw StockPhysicsPythonFailure();
+}
+
 class StockPhysicsConfigValue
 {
 public:
@@ -47,154 +65,80 @@ public:
 
     StockPhysicsConfigValue child( const char * key ) const
     {
-        if (!this->dictionary()) return StockPhysicsConfigValue( NULL, path_ );
+        this->dictionary();
         PyObject * value = PyDict_GetItemString( value_.get(), key );
-        if (!value)
-            PyErr_Format( PyExc_ValueError, "%s: dictionary has no field '%s'", path_.c_str(), key );
+        if (!value) fail( PyExc_ValueError, "dictionary has no field '" + std::string( key ) + "'" );
         return StockPhysicsConfigValue( value, path_ + "." + key );
     }
-    bool dictionary() const
+    void dictionary() const
     {
-        if (!value_) return false;
-        if (PyDict_Check( value_.get() )) return true;
-        PyErr_Format( PyExc_TypeError, "%s: object is not a dictionary", path_.c_str() );
-        return false;
+        if (!value_ || !PyDict_Check( value_.get() )) fail( PyExc_TypeError, "object is not a dictionary" );
     }
-    bool floating( float & result ) const
+    float floating() const
     {
-        if (!value_) return false;
-        PyNumberMethods * number = Py_TYPE( value_.get() )->tp_as_number;
-        if (!PyNumber_Check( value_.get() ) || !number || !number->nb_float)
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not floating", path_.c_str() );
-            return false;
-        }
+        this->requireNumber( 1 );
         const double value = PyFloat_AsDouble( value_.get() );
-        if (PyErr_Occurred()) return false;
-        result = static_cast<float>( value );
-        return true;
+        stockPhysicsCheckPython();
+        return static_cast<float>( value );
     }
-    bool integral( std::int32_t & result ) const
+    std::int32_t integral() const
     {
-        if (!value_) return false;
-        PyNumberMethods * number = Py_TYPE( value_.get() )->tp_as_number;
-        if (!PyNumber_Check( value_.get() ) || !number || !number->nb_int)
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not integral", path_.c_str() );
-            return false;
-        }
+        this->requireNumber( 0 );
         const long value = PyInt_AsLong( value_.get() );
-        if (PyErr_Occurred()) return false;
-        // The original ABI is Win32 long, even in this portable reader probe.
+        stockPhysicsCheckPython();
+        // The original ABI is Win32 long; PyInt_AsLong raises there.
         if (value < INT32_MIN || value > INT32_MAX)
         {
             PyErr_Format( PyExc_OverflowError, "%s: integer does not fit the native long", path_.c_str() );
-            return false;
+            throw StockPhysicsPythonFailure();
         }
-        result = static_cast<std::int32_t>( value );
-        return true;
+        return static_cast<std::int32_t>( value );
     }
-    bool boolean( bool & result ) const
+    bool boolean() const
     {
-        if (!value_) return false;
-        if (!PyBool_Check( value_.get() ))
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not boolean", path_.c_str() );
-            return false;
-        }
-        result = value_.get() == Py_True;
-        return true;
+        if (!value_ || !PyBool_Check( value_.get() )) fail( PyExc_TypeError, "object is not boolean" );
+        return value_.get() == Py_True;
     }
-    bool sequence( std::vector<float> & output ) const
+    std::vector<float> sequence() const
     {
-        if (!value_) return false;
-        if (!PySequence_Check( value_.get() ))
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not a sequence", path_.c_str() );
-            return false;
-        }
-        const Py_ssize_t count = PySequence_Size( value_.get() );
-        if (count < 0) return false;
+        // f839c0: any width, converted element by element.
+        const Py_ssize_t count = this->sequenceSize();
         std::vector<float> result;
         result.reserve( static_cast<size_t>( count ) );
         for (Py_ssize_t index = 0; index < count; ++index)
-        {
-            PyObjectPtr item( PySequence_GetItem( value_.get(), index ), PyObjectPtr::STEAL_REFERENCE );
-            float number;
-            if (!StockPhysicsConfigValue( item.get(), path_ + "[]" ).floating( number )) return false;
-            result.push_back( number );
-        }
-        output.swap( result );
-        return true;
+            result.push_back( this->item( index ).floating() );
+        return result;
     }
     template<size_t Count>
-    bool fixed( std::array<float, Count> & output ) const
+    std::array<float, Count> fixed() const
     {
-        if (!value_) return false;
-        if (!PySequence_Check( value_.get() ))
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not a sequence", path_.c_str() );
-            return false;
-        }
-        const Py_ssize_t count = PySequence_Size( value_.get() );
-        if (count < 0) return false;
-        if (count != static_cast<Py_ssize_t>( Count ))
-        {
-            PyErr_Format( PyExc_ValueError, "%s: sequence has the wrong item count", path_.c_str() );
-            return false;
-        }
+        // f7e3e0/f80e20/f809e0/f80c00 return a temporary, so the caller's
+        // field changes only after every element converts.
+        if (this->sequenceSize() != static_cast<Py_ssize_t>( Count ))
+            fail( PyExc_ValueError, "sequence has the wrong item count" );
+        std::array<float, Count> result;
         for (size_t index = 0; index < Count; ++index)
-        {
-            PyObjectPtr item( PySequence_GetItem( value_.get(), static_cast<Py_ssize_t>( index ) ),
-                PyObjectPtr::STEAL_REFERENCE );
-            if (!StockPhysicsConfigValue( item.get(), path_ + "[]" ).floating( output[index] )) return false;
-        }
-        return true;
+            result[index] = this->item( static_cast<Py_ssize_t>( index ) ).floating();
+        return result;
     }
-    bool vector( wot::Vector3 & output ) const
+    wot::Vector3 vector() const
     {
-        if (!value_) return false;
-        if (!PySequence_Check( value_.get() ))
-        {
-            PyErr_Format( PyExc_TypeError, "%s: object is not a sequence", path_.c_str() );
-            return false;
-        }
-        const Py_ssize_t count = PySequence_Size( value_.get() );
-        if (count < 0) return false;
-        if (count != 3)
-        {
-            PyErr_Format( PyExc_ValueError, "%s: vector requires three items", path_.c_str() );
-            return false;
-        }
+        if (this->sequenceSize() != 3) fail( PyExc_ValueError, "vector requires three items" );
         // f83d20 obtains and validates all three objects before converting any.
-        std::array<PyObjectPtr, 3> items;
-        for (size_t index = 0; index < 3; ++index)
-        {
-            items[index] = PyObjectPtr( PySequence_GetItem( value_.get(), static_cast<Py_ssize_t>( index ) ),
-                PyObjectPtr::STEAL_REFERENCE );
-            if (!items[index]) return false;
-        }
-        for (const auto & item : items)
-        {
-            PyNumberMethods * number = Py_TYPE( item.get() )->tp_as_number;
-            if (!PyNumber_Check( item.get() ) || !number || !number->nb_float)
-            {
-                PyErr_Format( PyExc_TypeError, "%s: vector item is not floating", path_.c_str() );
-                return false;
-            }
-        }
+        std::array<StockPhysicsConfigValue, 3> items = {{ this->item( 0 ), this->item( 1 ), this->item( 2 ) }};
+        for (const auto & item : items) item.requireNumber( 1 );
         std::array<float, 3> values;
-        for (size_t index = 0; index < 3; ++index)
-            if (!StockPhysicsConfigValue( items[index].get(), path_ + "[]" ).floating( values[index] ))
-                return false;
-        output = { values[0], values[1], values[2] };
-        return true;
+        for (size_t index = 0; index < 3; ++index) values[index] = items[index].floating();
+        return { values[0], values[1], values[2] };
     }
     PyObjectPtr items() const
     {
-        if (!this->dictionary()) return PyObjectPtr();
-        // f81c30 snapshots PyDict_Next order before converting entry values.
-        return PyObjectPtr( PyDict_Items( value_.get() ), PyObjectPtr::STEAL_REFERENCE );
+        // f81c30 snapshots PyDict_Next order; a non-dictionary iterates empty.
+        if (!value_ || !PyDict_Check( value_.get() ))
+            return PyObjectPtr( PyList_New( 0 ), PyObjectPtr::STEAL_REFERENCE );
+        PyObjectPtr result( PyDict_Items( value_.get() ), PyObjectPtr::STEAL_REFERENCE );
+        if (!result) throw StockPhysicsPythonFailure();
+        return result;
     }
     std::string byteStringName() const
     {
@@ -204,213 +148,306 @@ public:
             std::string( PyString_AS_STRING( value_.get() ), PyString_GET_SIZE( value_.get() ) ) : std::string();
     }
 private:
+    [[noreturn]] void fail( PyObject * type, const std::string & message ) const
+    {
+        throw StockPhysicsProxyFailure{ type, path_ + ": " + message };
+    }
+    void requireNumber( int floatingSlot ) const
+    {
+        PyNumberMethods * number = value_ ? Py_TYPE( value_.get() )->tp_as_number : NULL;
+        if (!value_ || !PyNumber_Check( value_.get() ) || !number ||
+            !(floatingSlot ? number->nb_float : number->nb_int))
+            fail( PyExc_TypeError, floatingSlot ? "object is not floating" : "object is not integral" );
+    }
+    Py_ssize_t sequenceSize() const
+    {
+        if (!value_ || !PySequence_Check( value_.get() )) fail( PyExc_TypeError, "object is not a sequence" );
+        const Py_ssize_t count = PySequence_Size( value_.get() );
+        stockPhysicsCheckPython();
+        return count;
+    }
+    StockPhysicsConfigValue item( Py_ssize_t index ) const
+    {
+        PyObjectPtr item( PySequence_GetItem( value_.get(), index ), PyObjectPtr::STEAL_REFERENCE );
+        if (!item) throw StockPhysicsPythonFailure();
+        return StockPhysicsConfigValue( item.get(), path_ + "[]" );
+    }
+
     PyObjectPtr value_;
     std::string path_;
 };
 
+typedef StockPhysicsProxyFailure Caught;
+
 bool readStockPhysicsBody( const StockPhysicsConfigValue & value, wot::VehicleBodyConfiguration & result )
 {
-    return value.child( "gravity" ).floating( result.gravity ) &&
-        value.child( "fullMass" ).floating( result.full_mass ) &&
-        value.child( "hullInertiaFactors" ).vector( result.hull_inertia_factors ) &&
-        value.child( "hullSize" ).vector( result.hull_size ) &&
-        value.child( "hullCOMShiftY" ).floating( result.hull_com_shift_y ) &&
-        value.child( "hullBoxOffsetZ" ).floating( result.hull_box_offset_z ) &&
-        value.child( "turretTopPos" ).vector( result.turret_top_position ) &&
-        value.child( "turretTopWidth" ).floating( result.turret_top_width ) &&
-        value.child( "smplFwMaxSpeed" ).floating( result.simple_forward_max_speed ) &&
-        value.child( "smplBkMaxSpeed" ).floating( result.simple_backward_max_speed ) &&
-        value.child( "smplRotSpeed" ).floating( result.simple_rotation_speed ) &&
-        value.child( "angVelocityFactor" ).floating( result.angular_velocity_factor ) &&
-        value.child( "allowedRPMExcess" ).floating( result.allowed_rpm_excess ) &&
-        value.child( "overspeedResistFactor" ).floating( result.overspeed_resistance_factor ) &&
-        value.child( "isRotationAroundCenter" ).boolean( result.rotation_around_center ) &&
-        value.child( "centerRotationFwdSpeed" ).floating( result.center_rotation_forward_speed ) &&
-        value.child( "movementRevertSpeed" ).floating( result.movement_revert_speed ) &&
-        value.child( "comFrictionYOffs" ).floating( result.com_friction_y_offset ) &&
-        value.child( "comSideFriction" ).floating( result.com_side_friction ) &&
-        value.child( "enableSabilization" ).boolean( result.stabilization_enabled ) &&
-        value.child( "gimlet" ).child( "wPushedRot" ).floating( result.gimlet_pushed_rotation ) &&
-        value.child( "gimlet" ).child( "wPushedHB" ).floating( result.gimlet_pushed_handbrake );
+    // f846c0: one catch region; the fields read before a failure remain.
+    try
+    {
+        result.gravity = value.child( "gravity" ).floating();
+        result.full_mass = value.child( "fullMass" ).floating();
+        result.hull_inertia_factors = value.child( "hullInertiaFactors" ).vector();
+        result.hull_size = value.child( "hullSize" ).vector();
+        result.hull_com_shift_y = value.child( "hullCOMShiftY" ).floating();
+        result.hull_box_offset_z = value.child( "hullBoxOffsetZ" ).floating();
+        result.turret_top_position = value.child( "turretTopPos" ).vector();
+        result.turret_top_width = value.child( "turretTopWidth" ).floating();
+        result.simple_forward_max_speed = value.child( "smplFwMaxSpeed" ).floating();
+        result.simple_backward_max_speed = value.child( "smplBkMaxSpeed" ).floating();
+        result.simple_rotation_speed = value.child( "smplRotSpeed" ).floating();
+        result.angular_velocity_factor = value.child( "angVelocityFactor" ).floating();
+        result.allowed_rpm_excess = value.child( "allowedRPMExcess" ).floating();
+        result.overspeed_resistance_factor = value.child( "overspeedResistFactor" ).floating();
+        result.rotation_around_center = value.child( "isRotationAroundCenter" ).boolean();
+        result.center_rotation_forward_speed = value.child( "centerRotationFwdSpeed" ).floating();
+        result.movement_revert_speed = value.child( "movementRevertSpeed" ).floating();
+        result.com_friction_y_offset = value.child( "comFrictionYOffs" ).floating();
+        result.com_side_friction = value.child( "comSideFriction" ).floating();
+        result.stabilization_enabled = value.child( "enableSabilization" ).boolean();
+        result.gimlet_pushed_rotation = value.child( "gimlet" ).child( "wPushedRot" ).floating();
+        result.gimlet_pushed_handbrake = value.child( "gimlet" ).child( "wPushedHB" ).floating();
+    }
+    catch (const Caught &)
+    {
+        return false;
+    }
+    return true;
 }
 
-bool readStockPhysicsShape( const StockPhysicsConfigValue & value, wot::VehicleShapeConfiguration & result )
+void readStockPhysicsShape( const StockPhysicsConfigValue & value, wot::VehicleShapeConfiguration & result )
 {
-    return value.child( "useComplexForm" ).boolean( result.use_complex_form ) &&
-        value.child( "auxClearance" ).floating( result.auxiliary_clearance ) &&
-        value.child( "tankBoardAngle" ).floating( result.tank_board_angle ) &&
-        value.child( "tankAftChamferFraction" ).floating( result.tank_aft_chamfer_fraction ) &&
-        value.child( "tankFrontChamferFraction" ).floating( result.tank_front_chamfer_fraction ) &&
-        value.child( "terrBoardAngle" ).floating( result.terrain_board_angle ) &&
-        value.child( "terrFrontChamferFraction" ).floating( result.terrain_front_chamfer_fraction ) &&
-        value.child( "terrAftChamferFraction" ).floating( result.terrain_aft_chamfer_fraction );
+    try // f8fe40
+    {
+        result.use_complex_form = value.child( "useComplexForm" ).boolean();
+        result.auxiliary_clearance = value.child( "auxClearance" ).floating();
+        result.tank_board_angle = value.child( "tankBoardAngle" ).floating();
+        result.tank_aft_chamfer_fraction = value.child( "tankAftChamferFraction" ).floating();
+        result.tank_front_chamfer_fraction = value.child( "tankFrontChamferFraction" ).floating();
+        result.terrain_board_angle = value.child( "terrBoardAngle" ).floating();
+        result.terrain_front_chamfer_fraction = value.child( "terrFrontChamferFraction" ).floating();
+        result.terrain_aft_chamfer_fraction = value.child( "terrAftChamferFraction" ).floating();
+    }
+    catch (const Caught &) {}
+}
+
+void readStockPhysicsTank( const StockPhysicsConfigValue & value, wot::VehiclePhysicsModeConfiguration & mode )
+{
+    // f8fd60: the shape lookup itself sits outside every catch region.
+    if (readStockPhysicsBody( value, mode.body ))
+        readStockPhysicsShape( value.child( "shape" ), mode.shape );
+    try
+    {
+        mode.siege_mode_available = value.child( "siegeModeAvailable" ).boolean();
+    }
+    catch (const Caught &) {}
 }
 
 bool readStockPhysicsGroundSurface( const StockPhysicsConfigValue & value, wot::VehicleGroundSurfaceConfiguration & result )
 {
-    return value.child( "dirtCumulationRate" ).floating( result.dirt_cumulation_rate ) &&
-        value.child( "dirtReleaseRate" ).floating( result.dirt_release_rate ) &&
-        value.child( "dirtSideVelocity" ).floating( result.dirt_side_velocity ) &&
-        value.child( "maxDirt" ).floating( result.max_dirt ) &&
-        value.child( "hbComSideFriction" ).floating( result.handbrake_com_side_friction ) &&
-        value.child( "sideFriction" ).floating( result.side_friction ) &&
-        value.child( "fwdFriction" ).floating( result.forward_friction ) &&
-        value.child( "rollingFriction" ).floating( result.rolling_friction ) &&
-        value.child( "hbSideFrictionAddition" ).floating( result.handbrake_side_friction_addition ) &&
-        value.child( "rotationFactor" ).floating( result.rotation_factor );
+    try // f830d0
+    {
+        result.dirt_cumulation_rate = value.child( "dirtCumulationRate" ).floating();
+        result.dirt_release_rate = value.child( "dirtReleaseRate" ).floating();
+        result.dirt_side_velocity = value.child( "dirtSideVelocity" ).floating();
+        result.max_dirt = value.child( "maxDirt" ).floating();
+        result.handbrake_com_side_friction = value.child( "hbComSideFriction" ).floating();
+        result.side_friction = value.child( "sideFriction" ).floating();
+        result.forward_friction = value.child( "fwdFriction" ).floating();
+        result.rolling_friction = value.child( "rollingFriction" ).floating();
+        result.handbrake_side_friction_addition = value.child( "hbSideFrictionAddition" ).floating();
+        result.rotation_factor = value.child( "rotationFactor" ).floating();
+    }
+    catch (const Caught &)
+    {
+        return false;
+    }
+    return true;
 }
 
-bool readStockPhysicsGrounds( const StockPhysicsConfigValue & value,
-    std::vector<wot::VehicleGroundConfiguration> & output )
+bool readStockPhysicsGrounds( const StockPhysicsConfigValue & value, wot::VehicleChassisConfiguration & chassis )
 {
+    // f83340: an item that fails keeps the table entry, later items continue.
     PyObjectPtr entries = value.items();
-    if (!entries) return false;
+    bool complete = true;
+    size_t installed = 0;
     const Py_ssize_t count = PyList_GET_SIZE( entries.get() );
     for (Py_ssize_t index = 0; index < count; ++index)
     {
         PyObject * pair = PyList_GET_ITEM( entries.get(), index );
-        StockPhysicsConfigValue key( PyTuple_GET_ITEM( pair, 0 ), "grounds.key" );
-        StockPhysicsConfigValue item( PyTuple_GET_ITEM( pair, 1 ), "grounds.value" );
-        wot::VehicleGroundConfiguration result;
-        if (!key.integral( result.material_kind ) ||
-            !readStockPhysicsGroundSurface( item.child( "firm" ), result.firm ) ||
-            !readStockPhysicsGroundSurface( item.child( "medium" ), result.medium ) ||
-            !readStockPhysicsGroundSurface( item.child( "soft" ), result.soft )) return false;
-        output.push_back( result );
+        // The key conversion precedes the per-item region (escapes to f822a0).
+        const std::int32_t kind = StockPhysicsConfigValue( PyTuple_GET_ITEM( pair, 0 ), "grounds.key" ).integral();
+        const StockPhysicsConfigValue item( PyTuple_GET_ITEM( pair, 1 ), "grounds.value" );
+        wot::VehicleGroundSurfaceConfiguration firm, medium, soft;
+        bool ok = kind != -1;
+        try
+        {
+            if (ok) ok = readStockPhysicsGroundSurface( item.child( "firm" ), firm );
+            if (ok) ok = readStockPhysicsGroundSurface( item.child( "medium" ), medium );
+            if (ok) ok = readStockPhysicsGroundSurface( item.child( "soft" ), soft );
+        }
+        catch (const Caught &)
+        {
+            complete = false;
+            continue;
+        }
+        if (ok && wot::install_vehicle_ground_settings( chassis.grounds, kind, firm, medium, soft ))
+            ++installed;
+        else
+            complete = false;
     }
-    return true;
+    return complete && installed == chassis.grounds.size();
 }
 
 bool readStockPhysicsChassisBase( const StockPhysicsConfigValue & value, wot::VehicleChassisConfiguration & result )
 {
-    return value.child( "chassisMass" ).floating( result.chassis_mass ) &&
-        value.child( "chassisMassFraction" ).floating( result.chassis_mass_fraction ) &&
-        value.child( "clearance" ).floating( result.clearance ) &&
-        value.child( "trackGaugeFactor" ).floating( result.track_gauge_factor ) &&
-        value.child( "wheelDetachOnRoll" ).boolean( result.wheel_detach_on_roll ) &&
-        value.child( "trackToBeLockedDelay" ).floating( result.track_to_be_locked_delay ) &&
-        value.child( "wheelRadius" ).floating( result.wheel_radius ) &&
-        value.child( "wheelInertiaFactor" ).floating( result.wheel_inertia_factor ) &&
-        value.child( "wheelFwdInertiaFactor" ).floating( result.wheel_forward_inertia_factor ) &&
-        value.child( "stiffness0" ).floating( result.stiffness_zero ) &&
-        value.child( "stiffness1" ).floating( result.stiffness_one ) &&
-        value.child( "damping" ).floating( result.damping ) &&
-        value.child( "wheelRestitution" ).floating( result.wheel_restitution ) &&
-        value.child( "wheelPenetration" ).floating( result.wheel_penetration ) &&
-        value.child( "wheelUsePseudoContacts" ).boolean( result.wheel_use_pseudo_contacts ) &&
-        value.child( "brake" ).floating( result.brake ) &&
-        value.child( "rotationBrake" ).floating( result.rotation_brake ) &&
-        value.child( "wheelSinkageResistFactor" ).floating( result.wheel_sinkage_resistance_factor ) &&
-        value.child( "wheelDryFrictionFactor" ).floating( result.wheel_dry_friction_factor ) &&
-        value.child( "sideFrictionConstantRatio" ).floating( result.side_friction_constant_ratio ) &&
-        value.child( "roadWheelPositions" ).fixed( result.road_wheel_positions ) &&
-        value.child( "stiffnessFactors" ).fixed( result.stiffness_factors ) &&
-        value.child( "slopeResistTerrain" ).fixed( result.slope_resistance_terrain ) &&
-        value.child( "slopeResistStaticObject" ).fixed( result.slope_resistance_static_object ) &&
-        value.child( "slopeResistDynamicObject" ).fixed( result.slope_resistance_dynamic_object ) &&
-        value.child( "slopeGripLngTerrain" ).fixed( result.slope_grip_forward_terrain ) &&
-        value.child( "slopeGripSdwTerrain" ).fixed( result.slope_grip_side_terrain ) &&
-        value.child( "slopeGripLngStaticObject" ).fixed( result.slope_grip_forward_static_object ) &&
-        value.child( "slopeGripSdwStaticObject" ).fixed( result.slope_grip_side_static_object ) &&
-        value.child( "slopeGripLngDynamicObject" ).fixed( result.slope_grip_forward_dynamic_object ) &&
-        value.child( "slopeGripSdwDynamicObject" ).fixed( result.slope_grip_side_dynamic_object ) &&
-        value.child( "flatSideFriction" ).boolean( result.flat_side_friction ) &&
-        readStockPhysicsGrounds( value.child( "grounds" ), result.grounds );
-}
-
-bool readStockPhysicsChassis( const StockPhysicsConfigValue & value,
-    wot::VehicleChassisConfiguration & result )
-{
-    if (!readStockPhysicsChassisBase( value, result )) return false;
-    const auto pitch = value.child( "hullAiming" ).child( "pitch" );
-    if (!(pitch.child( "correctionCenterZ" ).floating( result.pitch_correction_center_z ) &&
-        pitch.child( "correctionSpeed" ).floating( result.pitch_correction_speed ) &&
-        pitch.child( "pitchMin" ).floating( result.pitch_min ) &&
-        pitch.child( "pitchMax" ).floating( result.pitch_max ) &&
-        pitch.child( "correctionStiffness" ).floating( result.pitch_correction_stiffness ) &&
-        pitch.child( "correctionDamping" ).floating( result.pitch_correction_damping ) &&
-        pitch.child( "correctionScale" ).floating( result.pitch_correction_scale ))) return false;
-    const auto yaw = value.child( "hullAiming" ).child( "yaw" );
-    return yaw.child( "gimletForce" ).floating( result.yaw_gimlet_force ) &&
-        yaw.child( "stiffness" ).floating( result.yaw_stiffness ) &&
-        yaw.child( "damping" ).floating( result.yaw_damping ) &&
-        yaw.child( "preciseRestitution" ).floating( result.yaw_precise_restitution ) &&
-        yaw.child( "dampingYawDist" ).floating( result.yaw_damping_distance ) &&
-        yaw.child( "preciseYawDist" ).floating( result.yaw_precise_distance );
-}
-
-bool readStockPhysicsEngine( const StockPhysicsConfigValue & value, wot::VehicleEngineConfiguration & result )
-{
-    return value.child( "engineLoses" ).fixed( result.losses ) &&
-        value.child( "smplEnginePower" ).floating( result.simple_engine_power ) &&
-        value.child( "engineInertia" ).floating( result.engine_inertia ) &&
-        value.child( "smplEngJoinRatio" ).floating( result.simple_engine_join_ratio ) &&
-        value.child( "idleChoker" ).floating( result.idle_choker ) &&
-        value.child( "rotationChoker" ).floating( result.rotation_choker ) &&
-        value.child( "rotationByLockChoker" ).floating( result.rotation_by_lock_choker ) &&
-        value.child( "smplMinRPM" ).floating( result.simple_min_rpm ) &&
-        value.child( "idleRPM" ).floating( result.idle_rpm ) &&
-        value.child( "startRPM" ).floating( result.start_rpm ) &&
-        value.child( "engVelMax" ).floating( result.maximum_forward_angular_velocity ) &&
-        value.child( "engVelBkMax" ).floating( result.maximum_backward_angular_velocity ) &&
-        value.child( "engVelRot" ).floating( result.rotation_angular_velocity );
-}
-
-bool readStockPhysicsGimlet( const StockPhysicsConfigValue & value, wot::VehicleGimletConfiguration & result )
-{
-    return value.child( "wPushedDiag" ).floating( result.pushed_diagonal_weight ) &&
-        value.child( "wPushedRot" ).floating( result.pushed_rotation_weight ) &&
-        value.child( "wPushedHB" ).floating( result.pushed_handbrake_weight ) &&
-        value.child( "pushInContact" ).floating( result.push_in_contact ) &&
-        value.child( "pushHB" ).floating( result.push_handbrake ) &&
-        value.child( "pushStop" ).floating( result.push_stop ) &&
-        value.child( "pushRotOnSpotFixedPeriod" ).floating( result.on_spot_fixed_period ) &&
-        value.child( "pushRotOnSpotGrowPeriod" ).floating( result.on_spot_grow_period ) &&
-        value.child( "gimletPushOnSpotInit" ).floating( result.on_spot_initial_push ) &&
-        value.child( "gimletPushOnSpotFinal" ).floating( result.on_spot_final_push ) &&
-        value.child( "pushRotOnMoveFixedPeriod" ).floating( result.on_move_fixed_period ) &&
-        value.child( "pushRotOnMoveGrowPeriod" ).floating( result.on_move_grow_period ) &&
-        value.child( "gimletPushOnMoveInit" ).floating( result.on_move_initial_push ) &&
-        value.child( "gimletPushOnMoveFinal" ).floating( result.on_move_final_push ) &&
-        value.child( "gimletVelScaleMin" ).floating( result.minimum_velocity_scale ) &&
-        value.child( "gimletVelScaleMax" ).floating( result.maximum_velocity_scale );
-}
-
-bool readStockPhysicsGears( const StockPhysicsConfigValue & value,
-    std::vector<wot::VehicleFakeGearConfiguration> & result )
-{
-    std::vector<float> speed, hysteresis, low, high;
-    if (!value.child( "switchSpeed" ).sequence( speed ) ||
-        !value.child( "switchHysteresis" ).sequence( hysteresis ) ||
-        !value.child( "lowRpm" ).sequence( low ) ||
-        !value.child( "highRpm" ).sequence( high )) return false;
-    if (speed.size() != hysteresis.size() || speed.size() != low.size() || speed.size() != high.size())
+    try // f822a0
     {
-        PyErr_SetString( PyExc_ValueError, "fake gearbox sequences must have equal lengths" );
+        result.chassis_mass = value.child( "chassisMass" ).floating();
+        result.chassis_mass_fraction = value.child( "chassisMassFraction" ).floating();
+        result.clearance = value.child( "clearance" ).floating();
+        result.track_gauge_factor = value.child( "trackGaugeFactor" ).floating();
+        result.wheel_detach_on_roll = value.child( "wheelDetachOnRoll" ).boolean();
+        result.track_to_be_locked_delay = value.child( "trackToBeLockedDelay" ).floating();
+        result.wheel_radius = value.child( "wheelRadius" ).floating();
+        result.wheel_inertia_factor = value.child( "wheelInertiaFactor" ).floating();
+        result.wheel_forward_inertia_factor = value.child( "wheelFwdInertiaFactor" ).floating();
+        result.stiffness_zero = value.child( "stiffness0" ).floating();
+        result.stiffness_one = value.child( "stiffness1" ).floating();
+        result.damping = value.child( "damping" ).floating();
+        result.wheel_restitution = value.child( "wheelRestitution" ).floating();
+        result.wheel_penetration = value.child( "wheelPenetration" ).floating();
+        result.wheel_use_pseudo_contacts = value.child( "wheelUsePseudoContacts" ).boolean();
+        result.brake = value.child( "brake" ).floating();
+        result.rotation_brake = value.child( "rotationBrake" ).floating();
+        result.wheel_sinkage_resistance_factor = value.child( "wheelSinkageResistFactor" ).floating();
+        result.wheel_dry_friction_factor = value.child( "wheelDryFrictionFactor" ).floating();
+        result.side_friction_constant_ratio = value.child( "sideFrictionConstantRatio" ).floating();
+        result.road_wheel_positions = value.child( "roadWheelPositions" ).fixed<5>();
+        result.stiffness_factors = value.child( "stiffnessFactors" ).fixed<5>();
+        result.slope_resistance_terrain = value.child( "slopeResistTerrain" ).fixed<3>();
+        result.slope_resistance_static_object = value.child( "slopeResistStaticObject" ).fixed<3>();
+        result.slope_resistance_dynamic_object = value.child( "slopeResistDynamicObject" ).fixed<3>();
+        result.slope_grip_forward_terrain = value.child( "slopeGripLngTerrain" ).fixed<4>();
+        result.slope_grip_side_terrain = value.child( "slopeGripSdwTerrain" ).fixed<4>();
+        result.slope_grip_forward_static_object = value.child( "slopeGripLngStaticObject" ).fixed<4>();
+        result.slope_grip_side_static_object = value.child( "slopeGripSdwStaticObject" ).fixed<4>();
+        result.slope_grip_forward_dynamic_object = value.child( "slopeGripLngDynamicObject" ).fixed<4>();
+        result.slope_grip_side_dynamic_object = value.child( "slopeGripSdwDynamicObject" ).fixed<4>();
+        result.flat_side_friction = value.child( "flatSideFriction" ).boolean();
+        result.grounds_complete = readStockPhysicsGrounds( value.child( "grounds" ), result );
+        return result.grounds_complete;
+    }
+    catch (const Caught &)
+    {
         return false;
     }
+}
+
+bool readStockPhysicsChassis( const StockPhysicsConfigValue & value, wot::VehicleChassisConfiguration & result )
+{
+    // f88700 reads hullAiming whatever f822a0 returned.
+    const bool base = readStockPhysicsChassisBase( value, result );
+    try
+    {
+        const auto pitch = value.child( "hullAiming" ).child( "pitch" );
+        result.pitch_correction_center_z = pitch.child( "correctionCenterZ" ).floating();
+        result.pitch_correction_speed = pitch.child( "correctionSpeed" ).floating();
+        result.pitch_min = pitch.child( "pitchMin" ).floating();
+        result.pitch_max = pitch.child( "pitchMax" ).floating();
+        result.pitch_correction_stiffness = pitch.child( "correctionStiffness" ).floating();
+        result.pitch_correction_damping = pitch.child( "correctionDamping" ).floating();
+        result.pitch_correction_scale = pitch.child( "correctionScale" ).floating();
+        const auto yaw = value.child( "hullAiming" ).child( "yaw" );
+        result.yaw_gimlet_force = yaw.child( "gimletForce" ).floating();
+        result.yaw_stiffness = yaw.child( "stiffness" ).floating();
+        result.yaw_damping = yaw.child( "damping" ).floating();
+        result.yaw_precise_restitution = yaw.child( "preciseRestitution" ).floating();
+        result.yaw_damping_distance = yaw.child( "dampingYawDist" ).floating();
+        result.yaw_precise_distance = yaw.child( "preciseYawDist" ).floating();
+    }
+    catch (const Caught &)
+    {
+        return false;
+    }
+    return base;
+}
+
+void readStockPhysicsEngine( const StockPhysicsConfigValue & value, wot::VehicleEngineConfiguration & result )
+{
+    // f7ecd0 has no catch region of its own; f900a0 catches around it.
+    result.losses = value.child( "engineLoses" ).fixed<2>();
+    result.simple_engine_power = value.child( "smplEnginePower" ).floating();
+    result.engine_inertia = value.child( "engineInertia" ).floating();
+    result.simple_engine_join_ratio = value.child( "smplEngJoinRatio" ).floating();
+    result.idle_choker = value.child( "idleChoker" ).floating();
+    result.rotation_choker = value.child( "rotationChoker" ).floating();
+    result.rotation_by_lock_choker = value.child( "rotationByLockChoker" ).floating();
+    result.simple_min_rpm = value.child( "smplMinRPM" ).floating();
+    result.idle_rpm = value.child( "idleRPM" ).floating();
+    result.start_rpm = value.child( "startRPM" ).floating();
+    result.maximum_forward_angular_velocity = value.child( "engVelMax" ).floating();
+    result.maximum_backward_angular_velocity = value.child( "engVelBkMax" ).floating();
+    result.rotation_angular_velocity = value.child( "engVelRot" ).floating();
+}
+
+void readStockPhysicsGlobals( const StockPhysicsConfigValue & root, wot::VehiclePhysicsConfiguration & result )
+{
+    // f85c70 inside f900a0's catch region (state 32).
+    static const char * const gimletNames[] = { "wPushedDiag", "wPushedRot", "wPushedHB",
+        "pushInContact", "pushHB", "pushStop", "pushRotOnSpotFixedPeriod", "pushRotOnSpotGrowPeriod",
+        "gimletPushOnSpotInit", "gimletPushOnSpotFinal", "pushRotOnMoveFixedPeriod",
+        "pushRotOnMoveGrowPeriod", "gimletPushOnMoveInit", "gimletPushOnMoveFinal",
+        "gimletVelScaleMin", "gimletVelScaleMax" };
+    try
+    {
+        const auto normal = root.child( "modes" ).child( "normal" );
+        const auto anchor = normal.child( "anchor" );
+        wot::VehicleAnchorConfiguration values;
+        values.maximum_reaction_factor = anchor.child( "anchorMaxReactionFactor" ).floating();
+        values.constant_fraction = anchor.child( "anchorConstFraction" ).floating();
+        values.velocity_factor = anchor.child( "anchorVelFactor" ).floating();
+        result.anchor = values;
+        result.rail_factor_in_contact = normal.child( "rail" ).child( "railFactorInContact" ).floating();
+        const auto gimlet = normal.child( "gimlet" );
+        for (std::uint32_t field = 0; field != 16; ++field)
+        {
+            result.gimlet.*wot::vehicle_gimlet_fields[field] = gimlet.child( gimletNames[field] ).floating();
+            result.gimlet_fields = field + 1;
+        }
+    }
+    catch (const Caught &) {}
+}
+
+std::vector<wot::VehicleFakeGearConfiguration> readStockPhysicsGears( const StockPhysicsConfigValue & value )
+{
+    const std::vector<float> speed = value.child( "switchSpeed" ).sequence();
+    const std::vector<float> hysteresis = value.child( "switchHysteresis" ).sequence();
+    const std::vector<float> low = value.child( "lowRpm" ).sequence();
+    const std::vector<float> high = value.child( "highRpm" ).sequence();
+    if (speed.size() != hysteresis.size() || speed.size() != low.size() || speed.size() != high.size())
+        throw Caught{ PyExc_ValueError, "fake gearbox sequences must have equal lengths" };
+    std::vector<wot::VehicleFakeGearConfiguration> result;
     for (size_t index = 0; index < speed.size(); ++index)
         result.push_back( { speed[index], hysteresis[index], low[index], high[index] } );
-    return true;
+    return result;
 }
 }
 
 bool readStockVehiclePhysicsConfiguration( PyObject * object,
-    wot::VehiclePhysicsConfiguration & output )
+    wot::VehiclePhysicsConfiguration & output, bool configured )
 {
     try
     {
         const StockPhysicsConfigValue root( object, "WGVehiclePhysics.configure" );
         wot::VehiclePhysicsConfiguration result{};
-        if (!root.child( "vehicleType" ).integral( result.vehicle_type )) return false;
+        result.vehicle_type = root.child( "vehicleType" ).integral();
         if (result.vehicle_type != 0)
         {
+            // f4fe59 rethrows with no active exception (terminate).
             PyErr_SetString( PyExc_ValueError, "WGVehiclePhysics.configure requires Tank vehicleType 0" );
             return false;
         }
-        const auto modes = root.child( "modes" );
-        PyObjectPtr entries = modes.items();
-        if (!entries) return false;
+        PyObjectPtr entries = root.child( "modes" ).items();
         const Py_ssize_t count = PyList_GET_SIZE( entries.get() );
         for (Py_ssize_t index = 0; index < count; ++index)
         {
@@ -419,28 +456,53 @@ bool readStockVehiclePhysicsConfiguration( PyObject * object,
             const StockPhysicsConfigValue value( PyTuple_GET_ITEM( pair, 1 ), "modes.value" );
             wot::VehiclePhysicsModeConfiguration mode{};
             mode.name = key.byteStringName();
-            if (!value.child( "mode_index" ).integral( mode.mode_index ) ||
-                !readStockPhysicsBody( value, mode.body ) ||
-                !readStockPhysicsShape( value.child( "shape" ), mode.shape ) ||
-                !value.child( "siegeModeAvailable" ).boolean( mode.siege_mode_available ) ||
-                !readStockPhysicsChassis( value.child( "chassis" ), mode.chassis ) ||
-                !readStockPhysicsEngine( value.child( "engine" ), mode.engine )) return false;
+            mode.mode_index = value.child( "mode_index" ).integral();
+            readStockPhysicsTank( value, mode );
+            // f814d0 sizes the table from the registry when f900a0 constructs it.
+            mode.chassis.grounds.assign( wot::vehicle_ground_material_registry().count,
+                wot::VehicleGroundSettings() );
+            try // f900a0 states 22-23
+            {
+                readStockPhysicsChassis( value.child( "chassis" ), mode.chassis );
+            }
+            catch (const Caught &) {}
+            try // f900a0 states 29-30
+            {
+                readStockPhysicsEngine( value.child( "engine" ), mode.engine );
+            }
+            catch (const Caught &) {}
             result.modes.push_back( std::move( mode ) );
         }
-        const auto normal = modes.child( "normal" );
-        const auto anchor = normal.child( "anchor" );
-        const auto rail = normal.child( "rail" );
-        if (!anchor.child( "anchorMaxReactionFactor" ).floating( result.anchor_maximum_reaction_factor ) ||
-            !anchor.child( "anchorConstFraction" ).floating( result.anchor_constant_fraction ) ||
-            !anchor.child( "anchorVelFactor" ).floating( result.anchor_velocity_factor ) ||
-            !rail.child( "railFactorInContact" ).floating( result.rail_factor_in_contact ) ||
-            !readStockPhysicsGimlet( normal.child( "gimlet" ), result.gimlet ) ||
-            // f84e80 reads modes.normal.fakegearbox; __buildConfigurations
-            // moves the producer's root fakegearbox into every mode.
-            !readStockPhysicsGears( normal.child( "fakegearbox" ).child( "fwdgears" ), result.forward_gears ) ||
-            !readStockPhysicsGears( normal.child( "fakegearbox" ).child( "bkwdgears" ), result.backward_gears )) return false;
+        readStockPhysicsGlobals( root, result );
+        if (!configured && result.modes.empty())
+        {
+            // f84e80 reads the root into a discarded Vehicle::Settings when
+            // the Tank holds no mode settings.
+            wot::VehicleBodyConfiguration discarded;
+            readStockPhysicsBody( root, discarded );
+        }
+        // f84e80: modes.normal is looked up before its catch region.
+        const auto normal = root.child( "modes" ).child( "normal" );
+        try
+        {
+            wot::VehicleFakeGearboxConfiguration gears;
+            gears.forward = readStockPhysicsGears( normal.child( "fakegearbox" ).child( "fwdgears" ) );
+            gears.backward = readStockPhysicsGears( normal.child( "fakegearbox" ).child( "bkwdgears" ) );
+            result.gears = std::move( gears );
+        }
+        catch (const Caught &) {}
         output = std::move( result );
         return true;
+    }
+    catch (const StockPhysicsProxyFailure & failure)
+    {
+        // Uncaught in #1513 as well: it unwinds past the Python method.
+        PyErr_SetString( failure.type, failure.message.c_str() );
+        return false;
+    }
+    catch (const StockPhysicsPythonFailure &)
+    {
+        return false;
     }
     catch (const std::bad_alloc &)
     {
@@ -461,7 +523,8 @@ bool configureStockVehiclePhysics( wot::VehiclePhysics & core, PyObject * object
     // object. A newer committed epoch wins; the outer result is discarded.
     const std::uint64_t epoch = core.configuration_epoch();
     wot::VehiclePhysicsConfiguration configuration;
-    if (!readStockVehiclePhysicsConfiguration( object, configuration )) return false;
+    if (!readStockVehiclePhysicsConfiguration( object, configuration, core.tank() != nullptr ))
+        return false;
     if (core.configuration_epoch() != epoch)
     {
         PyErr_SetString( PyExc_RuntimeError,
@@ -490,6 +553,42 @@ bool configureStockVehiclePhysics( wot::VehiclePhysics & core, PyObject * object
         PyErr_SetString( PyExc_RuntimeError, error.what() );
     }
     return false;
+}
+
+bool setupStockGroundMaterialsMap( PyObject * groups )
+{
+    // f5fde0: reset the map and store the group count before validating the
+    // groups. Any invalid group restores count 1 with an all -1 map.
+    auto & registry = wot::vehicle_ground_material_registry();
+    registry.groups.fill( -1 );
+    const auto invalid = [&registry]()
+    {
+        PyErr_SetString( PyExc_TypeError,
+            "wg_setupGroundMaterialsMap: argument 2 must be a sequence of sequences of matKinds." );
+        registry.groups.fill( -1 );
+        registry.count = 1;
+        return false;
+    };
+    if (!PySequence_Check( groups )) return invalid();
+    const Py_ssize_t count = PySequence_Size( groups );
+    if (count < 0) return invalid();
+    registry.count = static_cast<std::uint32_t>( count );
+    for (Py_ssize_t index = 0; index < count; ++index)
+    {
+        PyObjectPtr group( PySequence_GetItem( groups, index ), PyObjectPtr::STEAL_REFERENCE );
+        if (!group || !PySequence_Check( group.get() )) return invalid();
+        const Py_ssize_t size = PySequence_Size( group.get() );
+        if (size < 0) return invalid();
+        for (Py_ssize_t item = 0; item < size; ++item)
+        {
+            PyObjectPtr kind( PySequence_GetItem( group.get(), item ), PyObjectPtr::STEAL_REFERENCE );
+            if (!kind || !PyInt_Check( kind.get() )) return invalid();
+            const unsigned long value = static_cast<unsigned long>( PyInt_AS_LONG( kind.get() ) );
+            if (value > 0xff) return invalid();
+            registry.groups[value] = static_cast<std::int32_t>( index );
+        }
+    }
+    return true;
 }
 
 // This wrapper owns precisely one authoritative core. Presentation objects
@@ -761,6 +860,16 @@ PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )
     PY_ATTRIBUTE( simulationYBound )
 PY_END_ATTRIBUTES()
 PY_FACTORY_NAMED( PyWGVehiclePhysics, "WGVehiclePhysics", BigWorld )
+
+PyObject * py_wg_setupGroundMaterialsMap( PyObject * args )
+{
+    PyObject * groups;
+    if (!PyArg_ParseTuple( args, "O:wg_setupGroundMaterialsMap", &groups )) return NULL;
+    // The original returns None with the TypeError still set; raise it here.
+    if (!setupStockGroundMaterialsMap( groups )) return NULL;
+    Py_RETURN_NONE;
+}
+PY_MODULE_FUNCTION( wg_setupGroundMaterialsMap, BigWorld )
 
 wot::VehiclePhysics * unwrapStockVehiclePhysics( PyObject * object )
 {
