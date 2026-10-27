@@ -343,7 +343,7 @@ class WorkerRuntimeHostTest(unittest.TestCase):
             self.assertEqual(worker[scenario], prefix + [
                 ('tick.game', game), ('tick.render', render), ('checkDevice', 1),
                 ('updateAnimations', game), ('preloadDeviceResources', 2), ('tickStockAudio', render),
-                ('result', 1)], scenario)
+                ('SimpleGUI.draw', 0), ('result', 1)], scenario)
         for scenario in ('device-lost', 'device-lost-inactive'):
             self.assertEqual(worker[scenario], prefix + [
                 ('tick.game', 16), ('tick.render', 17), ('checkDevice', 0), ('result', 1)], scenario)
@@ -357,6 +357,7 @@ class WorkerRuntimeHostTest(unittest.TestCase):
         self.assertIn('draw', names(control['active']))
         self.assertIn('inactiveTick.game', names(control['inactive']))
         self.assertNotIn('tickStockAudio', names(control['active']))
+        self.assertEqual(names(control['active']).count('SimpleGUI.draw'), 0)
         self.assertNotEqual(control['inactive'], worker['inactive'])
 
     def progress_host(self, tree, name):
@@ -381,7 +382,7 @@ class WorkerRuntimeHostTest(unittest.TestCase):
             self.assertEqual(role['device-lost'], [('callback', 1), ('checkDevice', 0), ('result', 0),
                                                    ('lastDrawn', 3000)])
             self.assertEqual(role['gui-cancelled'], [('callback', 0), ('result', 0), ('lastTime', -1000)])
-        presentation = {'Clear', 'beginScene', 'endScene', 'present', 'SimpleGUI.draw', 'push', 'pop',
+        presentation = {'Clear', 'beginScene', 'endScene', 'present', 'push', 'pop',
                         'drawBar', 'drawConsoleString', 'SetSoftwareVertexProcessing'}
         self.assertTrue(presentation & set(names(player['gui-draw'])))
         for trace in worker.values():
@@ -389,8 +390,10 @@ class WorkerRuntimeHostTest(unittest.TestCase):
         updates = [value for name, value in player['gui-draw'] if name == 'SimpleGUI.update']
         self.assertGreater(len(updates), 1)
         self.assertEqual([value for name, value in worker['gui-draw'] if name == 'SimpleGUI.update'], updates)
-        for name in ('nextFrame', 'preloadDeviceResources'):
+        for name in ('nextFrame', 'preloadDeviceResources', 'SimpleGUI.draw'):
             self.assertEqual(names(worker['gui-draw']).count(name), len(updates))
+        # SimpleGUI::draw owns the component update pass in both roles.
+        self.assertEqual(names(player['gui-draw']).count('SimpleGUI.draw'), len(updates))
         self.assertEqual(names(player['gui-draw']).count('present'), len(updates))
         self.assertEqual(worker['gui-draw'][:3], [('callback', 1), ('setProgress', 500), ('Script.call', 0)])
         self.assertEqual(worker['gui-draw'][-2:], player['gui-draw'][-2:])
@@ -398,6 +401,28 @@ class WorkerRuntimeHostTest(unittest.TestCase):
         control = calls(run(self.progress_host(self.engine.reference, 'control'), WORKER))
         self.assertIn('present', names(control['draw']))
         self.assertIn('present', names(control['gui-draw']))
+
+    def simple_gui_host(self, tree, name):
+        return compile_host(self, self.work / name, 'worker-host-simple-gui', {
+            '@SIMPLE_GUI_DRAW_BODY@': function(self.source('lib/ashes/simple_gui.cpp', tree),
+                                               'void SimpleGUI::draw()')})
+
+    def test_gui_update_pass_advances_components_without_drawing(self):
+        binary = self.simple_gui_host(self.engine.integrated, 'patched')
+        player, worker = calls(run(binary)), calls(run(binary, WORKER))
+        update = [('getViewport', 0)] + [('component.update', 20), ('component.width', 320),
+                                         ('component.applyShaders', 20)] * 2
+        state = [('resolutionChanged', 1), ('realResolutionCounter', 1)]
+        focus = [('tickCrossFocusEvents', 0), ('tickDragFocusEvents', 0)]
+        self.assertEqual(player['draw'][:len(update)], update)
+        self.assertEqual(names(player['draw']).count('component.draw'), 2)
+        self.assertIn(('DrawContext.flush', 0), player['draw'])
+        self.assertEqual(player['draw'][-len(focus) - len(state):], focus + state)
+        self.assertEqual(worker['draw'], update + focus + state)
+        for role in (player, worker):
+            self.assertEqual(role['update-disabled'], [])
+        control = calls(run(self.simple_gui_host(self.engine.reference, 'control'), WORKER))
+        self.assertEqual(control, player)
 
     def cursor_host(self, tree, name):
         cursor = self.source('lib/ashes/mouse_cursor.cpp', tree)

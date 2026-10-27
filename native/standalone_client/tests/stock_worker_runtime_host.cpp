@@ -92,6 +92,11 @@ struct CameraApp
     static CameraApp & instance() { static CameraApp app; return app; }
     ClientCamera & clientCamera() { static ClientCamera camera; return camera; }
 };
+struct SimpleGUI
+{
+    static SimpleGUI & instance() { static SimpleGUI gui; return gui; }
+    void draw() { record("SimpleGUI.draw"); }
+};
 struct FramePacing { int sleepTime(int value) { return value; } };
 static uint64 frameTimerValue() { return 0; }
 static uint64 frameTimerFreq() { return 1000; }
@@ -468,6 +473,105 @@ int main()
     context.windowed_ = false;
     context.releaseDevice();
     dumpState("release-fullscreen", context);
+    return 0;
+}
+
+#elif defined(WORKER_HOST_SIMPLE_GUI)
+#define MF_ASSERT_DEV(condition)
+#define D3DRS_LIGHTING 1
+#define D3DRS_ZFUNC 2
+#define D3DCMP_LESSEQUAL 3
+#define D3DTS_WORLD 1
+#define D3DTS_VIEW 2
+#define D3DTS_PROJECTION 3
+struct Vector2
+{
+    float x = 0.f, y = 0.f;
+    Vector2() {}
+    Vector2(float a, float b) : x(a), y(b) {}
+    void set(float a, float b) { x = a; y = b; }
+};
+struct DogWatch { explicit DogWatch(const char *) {} void start() {} void stop() {} };
+namespace DX { struct Viewport {}; }
+namespace Moo
+{
+enum { RENDERING_PASS_COLOR = 0 };
+struct Device { void SetTransform(int, const Matrix *) { record("SetTransform"); } };
+struct DrawContext
+{
+    enum { ALL_CHANNELS_MASK = 1 };
+    explicit DrawContext(int) {}
+    void begin(int) { record("DrawContext.begin"); }
+    void end(int) {}
+    void flush(int) { record("DrawContext.flush"); }
+};
+struct RenderContext
+{
+    Device device_;
+    Device * device() { return &device_; }
+    void getViewport(DX::Viewport *) { record("getViewport"); }
+    void setViewport(DX::Viewport *) { record("setViewport"); }
+    float screenWidth() { return 320.f; }
+    float screenHeight() { return 240.f; }
+    void setRenderState(int, int) { record("setRenderState"); }
+    Matrix view() const { return Matrix::identity; }
+    void view(const Matrix &) {}
+    Matrix projection() const { return Matrix::identity; }
+    void projection(const Matrix &) {}
+    void updateViewTransforms() {}
+    void setPixelShader(void *) {}
+    void setVertexShader(void *) {}
+    void setFVF(int) {}
+    void push() {}
+    void pop() {}
+    void world(const Matrix &) {}
+};
+inline RenderContext & rc() { static RenderContext context; return context; }
+}
+struct GUIVertex { static int fvf() { return 0; } };
+struct SimpleGUIComponent
+{
+    // FlashGUIComponent::update advances its movie here.
+    void update(float dTime, float width, float) { record("component.update", milli(dTime)); record("component.width", std::lround(width)); }
+    void applyShaders(float dTime) { record("component.applyShaders", milli(dTime)); }
+    void draw(Moo::DrawContext &, bool) { record("component.draw"); }
+};
+struct SimpleGUI
+{
+    typedef std::vector<SimpleGUIComponent *> Components;
+    bool updateGUI_ = true;
+    float dTime_ = 0.f;
+    DX::Viewport originalView_;
+    Vector2 resolutionOverride_, lastResolution_, lastRealResolution_;
+    bool resolutionHasChanged_ = false;
+    int realResolutionCounter_ = 0;
+    int drawCallCount_ = 0;
+    Components components_;
+    Moo::DrawContext * guiDrawContext_ = nullptr;
+    std::vector<int> clipStack_ = std::vector<int>(1);
+    bool usingResolutionOverride() const { return false; }
+    void tickCrossFocusEvents() { record("tickCrossFocusEvents"); }
+    void tickDragFocusEvents() { record("tickDragFocusEvents"); }
+    void draw();
+};
+
+void SimpleGUI::draw()
+@SIMPLE_GUI_DRAW_BODY@
+
+int main()
+{
+    printRole();
+    SimpleGUI gui;
+    SimpleGUIComponent first, second;
+    gui.components_ = { &first, &second };
+    gui.dTime_ = 0.02f;
+    gui.draw();
+    record("resolutionChanged", gui.resolutionHasChanged_);
+    record("realResolutionCounter", gui.realResolutionCounter_);
+    dump("draw");
+    gui.updateGUI_ = false;
+    gui.draw();
+    dump("update-disabled");
     return 0;
 }
 

@@ -50,12 +50,13 @@ EDITS = (
      '\t\t\t\t}\n',
      '\t\t\t\tif (wot::stockSimulationWorker())\n'
      '\t\t\t\t{\n'
-     '\t\t\t\t\t// No scene, GUI or Present. Keep beginScene\'s resource preload\n'
-     '\t\t\t\t\t// and DeviceApp::draw\'s audio service at this frame boundary.\n'
+     '\t\t\t\t\t// No scene/GUI drawing or Present. Keep beginScene\'s preload,\n'
+     '\t\t\t\t\t// DeviceApp\'s audio and the GUI update that advances GUI.Flash.\n'
      '\t\t\t\t\tMoo::rc().preloadDeviceResources( 2 );\n'
      '\t\t\t\t\ttickStockAudio(\n'
      '\t\t\t\t\t\tCameraApp::instance().clientCamera().camera()->invView(),\n'
      '\t\t\t\t\t\tdRenderTime_ );\n'
+     '\t\t\t\t\tSimpleGUI::instance().draw();\n'
      '\t\t\t\t}\n'
      '\t\t\t\telse\n'
      '\t\t\t\t{\n'
@@ -128,6 +129,22 @@ EDITS = (
      '\t\treturn true;\n'
      '\t}\n\n'
      '\t// just draw the scene\n'),
+    ('lib/ashes/simple_gui.cpp', '#include "moo/draw_context.hpp"\n',
+     '#include "moo/draw_context.hpp"\n' + INCLUDE),
+    # SimpleGUI::update only stores dTime; this pass updates every component,
+    # including FlashGUIComponent::update -> Movie::Advance for GUI.Flash apps.
+    ('lib/ashes/simple_gui.cpp',
+     '\tdwUpdateGUI.stop();\n\n\tstatic DogWatch\tdwDrawGUI("Draw");\n',
+     '\tdwUpdateGUI.stop();\n\n'
+     '\t// A hidden simulation worker keeps the update pass above, which advances\n'
+     '\t// every GUI.Flash movie, and the focus events, but never draws.\n'
+     '\tif (wot::stockSimulationWorker())\n'
+     '\t{\n'
+     '\t\ttickCrossFocusEvents();\n'
+     '\t\ttickDragFocusEvents();\n'
+     '\t\treturn;\n'
+     '\t}\n\n'
+     '\tstatic DogWatch\tdwDrawGUI("Draw");\n'),
     ('lib/ashes/gui_progress.cpp', '#include "ashes/clip_gui_shader.hpp"\n',
      '#include "ashes/clip_gui_shader.hpp"\n' + INCLUDE),
     # After the callback, progress script and GUI update, before Clear/beginScene.
@@ -136,9 +153,11 @@ EDITS = (
      '\t\t\tSimpleGUI::instance().update(dTime);\n\n'
      '\t\t\tif (wot::stockSimulationWorker())\n'
      '\t\t\t{\n'
-     '\t\t\t\t// No loading-screen frame; keep beginScene\'s preload and the frame counter.\n'
+     '\t\t\t\t// No loading-screen frame; keep beginScene\'s preload, the frame\n'
+     '\t\t\t\t// counter and the GUI update that advances the GUI.Flash movie.\n'
      '\t\t\t\tMoo::rc().preloadDeviceResources( 2 );\n'
      '\t\t\t\tMoo::rc().nextFrame();\n'
+     '\t\t\t\tSimpleGUI::instance().draw();\n'
      '\t\t\t\tcontinue;\n'
      '\t\t\t}\n\n'
      '\t\t\t// just draw the scene\n'),
@@ -147,7 +166,8 @@ FILES = tuple(sorted({path for path, unused, unused in EDITS}))
 # Role queries each final file owns; the pristine count is zero.
 ROLE_COUNTS = {'client/bw_winmain.cpp': 2, 'client/app.cpp': 2,
                'lib/ashes/mouse_cursor.cpp': 2, 'lib/moo/render_context.cpp': 4,
-               'lib/romp/progress.cpp': 1, 'lib/ashes/gui_progress.cpp': 1}
+               'lib/romp/progress.cpp': 1, 'lib/ashes/gui_progress.cpp': 1,
+               'lib/ashes/simple_gui.cpp': 1}
 
 
 # Pinned v0.10.1 WorkerPresentation.activate requires a positive hidden count.
