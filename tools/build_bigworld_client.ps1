@@ -173,6 +173,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         "--strip-components", "1") "scaleform-source-extract.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_scaleform_sdk.py"),
         $EngineRoot, $ScaleformRoot) "scaleform-source-patch.log"
+    # Edits only lib/scaleform/util.cpp, which patch_scaleform_sdk.py does not touch.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_lobby_input.py"),
+        $EngineRoot) "stock-lobby-input-patch.log"
 
     $GlooxArchive = Join-Path $WorkRoot "gloox.tar.bz2"
     $GlooxRoot = Join-Path $WorkRoot "gloox"

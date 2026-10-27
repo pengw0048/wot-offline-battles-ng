@@ -96,6 +96,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio_io.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bigworld_ipc.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_light_fx.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_lobby_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_components.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_animators.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_audio.cpp"
@@ -104,7 +105,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_water_sensor.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_terrain_sensor.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_filter.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/stock_cursor_camera.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/stock_cursor_camera.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_bsp_collision_model.cpp")
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})
 include("${CMAKE_CURRENT_LIST_DIR}/offline_fork.cmake")
