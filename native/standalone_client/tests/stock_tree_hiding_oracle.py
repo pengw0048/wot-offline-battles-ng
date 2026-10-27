@@ -394,3 +394,58 @@ class PoolTargets(TreeHidingOracle):
                                 clear=[self.byte(target + 0x84)] + self.floats(target + 0x88, 4),
                                 calls=self.created))
         return targets
+
+
+def focus_consumer_graph(executable):
+    """Direct callers and field accesses of the CursorCamera focus consumers.
+
+    rel32 calls/jumps and absolute references are scanned over .text; every
+    disp32 hit of the SRT hiding fields is decoded back to its instruction.
+    """
+    import re
+    import capstone
+    data = open(executable, 'rb').read()
+    pe = struct.unpack_from('<I', data, 60)[0]
+    base = struct.unpack_from('<I', data, pe + 52)[0]
+    sections = pe + 24 + struct.unpack_from('<H', data, pe + 20)[0]
+    image = bytearray(struct.unpack_from('<I', data, pe + 80)[0])
+    for index in range(struct.unpack_from('<H', data, pe + 6)[0]):
+        at = sections + index * 40
+        size, address, raw_size, raw = struct.unpack_from('<IIII', data, at + 8)
+        image[address:address + min(size, raw_size)] = data[raw:raw + min(size, raw_size)]
+        if data[at:at + 8].rstrip(b'\0') == b'.text':
+            text = (address, size)
+    low, size = text
+    targets = (0x748150, 0x748190, 0x7481d0, 0x748370, 0x755670, 0x74e510, 0x747180, 0x753330, 0x74f150,
+               0x96ea70, 0x9cd1d0, 0x98c3e0, 0x9cb010, 0x986220)
+    callers = {target: [] for target in targets}
+    for match in re.finditer(rb'[\xe8\xe9]', image[low:low + size]):
+        at = low + match.start()
+        destination = (base + at + 5 + struct.unpack_from('<i', image, at + 1)[0]) & 0xffffffff
+        if destination in callers:
+            callers[destination].append(base + at)
+    references = {}
+    for value in (0x1d38e44, 0x1d38830, 0x74e510, 0x74f150):
+        hits, at = [], image.find(struct.pack('<I', value))
+        while at != -1:
+            hits.append(base + at)
+            at = image.find(struct.pack('<I', value), at + 1)
+        references[value] = hits
+    decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    fields = {}
+    for offset in range(0x1d0c, 0x1d30, 4):
+        sites, at = [], image.find(struct.pack('<I', offset), low)
+        while at != -1 and at < low + size:
+            for start in range(at - 7, at):
+                instruction = next(decoder.disasm(bytes(image[start:start + 15]), base + start), None)
+                if (instruction and start + instruction.size >= at + 4 and
+                        re.search(r'\[e[a-z]{2} \+ 0x%x\]' % offset, instruction.op_str)):
+                    sites.append([base + start, instruction.mnemonic])
+                    break
+            at = image.find(struct.pack('<I', offset), at + 1)
+        fields['0x%x' % offset] = sites
+    return dict(callers={'0x%x' % k: v for k, v in callers.items()},
+                references={'0x%x' % k: v for k, v in references.items()}, fields=fields,
+                bytes={'0x%x' % a: bytes(image[a - base:a - base + n]).hex() for a, n in (
+                    (0x9c5dd0, 0x37), (0x9c6a40, 0x2a), (0x96ea70, 0x14), (0x9cd1d0, 0xd), (0x98c3e0, 0xd),
+                    (0x6c58ef, 0x28), (0x755670, 0xe))})

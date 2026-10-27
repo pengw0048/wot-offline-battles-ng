@@ -1378,8 +1378,8 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
     if (!success) owner->fail( "Cannot composite the original tree-hiding target" );
 }
 
-// #1513 006b1800, 006b3d00 and 006b1880. Each also forwards to the SRT
-// SpeedTreeRender (00748190, 007481d0), which this client does not restore.
+// #1513 006b1800, 006b3d00 and 006b1880. The first two also forward to the
+// SRT SpeedTreeRender (00748190, 007481d0), read only for .srt instances.
 void wg_enableTreeHiding( bool enable )
 {
     treeHiding().settings.hideClosest = enable;

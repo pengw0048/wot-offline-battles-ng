@@ -1530,6 +1530,57 @@ def run_oracle_script(script):
     return run.stdout
 
 
+class UnrestoredFocusConsumerGraphTests(unittest.TestCase):
+    def test_srt_csm_and_asm_focus_consumers_have_the_recorded_original_graph(self):
+        """The camera-target consumers this client does not own, as #1513 wires them.
+
+        HANDOFF records why each one is unreachable or needs its own owner.
+        """
+        requirements(self)
+        script = ('import json, sys\nsys.path.insert(0, sys.argv[1])\n'
+                  'from stock_tree_hiding_oracle import focus_consumer_graph\n'
+                  'print(json.dumps(focus_consumer_graph(sys.argv[2])))')
+        graph = json.loads(run_oracle_script(script))
+        callers = {int(k, 16): v for k, v in graph['callers'].items()}
+        code = {int(k, 16): bytes.fromhex(v) for k, v in graph['bytes'].items()}
+        # Slot 0x10c: both pipelines gate the old-ST4 and SRT targets by
+        # `enabled`; only deferred also hands the raw target to 96ea70.
+        deferred, forward = code[0x9c5dd0], code[0x9c6a40]
+        self.assertEqual(deferred[:0x0f], forward[:0x0f])
+        self.assertEqual(deferred[0x27:0x2f], bytes.fromhex('ff7508e8718cfaff'))
+        self.assertEqual(forward[0x27:], bytes.fromhex('5e5dc2'))
+        self.assertEqual(callers[0x748150], [0x9c5df2, 0x9c6a62])
+        self.assertEqual(callers[0x96ea70], [0x9c5dfa])
+        # 96ea70 stores the raw pointer, unreferenced, into one global each.
+        self.assertEqual(code[0x96ea70], bytes.fromhex('558becff7508e855e7050083c4045de95cd90100'))
+        self.assertEqual(code[0x9cd1d0], bytes.fromhex('558bec8b4508a3448ed3015dc3'))
+        self.assertEqual(code[0x98c3e0], bytes.fromhex('558bec8b4508a33088d3015dc3'))
+        self.assertEqual(graph['references'], {'0x1d38e44': [0x9cb0a2, 0x9cd1d7], '0x1d38830': [0x9863a5, 0x98c3e7],
+                                               '0x74e510': [], '0x74f150': []})
+        # WG CSM split (9cb010) runs from the shadow update; ASM (986220) per atlas.
+        self.assertEqual(callers[0x9cb010], [0x96e415])
+        self.assertEqual(callers[0x986220], [0x9852c8, 0x9852e2, 0x9852fc])
+        # SRT: writers 748150/748190/7481d0 and the 74cb9c constructor; readers
+        # 74e510 (per frame) and 74f150 (per SRT instance) only.
+        writers = {0x748178, 0x7481b8, 0x7481fa, 0x748206, 0x748213}
+        constructor = {0x74cdda, 0x74cde4, 0x74cdf9, 0x74ce03, 0x74ce0d}
+        sites = {site for field in graph['fields'].values() for site, unused in field}
+        self.assertEqual(sites - writers - constructor,
+                         {0x74ead9, 0x74eb01, 0x74eb1b, 0x74eb31, 0x74eb29, 0x74eb23, 0x74eb49, 0x74eb74,
+                          0x74f207, 0x74f4ee, 0x74f2d6, 0x74f17e, 0x74f1d7, 0x74f1ba, 0x74f1cf})
+        self.assertTrue(writers | constructor <= sites)
+        self.assertEqual(callers[0x748190], [0x6b1851])
+        self.assertEqual(callers[0x7481d0], [0x6b3dac])
+        # 74e510: App tick 637e62 -> 748370 -> 755670 -> jmp.
+        self.assertEqual((callers[0x748370], callers[0x755670], callers[0x74e510]), ([0x637e62], [0x7483fe], [0x755679]))
+        self.assertEqual(code[0x755670], bytes.fromhex('66c781751100000000e9928effff'))
+        # 74f150: only StaticTreeFeature's draw, for an instance whose +8 SRT
+        # model is set (748260 '.srt'); +4 old-ST4 instances go to afed60.
+        self.assertEqual((callers[0x74f150], callers[0x753330], callers[0x747180]), ([0x7533c8], [0x7471ad], [0x6c58ff]))
+        self.assertEqual(code[0x6c58ef], bytes.fromhex(
+            '8b460885c074108b0db411d2016a0150e87c180800eb118b4e0485c9740aff36ff759ce849944300'))
+
+
 class HidingConsumerReachabilityTests(unittest.TestCase):
     def test_every_published_target_has_a_production_reader(self):
         """The base adapter stored targets that no production code read."""
