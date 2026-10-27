@@ -68,11 +68,18 @@ bool sampleStockLodLink(PyObject* p,uint32& priority,float& distance) {
     if(!link || !link->alive) return false;
     priority=link->priority;distance=link->distance;return true;
 }
+// Production semantics: the first output is the assembly-time authored local.
 bool stockVehicleCompoundNode(PyObject* p,const BW::string& name,Matrix& authored,Matrix& parent,Matrix& world) {
     auto model=dynamic_cast<Compound*>(p);
     if(!model || !model->active || !model->authored.count(name)) return false;
-    authored=model->local.count(name)?model->local[name]:model->authored[name];
-    parent=Matrix::identity;world=authored;return true;
+    authored=model->authored[name];parent=Matrix::identity;
+    world=model->local.count(name)?model->local[name]:authored;return true;
+}
+// The vehicle_appearance owner's current local-array read (no evaluation).
+bool stockVehicleCompoundNodeLocal(PyObject* p,const BW::string& name,Matrix& local) {
+    auto model=dynamic_cast<Compound*>(p);
+    if(!model || !model->active || !model->authored.count(name)) return false;
+    local=model->local.count(name)?model->local[name]:model->authored[name];return true;
 }
 bool writeStockVehicleCompoundNodeLocal(PyObject* p,const BW::string& name,const Matrix& local) {
     auto model=dynamic_cast<Compound*>(p);
@@ -113,8 +120,13 @@ int main() {
     // A missing descriptor node is reported, keeps identity and is retained.
     state->motion.wheels.push_back(wheel(model,*state,"W_missing",true,0.5f));
     assert(errors==1 && state->motion.wheels.size()==4 && !state->motion.wheels[3].linked);
-    assert(state->motion.wheels[0].authored[3][0]==1.5f);
+    assert(state->motion.wheels[0].basis[3][0]==1.5f);
     assert(state->wheelCount()==4 && state->wheelIsLeft(0) && state->wheelRadius(1)==0.25f);
+    // 0078d560 records the current local array, not the authored local.
+    Compound moved;moved.authored["W"]=Matrix::identity;Matrix offset=Matrix::identity;offset[3][1]=0.25f;
+    moved.local["W"]=offset;WheelsState probe(&moved);
+    WheelRecord current=wheel(moved,probe,"W",true,0.5f);
+    assert(current.linked && current.basis[3][1]==0.25f);
     Matrix world;assert(!state->wheelWorld(3,world));
 
     // An inactive component never writes; the Hangar's unset movementInfo

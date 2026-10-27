@@ -63,6 +63,13 @@ struct PyObjectPlus : PyObject {};
 struct Node { std::string parent;Matrix authored,local; };
 struct Compound : PyObjectPlus {
     bool active=true;std::map<std::string,Node> nodes;unsigned writes=0;
+    std::map<std::string,int> ids;
+    // Stable node indices, as in the compound node array.
+    int id(const std::string& name) {
+        auto found=ids.find(name);
+        if(found!=ids.end()) return found->second;
+        const int next=static_cast<int>(ids.size());ids[name]=next;return next;
+    }
     Matrix world(const std::string& name) {
         if(name.empty()) return nodes[""].local;
         Matrix w;w.multiply(nodes[name].local,world(nodes[name].parent));return w;
@@ -91,6 +98,16 @@ bool stockVehicleCompoundNode(PyObject* p,const BW::string& name,Matrix& authore
     authored=model->nodes[name].authored;
     parent=name.empty()?Matrix::identity:model->world(model->nodes[name].parent);
     world=model->world(name);return true;
+}
+bool stockVehicleCompoundNodeLocal(PyObject* p,const BW::string& name,Matrix& local) {
+    auto model=dynamic_cast<Compound*>(p);
+    if(!model || !model->active || !model->nodes.count(name)) return false;
+    local=model->nodes[name].local;return true;
+}
+bool stockVehicleCompoundNodeIdentity(PyObject* p,const BW::string& name,int& index,int& parent) {
+    auto model=dynamic_cast<Compound*>(p);
+    if(!model || !model->active || !model->nodes.count(name)) return false;
+    index=model->id(name);parent=name.empty()?-1:model->id(model->nodes[name].parent);return true;
 }
 bool writeStockVehicleCompoundNodeLocal(PyObject* p,const BW::string& name,const Matrix& local) {
     auto model=dynamic_cast<Compound*>(p);
@@ -130,13 +147,10 @@ TrackNode node(TrackNodesState& s,const char* name,bool left,float offset,const 
                float damping,float elasticity,float fwd,float back) {
     TrackNode n;n.name=name;n.isLeft=left;n.leftName=l;n.rightName=r;
     n.damping=damping;n.elasticity=elasticity;n.forwardCoefficient=fwd;n.backwardCoefficient=back;
-    if(0.001f<fabsf(fwd-back)) n.blend=(1.f-back)/(fwd-back);
-    n.previousOffset=n.offset=offset;
-    n.spring.setMaxAmplitude(s.maxAmplitude);n.spring.setMass(TRACK_NODE_MASS);
-    n.spring.decay=n.damping;n.spring.setForce(s.gravity);n.spring.setStiffness(n.elasticity);n.spring.reset();
-    Matrix parent,world;n.linked=s.node(n.name,n.authored,parent,world);
-    if(!n.linked) { n.authored=Matrix::identity;++errors; }
-    return n;
+    const unsigned before=errors;s.addNode(n,offset);
+    TrackNode added=s.nodes.back();s.nodes.pop_back();
+    assert(added.linked==(errors==before));
+    return added;
 }
 bool finite(float v) { return std::isfinite(v); }
 int main() {
@@ -179,7 +193,7 @@ int main() {
     assert(state->linked && state->warmup==0.f && state->resetVelocity && activeTrackNodes.size()==1);
     assert(state->nodes[0].wheel==0 && state->nodes[1].wheel==-1 && state->nodes[2].wheel==-1);
     assert(state->nodes[0].right==1 && state->nodes[1].left==0 && state->nodes[0].left==-1);
-    assert(state->nodes[0].hullChild && state->nodes[2].left==-1);
+    assert(state->hullIndex==model.id("V") && state->nodes[2].left==-1);
     // The node above the wheel is pushed to the wheel surface; the others
     // sag under gravity and are bounded by the oscillator limit.
     const float surface=sqrtf(0.4f*0.4f-0.01f)+0.4f-0.035f;
@@ -241,17 +255,25 @@ int main() {
     empty->destroy();
     // Forward first activation links without the settle loop.
     Renderer::instance().type=IRendererPipeline::TYPE_FORWARD_SHADING;
+    model.nodes["TR"].local=model.nodes["TR"].authored;
     auto forward=std::make_shared<TrackNodesState>(&model,"V");forward->captureHull();
     forward->gravity=-9.8f;forward->maxAmplitude=0.5f;forward->maxOffset=0.2f;
     forward->nodes.push_back(node(*forward,"TR",false,0.05f,"","",1.f,1500.f,1.f,1.f));
     forward->activate();assert(forward->warmup==0.f && !forward->resetVelocity);
     tickStockVehicleTrackNodes(1.f/60.f);
-    // V swung up by 0.05 since assembly; forward rendering cancels it.
-    assert(fabsf(model.nodes["TR"].local[3][1]-0.6f)<1e-6f);
-    assert(fabsf(model.world("TR")[3][1]-0.85f)<1e-6f);
+    // The hull local recorded at construction (V at +0.05) is the reference.
+    assert(forward->hullLocal[3][1]==0.05f);
+    assert(fabsf(model.nodes["TR"].local[3][1]-0.65f)<1e-6f);
+    assert(fabsf(model.world("TR")[3][1]-0.9f)<1e-6f);
+    // A later hull swing is cancelled for direct children of V.
+    model.nodes["V"].local=translate(0,0.15f,0);tickStockVehicleTrackNodes(1.f/60.f);
+    assert(fabsf(model.nodes["TR"].local[3][1]-0.55f)<1e-6f);
+    assert(fabsf(model.world("TR")[3][1]-0.9f)<1e-6f);
     // Focused single-step laws on a fresh deferred component.
     Renderer::instance().type=IRendererPipeline::TYPE_DEFERRED_SHADING;
     model.nodes["V"].local=Matrix::identity;
+    // addTrackNode records current locals; restore the published track nodes.
+    for(const char* name:{"T0","T1","TR"}) model.nodes[name].local=model.nodes[name].authored;
     model.nodes["W2"]={"Tank",translate(1.5f,0.1f,0.f),translate(1.5f,0.1f,0.f)};
     model.nodes["W3"]={"Tank",translate(1.5f,0.3f,0.f),translate(1.5f,0.3f,0.f)};
     auto laws=std::make_shared<TrackNodesState>(&model,"V");laws->captureHull();
@@ -284,6 +306,34 @@ int main() {
     laws->warmup=10.f;laws->simulate(1.f/60.f);
     assert(laws->warmup==10.f-(1.f/60.f)*10.f && laws->nodes[1].spring.decay==1.f+laws->warmup);
     laws->destroy();
+
+    // Root review counterexamples (production-state host): an identity
+    // sibling of V has V's world pose but is not V; only the parent index
+    // selects the hull correction.
+    {
+        Compound twin;
+        twin.nodes[""]={"",Matrix::identity,Matrix::identity};
+        twin.nodes["V"]={"",Matrix::identity,Matrix::identity};
+        twin.nodes["sibling"]={"",Matrix::identity,Matrix::identity};
+        twin.nodes["track"]={"sibling",translate(1,0,0),translate(1,0,0)};
+        twin.nodes["child"]={"V",translate(-1,0,0),translate(-1,0,0)};
+        auto s=std::make_shared<TrackNodesState>(&twin,"V");s->captureHull();
+        s->nodes.push_back(node(*s,"track",true,0,"","",1,1500,1,1));
+        s->nodes.push_back(node(*s,"child",true,0,"","",1,1500,1,1));s->link();
+        twin.nodes["V"].local=translate(0,0.25f,0);assert(s->publish(true));
+        assert(twin.world("track")[3][1]==0.f);
+        assert(fabsf(twin.world("child")[3][1])<1e-6f && fabsf(twin.nodes["child"].local[3][1]+0.25f)<1e-6f);
+        // Construction records the current hull local, not the authored one.
+        auto current=std::make_shared<TrackNodesState>(&twin,"V");current->captureHull();
+        assert(current->hullLinked && current->hullLocal[3][1]==0.25f);
+        // addTrackNode likewise records the current node local.
+        twin.nodes["track"].local=translate(1,0.1f,0);
+        TrackNode moved=node(*current,"track",true,0,"","",1,1500,1,1);
+        assert(moved.linked && moved.basis[3][1]==0.1f);
+        // A reset compound fails the forward read without writing.
+        twin.active=false;const unsigned held=twin.writes;
+        assert(!s->publish(true) && twin.writes==held);
+    }
 
     // A missing hull node is reported and the factory still succeeds.
     auto unhulled=std::make_shared<TrackNodesState>(&model,"absent");

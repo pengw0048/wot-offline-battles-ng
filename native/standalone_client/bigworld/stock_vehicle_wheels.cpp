@@ -23,7 +23,8 @@ struct WheelRecord
 {
     BW::string node;
     bool linked = false;
-    Matrix authored = Matrix::identity;
+    // Compound local-array value recorded when the wheel is added.
+    Matrix basis = Matrix::identity;
     float angle = 0.f;
     float radius = 0.f;
     float inverseRadius = 0.f;
@@ -66,14 +67,14 @@ struct WheelsMotion
         }
     }
 
-    // D3DXMatrixRotationX(angle) * authored local, written into the compound
+    // D3DXMatrixRotationX(angle) * recorded local, written into the compound
     // node-local array that the compound then evaluates into world matrices.
     static Matrix pose( const WheelRecord & wheel )
     {
         Matrix rotation;
         rotation.setRotateX( wheel.angle );
         Matrix local;
-        local.multiply( rotation, wheel.authored );
+        local.multiply( rotation, wheel.basis );
         return local;
     }
 };
@@ -185,13 +186,10 @@ void WheelsState::link( WheelRecord & wheel )
     // 0078d560 copies the compound node's current local matrix. A missing
     // node keeps the identity basis and is reported, not raised.
     PyObjectPtr model( const_cast<PyObject *>( compound.getPyObj() ) );
-    Matrix parent;
-    Matrix world;
-    wheel.linked = model && stockVehicleCompoundNode( model.get(), wheel.node,
-        wheel.authored, parent, world );
+    wheel.linked = model && stockVehicleCompoundNodeLocal( model.get(), wheel.node, wheel.basis );
     if (!wheel.linked)
     {
-        wheel.authored = Matrix::identity;
+        wheel.basis = Matrix::identity;
         ERROR_MSG( "WheelsAnimator::linkWithCompound Cannot find node with name: %s in model\n",
             wheel.node.c_str() );
     }

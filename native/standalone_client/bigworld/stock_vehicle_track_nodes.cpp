@@ -10,7 +10,6 @@
 
 #include <cfloat>
 #include <cmath>
-#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -143,7 +142,8 @@ struct TrackNode
     BW::string leftName;
     BW::string rightName;
     bool linked = false;
-    Matrix authored = Matrix::identity;
+    // Compound local-array value recorded by addTrackNode (record +0x44).
+    Matrix basis = Matrix::identity;
     Vector3 previousPosition = Vector3::zero();
     Vector3 previousVelocity = Vector3::zero();
     Vector3 wheelPosition = Vector3::zero();
@@ -154,7 +154,6 @@ struct TrackNode
     int left = -1;
     int right = -1;
     bool isLeft = false;
-    bool hullChild = false;
 };
 
 const float TRACK_NODE_MASS = 60.f;          // 01a12f2c
@@ -194,6 +193,18 @@ struct TrackNodesState : public StockComponentState
         PyObjectPtr model( const_cast<PyObject *>( compound.getPyObj() ) );
         return model && stockVehicleCompoundNode( model.get(), name, authored, parent, world );
     }
+    // Compound node-local array value, read without evaluating providers.
+    bool local( const BW::string & name, Matrix & value ) const
+    {
+        PyObjectPtr model( const_cast<PyObject *>( compound.getPyObj() ) );
+        return model && stockVehicleCompoundNodeLocal( model.get(), name, value );
+    }
+    // Compound node index and its parent index (-1 for the root).
+    bool identity( const BW::string & name, int & index, int & parent ) const
+    {
+        PyObjectPtr model( const_cast<PyObject *>( compound.getPyObj() ) );
+        return model && stockVehicleCompoundNodeIdentity( model.get(), name, index, parent );
+    }
     bool rootInverse( Matrix & inverse ) const
     {
         Matrix authored;
@@ -216,11 +227,13 @@ struct TrackNodesState : public StockComponentState
         float & penetration, float & impulse ) const;
     void simulate( float elapsed );
     void captureHull();
+    void addNode( TrackNode node, float offset );
     bool publish( bool forward );
 
     WeakPyPtr<PyObjectPlus> compound;
     BW::string hullName;
     bool hullLinked = false;
+    int hullIndex = -1;
     Matrix hullLocal = Matrix::identity;
     std::vector<TrackNode> nodes;
     std::weak_ptr<StockWheelsDataProvider> wheels;
@@ -297,16 +310,7 @@ void TrackNodesState::link()
         Matrix parent;
         Matrix world;
         if (node.linked && this->node( node.name, authored, parent, world ))
-        {
             node.previousPosition = world.applyToOrigin();
-            // The compound adapter exposes parent poses, not parent indices.
-            Matrix hullAuthored;
-            Matrix hullParent;
-            Matrix hullWorld;
-            node.hullChild = hullLinked &&
-                this->node( hullName, hullAuthored, hullParent, hullWorld ) &&
-                memcmp( &parent, &hullWorld, sizeof( Matrix ) ) == 0;
-        }
         // Empty sibling names never match a configured node name.
         for (size_t other = 0; other < nodes.size(); ++other)
         {
@@ -337,7 +341,7 @@ void TrackNodesState::contact( const TrackNode & node, const Matrix & inverseRoo
     Matrix parentRoot;
     parentRoot.multiply( parent, inverseRoot );
     Matrix nodeRoot;
-    nodeRoot.multiply( offsetLocal( node.authored, node.offset ), parentRoot );
+    nodeRoot.multiply( offsetLocal( node.basis, node.offset ), parentRoot );
     const float radius = source->wheelRadius( static_cast<size_t>( node.wheel ) );
     const float wheelY = wheel[3][1];
     const float surface = sqrtf( radius * radius - node.wheelDistanceSquared ) + wheelY +
@@ -389,7 +393,7 @@ void TrackNodesState::simulate( float elapsed )
         if (!node.linked || !this->node( node.name, authored, parent, world ))
             continue;
         Matrix rest;
-        rest.multiply( node.authored, parent );
+        rest.multiply( node.basis, parent );
         const Vector3 position = rest.applyToOrigin();
         Vector3 displacement = position - node.previousPosition;
         if ((eligibility & 3U) == 1U || resetVelocity)
@@ -444,14 +448,40 @@ void TrackNodesState::simulate( float elapsed )
         }
 }
 
+void TrackNodesState::addNode( TrackNode node, float offset )
+{
+    // 0078ea00
+    if (0.001f < fabsf( node.forwardCoefficient - node.backwardCoefficient ))
+        node.blend = (1.f - node.backwardCoefficient) /
+            (node.forwardCoefficient - node.backwardCoefficient);
+    node.previousOffset = node.offset = offset;
+    // The oscillator is configured before the node is linked.
+    node.spring.setMaxAmplitude( maxAmplitude );
+    node.spring.setMass( TRACK_NODE_MASS );
+    node.spring.decay = node.damping;
+    node.spring.setForce( gravity );
+    node.spring.setStiffness( node.elasticity );
+    node.spring.reset();
+    // 0078f7c0 records the node's current local-array value.
+    node.linked = this->local( node.name, node.basis );
+    if (!node.linked)
+    {
+        node.basis = Matrix::identity;
+        ERROR_MSG( "TrackNodesAnimator::linkWithCompound Cannot find node with name: %s in model\n",
+            node.name.c_str() );
+    }
+    nodes.push_back( node );
+}
+
 void TrackNodesState::captureHull()
 {
-    // 0078e1a0 -> 0078f7c0 records the hull swinging node's current local.
-    Matrix parent;
-    Matrix world;
-    hullLinked = this->node( hullName, hullLocal, parent, world );
+    // 0078e1a0 -> 0078f7c0 records the hull swinging node's index and its
+    // current local-array value, not the assembly-time authored local.
+    int parent;
+    hullLinked = this->identity( hullName, hullIndex, parent ) && this->local( hullName, hullLocal );
     if (!hullLinked)
     {
+        hullIndex = -1;
         hullLocal = Matrix::identity;
         ERROR_MSG( "TrackNodesAnimator::linkWithCompound Cannot find node with name: %s in model\n",
             hullName.c_str() );
@@ -467,14 +497,10 @@ bool TrackNodesState::publish( bool forward )
     if (forward && hullLinked)
     {
         // Forward rendering cancels the hull swing for its direct children:
-        // recorded hull local * inverse(current hull local).
-        Matrix authored;
-        Matrix parent;
-        Matrix world;
-        Matrix current = Matrix::identity;
-        Matrix inverseParent;
-        if (this->node( hullName, authored, parent, world ) && inverseParent.invert( parent ))
-            current.multiply( world, inverseParent );
+        // recorded hull local * inverse(current hull local) (0078d8e0).
+        Matrix current;
+        if (!this->local( hullName, current ))
+            return false;
         Matrix inverse;
         if (!inverse.invert( current ))
             inverse = Matrix::identity;
@@ -485,9 +511,17 @@ bool TrackNodesState::publish( bool forward )
         const TrackNode & node = nodes[index];
         if (!node.linked)
             continue;
-        Matrix basis = node.authored;
-        if (forward && node.hullChild)
-            basis.multiply( node.authored, correction );
+        Matrix basis = node.basis;
+        if (forward && hullLinked)
+        {
+            // 0078d8e0 compares the node's parent index with the hull index.
+            int index;
+            int parent;
+            if (!this->identity( node.name, index, parent ))
+                return false;
+            if (parent == hullIndex)
+                basis.multiply( node.basis, correction );
+        }
         if (!writeStockVehicleCompoundNodeLocal( model.get(), node.name,
                 offsetLocal( basis, node.offset ) ))
             return false;
@@ -645,26 +679,7 @@ PyObject * TrackNodesAnimator::py_addTrackNode( PyObject * args )
     node.elasticity = spring[1];
     node.forwardCoefficient = spring[2];
     node.backwardCoefficient = spring[3];
-    if (0.001f < fabsf( spring[2] - spring[3] ))
-        node.blend = (1.f - spring[3]) / (spring[2] - spring[3]);
-    node.previousOffset = node.offset = offset;
-    // 0078ea00 configures the oscillator before linking its node.
-    node.spring.setMaxAmplitude( value->maxAmplitude );
-    node.spring.setMass( TRACK_NODE_MASS );
-    node.spring.decay = node.damping;
-    node.spring.setForce( value->gravity );
-    node.spring.setStiffness( node.elasticity );
-    node.spring.reset();
-    Matrix parent;
-    Matrix world;
-    node.linked = value->node( node.name, node.authored, parent, world );
-    if (!node.linked)
-    {
-        node.authored = Matrix::identity;
-        ERROR_MSG( "TrackNodesAnimator::linkWithCompound Cannot find node with name: %s in model\n",
-            node.name.c_str() );
-    }
-    value->nodes.push_back( node );
+    value->addNode( node, offset );
     Py_RETURN_NONE;
 }
 
