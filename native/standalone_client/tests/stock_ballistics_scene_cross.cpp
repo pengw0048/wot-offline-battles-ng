@@ -10,12 +10,17 @@
 #include <cstdio>
 #include <string>
 
+// The static-item identity owner: readStockObstacleItem since BQ b351782e,
+// readStockObstacleIdentity before it.
 namespace BW {
-bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
+bool readStockObstacleItem(const CollisionObstacle & obstacle, uint32 & chunkID, uint32 & itemIndex) {
     if (!obstacle.identity.known) return false;
-    output.chunkID = obstacle.identity.chunkID;
-    output.itemIndex = obstacle.identity.itemIndex;
+    chunkID = obstacle.identity.chunkID;
+    itemIndex = obstacle.identity.itemIndex;
     return true;
+}
+bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
+    return readStockObstacleItem(obstacle, output.chunkID, output.itemIndex);
 }
 }
 
