@@ -242,7 +242,8 @@ bool WGSPGCrosshairGUIComponent::init( const BW::string & crosshairPath, uint32 
 	for (uint32 i = 0; i != elementCount; ++i)
 	{
 		char name[32];
-		std::snprintf( name, sizeof( name ), "elem_%u", i + 1 );
+		// The SDK maps snprintf to MSVC's global _snprintf.
+		::snprintf( name, sizeof( name ), "elem_%u", i + 1 );
 		if (!crosshair_.GetMember( name, &elements_[i] ))
 		{
 			return false;
