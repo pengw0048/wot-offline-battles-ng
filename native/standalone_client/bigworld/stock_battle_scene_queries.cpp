@@ -43,16 +43,25 @@ PyObject * unsignedObject( uint32 value )
         PyLong_FromUnsignedLong( value );
 }
 
+// f63ac0/f63970: chunkID | itemIndex16 << 32 | valid16 << 48; 0 without identity.
+uint64 compositeIdentity( bool known, uint32 chunkID, uint16 itemIndex )
+{
+    return known ? uint64( chunkID ) | (uint64( itemIndex ) << 32) | (uint64( 1 ) << 48) : 0;
+}
+
+// ClosestCcbPy (vtable 0174d058, f620a0) and ClosestCcbNative (0174d070,
+// f62400) share skip, nearest-hit and f63970 record rules; only their filter
+// differs. The space stays pinned while traversal runs.
 class SegmentQuery : public CollisionCallback
 {
 public:
+    // f61a90: an int (including bool) selects flags; only otherwise may a
+    // callable filter surfaces. Any other object is ignored.
     SegmentQuery( const ClientSpacePtr & space, WorldTriangle::Flags skipFlags,
         PyObject * filter ) :
-        space_( space ), nearest_( FLT_MAX ), found_( false ), interrupted_( false ),
-        failed_( false )
+        space_( space ), native_( NULL ), nearest_( FLT_MAX ), found_( false ),
+        interrupted_( false ), failed_( false )
     {
-        // f61a90: an int (including bool) selects flags; only otherwise may a
-        // callable filter surfaces. Any other object is ignored.
         filter_.skipFlags = skipFlags;
         if (filter && PyInt_Check( filter ))
             filter_.selectMask = PyInt_AS_LONG( filter );
@@ -64,12 +73,35 @@ public:
         hit_.distance = FLT_MAX;
     }
 
+    // f642b0 takes a std::function by value; an empty one accepts every surface.
+    SegmentQuery( const ClientSpacePtr & space, WorldTriangle::Flags skipFlags,
+        const StockNativeSegmentFilter & filter ) :
+        space_( space ), native_( &filter ), nearest_( FLT_MAX ), found_( false ),
+        interrupted_( false ), failed_( false )
+    {
+        filter_.skipFlags = skipFlags;
+        hit_.distance = FLT_MAX;
+    }
+
+    // Vtables 0174d058/0174d070 slot 1 (00bce4c0): terrain answers at its highest LOD.
+    bool useHighestAvailableLod() override { return true; }
+
     int operator()( const CollisionObstacle & obstacle,
         const WorldTriangle & triangle, float distance ) override
     {
         if (failed_ || interrupted_)
             return COLLIDE_STOP;
-        switch (wot::classifyStockSegmentTriangle( filter_, triangle.flags(),
+        if (native_)
+        {
+            // f62400: skip, farther than the recorded hit, then the native filter.
+            if (filter_.skipFlags & triangle.flags())
+                return COLLIDE_ALL;
+            if (distance > hit_.distance)
+                return COLLIDE_BEFORE;
+            if (*native_ && !this->consultNative( obstacle, triangle ))
+                return failed_ || interrupted_ ? COLLIDE_STOP : COLLIDE_ALL;
+        }
+        else switch (wot::classifyStockSegmentTriangle( filter_, triangle.flags(),
             distance, nearest_ ))
         {
         case wot::StockSegmentStep::Skip:
@@ -90,20 +122,18 @@ public:
         return COLLIDE_BEFORE;
     }
 
-    // Vtable 0x174d058 slot 1 (00bce4c0): terrain answers at its highest LOD.
-    bool useHighestAvailableLod() override { return true; }
-
     bool found() const { return found_; }
     bool interrupted() const { return interrupted_; }
     bool failed() const { return failed_; }
     const StockSegmentHit & hit() const { return hit_; }
 
 private:
-    // f63ac0/f63970 read the static-item identity; a miss leaves 0/0.
-    bool identity( const CollisionObstacle & obstacle, uint32 & chunkID, uint16 & itemIndex )
+    // The WGDE static-item owner is the identity source; a miss is absent.
+    bool identity( const CollisionObstacle & obstacle, bool & known, uint32 & chunkID,
+        uint16 & itemIndex )
     {
         StockObstacleIdentity value;
-        const bool known = readStockObstacleIdentity( obstacle, value );
+        known = readStockObstacleIdentity( obstacle, value );
         if (PyErr_Occurred())
         {
             failed_ = true;
@@ -114,13 +144,31 @@ private:
         return true;
     }
 
+    bool consultNative( const CollisionObstacle & obstacle, const WorldTriangle & triangle )
+    {
+        bool known;
+        uint32 chunkID;
+        uint16 itemIndex;
+        if (!this->identity( obstacle, known, chunkID, itemIndex ))
+            return false;
+        const bool accepted = (*native_)( triangle.materialKind(),
+            triangle.collisionFlags(), compositeIdentity( known, chunkID, itemIndex ) );
+        if (space_->cleared())
+        {
+            interrupted_ = true;
+            return false;
+        }
+        return accepted;
+    }
+
     // f620a0: (matKind, collFlags, itemIndex, chunkID). Only an int-subclass
     // zero rejects; a raised error is printed and the surface is accepted.
     bool consult( const CollisionObstacle & obstacle, const WorldTriangle & triangle )
     {
+        bool known;
         uint32 chunkID;
         uint16 itemIndex;
-        if (!this->identity( obstacle, chunkID, itemIndex ))
+        if (!this->identity( obstacle, known, chunkID, itemIndex ))
             return false;
         PyObjectPtr args( PyTuple_New( 4 ), PyObjectPtr::STEAL_REFERENCE );
         if (!args)
@@ -151,6 +199,7 @@ private:
             accepted = !(PyInt_Check( result ) && PyInt_AS_LONG( result ) == 0);
             Py_DECREF( result );
         }
+        // Geometry it retired outlives this traversal; its result does not.
         if (space_->cleared())
         {
             interrupted_ = true;
@@ -164,8 +213,10 @@ private:
         float distance )
     {
         StockSegmentHit hit;
-        if (!this->identity( obstacle, hit.chunkID, hit.itemIndex ))
+        bool known;
+        if (!this->identity( obstacle, known, hit.chunkID, hit.itemIndex ))
             return false;
+        hit.itemID = compositeIdentity( known, hit.chunkID, hit.itemIndex );
         const Vector3 & v0 = triangle.v0();
         const Vector3 & v1 = triangle.v1();
         const Vector3 & v2 = triangle.v2();
@@ -186,23 +237,26 @@ private:
     ClientSpacePtr space_;
     wot::StockSegmentFilter filter_;
     PyObjectPtr callable_;
+    const StockNativeSegmentFilter * native_;
     float nearest_;
     StockSegmentHit hit_;
     bool found_;
     bool interrupted_;
     bool failed_;
 };
-} // namespace
 
-StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
-    const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,
+template <class Filter>
+StockSegmentResult collideSegment( SpaceID spaceID, const Vector3 & start,
+    const Vector3 & end, WorldTriangle::Flags skipFlags, const Filter & filter,
     StockSegmentHit & hit )
 {
-    // f640d0 resolves the space by ID and keeps it for the whole traversal.
+    // f640d0/f642b0 resolve the space by ID and keep it for the whole traversal.
     ClientSpacePtr space = SpaceManager::instance().space( spaceID );
     if (!space)
         return STOCK_SEGMENT_NO_SPACE;
-    if (space->cleared())
+    // 01172190 rejects |(end-start) x e2 . e1| < 1e-6 before any position test,
+    // so #1513 reports no surface for a zero-length segment, present or not.
+    if (space->cleared() || start == end)
         return STOCK_SEGMENT_MISS;
     SegmentQuery query( space, skipFlags, filter );
     space->collide( start, end, query );
@@ -217,6 +271,34 @@ StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     hit.point = Vector3( start.x + hit.distance * direction.x,
         start.y + hit.distance * direction.y, start.z + hit.distance * direction.z );
     return STOCK_SEGMENT_HIT;
+}
+} // namespace
+
+StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
+    const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,
+    StockSegmentHit & hit )
+{
+    return collideSegment( spaceID, start, end, skipFlags, filter, hit );
+}
+
+bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
+    const Vector3 & end, WorldTriangle::Flags skipFlags,
+    const StockNativeSegmentFilter & filter, StockNativeSegmentHit & hit )
+{
+    StockSegmentHit found;
+    const StockSegmentResult result =
+        collideSegment( spaceID, start, end, skipFlags, filter, found );
+    if (result == STOCK_SEGMENT_FAILED)
+        PyErr_PrintEx( 0 );    // f642b0 has no Python error channel.
+    if (result != STOCK_SEGMENT_HIT)
+        return false;
+    // f642b0 result +4 point, +10 normal, +1c matKind, +20 origin, +30 identity.
+    hit.point = found.point;
+    hit.normal = found.normal;
+    hit.materialKind = found.materialKind;
+    hit.origin = found.translation;
+    hit.identity = found.itemID;
+    return true;
 }
 
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha )

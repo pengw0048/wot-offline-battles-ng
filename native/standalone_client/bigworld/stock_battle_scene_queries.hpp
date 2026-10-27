@@ -7,6 +7,8 @@
 #include "pyscript/script.hpp"
 #include "space/forward_declarations.hpp"
 
+#include <functional>
+
 BW_BEGIN_NAMESPACE
 
 // One accepted wg_collideSegment surface (f63970 hit record).
@@ -19,6 +21,7 @@ struct StockSegmentHit
     uint32 materialKind;
     uint32 chunkID;
     uint16 itemIndex;
+    uint64 itemID;     // Composite identity, see StockNativeSegmentHit.
 };
 
 enum StockSegmentResult
@@ -35,6 +38,30 @@ enum StockSegmentResult
 StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,
     StockSegmentHit & hit );
+
+// One f642b0 result: +4 point, +10 normal, +1c materialKind, +20 origin,
+// +30 identity. identity is 0 without static-item identity, otherwise
+// chunkID | uint64(uint16 itemIndex) << 32 | uint64(1) << 48 (f63ac0).
+struct StockNativeSegmentHit
+{
+    Vector3 point;
+    Vector3 normal;
+    uint32 materialKind;
+    Vector3 origin;
+    uint64 identity;
+};
+
+// ClosestCcbNative filter (f62400): false rejects only that surface. An empty
+// function accepts every surface without an identity lookup.
+typedef std::function< bool( uint32 materialKind, uint32 collisionFlags, uint64 identity ) >
+    StockNativeSegmentFilter;
+
+// The native f642b0 query for native owners such as PyBallisticsSimulator.
+// False for no surface, a zero-length segment, a missing or cleared space and
+// an interrupted or failed query; it never leaves a Python error set.
+bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
+    const Vector3 & end, WorldTriangle::Flags skipFlags,
+    const StockNativeSegmentFilter & filter, StockNativeSegmentHit & hit );
 
 // The native owner behind BigWorld.wg_collideWater: segment distance or -1.
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha );

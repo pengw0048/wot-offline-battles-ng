@@ -4,6 +4,9 @@
 #include "stock_scene_identity.hpp"
 
 #include "stock_ground_water_query.inc"
+// Unchanged SDK BSPNode::intersectsThisNode and the patched ClientSpace bodies.
+#include "stock_sdk_bsp_node.inc"
+#include "stock_client_space.inc"
 #include "stock_battle_scene_queries.cpp"
 
 #include <cstdio>
@@ -15,7 +18,50 @@ namespace BW {
 std::vector<HostVisit> hostVisits;
 int hostLiveSpaces = 0;
 std::vector<bool> hostHighestLod;
+std::vector<std::string> hostRetirements;
+int hostRetiredNodes = 0;
 ClientSpacePtr DeprecatedSpaceHelpers::camera;
+
+namespace {
+// sweep_helpers.cpp BSPSweepVisitor::visit with sTravel 0 and eTravel 1. prune
+// false models a coarse traversal that still reports farther triangles.
+struct HostCollisionState { bool onlyLess = false, onlyMore = false; float dist = -1.f; };
+struct HostSweepVisitor : CollisionVisitor {
+    HostSweepVisitor(SpaceID s, const CollisionObstacle & o, CollisionCallback & c, HostCollisionState & st, bool p)
+        : space(s), ob(o), cc(c), cs(st), prune(p) {}
+    bool visit(const WorldTriangle & hitTriangle, float rd) override {
+        const float ndist = rd;
+        if (prune && cs.onlyLess && ndist > cs.dist) return true;
+        if (cs.onlyMore && ndist < cs.dist) return false;
+        const uint16 flags = hitTriangle.flags_;
+        const int say = cc(ob, hitTriangle, ndist);
+        hostVisits.push_back(HostVisit{space, flags, ndist, say});
+        if ((say & 3) != 3) cs.dist = ndist;
+        if (!say) { stop = true; return true; }
+        cs.onlyLess = !(say & 2);
+        cs.onlyMore = !(say & 1);
+        return cs.onlyLess;
+    }
+    SpaceID space; const CollisionObstacle & ob; CollisionCallback & cc; HostCollisionState & cs;
+    bool prune; bool stop = false;
+};
+}
+
+// Nodes are visited by mapping and insertion order; the node loop itself is
+// the SDK's, so it keeps reading its triangles after a visitor stops.
+float HostSpace::doCollide(const Vector3 & start, const Vector3 & end, CollisionCallback & cc) const {
+    hostHighestLod.push_back(cc.useHighestAvailableLod());
+    HostCollisionState state;
+    std::vector<HostNode *> nodes;
+    for (const auto & mapping : mappings) nodes.insert(nodes.end(), mapping.second.begin(), mapping.second.end());
+    for (HostNode * node : nodes) {
+        HostSweepVisitor visitor(id(), node->obstacle, cc, state, prune);
+        float dist = 1.f;
+        node->node.intersectsThisNode(start, end, dist, NULL, &visitor);
+        if (visitor.stop) break;
+    }
+    return state.dist;
+}
 
 bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
     if (obstacle.identity.raises) {
@@ -122,9 +168,13 @@ ClientSpace * hostSpace(PyObject * args, Py_ssize_t index = 0) {
     return space;
 }
 
+HostSpace * hostSpaceOf(PyObject * args) {
+    ClientSpace * space = hostSpace(args);
+    return space ? static_cast<HostSpace *>(space) : nullptr;
+}
 PyObject * addSpace(PyObject *, PyObject * args) {
     int id; if (!PyArg_ParseTuple(args, "i", &id)) return NULL;
-    SpaceManager::instance().spaces[id] = ClientSpacePtr(new ClientSpace(id));
+    SpaceManager::instance().spaces[id] = ClientSpacePtr(new HostSpace(id));
     Py_RETURN_NONE;
 }
 PyObject * removeSpace(PyObject *, PyObject * args) {
@@ -137,9 +187,23 @@ PyObject * clearSpace(PyObject *, PyObject * args) {
     space->clear();
     Py_RETURN_NONE;
 }
+// clearAllSpaces: SpaceManager::clearSpaces clears every listed space.
+PyObject * clearAllSpaces(PyObject *, PyObject *) {
+    std::vector<ClientSpacePtr> spaces;
+    for (auto & entry : SpaceManager::instance().spaces) spaces.push_back(entry.second);
+    for (ClientSpacePtr & space : spaces) space->clear();
+    Py_RETURN_NONE;
+}
+PyObject * delMapping(PyObject *, PyObject * args) {
+    int id; unsigned long long mapping;
+    if (!PyArg_ParseTuple(args, "iK", &id, &mapping)) return NULL;
+    ClientSpace * space = hostSpace(args); if (!space) return NULL;
+    space->delMapping(mapping);
+    Py_RETURN_NONE;
+}
 PyObject * setPrune(PyObject *, PyObject * args) {
     int id, prune; if (!PyArg_ParseTuple(args, "ii", &id, &prune)) return NULL;
-    ClientSpace * space = hostSpace(args); if (!space) return NULL;
+    HostSpace * space = hostSpaceOf(args); if (!space) return NULL;
     space->prune = prune != 0;
     Py_RETURN_NONE;
 }
@@ -158,32 +222,101 @@ PyObject * setCamera(PyObject *, PyObject * args) {
     DeprecatedSpaceHelpers::camera = ClientSpacePtr(space);
     Py_RETURN_NONE;
 }
-// addSurface(space, flags, distance, (v0, v1, v2), matrix16|None, identity)
-// identity: None, 'raise' or (chunkID, itemIndex).
+// addSurface(space, flags, distance, (v0, v1, v2), matrix16|None, identity[, mapping[, node]])
+// identity: None, 'raise' or (chunkID, itemIndex). node -1 starts a new BSP
+// node with this obstacle; otherwise the triangle joins that node of the mapping.
 PyObject * addSurface(PyObject *, PyObject * args) {
-    int id, flags; float distance; PyObject * vertices, * transform, * identity;
-    if (!PyArg_ParseTuple(args, "iifOOO", &id, &flags, &distance, &vertices, &transform, &identity)) return NULL;
-    ClientSpace * space = hostSpace(args); if (!space) return NULL;
-    HostSurface surface;
-    surface.distance = distance;
-    surface.triangle.flags_ = uint16(flags);
+    int id, flags, node = -1; float distance; PyObject * vertices, * transform, * identity;
+    unsigned long long mapping = 0;
+    if (!PyArg_ParseTuple(args, "iifOOO|Ki", &id, &flags, &distance, &vertices, &transform, &identity,
+                          &mapping, &node)) return NULL;
+    HostSpace * space = hostSpaceOf(args); if (!space) return NULL;
+    WorldTriangle triangle;
+    triangle.hostDistance = distance;
+    triangle.flags_ = uint16(flags);
     for (Py_ssize_t i = 0; i < 3; ++i) {
         PyObject * vertex = PySequence_GetItem(vertices, i);
-        const bool ok = vertex && floats(vertex, &surface.triangle.v[i].x, 3);
+        const bool ok = vertex && floats(vertex, &triangle.v[i].x, 3);
         Py_XDECREF(vertex);
         if (!ok) return NULL;
     }
-    if (!matrix(transform, surface.obstacle.matrix)) return NULL;
-    if (PyString_Check(identity)) surface.obstacle.identity.raises = true;
-    else if (identity != Py_None) {
-        unsigned long chunk, item;
-        if (!PyArg_ParseTuple(identity, "kk", &chunk, &item)) return NULL;
-        surface.obstacle.identity.known = true;
-        surface.obstacle.identity.chunkID = uint32(chunk);
-        surface.obstacle.identity.itemIndex = uint32(item);
+    std::vector<HostNode *> & nodes = space->mappings[mapping];
+    HostNode * owner;
+    if (node < 0) {
+        owner = new HostNode;
+        if (!matrix(transform, owner->obstacle.matrix)) { delete owner; return NULL; }
+        if (PyString_Check(identity)) owner->obstacle.identity.raises = true;
+        else if (identity != Py_None) {
+            unsigned long chunk, item;
+            if (!PyArg_ParseTuple(identity, "kk", &chunk, &item)) { delete owner; return NULL; }
+            owner->obstacle.identity.known = true;
+            owner->obstacle.identity.chunkID = uint32(chunk);
+            owner->obstacle.identity.itemIndex = uint32(item);
+        }
+        nodes.push_back(owner);
+    } else {
+        owner = nodes.at(size_t(node));
     }
-    space->surfaces.push_back(surface);
+    BSPNode & bsp = owner->node;
+    WorldTriangle * grown = new WorldTriangle[bsp.numTriangles_ + 1];
+    for (uint i = 0; i < bsp.numTriangles_; ++i) grown[i] = bsp.pTriangles_[i];
+    grown[bsp.numTriangles_] = triangle;
+    delete[] bsp.pTriangles_;
+    bsp.pTriangles_ = grown;
+    ++bsp.numTriangles_;
     Py_RETURN_NONE;
+}
+PyObject * retirements(PyObject *, PyObject *) {
+    PyObject * list = PyList_New(0);
+    for (const std::string & name : hostRetirements) {
+        PyObject * item = PyString_FromString(name.c_str());
+        PyList_Append(list, item); Py_DECREF(item);
+    }
+    hostRetirements.clear();
+    const int retired = hostRetiredNodes;
+    hostRetiredNodes = 0;
+    return Py_BuildValue("(Ni)", list, retired);
+}
+PyObject * queryActive(PyObject *, PyObject *) { return PyBool_FromLong(ClientSpace::geometryQueryActive()); }
+
+// nativeCollide(space, start, end, skip, filter): filter None (empty), a
+// Python callable (matKind, collFlags, identity) -> bool, or ('clear', id).
+PyObject * nativeCollide(PyObject *, PyObject * args) {
+    int id, skip; PyObject * a, * b, * filter;
+    if (!PyArg_ParseTuple(args, "iOOiO", &id, &a, &b, &skip, &filter)) return NULL;
+    Vector3 start, end;
+    if (!vector3(a, start, 2) || !vector3(b, end, 3)) return NULL;
+    StockNativeSegmentFilter native;
+    bool raised = false;
+    if (PyTuple_Check(filter)) {
+        const int target = int(PyInt_AsLong(PyTuple_GetItem(filter, 1)));
+        native = [target](uint32, uint32, uint64) {
+            ClientSpace * space = SpaceManager::instance().space(target);
+            if (space) space->clear();
+            return false;
+        };
+    } else if (filter != Py_None) {
+        native = [filter, &raised](uint32 kind, uint32 flags, uint64 identity) {
+            PyObject * result = PyObject_CallFunction(filter, (char *)"(IIK)", kind, flags,
+                                                      (unsigned long long)identity);
+            if (!result) { raised = true; PyErr_Clear(); return true; }
+            const bool keep = PyObject_IsTrue(result) == 1;
+            Py_DECREF(result);
+            return keep;
+        };
+    }
+    StockNativeSegmentHit hit;
+    const bool found = collideStockSegmentNative(SpaceID(id), start, end, uint16(skip), native, hit);
+    if (PyErr_Occurred()) {
+        PyErr_Clear();
+        PyErr_SetString(PyExc_AssertionError, "collideStockSegmentNative left a Python error set");
+        return NULL;
+    }
+    if (raised) { PyErr_SetString(PyExc_AssertionError, "host native filter raised"); return NULL; }
+    if (!found) Py_RETURN_NONE;
+    return Py_BuildValue("((fff)(fff)I(fff)K)", hit.point.x, hit.point.y, hit.point.z,
+                         hit.normal.x, hit.normal.y, hit.normal.z, hit.materialKind,
+                         hit.origin.x, hit.origin.y, hit.origin.z, (unsigned long long)hit.identity);
 }
 PyObject * visits(PyObject *, PyObject *) {
     PyObject * list = PyList_New(0);
@@ -250,6 +383,9 @@ PyMethodDef bigWorld[] = {
 PyMethodDef hostMethods[] = {
     {"addSpace", addSpace, METH_VARARGS, NULL}, {"removeSpace", removeSpace, METH_VARARGS, NULL},
     {"clearSpace", clearSpace, METH_VARARGS, NULL}, {"setPrune", setPrune, METH_VARARGS, NULL},
+    {"clearAllSpaces", clearAllSpaces, METH_NOARGS, NULL}, {"delMapping", delMapping, METH_VARARGS, NULL},
+    {"retirements", retirements, METH_NOARGS, NULL}, {"queryActive", queryActive, METH_NOARGS, NULL},
+    {"nativeCollide", nativeCollide, METH_VARARGS, NULL},
     {"setBounds", setBounds, METH_VARARGS, NULL}, {"setCamera", setCamera, METH_VARARGS, NULL},
     {"addSurface", addSurface, METH_VARARGS, NULL}, {"visits", visits, METH_NOARGS, NULL},
     {"liveSpaces", liveSpaces, METH_NOARGS, NULL}, {"highestLod", highestLod, METH_NOARGS, NULL}, {"addWater", addWater, METH_VARARGS, NULL},

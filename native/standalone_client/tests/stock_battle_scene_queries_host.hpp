@@ -17,9 +17,12 @@
 
 namespace BW {
 using string = std::string;
+template <class T> using vector = std::vector<T>;
 using int32 = std::int32_t;
 using uint16 = std::uint16_t;
 using uint32 = std::uint32_t;
+using uint64 = std::uint64_t;
+using uint = unsigned;
 using SpaceID = int32;
 
 struct Vector3 {
@@ -110,7 +113,16 @@ struct WorldTriangle {
     Flags flags() const { return flags_; }
     uint32 collisionFlags() const { return flags_ & 0xff; }
     uint32 materialKind() const { return (flags_ >> 8) & 0xff; }
+    // Stand-in for the SDK ray test: the scripted distance, and the same
+    // zero-direction rejection as 01172190 and worldtri.cpp.
+    float hostDistance = 0.f;
+    bool intersects(const Vector3 &, const Vector3 & dir, float & dist) const {
+        if (dir.x == 0.f && dir.y == 0.f && dir.z == 0.f) return false;
+        dist = hostDistance;
+        return true;
+    }
 };
+const int TRIANGLE_NOT_IN_BSP = 0xff;
 
 struct HostIdentity { bool known = false; bool raises = false; uint32 chunkID = 0; uint32 itemIndex = 0; };
 class CollisionObstacle {
@@ -132,62 +144,100 @@ public:
     virtual int operator()(const CollisionObstacle &, const WorldTriangle &, float) = 0;
 };
 
-// One reported surface in scripted traversal order.
-struct HostSurface { CollisionObstacle obstacle; WorldTriangle triangle; float distance; };
+struct CollisionVisitor { virtual ~CollisionVisitor() {} virtual bool visit(const WorldTriangle &, float) = 0; };
+// The public BSPNode storage; intersectsThisNode is the unchanged SDK body.
+struct BSPNode {
+    uint numTriangles_ = 0, numSharedTriangles_ = 0;
+    WorldTriangle * pTriangles_ = nullptr;
+    WorldTriangle ** ppSharedTriangles_ = nullptr;
+    bool intersectsThisNode(const Vector3 & start, const Vector3 & end, float & dist,
+                            const WorldTriangle ** ppHitTriangle, CollisionVisitor * pVisitor) const;
+};
+
 struct HostVisit { SpaceID space; uint16 flags; float distance; int verdict; };
 extern std::vector<HostVisit> hostVisits;
 extern int hostLiveSpaces;
+extern int hostRetiredNodes;
 extern std::vector<bool> hostHighestLod;
+extern std::vector<std::string> hostRetirements;
 
-class ClientSpace {
-public:
-    explicit ClientSpace(SpaceID id) : id_(id) { ++hostLiveSpaces; }
-    ~ClientSpace() { --hostLiveSpaces; }
-    void incRef() { ++references_; }
-    void decRef() { if (--references_ == 0) delete this; }
-    SpaceID id() const { return id_; }
-    bool cleared() const { return cleared_; }
-    void clear() { cleared_ = true; surfaces.clear(); }
-    AABB bounds() const { return box; }
-    // BigWorld CollisionState: COLLIDE_BEFORE prunes farther surfaces unless
-    // the fixture models a coarse BSP that still reports them.
-    float collide(const Vector3 &, const Vector3 &, CollisionCallback & cc) {
-        hostHighestLod.push_back(cc.useHighestAvailableLod());
-        const std::vector<HostSurface> visit = surfaces;
-        bool onlyLess = false;
-        float limit = -1.f;
-        for (const HostSurface & s : visit) {
-            if (onlyLess && prune && s.distance > limit) continue;
-            const int verdict = cc(s.obstacle, s.triangle, s.distance);
-            hostVisits.push_back(HostVisit{id_, s.triangle.flags_, s.distance, verdict});
-            if (verdict == COLLIDE_STOP) break;
-            if (verdict == COLLIDE_BEFORE) { onlyLess = true; limit = s.distance; }
-        }
-        return limit;
-    }
-    std::vector<HostSurface> surfaces;
-    AABB box;
-    bool prune = true;
-private:
-    SpaceID id_;
-    int references_ = 0;
-    bool cleared_ = false;
-};
-
+class ClientSpace;
 class ClientSpacePtr {
 public:
-    ClientSpacePtr(ClientSpace * p = nullptr) : p_(p) { if (p_) p_->incRef(); }
-    ClientSpacePtr(const ClientSpacePtr & o) : ClientSpacePtr(o.p_) {}
-    ~ClientSpacePtr() { if (p_) p_->decRef(); }
-    ClientSpacePtr & operator=(const ClientSpacePtr & o) {
-        ClientSpace * old = p_; p_ = o.p_; if (p_) p_->incRef(); if (old) old->decRef(); return *this;
-    }
+    ClientSpacePtr(ClientSpace * p = nullptr);
+    ClientSpacePtr(const ClientSpacePtr & o);
+    ~ClientSpacePtr();
+    ClientSpacePtr & operator=(const ClientSpacePtr & o);
     ClientSpace * operator->() const { return p_; }
     ClientSpace * get() const { return p_; }
     explicit operator bool() const { return p_ != nullptr; }
     bool operator!() const { return p_ == nullptr; }
+    friend bool operator==(const ClientSpacePtr & a, const ClientSpace * b) { return a.p_ == b; }
+    friend bool operator==(const ClientSpace * a, const ClientSpacePtr & b) { return a == b.p_; }
 private:
     ClientSpace * p_;
+};
+
+// The patched lib/space/client_space.hpp members the extracted bodies use.
+class ClientSpace {
+public:
+    typedef uint64 GeometryMappingID;
+    explicit ClientSpace(SpaceID id) : id_(id), isCleared_(false) { ++hostLiveSpaces; }
+    virtual ~ClientSpace() { --hostLiveSpaces; }
+    void incRef() { ++references_; }
+    void decRef() { if (--references_ == 0) delete this; }
+    SpaceID id() const { return id_; }
+    void delMapping(GeometryMappingID mappingID);
+    void clear();
+    bool cleared() const;
+    static bool geometryQueryActive();
+    static void retireDeferredGeometry();
+    AABB bounds() const { return box; }
+    float collide(const Vector3 & start, const Vector3 & end, CollisionCallback & cc) const;
+    float collide(const WorldTriangle & triangle, const Vector3 & translation, CollisionCallback & cc) const;
+    AABB box;
+protected:
+    virtual void doDelMapping(GeometryMappingID mappingID) = 0;
+    virtual void doClear() = 0;
+    virtual float doCollide(const Vector3 & start, const Vector3 & end, CollisionCallback & cc) const = 0;
+    virtual float doCollide(const WorldTriangle &, const Vector3 &, CollisionCallback &) const { return -1.f; }
+private:
+    SpaceID id_;
+    bool isCleared_;
+    int references_ = 0;
+};
+
+inline ClientSpacePtr::ClientSpacePtr(ClientSpace * p) : p_(p) { if (p_) p_->incRef(); }
+inline ClientSpacePtr::ClientSpacePtr(const ClientSpacePtr & o) : ClientSpacePtr(o.p_) {}
+inline ClientSpacePtr::~ClientSpacePtr() { if (p_) p_->decRef(); }
+inline ClientSpacePtr & ClientSpacePtr::operator=(const ClientSpacePtr & o) {
+    ClientSpace * old = p_; p_ = o.p_; if (p_) p_->incRef(); if (old) old->decRef(); return *this;
+}
+
+// Mapped geometry: one obstacle per BSP node, heap storage freed on retirement.
+struct HostNode { CollisionObstacle obstacle; BSPNode node; };
+class HostSpace : public ClientSpace {
+public:
+    explicit HostSpace(SpaceID id) : ClientSpace(id) {}
+    ~HostSpace() { retireAll(); }
+    std::map<GeometryMappingID, std::vector<HostNode *>> mappings;
+    bool prune = true;
+protected:
+    void doDelMapping(GeometryMappingID mappingID) override {
+        hostRetirements.push_back("delMapping");
+        auto found = mappings.find(mappingID);
+        if (found == mappings.end()) return;
+        for (HostNode * node : found->second) retire(node);
+        mappings.erase(found);
+    }
+    void doClear() override { hostRetirements.push_back("clear"); retireAll(); }
+    float doCollide(const Vector3 & start, const Vector3 & end, CollisionCallback & cc) const override;
+private:
+    static void retire(HostNode * node) { delete[] node->node.pTriangles_; delete node; ++hostRetiredNodes; }
+    void retireAll() {
+        for (auto & mapping : mappings) for (HostNode * node : mapping.second) retire(node);
+        mappings.clear();
+    }
 };
 
 struct SpaceManager {
@@ -198,7 +248,11 @@ struct SpaceManager {
 namespace DeprecatedSpaceHelpers {
 extern ClientSpacePtr camera;
 inline ClientSpacePtr cameraSpace() { return camera; }
+inline void cameraSpace(const ClientSpacePtr & space) { camera = space; }
 }
+// Logical retirement owners called by the patched ClientSpace::clear.
+inline void retireStockSpaceData(SpaceID, ClientSpace *) { hostRetirements.push_back("spaceData"); }
+inline void retireStockSpaceSounds(ClientSpace *) { hostRetirements.push_back("sounds"); }
 
 class Water {
 public:

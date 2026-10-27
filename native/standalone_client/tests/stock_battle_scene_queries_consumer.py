@@ -246,9 +246,10 @@ assert close(collide(1, UP, DOWN, 0)[1], (-1.0, 0.0, 0.0))
 space(1)
 surface(1, 0, 1.0, ((-1.0, 0.0, -1.0), (1.0, 0.0, -1.0), (0.0, 0.0, 1.0)))
 assert close(collide(1, UP, DOWN, 0)[1], (0.0, -1.0, 0.0))  # winding, not ray side
-# Degenerate segment: the zero direction leaves the point at start.
+# Zero-length segment: 01172190 rejects a zero direction, so even a present
+# surface at the point is not reported.
 space(1, (0, 0.5))
-assert collide(1, UP, UP, 0)[0] == Vector3(*UP)
+assert collide(1, UP, UP, 0) is None and Host.visits() == []
 
 # An identity-owner failure aborts with that error; an unknown identity is 0/0.
 space(1)
@@ -258,21 +259,121 @@ space(1)
 surface(1, 0, 1.0, item='raise')
 expect(RuntimeError, lambda: collide(1, UP, DOWN, 0, lambda *a: None))
 
-# Teardown inside the filter: the pinned space survives the traversal, no later
-# surface is visited and the query reports no surface.
-space(2, (material(87, 0), 1.0), (material(4, 0), 3.0))
+# Teardown inside the filter. Two triangles share one BSP node: the SDK node
+# loop reads the second after the visitor stops, so the node must outlive the
+# clear until the outermost collide returns. Logical clearing is immediate.
+def node(identity, kinds, mapping=0):
+    Host.addSurface(identity, material(kinds[0], 0), 1.0, TRIANGLE, None, (9, 0), mapping)
+    for index, kind in enumerate(kinds[1:], 1):
+        Host.addSurface(identity, material(kind, 0), 1.0 + index, TRIANGLE, None, None, mapping, 0)
+
+
+space(2)
+node(2, (87, 4))
+Host.retirements()
 live = Host.liveSpaces()
+seen = []
 
 
 def teardown(*args):
+    seen.append(args[0])
     Host.clearSpace(2)
     Host.removeSpace(2)
-    assert Host.liveSpaces() == live
+    assert Host.liveSpaces() == live and Host.queryActive()
+    names, retired = Host.retirements()
+    assert names == ['sounds', 'spaceData'] and retired == 0, (names, retired)
     return False
 
 
-assert collide(2, UP, DOWN, 0, teardown) is None
-assert [v[3] for v in Host.visits()] == [0] and Host.liveSpaces() == live - 1
+assert collide(2, UP, DOWN, 0, teardown) is None and seen == [87]
+# The node loop still visits the second triangle; the query answers STOP.
+assert [v[3] for v in Host.visits()] == [0, 0]
+r = Host.retirements()
+assert r == (['clear'], 1) and Host.liveSpaces() == live - 1, r
+assert not Host.queryActive()
+
+# A filter that clears and then raises: printed, no surface, one retirement.
+space(2)
+node(2, (87, 4))
+Host.retirements()
+
+
+def clear_and_raise(*args):
+    Host.clearSpace(2)
+    raise RuntimeError('filter failed after clearing')
+
+
+result, text = stderr(lambda: collide(2, UP, DOWN, 0, clear_and_raise))
+assert result is None and 'filter failed after clearing' in text and sys.exc_info()[0] is None
+assert Host.retirements() == (['sounds', 'spaceData', 'clear'], 1) and not Host.queryActive()
+
+# Repeated clear and clearAllSpaces inside a filter retire each space once.
+for unused in range(8):
+    Host.removeSpace(unused)
+space(2)
+node(2, (87, 4))
+space(4)
+node(4, (5, 6))
+Host.retirements()
+
+
+def clear_all(*args):
+    Host.clearSpace(2)
+    Host.clearAllSpaces()
+    Host.clearSpace(2)
+    return False
+
+
+assert collide(2, UP, DOWN, 0, clear_all) is None
+assert Host.retirements() == (['sounds', 'spaceData', 'sounds', 'spaceData', 'sounds',
+                               'spaceData', 'sounds', 'spaceData', 'clear', 'clear'], 2)
+Host.clearSpace(2)  # Outside a query the original repeats doClear at once.
+assert Host.retirements() == (['sounds', 'spaceData', 'clear'], 0)
+
+# A nested query that clears the outer space waits for the outer collide.
+space(2)
+node(2, (87, 4))
+space(5, (7, 1.0))
+Host.retirements()
+order = []
+
+
+def inner(*args):
+    Host.clearSpace(2)
+    return True
+
+
+def outer(*args):
+    if not order:
+        collide(5, UP, DOWN, 0, inner)
+        order.append(Host.retirements())
+    return True
+
+
+assert collide(2, UP, DOWN, 0, outer) is None
+assert order == [(['sounds', 'spaceData'], 0)], order
+assert Host.retirements() == (['clear'], 1)
+
+# Unmapping inside a filter is deferred the same way; the space stays live.
+space(6)
+node(6, (87, 4), mapping=1)
+Host.addSurface(6, material(3, 0), 5.0, TRIANGLE, None, (9, 9), 2)
+Host.retirements()
+
+
+def unmap(*args):
+    if args[0] == 87:
+        Host.delMapping(6, 1)
+        assert Host.retirements() == ([], 0)
+    return args[0] == 3
+
+
+hit = collide(6, UP, DOWN, 0, unmap)
+assert hit[2] == 3 and hit[5] == 9
+assert Host.retirements() == (['delMapping'], 1)
+assert collide(6, UP, DOWN, 0)[2] == 3
+Host.delMapping(6, 2)  # Outside a query the mapping retires at once.
+assert Host.retirements() == (['delMapping'], 1) and collide(6, UP, DOWN, 0) is None
 
 # Re-entrant queries from a filter own separate state.
 space(3, (material(87, 0), 1.0), (material(4, 0), 3.0))
@@ -301,6 +402,60 @@ class Filter(object):
 holder['f'] = Filter()
 space(3, (material(87, 0), 1.0))
 assert collide(3, UP, DOWN, 0, holder['f'])[2] == 87
+
+# Native f642b0 seam (ClosestCcbNative): composite identity, bool filter.
+native = Host.nativeCollide
+KNOWN = 1 << 48
+
+
+def identity(chunk, item):
+    return chunk | (item << 32) | KNOWN
+
+
+space(7)
+surface(7, material(9, TERRAIN), 1.0)                      # absent identity
+surface(7, material(80, 2), 2.0, item=(0, 0))               # known (0, 0)
+surface(7, material(81, 0), 3.0, item=(0x81234567, 0x12345))
+surface(7, material(82, 0), 4.0, item=(0x81234567, 3))
+surface(7, material(83, 0), 5.0, item=(5, 0x2345))
+Host.setPrune(7, False)
+calls = []
+hit = native(7, UP, DOWN, 0, lambda *a: calls.append(a) or True)
+assert hit[2] == 9 and hit[4] == 0 and hit[0] == (0.0, 9.0, 0.0), hit
+assert close(hit[1], (0.0, 1.0, 0.0)) and hit[3] == (0.0, 0.0, 0.0)
+# Farther surfaces are not offered once a nearer one is recorded.
+assert calls == [(9, TERRAIN, 0)], calls
+del calls[:]
+assert native(7, UP, DOWN, TERRAIN, lambda *a: calls.append(a) or a[0] == 83)[4] == identity(5, 0x2345)
+assert calls == [(80, 2, KNOWN), (81, 0, identity(0x81234567, 0x2345)),
+                 (82, 0, identity(0x81234567, 3)), (83, 0, identity(5, 0x2345))], calls
+# Known (0, 0) differs from absent; equality covers both halves (008aa7b0).
+for wanted, kind in ((KNOWN, 80), (identity(0x81234567, 0x2345), 81), (identity(0x81234567, 3), 82),
+                     (identity(5, 0x2345), 83)):
+    hit = native(7, UP, DOWN, 0, lambda m, f, i: i == wanted)
+    assert hit[2] == kind and hit[4] == wanted, (kind, hit)
+assert native(7, UP, DOWN, 0, lambda m, f, i: i == identity(0, 0x2345)) is None
+assert native(7, UP, DOWN, TERRAIN, None)[4] == KNOWN         # empty filter: nearest
+assert native(7, UP, DOWN, 0xffff, None) is None              # full 16-bit skip
+# A rejected front destructible reveals the farther wall.
+space(8, (material(87, 0), 1.0), (material(4, 0), 3.0))
+assert native(8, UP, DOWN, 0x80, lambda m, f, i: m != 87)[2] == 4
+assert Host.highestLod()[-1] is True
+# The equal-point candidate recheck never re-hits, present or removed.
+Host.visits()
+assert native(8, (0, 9, 0), (0, 9, 0), 0x80, None) is None and Host.visits() == []
+# Missing, cleared and torn-down spaces are plain misses with no Python error.
+assert native(99, UP, DOWN, 0, None) is None
+space(9, (material(87, 0), 1.0), (material(4, 0), 3.0))
+Host.retirements()
+assert native(9, UP, DOWN, 0, ('clear', 9)) is None
+assert Host.retirements() == (['sounds', 'spaceData', 'clear'], 2)
+assert native(9, UP, DOWN, 0, None) is None
+# An identity-owner failure is reported and cleared, never left pending.
+space(10)
+surface(10, 0, 1.0, item='raise')
+result, text = stderr(lambda: native(10, UP, DOWN, 0, None))
+assert result is None and 'host identity owner failed' in text and sys.exc_info()[0] is None
 
 # Water: first positive distance wins; default third argument is True.
 water = BigWorld.wg_collideWater

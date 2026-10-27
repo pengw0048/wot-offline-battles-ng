@@ -15,6 +15,7 @@ from stock_cursor_camera_oracle import OriginalCursorCamera, f32
 
 WATER_DISTANCE = 0xa302e0      # Water::a302e0(start, end, edgeAlpha)
 HIT_RECORD = 0xf63970          # hit record update(base, obstacle, triangle, dist)
+TRIANGLE_INTERSECTS = 0x1172190  # WorldTriangle::intersects(start, dir, length)
 SEGMENT_CALLBACK = 0xf61a90    # wg_collideSegment callback constructor
 SPACE_MANAGER = 0xac3460
 SPACE_LOOKUP = 0xac3620
@@ -132,6 +133,40 @@ class OriginalSceneQueries(OriginalCursorCamera):
                 'itemIndex': self.word(record + 0x1c) & 0xffff,
                 'translation': self.floats(record + 0x50, 3)}
 
+    def triangle_hit(self, vertices, start, direction, length=10.0):
+        """(hit, length) from the original WorldTriangle::intersects."""
+        triangle = self.alloc(0x28)
+        self.put_floats(triangle, [c for v in vertices for c in v])
+        a, b, c = self.alloc(12), self.alloc(12), self.alloc(4)
+        self.put_floats(a, start)
+        self.put_floats(b, direction)
+        self.put_floats(c, [length])
+        return bool(self.call(TRIANGLE_INTERSECTS, (a, b, c), ecx=triangle) & 0xff), self.floats(c, 1)[0]
+
+    def identity_record(self, chunk, item):
+        """f63970 identity words when the destruction feature resolves the obstacle."""
+        record = self.alloc(0x70)
+        feature = self.alloc(8)
+        code = self.entry()
+
+        def lookup(e):
+            e.put_word(e._arg(2), chunk)
+            e.put_word(e._arg(3), item)
+            e._return(1, 16)
+        self.handle(code, lookup)
+        self.put_word(feature, self.vtable(0, 0, 0, 0, 0, 0, code))
+        base = self.alloc(0x20)
+        self.put_word(base + 0xc, feature)
+        matrix = self.alloc(64)
+        self.put_matrix(matrix, [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]])
+        obstacle = self.alloc(0x20)
+        self.put_word(obstacle + 4, matrix)
+        self.put_word(obstacle + 0xc, 0x1234)
+        triangle = self.alloc(0x28)
+        self.put_floats(triangle, [0., 0., 0., 0., 0., 1., 1., 0., 0.])
+        self.call(HIT_RECORD, (base, obstacle, triangle, 0x3f800000), ecx=record)
+        return self.word(record + 0x18) | (self.word(record + 0x1c) << 32)
+
     def py_object(self, flags, value=0, callable_=False):
         kind = self.alloc(0x60)
         self.put_word(kind + 0x54, flags)
@@ -200,7 +235,23 @@ def record_cases(seed=0x1970, count=200):
                    f32(generator.uniform(-500, 500)), 1.]]
         vertices = [[f32(generator.uniform(-5, 5)) for unused in range(3)] for unused in range(3)]
         cases.append({'matrix': matrix, 'vertices': vertices,
-                      'flags': generator.randint(0, 0xffff), 'distance': f32(generator.uniform(0, 50))})
+                      # Collision flags 0xff are TRIANGLE_NOT_IN_BSP and never reach a callback.
+                      'flags': generator.randint(0, 0xffff) & ~0x01, 'distance': f32(generator.uniform(0, 50))})
+    return cases
+
+
+def zero_direction_cases(seed=0x0172, count=500):
+    generator = random.Random(seed)
+    cases = []
+    for unused in range(count):
+        vertices = [[f32(generator.uniform(-5, 5)), f32(generator.uniform(-1, 1)),
+                     f32(generator.uniform(-5, 5))] for unused in range(3)]
+        a, b = generator.random(), generator.random()
+        if a + b > 1:
+            a, b = 1 - a, 1 - b
+        point = [f32(vertices[0][k] + a * (vertices[1][k] - vertices[0][k]) +
+                     b * (vertices[2][k] - vertices[0][k])) for k in range(3)]
+        cases.append((vertices, point))
     return cases
 
 

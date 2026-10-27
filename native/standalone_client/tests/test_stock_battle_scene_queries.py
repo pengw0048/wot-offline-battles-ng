@@ -90,7 +90,75 @@ def ground_water_query():
     return 'namespace BW {\n' + source[begin:end] + '\n}\n'
 
 
-def build_host(test, path):
+ENGINE_ARCHIVE = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+ENGINE_MEMBERS = ('client/script_bigworld.cpp', 'client/script_app.cpp',
+                  'lib/compiled_space/particle_system_loader.hpp',
+                  'lib/compiled_space/particle_system_loader.cpp',
+                  'lib/space/client_space.hpp', 'lib/space/client_space.cpp', 'lib/physics2/bsp.cpp')
+_ENGINE = {}
+
+
+def pinned_engine(test):
+    """Pristine engine members from the pinned public archive."""
+    if not _ENGINE:
+        if not ENGINE_ARCHIVE.exists():
+            test.skipTest('The pinned public BigWorld archive is unavailable')
+        import tarfile
+        with tarfile.open(ENGINE_ARCHIVE) as archive:
+            for member in archive:
+                parts = member.name.split('/', 1)
+                if len(parts) == 2 and parts[1].startswith('programming/bigworld/'):
+                    relative = parts[1][len('programming/bigworld/'):]
+                    if relative in ENGINE_MEMBERS:
+                        _ENGINE[relative] = archive.extractfile(member).read()
+                        if len(_ENGINE) == len(ENGINE_MEMBERS):
+                            break
+    return _ENGINE
+
+
+def patched_engine(test, root, retirement=True):
+    """Apply the real space-data, space-sound and retirement patchers in build order."""
+    import patch_stock_geometry_retirement
+    import patch_stock_space_data
+    import patch_stock_space_sounds
+    for relative, data in pinned_engine(test).items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(data)
+    patch_stock_space_data.patch(root)
+    patch_stock_space_sounds.patch(root)
+    if retirement:
+        patch_stock_geometry_retirement.apply(root)
+    return root
+
+
+def function(source, signature):
+    begin = source.index(signature)
+    return source[begin:source.index('\n}\n', begin) + 3]
+
+
+def engine_includes(test, path, retirement=True):
+    root = patched_engine(test, path / 'engine', retirement)
+    bsp = (root / 'lib/physics2/bsp.cpp').read_text(encoding='utf-8-sig')
+    (path / 'include/stock_sdk_bsp_node.inc').write_text(
+        'namespace BW {\n' + function(bsp, 'bool BSPNode::intersectsThisNode(const Vector3 &') + '}\n')
+    space = (root / 'lib/space/client_space.cpp').read_text(encoding='utf-8-sig')
+    parts = []
+    if retirement:
+        begin = space.index('namespace\n{\n// #1513 scene queries')
+        retire = space.index('void ClientSpace::retireDeferredGeometry()')
+        parts.append(space[begin:space.index('\n}\n', retire) + 3])
+    else:
+        parts.append('bool ClientSpace::geometryQueryActive() { return false; }\n'
+                     'void ClientSpace::retireDeferredGeometry() {}\n')
+    for signature in ('void ClientSpace::delMapping( GeometryMappingID mappingID )',
+                      'float ClientSpace::collide( const Vector3 & start',
+                      'float ClientSpace::collide( const WorldTriangle & triangle',
+                      'void ClientSpace::clear()', 'bool ClientSpace::cleared() const'):
+        parts.append(function(space, signature))
+    (path / 'include/stock_client_space.inc').write_text('namespace BW {\n' + '\n'.join(parts) + '}\n')
+
+
+def build_host(test, path, retirement=True):
     python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
     config = python.with_name('python2.7-config')
     if not config.exists():
@@ -99,16 +167,36 @@ def build_host(test, path):
         (path / 'include' / header).parent.mkdir(parents=True, exist_ok=True)
         (path / 'include' / header).write_text('#pragma once\n')
     (path / 'include/stock_ground_water_query.inc').write_text(ground_water_query())
+    engine_includes(test, path, retirement)
     flags = [f for f in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
              if f != '-DNDEBUG']
     libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
     binary = path / 'host'
-    subprocess.run(['c++', '-std=c++14', '-Wno-deprecated-register', '-Wno-writable-strings',
+    # AddressSanitizer reads every geometry access after a retirement.
+    subprocess.run(['c++', '-std=c++14', '-g', '-fsanitize=address', '-fno-omit-frame-pointer',
+                    '-Wno-deprecated-register', '-Wno-writable-strings',
                     '-Wno-unused-function', '-UNDEBUG', '-ffp-contract=off',
                     '-I', str(path / 'include'), '-I', str(ROOT / 'bigworld'),
                     str(ROOT / 'tests/stock_battle_scene_queries_host.cpp'),
                     *flags, *libs, '-o', str(binary)], check=True)
     return binary
+
+
+TEARDOWN = r'''
+import types, sys
+import Host, _BigWorld
+Math = types.ModuleType('Math')
+Math.Vector3 = lambda *a: a
+sys.modules['Math'] = Math
+TRIANGLE = ((-1.0, 0.0, -1.0), (0.0, 0.0, 1.0), (1.0, 0.0, -1.0))
+Host.addSpace(2)
+Host.addSurface(2, 87 << 8, 1.0, TRIANGLE, None, (9, 0), 0)
+Host.addSurface(2, 4 << 8, 2.0, TRIANGLE, None, None, 0, 0)
+def teardown(*args):
+    Host.clearSpace(2)
+    return False
+_BigWorld.wg_collideSegment(2, (0.0, 10.0, 0.0), (0.0, -10.0, 0.0), 0, teardown)
+'''
 
 
 class StockBattleSceneQueriesTest(unittest.TestCase):
@@ -148,6 +236,34 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
             header.write_text(original.replace(patch.ANCHOR, ''))
             with self.assertRaises(ValueError):
                 patch.apply(root)
+
+    def test_geometry_retirement_patch_is_exact_and_ordered(self):
+        import patch_stock_geometry_retirement as patch
+        import patch_stock_space_data
+        with tempfile.TemporaryDirectory(prefix='scene-query-retirement-patch-') as directory:
+            root = patched_engine(self, Path(directory))
+            space = (root / 'lib/space/client_space.cpp').read_text()
+            header = (root / 'lib/space/client_space.hpp').read_text()
+            self.assertEqual(space.count('GeometryQueryScope scope;'), 2)
+            clear = function(space, 'void ClientSpace::clear()')
+            self.assertLess(clear.index('isCleared_ = true;'), clear.index('deferGeometry( this, true, 0 )'))
+            self.assertLess(clear.index('retireStockSpaceData( id_, this );'), clear.index('this->doClear();'))
+            self.assertNotIn('\tdoClear();', clear)
+            self.assertIn('deferGeometry( this, false, mappingID )',
+                          function(space, 'void ClientSpace::delMapping( GeometryMappingID mappingID )'))
+            self.assertEqual(header.count('static void retireDeferredGeometry();'), 1)
+            patch.apply(root)
+            self.assertEqual((root / 'lib/space/client_space.cpp').read_text(), space)
+            self.assertEqual((root / 'lib/space/client_space.hpp').read_text(), header)
+        with tempfile.TemporaryDirectory(prefix='scene-query-retirement-order-') as directory:
+            root = Path(directory)
+            for relative, data in pinned_engine(self).items():
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_bytes(data)
+            patch.apply(root)
+            # The space-data patcher must run first; reversed order fails loudly.
+            with self.assertRaises(ValueError):
+                patch_stock_space_data.patch(root)
 
     def test_original_x86_water_alpha_matches_kernel(self):
         client = os.environ.get('WOT_0922_CLIENT')
@@ -225,6 +341,37 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
         self.assertEqual(len(production), len(cases))
         for argument, expected in oracle.filter_cases():
             self.assertEqual(emulator.classify_filter(argument), expected, argument)
+
+
+    def test_unpatched_space_reads_geometry_retired_inside_a_filter(self):
+        """Negative control: without the retirement patch the SDK node loop reads freed storage."""
+        with tempfile.TemporaryDirectory(prefix='scene-query-unpatched-') as directory:
+            path = Path(directory)
+            binary = build_host(self, path, retirement=False)
+            (path / 'teardown.py').write_text(TEARDOWN)
+            run = subprocess.run([str(binary), str(path / 'teardown.py')], capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn('heap-use-after-free', run.stderr)
+            self.assertIn('BSPNode::intersectsThisNode', run.stderr)
+
+    def test_original_x86_zero_direction_and_identity_word(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original instruction oracle')
+        try:
+            import stock_battle_scene_queries_oracle as oracle
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for the original instruction oracle')
+        emulator = oracle.OriginalSceneQueries(Path(client) / 'WorldOfTanks.exe')
+        zero = control = 0
+        for vertices, point in oracle.zero_direction_cases():
+            zero += emulator.triangle_hit(vertices, point, (0., 0., 0.))[0]
+            control += emulator.triangle_hit(vertices, (point[0], point[1] + .5, point[2]), (0., -1., 0.))[0]
+        self.assertEqual((zero, control), (0, 500))
+        for chunk, item in ((0, 0), (0x81234567, 0x12345), (5, 3), (0xffffffff, 0xffff)):
+            self.assertEqual(emulator.identity_record(chunk, item),
+                             chunk | ((item & 0xffff) << 32) | (1 << 48))
+        print('Original 01172190: 0/500 zero-direction hits, 500/500 control; f63970 identity word PASS')
 
 
 if __name__ == '__main__':
