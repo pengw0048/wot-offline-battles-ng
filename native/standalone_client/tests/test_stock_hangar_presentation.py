@@ -1,5 +1,5 @@
 """Hangar presentation and input: the #1513 Influx draw, GUI background, model
-texture, cursor sync, focus and edge-detect family.
+texture, cursor sync, focus, edge-detect, gamma and colour-grading family.
 
 Real CPython 2.7 runs the engine's PY_AUTO macros, the public Script bodies and
 the production stock_hangar_presentation.cpp, driven by the original BattleLoading,
@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 ENGINE_FILES = ('lib/pyscript/script.hpp', 'lib/pyscript/script.cpp', 'lib/ashes/mouse_cursor.hpp',
                 'lib/ashes/mouse_cursor.cpp', 'client/gui_app.cpp', 'client/lens_app.cpp',
-                'lib/pyscript/pyobject_plus.hpp')
+                'client/canvas_app.cpp', 'client/device_app.cpp', 'lib/moo/render_context.cpp',
+                'lib/moo/render_context.ipp', 'lib/pyscript/pyobject_plus.hpp')
 SET_DATA = ('bool & rBool,', 'float & rFloat,', 'double & rDouble,', 'BW::string & rString,')
 
 
@@ -59,11 +60,19 @@ def engine_sources(test):
 
 def generated_source(sources):
     script_hpp, script_cpp = sources['lib/pyscript/script.hpp'], sources['lib/pyscript/script.cpp']
+    patched = load_patch().patch_sources({path: sources[path] for path in load_patch().FILES})
+    accessors = sources['lib/moo/render_context.ipp']
     bodies = ''.join(between(script_cpp, 'int Script::setData( PyObject * pObject, ' + name, '\n}\n')
                      for name in SET_DATA)
     replacements = {
         '@SCRIPT_BODIES@': bodies + between(script_cpp, 'PyObject * Script::getData( const bool data )', '\n}\n') +
+        between(script_cpp, 'PyObject * Script::getData( const float data )', '\n}\n') +
         between(script_cpp, 'PyObject * Script::argCountError(', '\n}\n'),
+        '@RC_GAMMA_ACCESSORS@': between(accessors, 'void RenderContext::gammaCorrection( float gammaCorrection )',
+                                        '\n}\n') +
+        between(accessors, 'float RenderContext::gammaCorrection( ) const', '\n}\n'),
+        '@RC_SET_GAMMA@': between(patched['lib/moo/render_context.cpp'], 'void RenderContext::setGammaCorrection()',
+                                  '\n}\n'),
         '@PYAUTO_MACROS@': between(script_hpp, '// Section: Macros: Module Links', '// Section: Macros: Enums',
                                    False) +
         between(script_hpp, '// Section: Macros: Recursion utilities', '// Section: PyModuleLink', False),
@@ -126,7 +135,29 @@ class StockHangarPresentationTest(unittest.TestCase):
         fini = between(patched['client/gui_app.cpp'], 'void GUIApp::fini()', '\n}\n')
         self.assertLess(fini.index('finaliseStockHangarPresentation'), fini.index('deleteGUI'))
 
+        # #1513 has no CanvasApp gamma writer; the swap-chain value persists in
+        # devicePreferences and is reapplied after a reset.
+        canvas = patched['client/canvas_app.cpp']
+        self.assertNotIn('Moo::rc().gammaCorrection(', canvas)
+        self.assertIn('gammaCorrectionOutside_ = configSection->readFloat(', canvas)
+        device = patched['client/device_app.cpp']
+        read = device.index('gammaCorrection = devicePreferences->readFloat("gammaCorrection", gammaCorrection);')
+        seed = device.index('Moo::rc().gammaCorrection(gammaCorrection);')
+        self.assertLess(device.index('float gammaCorrection = 1.f;'), read)
+        self.assertLess(read, seed)
+        self.assertLess(seed, device.index('Moo::rc().createDevice('))
+        self.assertIn('devPref->writeFloat("gammaCorrection", Moo::rc().gammaCorrection());', device)
+        render = patched['lib/moo/render_context.cpp']
+        reset = between(render, 'bool RenderContext::changeModePriv(', '\n}\n')
+        self.assertLess(reset.index('ResetEx('), reset.index('setGammaCorrection();'))
+        self.assertIn('float f = float(i) * (1.f / 255.f);', render)
+
         mutations = {}
+        for index, (path, before, after) in enumerate(patch.REPLACEMENTS):
+            mutations['replacement reverted %d' % index] = dict(patched, **{path: patched[path].replace(after, before)})
+            mutations['replacement partial %d' % index] = dict(sources, **{path: sources[path].replace(before, after)})
+            mutations['replacement duplicated %d' % index] = dict(patched, **{path: patched[path] + after})
+            mutations['replacement missing %d' % index] = dict(sources, **{path: sources[path].replace(before, '')})
         for index, (path, anchor, insertion, before) in enumerate(patch.EDITS):
             joined = patch.joined(anchor, insertion, before)
             mutations['reverted %d' % index] = dict(patched, **{path: patched[path].replace(joined, anchor)})
@@ -222,6 +253,11 @@ class StockHangarPresentationTest(unittest.TestCase):
             self.skipTest('pefile and Unicorn are required for the original instruction oracle')
         report = oracle.run(Path(client) / 'WorldOfTanks.exe')
         self.assertEqual(report, oracle.expected())
+        # With a ColorGrading owner the original reaches its live +0x1c value;
+        # this client has none, so production matches the absent branch above.
+        read, write = oracle.grading_owner(Path(client) / 'WorldOfTanks.exe')
+        self.assertEqual(read[-1][-1], ['getData', 'float', 0.75])
+        self.assertAlmostEqual(write[-2][-1], 0.37, places=6)
         print('Original hangar presentation wrappers matched production: %d calls' % len(report))
 
 

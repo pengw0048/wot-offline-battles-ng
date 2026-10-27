@@ -558,3 +558,90 @@ check(host.calls(), [])
 host.finalise()
 host.setTargetCreates(1)
 print 'edge: Account colours, selection and highlight membership reach the z-pass and transfer'
+
+# ---- Gamma and colour filter settings: account_helpers/settings_core/options.pyc ----
+import struct
+
+
+def float32(value):
+    return struct.unpack('f', struct.pack('f', value))[0]
+
+
+OPTIONS = 'scripts/client/account_helpers/settings_core/options.pyc'
+settings = {'BigWorld': BigWorld}
+gamma_get = method(OPTIONS, 'GammaSetting', '_get', settings)
+gamma_set = method(OPTIONS, 'GammaSetting', '_set', settings)
+
+
+def ramp_matches(gamma):
+    actual, original = host.gammaRamps(gamma)
+    check(actual, original)
+    return actual
+
+
+# Before createDevice the swap-chain owner holds the default 1.0 and a
+# devicePreferences value is stored without a device ramp.
+host.detachDevice()
+check(gamma_get(None), 1.0)
+BigWorld.setGammaCorrection(1.25)
+check(host.calls(), [])
+host.applyDeviceGamma()  # createDevice applies the stored value
+check(len(host.calls()), 1)
+ramp_matches(1.25)
+# GammaSetting clamps the UI value to 0.5..2.0 before the native setter.
+for ui, native in ((-3, 0.5), (0.5, 0.5), (1.0, 1.0), (1.37, 1.37), (2.0, 2.0), (4, 2.0)):
+    gamma_set(None, ui)
+    check(gamma_get(None), float32(native))
+    check(len(host.calls()), 1)
+    ramp_matches(float32(native))
+gamma_set(None, 0.5)
+host.calls()
+low = ramp_matches(0.5)
+gamma_set(None, 2.0)
+host.calls()
+high = ramp_matches(2.0)
+assert high[64] > low[64]  # a higher gamma brightens the mid-tones
+# Apply then cancel restores the previous value and its ramp.
+previous = gamma_get(None)
+gamma_set(None, 0.8)
+gamma_set(None, previous)
+check(gamma_get(None), previous)
+host.calls()
+ramp_matches(previous)
+# A reset (and a later frame, which no longer writes gamma) keeps the user value.
+host.applyDeviceGamma()
+check(len(host.calls()), 1)
+check(gamma_get(None), previous)
+ramp_matches(previous)
+# The native setter keeps float precision; the owner clamps to 0.5..6 when applied.
+BigWorld.setGammaCorrection(1.1)
+check(BigWorld.getGammaCorrection(), float32(1.1))
+BigWorld.setGammaCorrection(7)
+check(BigWorld.getGammaCorrection(), 6.0)
+BigWorld.setGammaCorrection(0.1)
+check(BigWorld.getGammaCorrection(), 0.5)
+host.calls()
+for function, args in ((BigWorld.getGammaCorrection, (1,)), (BigWorld.setGammaCorrection, ()),
+                       (BigWorld.setGammaCorrection, ('bright',)), (BigWorld.setGammaCorrection, (1.0, 2.0)),
+                       (BigWorld.getColorGradingStrength, (0,)), (BigWorld.setColorGradingStrength, ()),
+                       (BigWorld.setColorGradingStrength, (None,)), (BigWorld.setColorGradingStrength, (1, 2))):
+    print 'settings contract:', expect_type_error(function, *args)
+check(BigWorld.getGammaCorrection(), 0.5)
+check(host.calls(), [])
+print 'gamma: devicePreferences seed, GammaSetting values, cancel and reset reach the device ramp'
+
+# The absent ColorGrading owner: 0.0 reads back as the UI minimum 25, and a
+# converted setter value is not retained.
+color = Bag()
+color._adjustValue = types.MethodType(method(OPTIONS, 'ColorFilterIntensitySetting', '_adjustValue', settings), color)
+color_get = method(OPTIONS, 'ColorFilterIntensitySetting', '_get', settings)
+color_set = method(OPTIONS, 'ColorFilterIntensitySetting', '_set', settings)
+check(BigWorld.getColorGradingStrength(), 0.0)
+check(color_get(color), 25)
+for ui in (-2, 25, 37, 100, 120):
+    check(color_set(color, ui), None)
+    check(BigWorld.getColorGradingStrength(), 0.0)
+    check(color_get(color), 25)
+check(BigWorld.setColorGradingStrength(0.37), None)
+check(host.calls(), [])
+print 'colour filter: the absent owner reads 0.0 and stores nothing'

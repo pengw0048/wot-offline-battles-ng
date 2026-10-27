@@ -22,22 +22,29 @@ from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EIP, U
 FUNCTIONS = {'SetDrawInflux': 0xaeb660, 'wg_enableGUIBackground': 0x633330,
              'wg_setGUIBackground': 0x6333e0, 'wg_setPyModelTexture': 0x6b3b30,
              'syncMousePosition': 0xaa8290, 'wgSetEdgeDetectColors': 0x652ee0,
-             'wgAddEdgeDetectEntity': 0x652ab0, 'wgDelEdgeDetectEntity': 0x652cf0}
+             'wgAddEdgeDetectEntity': 0x652ab0, 'wgDelEdgeDetectEntity': 0x652cf0,
+             'getGammaCorrection': 0x6503c0, 'setGammaCorrection': 0x6522b0,
+             'getColorGradingStrength': 0x650140, 'setColorGradingStrength': 0x652020}
 SET_DATA = {0x690570: 'bool', 0x68fe20: 'BW::string', 0x68fba0: 'float', 0x8f46f0: 'BW::PyModelPtr',
             0x664990: 'PyEntityPtr', 0x68fad0: 'uint', 0x64e160: 'BW::vector<Vector4>'}
 ERR_FORMAT, PRINT_EX, FREE, WARNING_SLOT = 0xfc3720, 0xfc7680, 0x13d8019, 0x1a5db0c
 EDGE_SLOT, EDGE_COLORS, EDGE_ADD, EDGE_DEL = 0x1d20c70, 0xaf4d20, 0xaf3c50, 0xaf4480
+# RenderSystem 01d380d4 +0x310 is the primary SwapChain (gamma +0x1b0, dirty
+# +0x1b4); Renderer 01d20620 +0x10 is the pipeline, vtable +0x94 its ColorGrading.
+GET_FLOAT, RENDER_SYSTEM_SLOT, RENDERER_SLOT = 0x68ed00, 0x1d380d4, 0x1d20620
 TUPLE_SIZE, TUPLE_ITEM, ARG_COUNT_ERROR, GET_BOOL = 0xfb3610, 0xfb3390, 0x68e100, 0x68ee00
 INFLUX, LOAD_BACKGROUND, MODEL_TEXTURE = 0xf99d60, 0x6f9090, 0x6b45a0
 INFLUX_FLAG, BACKGROUND_SLOT, GUI_SLOT = 0x1a1bfd0, 0x1a08620, 0x1d1fee0
 INCREMENT_IAT, DECREMENT_IAT = 0x149139c, 0x14913a0
-NONE, TRUE = 0x1a5c798, 0x1a5c7a0
+NONE, TRUE, FLOAT = 0x1a5c798, 0x1a5c7a0, 0x1a5c7a8
 STACK, GDT, MARKS = 0x6000000, 0x6300000, 0x6400000
 ARGS, ITEMS, BACKGROUND, GUI, VTABLE = MARKS + 0x100, MARKS + 0x200, MARKS + 0x400, MARKS + 0x500, MARKS + 0x600
 MODEL, SUPER_MODEL, TOP_MODEL = MARKS + 0x700, MARKS + 0x780, MARKS + 0x800
 DISPATCH, INCREMENT, DECREMENT, SENTINEL = MARKS + 0x900, MARKS + 0x904, MARKS + 0x908, MARKS + 0x90c
 DRAWER, PY_ENTITY, ENTITY, EMBODIMENTS = MARKS + 0xa00, MARKS + 0xa40, MARKS + 0xb00, MARKS + 0xc00
 AUXILIARY, VECTOR = MARKS + 0xd00, MARKS + 0xe00
+RENDER_SYSTEM, RENDERER, PIPELINE, SWAP_CHAIN = MARKS + 0xf00, MARKS + 0xf40, MARKS + 0xf80, MARKS + 0x1000
+PIPELINE_VTABLE, GRADING, GRADING_LOOKUP = MARKS + 0x1200, MARKS + 0x1300, MARKS + 0x914
 WARNINGS = {'zero': 'wgSetEdgeDetectColors - colors size is zero. ' + '\t' * 9 + 'Using defaults colors.\n',
             'great': 'wgSetEdgeDetectColors - colors size is great then zero. ' + '\t' * 9 +
             'Using the first three items.\n',
@@ -72,6 +79,7 @@ class OriginalWrappers(object):
                       INCREMENT: lambda: self._counter(1), DECREMENT: lambda: self._counter(-1),
                       ERR_FORMAT: self._format, PRINT_EX: self._print_ex, FREE: lambda: self._return(0),
                       EDGE_COLORS: self._edge_colors, EDGE_ADD: self._edge_add, EDGE_DEL: self._edge_del,
+                      GET_FLOAT: self._get_float, GRADING_LOOKUP: self._grading,
                       SENTINEL: lambda: u.emu_stop()}
         for address, kind in SET_DATA.items():
             self.hooks[address] = (lambda kind: lambda: self._set_data(kind))(kind)
@@ -129,6 +137,14 @@ class OriginalWrappers(object):
         message = self._cstr(self._arg(2))
         self.calls.append(['PyErr_Format', kind] + [name for name, text in WARNINGS.items() if text == message])
         self._return(0)
+
+    def _get_float(self):
+        self.calls.append(['getData', 'float', struct.unpack('<f', struct.pack('<I', self._arg(1)))[0]])
+        self._return(FLOAT)
+
+    def _grading(self):
+        self.calls.append(['pipeline.colorGrading', self.u.reg_read(UC_X86_REG_ECX) == PIPELINE])
+        self._return(GRADING if self.grading else 0)
 
     def _print_ex(self):
         self.calls.append(['PyErr_PrintEx', self._arg(1)])
@@ -189,9 +205,18 @@ class OriginalWrappers(object):
         self.u.mem_write(address, struct.pack('<I', value))
         self._return(value, 4)
 
-    def run(self, function, argc, fail_at=None, values=(1, 1, 1), drawer=True):
+    def run(self, function, argc, fail_at=None, values=(1, 1, 1), drawer=True, grading=False):
         u = self.u
         self.argc, self.fail_at, self.values, self.calls = argc, fail_at, values, []
+        self.grading = grading
+        u.mem_write(RENDER_SYSTEM_SLOT, struct.pack('<I', RENDER_SYSTEM))
+        u.mem_write(RENDER_SYSTEM + 0x310, struct.pack('<I', SWAP_CHAIN))
+        u.mem_write(SWAP_CHAIN + 0x1b0, struct.pack('<fB', 1.25, 0))
+        u.mem_write(RENDERER_SLOT, struct.pack('<I', RENDERER))
+        u.mem_write(RENDERER + 0x10, struct.pack('<I', PIPELINE))
+        u.mem_write(PIPELINE, struct.pack('<I', PIPELINE_VTABLE))
+        u.mem_write(PIPELINE_VTABLE + 0x94, struct.pack('<I', GRADING_LOOKUP))
+        u.mem_write(GRADING + 0x1c, struct.pack('<f', 0.75))
         # PyEntity +8 -> Entity: primary +0xe8, auxiliary vector +0xec/+0xf0; each
         # embodiment's key is the dword at +0x10 (00b4e280).
         u.mem_write(EDGE_SLOT, struct.pack('<I', DRAWER if drawer else 0))
@@ -220,9 +245,10 @@ class OriginalWrappers(object):
             outcome = 'crash'
         else:
             assert u.reg_read(UC_X86_REG_EIP) == SENTINEL, hex(u.reg_read(UC_X86_REG_EIP))
-            outcome = {0: 'NULL', NONE: 'None', TRUE: 'True'}[u.reg_read(UC_X86_REG_EAX)]
+            outcome = {0: 'NULL', NONE: 'None', TRUE: 'True', FLOAT: 'float'}[u.reg_read(UC_X86_REG_EAX)]
         state = [bytes(u.mem_read(INFLUX_FLAG, 1))[0], bytes(u.mem_read(BACKGROUND + 12, 1))[0],
-                 self._word(TOP_MODEL + 4)]
+                 self._word(TOP_MODEL + 4), struct.unpack('<f', u.mem_read(SWAP_CHAIN + 0x1b0, 4))[0],
+                 bytes(u.mem_read(SWAP_CHAIN + 0x1b4, 1))[0], struct.unpack('<f', u.mem_read(GRADING + 0x1c, 4))[0]]
         return [function, argc, fail_at, list(values), drawer, outcome, state, self.calls]
 
 
@@ -248,10 +274,12 @@ def cases():
         for argc in range(len(kinds) + 2):
             result.append((function, argc, None, (1, 1, 1, 1), True))
         result.extend((function, len(kinds), index, (1, 1, 1, 1), True) for index in range(len(kinds)))
-        if kinds[0] in ('bool', 'BW::PyModelPtr'):
+        if kinds and kinds[0] in ('bool', 'BW::PyModelPtr'):
             result.append((function, len(kinds), None, (0, 1, 1, 1), True))
         if function == 'syncMousePosition':
             result.append((function, 2, None, (0.25, -0.5, 0, 0), True))
+        if function in ('setGammaCorrection', 'setColorGradingStrength'):
+            result.extend((function, 1, None, (value, 0, 0, 0), True) for value in (0.5, 1.37, 2.0, 0.25))
     for drawer in (True, False):
         for count in (0, 1, 4, 5):
             result.append(('wgSetEdgeDetectColors', 1, None, (count,), drawer))
@@ -269,7 +297,7 @@ def expected():
     assert set(FUNCTIONS) <= set(declared), declared
     for function, argc, fail_at, values, drawer in cases():
         ret, kinds = declared[function]
-        state, calls = [7, 7, 2], []
+        state, calls = [7, 7, 2, 1.25, 0, 0.75], []
         required = len(kinds) - (2 if function == 'wgAddEdgeDetectEntity' else 0)
         if not required <= argc <= len(kinds):
             calls, outcome = [['argCountError', function, required, len(kinds)] + list(kinds)], 'NULL'
@@ -284,6 +312,18 @@ def expected():
                 break
         if outcome == 'NULL':
             pass
+        elif function == 'getGammaCorrection':
+            calls.append(['getData', 'float', 1.25])
+            outcome = 'float'
+        elif function == 'setGammaCorrection':
+            # The swap-chain setter stores the converted float and marks it dirty.
+            state[3], state[4] = struct.unpack('<f', struct.pack('<f', values[0]))[0], 1
+        elif function == 'getColorGradingStrength':
+            # This client has no ColorGrading owner: the original absent branch.
+            calls += [['pipeline.colorGrading', True], ['getData', 'float', 0.0]]
+            outcome = 'float'
+        elif function == 'setColorGradingStrength':
+            calls.append(['pipeline.colorGrading', True])
         elif function == 'wgSetEdgeDetectColors':
             if values[0] == 0:
                 calls.append(['PyErr_Format', 'Warning', 'zero'])
@@ -331,3 +371,10 @@ def expected():
 def run(executable):
     original = OriginalWrappers(executable)
     return [original.run(*case) for case in cases()]
+
+
+def grading_owner(executable):
+    """What an existing ColorGrading owner would receive: the live +0x1c value."""
+    original = OriginalWrappers(executable)
+    return [original.run('getColorGradingStrength', 0, grading=True)[-3:],
+            original.run('setColorGradingStrength', 1, values=(0.37, 0, 0, 0), grading=True)[-3:]]

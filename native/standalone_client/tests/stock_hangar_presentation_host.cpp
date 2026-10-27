@@ -2,7 +2,9 @@
 // and argCountError bodies and the production stock_hangar_presentation.cpp.
 // The GUI, texture, effect, model and Influx owners are recording fixtures.
 #include <Python.h>
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstddef>
@@ -22,6 +24,8 @@
 
 typedef unsigned int uint;
 typedef unsigned int uint32;
+typedef unsigned short WORD;
+#define INLINE inline
 typedef int int32;
 typedef long long int64;
 typedef long HRESULT;
@@ -319,8 +323,20 @@ public:
         return true;
     }
 };
+struct D3DGAMMARAMP { WORD red[256], green[256], blue[256]; };
+enum { D3DSGR_CALIBRATE = 1 };
 struct Device
 {
+    D3DGAMMARAMP ramp;
+    HRESULT SetGammaRamp(unsigned swapChain, unsigned flags, const D3DGAMMARAMP * value)
+    {
+        ramp = *value;
+        std::ostringstream text;
+        text << "device.SetGammaRamp:" << swapChain << ':' << flags << ':' << value->red[64] << ','
+             << value->green[128] << ',' << value->blue[255];
+        record(text.str());
+        return 0;
+    }
     HRESULT Clear(unsigned, const void *, unsigned flags, unsigned colour, float z, unsigned stencil)
     {
         std::ostringstream text;
@@ -329,13 +345,26 @@ struct Device
         return 0;
     }
 };
+// Public lib/moo RenderContext gamma owner: the render_context.ipp accessors
+// and the patched render_context.cpp setGammaCorrection run unchanged.
 class RenderContext
 {
 public:
+    RenderContext() : device_(NULL), gammaCorrection_(1.f) {}
     const BackBufferDesc & backBufferDesc() const { static BackBufferDesc desc = {1280, 720}; return desc; }
     FullscreenQuad & fsQuad() { static FullscreenQuad quad; return quad; }
     Device * device() { static Device value; return &value; }
+    float gammaCorrection() const;
+    void gammaCorrection(float gammaCorrection);
+    void setGammaCorrection();
+    Device * device_;  // NULL before createDevice.
+private:
+    float gammaCorrection_;
 };
+using std::max;
+using std::min;
+@RC_GAMMA_ACCESSORS@
+@RC_SET_GAMMA@
 RenderContext & rc() { static RenderContext context; return context; }
 
 class RenderTarget
@@ -479,6 +508,7 @@ int setData(PyObject * pObject, float & rFloat, const char * varName = "");
 int setData(PyObject * pObject, double & rDouble, const char * varName = "");
 int setData(PyObject * pObject, BW::string & rString, const char * varName = "");
 PyObject * getData(const bool data);
+PyObject * getData(const float data);
 PyObject * argCountError(const char * fn, int optas, int allas, ...);
 // PY_SCRIPT_CONVERTERS for a ScriptObjectPtr: None is NULL, otherwise the exact type.
 int setData(PyObject * pObject, PyModelPtr & rModel, const char * varName = "")
@@ -647,6 +677,48 @@ PyObject * resetDevice(PyObject *, PyObject *)
     Py_RETURN_NONE;
 }
 
+// createDevice/changeModePriv: attach the device, then run setGammaCorrection
+// as the patched creation (line 1324) and reset paths do.
+PyObject * applyDeviceGamma(PyObject *, PyObject *)
+{
+    BW::Moo::rc().device_ = BW::Moo::rc().device();
+    BW::Moo::rc().setGammaCorrection();
+    Py_RETURN_NONE;
+}
+
+PyObject * detachDevice(PyObject *, PyObject *)
+{
+    BW::Moo::rc().device_ = NULL;
+    Py_RETURN_NONE;
+}
+
+// The device ramp, and the #1513 00b2cd50 ramp for the same gamma: index
+// times the float 1/255, powf to 1/gamma, times 65535, truncated.
+PyObject * gammaRamps(PyObject *, PyObject * args)
+{
+    float gamma;
+    if (!PyArg_ParseTuple(args, "f", &gamma)) return NULL;
+    const BW::Moo::D3DGAMMARAMP & ramp = BW::Moo::rc().device()->ramp;
+    PyObject * actual = PyList_New(0);
+    PyObject * original = PyList_New(0);
+    const float reciprocal = 1.f / gamma;
+    for (int i = 0; i < 256; ++i)
+    {
+        if (ramp.red[i] != ramp.green[i] || ramp.red[i] != ramp.blue[i]) return PyErr_Format(PyExc_AssertionError, "channels");
+        PyObject * value = PyInt_FromLong(ramp.red[i]);
+        PyList_Append(actual, value);
+        Py_DECREF(value);
+        const float scaled = std::pow(float(i) * 0.003921568859368563f, reciprocal) * 65535.f;
+        value = PyInt_FromLong(WORD(int(scaled)));
+        PyList_Append(original, value);
+        Py_DECREF(value);
+    }
+    PyObject * result = Py_BuildValue("(OO)", actual, original);
+    Py_DECREF(actual);
+    Py_DECREF(original);
+    return result;
+}
+
 PyObject * drawEdges(PyObject *, PyObject *) { return PyBool_FromLong(BW::drawStockEdgeDetection()); }
 
 // makeEntity(primary, auxiliaries...): a PyEntity with named embodiments.
@@ -687,6 +759,9 @@ PyMethodDef hostMethods[] = {
     {"drawEdges", drawEdges, METH_NOARGS, NULL},
     {"setSelectFails", setSelectFails, METH_VARARGS, NULL},
     {"resetDevice", resetDevice, METH_NOARGS, NULL},
+    {"applyDeviceGamma", applyDeviceGamma, METH_NOARGS, NULL},
+    {"detachDevice", detachDevice, METH_NOARGS, NULL},
+    {"gammaRamps", gammaRamps, METH_VARARGS, NULL},
     {"makeEntity", makeEntity, METH_VARARGS, NULL},
     {"setEntity", setEntity, METH_VARARGS, NULL},
     {"calls", calls, METH_NOARGS, NULL},

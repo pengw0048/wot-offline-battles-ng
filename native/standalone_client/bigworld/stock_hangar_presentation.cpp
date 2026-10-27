@@ -464,6 +464,41 @@ PY_AUTO_MODULE_FUNCTION( RETOWN, wg_setPyModelTexture,
     ARG( BW::PyModelPtr, ARG( BW::string, ARG( BW::string, END ) ) ), BigWorld )
 
 /**
+ *	#1513 006503c0/006522b0: the primary RenderSystem::SwapChain gamma (+0x1b0,
+ *	default 1.0). Its public owner is Moo::RenderContext::gammaCorrection_,
+ *	which createDevice and every reset apply as the device gamma ramp.
+ */
+float getGammaCorrection()
+{
+    return Moo::rc().gammaCorrection();
+}
+PY_AUTO_MODULE_FUNCTION( RETDATA, getGammaCorrection, END, BigWorld )
+
+void setGammaCorrection( float gamma )
+{
+    Moo::rc().gammaCorrection( gamma );
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, setGammaCorrection, ARG( float, END ), BigWorld )
+
+/**
+ *	#1513 00650140/00652020 read and write ColorGrading +0x1c through the
+ *	pipeline's vtable +0x94 owner, returning 0.0/None when it is absent. This
+ *	client's deferred pipeline has no ColorGrading (wg_color_grading.fx) owner,
+ *	so it takes that absent branch: the argument is still converted, and
+ *	nothing is stored.
+ */
+float getColorGradingStrength()
+{
+    return 0.f;
+}
+PY_AUTO_MODULE_FUNCTION( RETDATA, getColorGradingStrength, END, BigWorld )
+
+void setColorGradingStrength( float )
+{
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, setColorGradingStrength, ARG( float, END ), BigWorld )
+
+/**
  *	#1513 00aa8290: a zero-delta mouse event at the given cursor position,
  *	dispatched through SimpleGUI::handleMouseEvent (01d1fee0 vtable +0x10).
  */
