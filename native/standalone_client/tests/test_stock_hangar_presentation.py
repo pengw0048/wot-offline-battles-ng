@@ -8,13 +8,16 @@ oracle runs the exact #1513 wrappers. Neither proves rendering or Windows input.
 """
 from pathlib import Path
 import importlib.util
+import io
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -166,6 +169,47 @@ class StockHangarPresentationTest(unittest.TestCase):
             result = subprocess.run([str(binary), str(ROOT / 'tests/stock_hangar_presentation_consumer.py'),
                                      str(package)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            print(result.stdout.strip())
+
+    def test_production_material_binding_owns_presentation_parameters(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original shader effects')
+        compiler = shutil.which('c++')
+        if not compiler:
+            self.skipTest('A host C++ compiler is required')
+        from test_stock_effect_dx9 import DEVICE
+        with tempfile.TemporaryDirectory(prefix='hangar-presentation-binding-') as directory:
+            root = Path(directory)
+            (root / 'd3d9.h').write_text(DEVICE)
+            (root / 'd3dx9effect.h').write_text('#include "d3d9.h"\n')
+            sanitizers = [] if os.name == 'nt' else ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+            binary = root / 'probe'
+            compiled = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', *sanitizers,
+                                       '-I' + str(root), '-I' + str(ROOT / 'include'), '-I' + str(ROOT / 'bigworld'),
+                                       str(ROOT / 'tests/stock_hangar_presentation_binding_probe.cpp'),
+                                       str(ROOT / 'bigworld/stock_effect_dx9.cpp'),
+                                       str(ROOT / 'src/stock_effect_binding.cpp'),
+                                       str(ROOT / 'src/stock_effect_reflection.cpp'),
+                                       str(ROOT / 'src/stock_shader_runtime.cpp'),
+                                       str(ROOT / 'src/stock_shader_binary.cpp'), '-o', str(binary)],
+                                      capture_output=True, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            paths = []
+            with zipfile.ZipFile(Path(client) / 'res/packages/shaders.pkg') as package:
+                for name in ('post_processing/background', 'edgeDetect/transfer', 'edgeDetect/z_pass',
+                             'edgeDetect/z_pass_skinned'):
+                    for variant in (10, 11):
+                        member = 'shaders/%s.%d.dx9.fxo' % (name, variant)
+                        with zipfile.ZipFile(io.BytesIO(package.read(member))) as effect:
+                            path = root / ('%s-%d.effect' % (name.replace('/', '-'), variant))
+                            path.write_bytes(effect.read('effect'))
+                            paths.append(str(path))
+            result = subprocess.run([str(binary)] + paths, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.count('binding owns, reset clears'), 4)
+            self.assertEqual(result.stdout.count('successive members reach the binding'), 4)
+            self.assertEqual(result.stdout.count('four colours reach the binding'), 2)
             print(result.stdout.strip())
 
     def test_original_wrappers_match_the_production_contract(self):

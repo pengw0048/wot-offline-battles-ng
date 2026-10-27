@@ -155,17 +155,24 @@ def battle_loading(icon):
 check(host.drawBackground(), True)  # no GUIApp owner yet: a legitimate no-draw
 check(host.calls(), [])
 EDGE_INIT = ['createEffect:shaders/edgeDetect/transfer.fx', 'OverrideBlock:shaders/edgeDetect/z_pass',
-             'effect.SetTexture:g_edgeDetectedMap:NULL', 'createRenderTarget:stock/Edge detect:1280x720:21:10']
+             'createRenderTarget:stock/Edge detect:1280x720:21:10']
+# Every write must reach the material's private binding, never the shared definition.
+BG = 'shaders/post_processing/background.fx'
+BG_BINDING, MAP = BG + '#binding', 'gui/maps/icons/map/screen/05_prohorovka.dds'
 assert host.initialise() and host.initialise()
 check(host.calls(), ['createEffect:shaders/post_processing/background.fx'] + EDGE_INIT)
 view = battle_loading('gui/maps/icons/map/screen/05_prohorovka.dds')
 view._populate()
 check(host.calls(), ['TextureManager.get:gui/maps/icons/map/screen/05_prohorovka.dds:111:Art/File Textures/'])
 check(host.drawBackground(), True)
-check(host.calls(), ['effect.SetTexture:inputTexture:gui/maps/icons/map/screen/05_prohorovka.dds',
-                     'fsQuad.drawChecked:shaders/post_processing/background.fx:1280x720:'
-                     'gui/maps/icons/map/screen/05_prohorovka.dds',
-                     'effect.SetTexture:inputTexture:NULL'])
+check(host.calls(), ['effect.SetTexture:%s:inputTexture:%s' % (BG_BINDING, MAP),
+                     'fsQuad.drawChecked:%s:1280x720:inputTexture=%s' % (BG, MAP),
+                     'effect.SetTexture:%s:inputTexture:NULL' % BG_BINDING])
+# A failed binding selection writes nothing and still leaves the binding clear.
+host.setSelectFails(1)
+check(host.drawBackground(), False)
+check(host.calls(), ['effect.SetTexture:%s:inputTexture:NULL' % BG_BINDING])
+host.setSelectFails(0)
 for playing in (False, True):
     REPLAY[0] = playing
     view.arenaLoadCompleted()
@@ -192,7 +199,7 @@ check(host.calls(), [])
 missing._dispose()
 host.finalise()
 host.finalise()
-check(host.calls(), ['effect.SetTexture:g_edgeDetectedMap:NULL'])  # the target is unbound once
+check(host.calls(), ['effect.SetTexture:%s:inputTexture:NULL' % BG_BINDING])  # binding cleared once
 host.setEffectLoads(0)
 assert host.initialise()
 check(host.calls(), ['createEffect:shaders/post_processing/background.fx',
@@ -391,19 +398,31 @@ check(host.drawEdges(), True)  # no members: nothing is drawn
 check(host.calls(), [])
 
 
+ZPASS = ('shaders/edgeDetect/z_pass.fx#binding', 'shaders/edgeDetect/z_pass_skinned.fx#binding')
+TRANSFER = 'shaders/edgeDetect/transfer.fx'
+TRANSFER_BINDING = TRANSFER + '#binding'
+
+
 def member_calls(mask, depth, occluded, name):
-    single = ['effect.SetVector:g_colorMask:' + mask, 'effect.SetInt:depthFunc:%d' % depth,
-              'effect.SetBool:edgeDetectOccluded:%d' % occluded]
-    return single * 2 + ['embodiment.draw:%s:override' % name]
+    calls = []
+    for owner in ZPASS:
+        calls += ['effect.SetVector:%s:g_colorMask:%s' % (owner, mask),
+                  'effect.SetInt:%s:depthFunc:%d' % (owner, depth),
+                  'effect.SetBool:%s:edgeDetectOccluded:%d' % (owner, occluded)]
+    # The immediate render op begins the override and must see this member's values.
+    return calls + ['embodiment.draw:%s:depthFunc=%d;edgeDetectOccluded=%d;g_colorMask=%s' %
+                    (name, depth, occluded, mask)]
 
 
 def frame(members, colours):
     return (['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
              'context.pushImmediateMode', 'context.pushOverrideBlock'] + members +
             ['context.popOverrideBlock', 'context.popImmediateMode', 'context.end:7', 'context.flush:7',
-             'target.pop:stock/Edge detect', 'effect.SetTexture:g_edgeDetectedMap:stock/Edge detect',
-             'effect.SetVectorArray:g_edgeColors:' + colours,
-             'fsQuad.drawChecked:shaders/edgeDetect/transfer.fx:1280x720:stock/Edge detect'])
+             'target.pop:stock/Edge detect',
+             'effect.SetTexture:%s:g_edgeDetectedMap:stock/Edge detect' % TRANSFER_BINDING,
+             'effect.SetVectorArray:%s:g_edgeColors:%s' % (TRANSFER_BINDING, colours),
+             'fsQuad.drawChecked:%s:1280x720:g_edgeColors=%s;g_edgeDetectedMap=stock/Edge detect' %
+             (TRANSFER, colours)])
 
 
 # EdgeDetectColorController.create subscribes; onAccountShowGUI sets Hangar colours.
@@ -502,12 +521,34 @@ check(host.calls(), frame(member_calls('0,0,1,0', 0, 0, 'player'), '|'.join(['0.
 # Fewer than four: the missing transfer colours are zero.
 BigWorld.wgSetEdgeDetectColors([(1, 0, 1, 1)])
 check(host.drawEdges(), True)
-check(host.calls()[-2], 'effect.SetVectorArray:g_edgeColors:1,0,1,1|0,0,0,0|0,0,0,0|0,0,0,0')
+check(host.calls()[-2], 'effect.SetVectorArray:%s:g_edgeColors:1,0,1,1|0,0,0,0|0,0,0,0|0,0,0,0' %
+      TRANSFER_BINDING)
 
-# Teardown drops members; a drawer without its target ignores additions.
+# A failed binding selection skips the member and reports the pass as failed.
+host.setSelectFails(1)
+check(host.drawEdges(), False)
+check(host.calls(), ['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+                     'context.pushImmediateMode', 'context.pushOverrideBlock', 'context.popOverrideBlock',
+                     'context.popImmediateMode', 'context.end:7', 'context.flush:7',
+                     'target.pop:stock/Edge detect'])
+host.setSelectFails(0)
+# A device reset releases the target from the transfer binding before retiring it.
+host.resetDevice()
+check(host.calls(), ['effect.SetTexture:%s:g_edgeDetectedMap:NULL' % TRANSFER_BINDING,
+                     'effect.SetTexture:%s:g_edgeDetectedMap:NULL' % TRANSFER_BINDING,
+                     'createRenderTarget:stock/Edge detect:1280x720:21:10'])
+check(host.drawEdges(), True)
+check(host.calls()[-1], 'fsQuad.drawChecked:%s:1280x720:g_edgeColors=1,0,1,1|0,0,0,0|0,0,0,0|0,0,0,0;'
+      'g_edgeDetectedMap=stock/Edge detect' % TRANSFER)
+
+# Teardown releases both bindings' textures and drops members; a drawer
+# without its target ignores additions.
 host.finalise()
+# Unmanaged then managed release; this background material never selected a binding.
+check(host.calls(), ['effect.SetTexture:%s:g_edgeDetectedMap:NULL' % TRANSFER_BINDING] * 2)
 host.finalise()
 check(host.drawEdges(), True)
+check(host.calls(), [])
 host.setTargetCreates(0)
 assert host.initialise()
 host.calls()

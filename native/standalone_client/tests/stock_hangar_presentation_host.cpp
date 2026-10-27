@@ -137,38 +137,42 @@ public:
 
 void setStockTPSDrawEnabled(bool enabled) { record(std::string("tPS.drawEnabled:") + (enabled ? "1" : "0")); }
 
+// One ARIE effect instance: the shared definition of a ManagedEffect, or one
+// material's private binding (patch_stock_effect_owners SELECT_BINDING).
 struct ID3DXEffect
 {
-    std::string bound;
+    std::string owner;
+    std::map<std::string, std::string> values;
+    HRESULT set(const char * kind, const char * name, const std::string & value)
+    {
+        if (value.empty()) values.erase(name);
+        else values[name] = value;
+        record(std::string("effect.") + kind + ":" + owner + ":" + name + ":" + (value.empty() ? "NULL" : value));
+        return 0;
+    }
+    std::string summary() const
+    {
+        std::string result;
+        for (std::map<std::string, std::string>::const_iterator it = values.begin(); it != values.end(); ++it)
+            result += (result.empty() ? "" : ";") + it->first + "=" + it->second;
+        return result;
+    }
     HRESULT SetTexture(const char * name, void * texture)
     {
-        bound = texture ? static_cast<const char *>(texture) : "";
-        record(std::string("effect.SetTexture:") + name + ":" + (texture ? bound : "NULL"));
-        return 0;
+        return set("SetTexture", name, texture ? static_cast<const char *>(texture) : "");
     }
-    HRESULT SetVector(const char * name, const Vector4 * value)
-    {
-        record(std::string("effect.SetVector:") + name + ":" + text(*value));
-        return 0;
-    }
-    HRESULT SetInt(const char * name, int value)
-    {
-        record(std::string("effect.SetInt:") + name + ":" + std::to_string(value));
-        return 0;
-    }
-    HRESULT SetBool(const char * name, int value)
-    {
-        record(std::string("effect.SetBool:") + name + ":" + std::to_string(value));
-        return 0;
-    }
+    HRESULT SetVector(const char * name, const Vector4 * value) { return set("SetVector", name, text(*value)); }
+    HRESULT SetInt(const char * name, int value) { return set("SetInt", name, std::to_string(value)); }
+    HRESULT SetBool(const char * name, int value) { return set("SetBool", name, std::to_string(value)); }
     HRESULT SetVectorArray(const char * name, const Vector4 * values, unsigned count)
     {
         std::string list;
         for (unsigned i = 0; i < count; ++i) list += (i ? "|" : "") + text(values[i]);
-        record(std::string("effect.SetVectorArray:") + name + ":" + list);
-        return 0;
+        return set("SetVectorArray", name, list);
     }
 };
+// Every fixture effect is an ARIE stock effect (stock_effect_adapter.hpp).
+namespace wot { inline bool is_stock_effect(ID3DXEffect * effect) { return effect != NULL; } }
 
 namespace Moo {
 class BaseTexture
@@ -207,13 +211,16 @@ public:
     virtual void deleteManagedObjects() {}
 };
 
+// pEffect() is the selected binding between select and end, else the definition.
 class ManagedEffect
 {
 public:
-    ID3DXEffect * pEffect() { return &effect_; }
-private:
-    ID3DXEffect effect_;
+    explicit ManagedEffect(const std::string & name) : active_(NULL) { definition_.owner = name; }
+    ID3DXEffect * pEffect() { return active_ ? active_ : &definition_; }
+    ID3DXEffect definition_;
+    ID3DXEffect * active_;
 };
+bool selectFails = false;
 
 class EffectProperty
 {
@@ -235,19 +242,44 @@ typedef Ptr<EffectProperty> EffectPropertyPtr;
 class EffectMaterial
 {
 public:
-    explicit EffectMaterial(const std::string & name) : name_(name) {}
+    // Each Properties lazily creates and keeps its own private binding.
+    class Properties
+    {
+    public:
+        Properties() : binding_(NULL) {}
+        bool select(ManagedEffect & effect)
+        {
+            if (selectFails) return false;
+            if (!binding_)
+            {
+                binding_ = new ID3DXEffect;
+                binding_->owner = effect.definition_.owner + "#binding";
+            }
+            effect.active_ = binding_;
+            return true;
+        }
+        ID3DXEffect * existingStockBinding() const { return binding_; }
+    private:
+        ID3DXEffect * binding_;
+    };
+    explicit EffectMaterial(const std::string & name) : name_(name), effect_(name) {}
     const Ptr<ManagedEffect> pEffect() { return Ptr<ManagedEffect>(&effect_); }
+    Properties & properties() { return properties_; }
+    // begin() runs setProperties, which selects the binding; end() clears it.
+    ID3DXEffect * begin() { return properties_.select(effect_) ? effect_.pEffect() : NULL; }
+    void end() { effect_.active_ = NULL; }
     EffectPropertyPtr getProperty(const StringRef & name)
     {
-        std::map<std::string, EffectProperty *>::iterator found = properties_.find(name.str());
-        return EffectPropertyPtr(found == properties_.end() ? NULL : found->second);
+        std::map<std::string, EffectProperty *>::iterator found = properties_map_.find(name.str());
+        return EffectPropertyPtr(found == properties_map_.end() ? NULL : found->second);
     }
-    void addProperty(const std::string & name) { properties_[name] = new EffectProperty(name_ + "." + name); }
+    void addProperty(const std::string & name) { properties_map_[name] = new EffectProperty(name_ + "." + name); }
     const std::string & name() const { return name_; }
 private:
     std::string name_;
     ManagedEffect effect_;
-    std::map<std::string, EffectProperty *> properties_;
+    Properties properties_;
+    std::map<std::string, EffectProperty *> properties_map_;
 };
 typedef Ptr<EffectMaterial> EffectMaterialPtr;
 
@@ -278,10 +310,12 @@ class FullscreenQuad
 public:
     bool drawChecked(EffectMaterial & material, uint width, uint height)
     {
+        ID3DXEffect * drawn = material.begin();
+        if (!drawn) return false;
         std::ostringstream text;
-        text << "fsQuad.drawChecked:" << material.name() << ':' << width << 'x' << height << ':'
-             << material.pEffect()->pEffect()->bound;
+        text << "fsQuad.drawChecked:" << material.name() << ':' << width << 'x' << height << ':' << drawn->summary();
         record(text.str());
+        material.end();
         return true;
     }
 };
@@ -365,9 +399,14 @@ class IEntityEmbodiment
 {
 public:
     explicit IEntityEmbodiment(const std::string & name) : name_(name) {}
+    // An immediate-mode render op through the rigid override material.
     void draw(Moo::DrawContext & context)
     {
-        record("embodiment.draw:" + name_ + (context.override_ ? ":override" : ":plain"));
+        if (!context.override_) { record("embodiment.draw:" + name_ + ":plain"); return; }
+        Moo::EffectMaterial * material = context.override_->stockMaterial(false)->baseMaterial().get();
+        ID3DXEffect * drawn = material->begin();
+        record("embodiment.draw:" + name_ + ":" + (drawn ? drawn->summary() : "unselected"));
+        material->end();
     }
 private:
     std::string name_;
@@ -589,6 +628,25 @@ PyObject * setTargetCreates(PyObject *, PyObject * args)
     Py_RETURN_NONE;
 }
 
+PyObject * setSelectFails(PyObject *, PyObject * args)
+{
+    int fails;
+    if (!PyArg_ParseTuple(args, "i", &fails)) return NULL;
+    BW::Moo::selectFails = fails != 0;
+    Py_RETURN_NONE;
+}
+
+// A lost device: unmanaged resources are released, then recreated.
+PyObject * resetDevice(PyObject *, PyObject *)
+{
+    if (BW::edgeDetector)
+    {
+        BW::edgeDetector->deleteUnmanagedObjects();
+        BW::edgeDetector->createUnmanagedObjects();
+    }
+    Py_RETURN_NONE;
+}
+
 PyObject * drawEdges(PyObject *, PyObject *) { return PyBool_FromLong(BW::drawStockEdgeDetection()); }
 
 // makeEntity(primary, auxiliaries...): a PyEntity with named embodiments.
@@ -627,6 +685,8 @@ PyObject * setEntity(PyObject *, PyObject * args)
 PyMethodDef hostMethods[] = {
     {"setTargetCreates", setTargetCreates, METH_VARARGS, NULL},
     {"drawEdges", drawEdges, METH_NOARGS, NULL},
+    {"setSelectFails", setSelectFails, METH_VARARGS, NULL},
+    {"resetDevice", resetDevice, METH_NOARGS, NULL},
     {"makeEntity", makeEntity, METH_VARARGS, NULL},
     {"setEntity", setEntity, METH_VARARGS, NULL},
     {"calls", calls, METH_NOARGS, NULL},

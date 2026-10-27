@@ -1,6 +1,7 @@
 #ifndef WOT_STOCK_HANGAR_PRESENTATION_PORTABLE
 #include "pch.hpp"
 #include "stock_hangar_presentation.hpp"
+#include "stock_effect_adapter.hpp"
 #include "stock_tps_scene.hpp"
 #include "ashes/simple_gui.hpp"
 #include "entity.hpp"
@@ -29,6 +30,27 @@ BW_BEGIN_NAMESPACE
 int StockHangarPresentation_token = 1;
 namespace
 {
+// The material's private ARIE binding is the owner its own draw consumes; a
+// write before selecting it lands in the shared definition instead.
+ID3DXEffect * selectBinding( const Moo::EffectMaterialPtr & material )
+{
+    if (!material || !material->pEffect() ||
+        !material->properties().select( *material->pEffect() )) return NULL;
+    return material->pEffect()->pEffect();
+}
+
+// end() returns pEffect() to the definition; the existing Properties binding
+// still holds the manual texture until it is cleared here.
+void clearTexture( const Moo::EffectMaterialPtr & material, const char * name )
+{
+    if (!material || !material->pEffect()) return;
+    ID3DXEffect * binding = material->properties().existingStockBinding();
+    if (binding) binding->SetTexture( name, NULL );
+    ID3DXEffect * current = material->pEffect()->pEffect();
+    if (current && current != binding && !wot::is_stock_effect( current ))
+        current->SetTexture( name, NULL );
+}
+
 // 00599b80 WGBackgroundImage: texture +4, background.fx +8, enabled +0xc.
 // The state is static in the original and outlives GUIApp's GPU resources.
 bool backgroundEnabled = false;
@@ -53,20 +75,24 @@ public:
         if (!Moo::createEffect( material, "shaders/post_processing/background.fx" ))
             ERROR_MSG( "WGBackgroundImage: background effect could not be loaded\n" );
     }
-    virtual void deleteManagedObjects() { material = NULL; }
+    virtual void deleteManagedObjects()
+    {
+        clearTexture( material, "inputTexture" );
+        material = NULL;
+    }
     bool draw()
     {
         // 006f8e90: disabled, no texture or no effect is a legitimate no-draw.
         if (closed || !backgroundEnabled || !backgroundTexture ||
             !backgroundTexture->pTexture() || !material || !material->pEffect())
             return true;
-        ID3DXEffect * effect = material->pEffect()->pEffect();
-        if (!effect || FAILED( effect->SetTexture( "inputTexture", backgroundTexture->pTexture() ) ))
-            return false;
+        ID3DXEffect * effect = selectBinding( material );
         const auto & desc = Moo::rc().backBufferDesc();
-        const bool drawn = Moo::rc().fsQuad().drawChecked( *material, desc.Width, desc.Height );
-        // Do not let the effect retain the texture after BattleLoading replaces it.
-        effect->SetTexture( "inputTexture", NULL );
+        const bool drawn = effect &&
+            SUCCEEDED( effect->SetTexture( "inputTexture", backgroundTexture->pTexture() ) ) &&
+            Moo::rc().fsQuad().drawChecked( *material, desc.Width, desc.Height );
+        // Do not let the binding retain the texture after BattleLoading replaces it.
+        clearTexture( material, "inputTexture" );
         return drawn;
     }
 };
@@ -132,6 +158,7 @@ public:
     }
     virtual void deleteManagedObjects()
     {
+        clearTexture( transfer, "g_edgeDetectedMap" );
         transfer = NULL;
         zPass.reset();
     }
@@ -148,9 +175,8 @@ public:
     }
     virtual void deleteUnmanagedObjects()
     {
-        // ID3DXEffect::SetTexture retains the default-pool target.
-        if (transfer && transfer->pEffect() && transfer->pEffect()->pEffect())
-            transfer->pEffect()->pEffect()->SetTexture( "g_edgeDetectedMap", NULL );
+        // SetTexture retains the default-pool target; release it before the target.
+        clearTexture( transfer, "g_edgeDetectedMap" );
         target = NULL;
     }
     virtual bool recreateForD3DExDevice() const { return true; }
@@ -222,18 +248,12 @@ public:
             Moo::ComplexEffectMaterial * complex = zPass->stockMaterial( index != 0 );
             Moo::EffectMaterialPtr material;
             if (complex) material = complex->baseMaterial();
-            ID3DXEffect * effect = NULL;
-            if (material && material->pEffect()) effect = material->pEffect()->pEffect();
+            // None of these is artistEditable, so begin() does not reapply
+            // them; they must be written into the binding the draw selects.
+            ID3DXEffect * effect = selectBinding( material );
             if (!effect || FAILED( effect->SetVector( "g_colorMask", &mask ) ) ||
                 FAILED( effect->SetInt( "depthFunc", depthFunc ) ) ||
                 FAILED( effect->SetBool( "edgeDetectOccluded", occluded ) )) return false;
-            // A material property, when exposed, is applied again at begin().
-            Moo::EffectPropertyPtr value = material->getProperty( "g_colorMask" );
-            if (value) value->be( mask );
-            value = material->getProperty( "depthFunc" );
-            if (value) value->be( depthFunc );
-            value = material->getProperty( "edgeDetectOccluded" );
-            if (value) value->be( occluded );
         }
         return true;
     }
@@ -266,7 +286,7 @@ public:
         Vector4 palette[4] = { Vector4( 0.f, 0.f, 0.f, 0.f ), Vector4( 0.f, 0.f, 0.f, 0.f ),
             Vector4( 0.f, 0.f, 0.f, 0.f ), Vector4( 0.f, 0.f, 0.f, 0.f ) };
         std::copy( colors.begin(), colors.begin() + std::min<size_t>( colors.size(), 4 ), palette );
-        ID3DXEffect * effect = transfer->pEffect()->pEffect();
+        ID3DXEffect * effect = selectBinding( transfer );
         if (!effect || FAILED( effect->SetTexture( "g_edgeDetectedMap", target->pTexture() ) ) ||
             FAILED( effect->SetVectorArray( "g_edgeColors",
                 reinterpret_cast<const D3DXVECTOR4 *>( palette ), 4 ) )) return false;
