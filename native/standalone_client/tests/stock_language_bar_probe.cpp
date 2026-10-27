@@ -168,6 +168,14 @@ struct Instance
         Call( target, "addEventListener", 2, args );
     }
 
+    // The centre of a LangBar tab, in Stage coordinates.
+    void Centre( const char * name, float & x, float & y )
+    {
+        AS3::Value tab = Get( main, name );
+        x = float( Number( Get( tab, "x" ) ) + Number( Get( tab, "width" ) ) / 2 );
+        y = float( Number( Get( tab, "y" ) ) + Number( Get( tab, "height" ) ) / 2 );
+    }
+
     void Click( float x, float y )
     {
         movie->NotifyMouseState( x, y, 0 );
@@ -301,9 +309,8 @@ bool initAgain( Instance & a )
 // its ancestors before Stage dispatch, as every lobby click does.
 void activeTabClick( Instance & a, CountingLog & log, size_t languages )
 {
-    AS3::Value tab = a.Get( a.main, "InputLangTab_mc" );
-    const float x = float( a.Number( a.Get( tab, "x" ) ) + a.Number( a.Get( tab, "width" ) ) / 2 );
-    const float y = float( a.Number( a.Get( tab, "y" ) ) + a.Number( a.Get( tab, "height" ) ) / 2 );
+    float x = 0, y = 0;
+    a.Centre( "InputLangTab_mc", x, y );
     Ptr<Counter> later = *new Counter;
     a.Listen( *later, a.stage, "mouseDown" );
     const unsigned before = log.nullReferences;
@@ -392,9 +399,11 @@ int main( int argc, char ** argv )
         {
             // No SetFocusEvent yet, so the owner has no active movie. A click on the
             // tab moves mouse focus through MovieImpl::QueueSetFocusTo and HandleFocus.
-            std::printf( "focus before activation: begin\n" );
+            float x = 0, y = 0;
+            a.Centre( "InputLangTab_mc", x, y );
+            std::printf( "focus before activation: begin at=%.1f,%.1f\n", x, y );
             std::fflush( stdout );
-            a.Click( 5.0f, 5.0f );
+            a.Click( x, y );
             check( "focus-before-activation", true, "returned exception=" + a.Exception() );
             a.Release();
             return g_failures;
