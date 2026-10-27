@@ -1,0 +1,283 @@
+"""#1513 Scaleform localization: WGGFxStringTranslator and WG.getFormattedLocalizedString.
+
+The patch tests run the SDK and engine patchers over the pinned sources in build
+order. The host runs the production owner over the public Script/FxDelegate text
+and the patched SDK 4.2.22 Translator, driven by the original helpers.i18n and
+gettext PYC with the original MO files. Neither proves GFx text rendering.
+"""
+from pathlib import Path
+import importlib.util
+import os
+import shlex
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_stock_scaleform_scene import ROOT, REVISION, SDK_FILES, load_patch
+from stock_battle_gui_support import client_executable
+
+ENGINE_FILES = ('CMakeLists.txt', 'build/cmake/BWConfiguration_client.cmake', 'client/CMakeLists.txt',
+                'lib/scaleform/CMakeLists.txt', 'lib/scaleform/config.hpp', 'lib/scaleform/ime.cpp',
+                'lib/scaleform/ime.hpp', 'lib/scaleform/loader.cpp', 'lib/scaleform/log.cpp',
+                'lib/scaleform/manager.cpp', 'lib/scaleform/manager.hpp', 'lib/scaleform/py_movie_view.cpp',
+                'lib/scaleform/py_movie_view.hpp')
+PUBLIC_FILES = ('lib/pyscript/script.cpp', 'lib/script/init_time_job.hpp', 'lib/script/init_time_job.cpp',
+                'lib/cstdmf/string_utils.cpp', 'lib/scaleform/fx_game_delegate.hpp',
+                'lib/scaleform/fx_game_delegate.cpp')
+SEAM_FILES = ('lib/scaleform/manager.cpp', 'lib/scaleform/py_movie_view.cpp')
+LOADER = 'Src/GFx/GFx_Loader.cpp'
+HOST_SDK_FILES = ('Src/GFx/GFx_Loader.h', 'Src/Kernel/SF_Std.cpp', 'Src/Kernel/SF_UTF8Util.cpp',
+                  'Src/Kernel/SF_WString.h', 'Src/Kernel/SF_WString.cpp', 'Src/GFx/GFx_TextField.cpp')
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'bigworld' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def pinned_sdk(test, names):
+    checkout = Path(os.environ.get('WOT_SCALEFORM_SDK_GIT',
+                                   '/Users/peng/.cache/wot-independent-client/scaleform-sdk-4.2'))
+    try:
+        return {name: subprocess.run(['git', '-C', str(checkout), 'show', REVISION + ':' + name],
+                                     check=True, capture_output=True).stdout for name in names}
+    except (OSError, subprocess.CalledProcessError):
+        test.skipTest('Pinned Scaleform SDK checkout unavailable')
+
+
+def pinned_engine(test, names):
+    archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        test.skipTest('Pinned public engine source archive required')
+    files = {}
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            for name in names:
+                if member.name.endswith('/programming/bigworld/' + name):
+                    files[name] = tar.extractfile(member).read()
+            if len(files) == len(names):
+                break
+    test.assertEqual(set(files), set(names))
+    return files
+
+
+def write(root, files):
+    for name, data in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
+
+
+def snapshot(root, names):
+    return {name: (root / name).read_bytes() for name in names}
+
+
+def text(data):
+    return data.decode('latin-1').replace('\r\n', '\n')
+
+
+def between(source, begin, end, include_end=True):
+    start = source.index(begin)
+    stop = source.index(end, start)
+    return source[start:stop + (len(end) if include_end else 0)]
+
+
+def prepared_engine(test, root):
+    """Engine and SDK roots after patch_scaleform_sdk.py, as the build leaves them."""
+    write(root / 'engine', pinned_engine(test, ENGINE_FILES))
+    write(root / 'sdk', pinned_sdk(test, SDK_FILES))
+    load_patch().patch_engine(root / 'engine', root / 'sdk')
+    return root / 'engine'
+
+
+class ScaleformLocalizationPatchTest(unittest.TestCase):
+    def test_sdk_definitions_are_idempotent_and_fail_closed(self):
+        patch = load_patch()
+        with tempfile.TemporaryDirectory(prefix='scaleform-translator-patch-') as directory:
+            root = Path(directory)
+            files = pinned_sdk(self, SDK_FILES)
+            self.assertNotIn(b'TranslateInfo::SetResult', files[LOADER])
+            self.assertNotIn(b'Translator::OnWordWrapping', files[LOADER])
+            write(root, files)
+            patch.patch_sdk(root)
+            final = snapshot(root, SDK_FILES)
+            loader = final[LOADER].decode()
+            self.assertEqual(loader.count(patch.TRANSLATOR_DEFINITIONS), 1)
+            self.assertEqual(loader.count('void Translator::TranslateInfo::SetResult('), 2)
+            self.assertEqual(loader.count('bool Translator::OnWordWrapping('), 1)
+            patch.patch_sdk(root)
+            self.assertEqual(final, snapshot(root, SDK_FILES))
+            changed = (
+                loader.replace(patch.TRANSLATOR_DEFINITIONS, patch.TRANSLATOR_DEFINITIONS * 2),
+                loader.replace('    pResult->Resize(resultLen + 1);\n', '    pResult->Resize(resultLen);\n'),
+                loader.replace('// ***** URLBuilder implementation\n', '// ***** URLBuilder\n'),
+                loader.replace(patch.TRANSLATOR_DEFINITIONS,
+                               patch.TRANSLATOR_DEFINITIONS[:patch.TRANSLATOR_DEFINITIONS.index('// 00b51fd0')]),
+            )
+            for index, data in enumerate(changed):
+                write(root, final)
+                (root / LOADER).write_text(data)
+                before = snapshot(root, SDK_FILES)
+                with self.assertRaises(ValueError, msg=index):
+                    patch.patch_sdk(root)
+                self.assertEqual(before, snapshot(root, SDK_FILES), index)
+
+    def test_engine_seams_follow_the_sdk_patch_in_either_order(self):
+        localization = load('patch_stock_scaleform_localization')
+        glyph = load('patch_stock_glyph_cache')
+        with tempfile.TemporaryDirectory(prefix='scaleform-localization-engine-') as directory:
+            engine = prepared_engine(self, Path(directory))
+            prepared = snapshot(engine, ENGINE_FILES)
+            localization.patch(engine)
+            glyph.patch(engine)
+            final = snapshot(engine, ENGINE_FILES)
+            self.assertEqual((engine / 'lib/stock_scaleform_localization.hpp').read_bytes(),
+                             (ROOT / 'bigworld/stock_scaleform_localization.hpp').read_bytes())
+            write(engine, prepared)
+            glyph.patch(engine)
+            localization.patch(engine)
+            localization.patch(engine)
+            self.assertEqual(final, snapshot(engine, ENGINE_FILES))
+        manager = final['lib/scaleform/manager.cpp'].decode()
+        view = final['lib/scaleform/py_movie_view.cpp'].decode()
+        self.assertIn('\t\tpLoader_->SetFontLib(pFontLib_);\n\t\tinstallStockTranslator( *pLoader_ );\n'
+                      '\t\tpTexMgr_ =', manager)
+        self.assertIn('\t\tgameDelegate_ =  *new FxDelegate;\n\t\tregisterStockLocalization( *gameDelegate_ );\n'
+                      '\t\tpMovieView_->SetExternalInterface(', view)
+        # Teardown still clears every handler before dropping the delegate.
+        self.assertIn('\t\tgameDelegate_->ClearAll();\n\t\tgameDelegate_ = NULL;\n', view)
+        for name in SEAM_FILES:
+            removed = set(prepared[name].decode().splitlines()) - set(final[name].decode().splitlines())
+            self.assertEqual(removed, set(), name)
+
+    def test_engine_patch_rejects_partial_duplicate_or_changed_state_without_writing(self):
+        localization = load('patch_stock_scaleform_localization')
+        with tempfile.TemporaryDirectory(prefix='scaleform-localization-reject-') as directory:
+            engine = prepared_engine(self, Path(directory))
+            pristine = {name: (engine / name).read_text() for name in SEAM_FILES}
+            localization.patch(engine)
+            patched = {name: (engine / name).read_text() for name in SEAM_FILES}
+            mutations = {}
+            for name, edits in localization.FILES:
+                for index, (before, after) in enumerate(edits):
+                    label = '%s edit %d ' % (name, index)
+                    mutations[label + 'reverted'] = (name, patched[name].replace(after, before))
+                    mutations[label + 'applied alone'] = (name, pristine[name].replace(before, after))
+                    mutations[label + 'duplicated'] = (name, patched[name] + after)
+                    mutations[label + 'anchor removed'] = (name, pristine[name].replace(before, ''))
+            mutations['translator moved'] = ('lib/scaleform/manager.cpp', patched['lib/scaleform/manager.cpp'].replace(
+                '\t\tinstallStockTranslator( *pLoader_ );\n', '').replace(
+                '\t\tpTexMgr_ =', '\t\tinstallStockTranslator( *pLoader_ );\n\t\tpTexMgr_ ='))
+            mutations['registration in manager'] = ('lib/scaleform/manager.cpp',
+                                                    patched['lib/scaleform/manager.cpp'] +
+                                                    '// registerStockLocalization\n')
+            for label, (name, data) in mutations.items():
+                for other in SEAM_FILES:
+                    (engine / other).write_text(pristine[other] if other != name else data)
+                before = {other: (engine / other).read_text() for other in SEAM_FILES}
+                with self.assertRaises(ValueError, msg=label):
+                    localization.patch(engine)
+                self.assertEqual(before, {other: (engine / other).read_text() for other in SEAM_FILES}, label)
+            # One file final and the other pristine completes to the same result.
+            (engine / SEAM_FILES[0]).write_text(patched[SEAM_FILES[0]])
+            (engine / SEAM_FILES[1]).write_text(pristine[SEAM_FILES[1]])
+            localization.patch(engine)
+            self.assertEqual(patched, {name: (engine / name).read_text() for name in SEAM_FILES})
+
+
+def generated_host(sdk, public, set_result):
+    loader_h, std = text(sdk['Src/GFx/GFx_Loader.h']), text(sdk['Src/Kernel/SF_Std.cpp'])
+    wstring_h, wstring_cpp = text(sdk['Src/Kernel/SF_WString.h']), text(sdk['Src/Kernel/SF_WString.cpp'])
+    utf8, field = text(sdk['Src/Kernel/SF_UTF8Util.cpp']), text(sdk['Src/GFx/GFx_TextField.cpp'])
+    script, jobs = text(public['lib/pyscript/script.cpp']), text(public['lib/script/init_time_job.cpp'])
+    delegate_h = text(public['lib/scaleform/fx_game_delegate.hpp'])
+    delegate_cpp = text(public['lib/scaleform/fx_game_delegate.cpp'])
+    production = (ROOT / 'bigworld/stock_scaleform_localization.cpp').read_text()
+    replacements = {
+        '@SDK_STD@': between(std, 'UPInt   SF_CDECL SFwcslen(', '\n}\n') +
+        between(std, 'wchar_t* SF_CDECL SFwcsncpy(', '\n}\n'),
+        '@UTF8@': between(utf8, 'SPInt     SF_STDCALL GetLength(', '#ifdef UTF8_UNIT_TEST', False),
+        '@WSTRING_CLASS@': between(wstring_h, 'class WStringBuffer\n{', '\n};\n'),
+        '@WSTRING_BODIES@': between(wstring_cpp, 'WStringBuffer::~WStringBuffer()', '\n}\n') +
+        between(wstring_cpp, 'bool     WStringBuffer::Resize(UPInt size)', '\n}\n'),
+        '@TRANSLATOR_CLASS@': between(loader_h, 'class Translator : public State\n{', '\n};\n'),
+        '@SET_RESULT@': set_result,
+        '@TEXT_FIELD_INFO@': between(field, 'class TranslateInfo : public Translator::TranslateInfo',
+                                     '            } translateInfo(', False) + '            };\n',
+        '@FX_DELEGATE_CLASSES@': between(delegate_h, 'class FxDelegateHandler : public RefCountBase',
+                                         '\tFallbackDefn    Fallback;\n};\n'),
+        '@FX_DELEGATE_BODIES@': between(delegate_cpp, 'class AddCallbackVisitor',
+                                        'void FxDelegate::UnregisterHandler', False) +
+        between(delegate_cpp, 'void FxDelegate::Callback(', '\n}\n'),
+        '@FINI_JOB_CLASS@': between(text(public['lib/script/init_time_job.hpp']), 'class FiniTimeJob\n{', '\n};\n'),
+        '@FINI_JOB_BODIES@': between(jobs, 'typedef BW::vector< FiniTimeJob * >', '\n} // namespace Script', False),
+        '@SCRIPT_BODIES@': between(script, 'bool Script::isFinalised()', '\n}\n') +
+        between(script, 'PyObject * Script::ask( PyObject * pFunction,', '\n}\n') +
+        between(script, 'PyObject * Script::getData( const BW::string & data )', '\n}\n') +
+        between(script, 'PyObject * Script::getData( const BW::wstring & data )', '\n}\n'),
+        # The _WIN32 conversion (the first definition), over a MultiByteToWideChar stand-in.
+        '@UTF8TOW@': between(text(public['lib/cstdmf/string_utils.cpp']),
+                             'bool bw_utf8tow( const char * src, BW::wstring& output )', '\n}\n'),
+        '@PRODUCTION@': ''.join(line for line in production.splitlines(True) if not line.startswith('#include')),
+    }
+    host = (ROOT / 'tests/stock_scaleform_localization_host.cpp').read_text()
+    for key, value in replacements.items():
+        assert host.count(key) == 1, key
+        host = host.replace(key, value)
+    return host
+
+
+class ScaleformLocalizationOwnerTest(unittest.TestCase):
+    def test_original_i18n_drives_the_production_owner(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original PYC and MO files')
+        python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
+        config = python.with_name('python2.7-config')
+        if not config.exists():
+            self.skipTest('Pinned CPython 2.7 development files unavailable')
+        patch = load_patch()
+        sdk = pinned_sdk(self, HOST_SDK_FILES)
+        public = pinned_engine(self, PUBLIC_FILES)
+        set_result = between(patch.TRANSLATOR_DEFINITIONS, '// 00b51f70', '// 00b52030', False)
+        with tempfile.TemporaryDirectory(prefix='scaleform-localization-host-') as directory:
+            root = Path(directory)
+            (root / 'host.cpp').write_text(generated_host(sdk, public, set_result))
+            flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
+                     if flag != '-DNDEBUG']
+            libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
+            # python2.7-config adds -Wall; the pinned SDK text keeps unused members.
+            subprocess.run(['c++', '-std=c++14', '-UNDEBUG', '-Werror', str(root / 'host.cpp'), *flags,
+                            '-Wno-deprecated-register', '-Wno-writable-strings', '-Wno-unused-function',
+                            '-Wno-unused-variable', '-Wno-unused-private-field', *libs, '-o', str(root / 'host')],
+                           check=True)
+            result = subprocess.run([str(root / 'host'), str(ROOT / 'tests/stock_scaleform_localization_consumer.py'),
+                                     client], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.endswith('localization owner: pass\n'), result.stdout)
+
+
+class ScaleformLocalizationOriginalTest(unittest.TestCase):
+    def test_original_owner_bodies(self):
+        exe = client_executable(self)
+        # WGGFxStringTranslator vtable 014bf270: dtor, GetCaps, Translate, OnWordWrapping.
+        self.assertEqual([exe.word(0x14bf270 + 4 * i) for i in range(4)],
+                         [0x6f4ff0, 0x9c0050, 0x6f5250, 0xb52030])
+        self.assertEqual(exe.code(0x9c0050, 6), bytes.fromhex('b801000000c3'))   # Cap_ReceiveHtml
+        # 00621af0: the new translator becomes loader state 1 (SetState through vtable +8).
+        self.assertEqual(exe.code(0x621af0, 5)[0], 0xe8)
+        self.assertEqual(exe.code(0x621b06, 3), bytes.fromhex('56' '6a01'))
+        # 00aa4cc5: each PyMovieView constructs WGExtensions (00ab3400).
+        call = exe.code(0xaa4cc5, 5)
+        self.assertEqual(0xaa4cc5 + 5 + int.from_bytes(call[1:], 'little', signed=True), 0xab3400)
+        # 00ab3752: Accept registers the formatted string callback 00ab37c0.
+        self.assertEqual(exe.code(0xab3752, 5), b'\x68' + (0x150c0dc).to_bytes(4, 'little'))
+        self.assertEqual(exe.cstr(0x150c0dc), 'WG.getFormattedLocalizedString')
+        self.assertEqual(exe.code(0xab376b, 5), b'\x68' + (0xab37c0).to_bytes(4, 'little'))
+
+if __name__ == '__main__':
+    unittest.main()

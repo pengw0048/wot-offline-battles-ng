@@ -88,6 +88,80 @@ def sdk_edits(sdk_root, edit):
     class_alias_edits(sdk_root, edit)
     amf3_edits(sdk_root, edit)
     text_selection_edits(sdk_root, edit)
+    translator_edits(sdk_root, edit)
+
+
+# GFx_Loader.h declares Translator::TranslateInfo::SetResult and
+# Translator::OnWordWrapping, but the pinned 4.2.22 source defines neither;
+# #1513's WGGFxStringTranslator links the 4.6.34 bodies (00b51f70, 00b51fd0,
+# 00b52030).
+TRANSLATOR_DEFINITIONS = (
+    '// ***** Translator implementation\n\n'
+    '// 00b51f70: copy the wide result and mark the text translated.\n'
+    'void Translator::TranslateInfo::SetResult(const wchar_t* presultText, UPInt resultLen)\n'
+    '{\n'
+    '    if (!presultText)\n'
+    '        return;\n'
+    '    if (resultLen == SF_MAX_UPINT)\n'
+    '        resultLen = SFwcslen(presultText);\n'
+    '    pResult->Resize(resultLen + 1);\n'
+    '    SFwcsncpy(pResult->GetBuffer(), resultLen + 1, presultText, resultLen);\n'
+    '    Flags |= Flag_Translated;\n'
+    '}\n\n'
+    '// 00b51fd0: decode the UTF-8 result; the buffer is sized from the whole string.\n'
+    'void Translator::TranslateInfo::SetResult(const char* presultTextUTF8, UPInt resultUTF8Len)\n'
+    '{\n'
+    '    if (!presultTextUTF8)\n'
+    '        return;\n'
+    '    if (resultUTF8Len == SF_MAX_UPINT)\n'
+    '        resultUTF8Len = SFstrlen(presultTextUTF8);\n'
+    '    const UPInt length = (UPInt)UTF8Util::GetLength(presultTextUTF8, -1);\n'
+    '    pResult->Resize(length + 1);\n'
+    '    UTF8Util::DecodeString(pResult->GetBuffer(), presultTextUTF8, (SPInt)resultUTF8Len);\n'
+    '    Flags |= Flag_Translated;\n'
+    '}\n\n'
+    '// 00b52030: the SDK word-wrapping modes; never called with WWT_Default.\n'
+    'bool Translator::OnWordWrapping(LineFormatDesc* pdesc)\n'
+    '{\n'
+    '    if (WWMode == WWT_Default)\n'
+    '        return false;\n'
+    '    if ((WWMode & (WWT_Asian | WWT_Prohibition | WWT_NoHangulWrap)) && pdesc->NumCharsInLine > 0)\n'
+    '    {\n'
+    '        const UPInt wordWrapPos = WordWrapHelper::FindWordWrapPos(WWMode, pdesc->ProposedWordWrapPoint,\n'
+    '            pdesc->pParaText, pdesc->ParaTextLen, pdesc->LineStartPos, pdesc->NumCharsInLine);\n'
+    '        if (wordWrapPos == SF_MAX_UPINT)\n'
+    '            return false;\n'
+    '        pdesc->ProposedWordWrapPoint = wordWrapPos;\n'
+    '        return true;\n'
+    '    }\n'
+    '    if ((WWMode & WWT_Hyphenation) && pdesc->ProposedWordWrapPoint > 0)\n'
+    '    {\n'
+    '        const wchar_t* pline = pdesc->pParaText + pdesc->LineStartPos;\n'
+    '        const UPInt minPos = WordWrapHelper::IsWhiteSpaceChar(pline[pdesc->ProposedWordWrapPoint - 1]) ?\n'
+    '            pdesc->ProposedWordWrapPoint : 0;\n'
+    '        for (UPInt pos = pdesc->NumCharsInLine; pos > minPos; --pos)\n'
+    '        {\n'
+    '            const wchar_t c = (wchar_t)SFtowlower(pline[pos - 1]);\n'
+    '            if ((c == L\'a\' || c == L\'e\' || c == L\'o\' || c == L\'u\' || c == L\'i\') &&\n'
+    '                pdesc->VisibleRectWidth > pdesc->pWidths[pos - 1] + pdesc->DashSymbolWidth)\n'
+    '            {\n'
+    '                pdesc->ProposedWordWrapPoint = pos;\n'
+    '                pdesc->UseHyphenation = true;\n'
+    '                return true;\n'
+    '            }\n'
+    '        }\n'
+    '    }\n'
+    '    return false;\n'
+    '}\n\n')
+
+
+def translator_edits(sdk_root, edit):
+    loader = sdk_root / 'Src/GFx/GFx_Loader.cpp'
+    anchor = 'namespace Scaleform { namespace GFx {\n\n// ***** URLBuilder implementation\n'
+    edit(loader, anchor, anchor.replace('// ***** URLBuilder', TRANSLATOR_DEFINITIONS + '// ***** URLBuilder'),
+         'Translator definitions')
+    # A duplicated definition block is rejected rather than accepted.
+    edit(loader, TRANSLATOR_DEFINITIONS, TRANSLATOR_DEFINITIONS, 'Translator definitions final state')
 
 
 # #1513 4.6.34 scaleform.gfx.TextFieldEx (table 015e4b58..015e4c08) adds the
