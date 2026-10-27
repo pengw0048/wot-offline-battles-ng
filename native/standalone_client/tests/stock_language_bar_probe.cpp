@@ -141,13 +141,15 @@ struct Instance
 
     bool IsNull( const AS3::Value & v ) const { return !v.IsObject() || v.GetObject() == NULL; }
 
-    unsigned Count( const AS3::Value & v ) const
+    double Number( const AS3::Value & v ) const
     {
         if (v.IsNumber())
-            return unsigned( v.AsNumber() );
-        return v.GetKind() == AS3::Value::kInt ? unsigned( v.AsInt() ) :
-            v.GetKind() == AS3::Value::kUInt ? unsigned( v.AsUInt() ) : 0u;
+            return v.AsNumber();
+        return v.GetKind() == AS3::Value::kInt ? double( v.AsInt() ) :
+            v.GetKind() == AS3::Value::kUInt ? double( v.AsUInt() ) : 0.0;
     }
+
+    unsigned Count( const AS3::Value & v ) const { return unsigned( Number( v ) ); }
 
     std::string Text( const AS3::Value & tab )
     {
@@ -295,6 +297,31 @@ bool initAgain( Instance & a )
     return true;
 }
 
+// On the focus-active movie a press on the tab runs IMEManager::HandleFocus over
+// its ancestors before Stage dispatch, as every lobby click does.
+void activeTabClick( Instance & a, CountingLog & log, size_t languages )
+{
+    AS3::Value tab = a.Get( a.main, "InputLangTab_mc" );
+    const float x = float( a.Number( a.Get( tab, "x" ) ) + a.Number( a.Get( tab, "width" ) ) / 2 );
+    const float y = float( a.Number( a.Get( tab, "y" ) ) + a.Number( a.Get( tab, "height" ) ) / 2 );
+    Ptr<Counter> later = *new Counter;
+    a.Listen( *later, a.stage, "mouseDown" );
+    const unsigned before = log.nullReferences;
+    a.Click( x, y );
+    const std::string pending = a.Exception();
+    const unsigned rows = a.Count( a.Get( a.main, "NumRows" ) );
+    char detail[256];
+    std::snprintf( detail, sizeof( detail ), "at=%.1f,%.1f pending=%s #1009=%u laterListener=%u rows=%u os=%u",
+        x, y, pending.c_str(), log.nullReferences - before, later->calls, rows, unsigned( languages ) );
+    check( "active-tab-click", pending == "none" && log.nullReferences == before && later->calls == 1 &&
+        rows == languages, detail );
+    a.Click( 900.0f, 600.0f );
+    std::snprintf( detail, sizeof( detail ), "#1009=%u laterListener=%u rows=%u",
+        log.nullReferences - before, later->calls, a.Count( a.Get( a.main, "NumRows" ) ) );
+    check( "active-outside-click", a.Exception() == "none" && log.nullReferences == before &&
+        later->calls == 2 && a.Count( a.Get( a.main, "NumRows" ) ) == 0, detail );
+}
+
 // Ordinary text focus and typing still go through the existing focus owner.
 void typing( Instance & a )
 {
@@ -408,6 +435,8 @@ int main( int argc, char ** argv )
 
         selection( c );
         b.movie->HandleEvent( SetFocusEvent() );
+        std::vector<HKL> layouts;
+        activeTabClick( b, *log, osLanguages( layouts ).size() );
         typing( b );
 
         // C goes first; a later command from A must not reach it.

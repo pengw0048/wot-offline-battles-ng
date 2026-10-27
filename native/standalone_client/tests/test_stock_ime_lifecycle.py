@@ -26,6 +26,11 @@ IME_MANAGER = 'Src/GFx/IME/GFx_IMEManager.h'
 MANAGER = 'lib/scaleform/manager.cpp'
 CONFIG = 'lib/scaleform/config.hpp'
 HELPERS = ('lib/scaleform/stock_language_bar.hpp', 'lib/scaleform/stock_language_bar_commands.hpp')
+# Every other patch the build applies to these engine files, in build order.
+BUILD_CHAIN = ('patch_stock_lobby_input', 'patch_stock_flash_input_mode', 'patch_stock_glyph_cache',
+               'patch_stock_scaleform_localization')
+CHAIN_FILES = ENGINE_FILES + ('lib/scaleform/util.cpp', 'lib/scaleform/flash_gui_component.hpp',
+                              'lib/scaleform/flash_gui_component.cpp')
 COMMANDS = {'LangBar_OnInit', 'LangBar_GetInstalledLanguages', 'LangBar_OnSelectInputLang',
             'LangBar_GetIMENames', 'LangBar_OnSelectIME'}
 
@@ -39,7 +44,7 @@ def run_patch(*arguments):
 class ImeLifecyclePatchTest(unittest.TestCase):
     def roots(self, directory):
         root = Path(directory)
-        write(root / 'engine', pinned_engine(self, ENGINE_FILES))
+        write(root / 'engine', pinned_engine(self, CHAIN_FILES))
         write(root / 'sdk', pinned_sdk(self, SDK_FILES + (IME_MANAGER,)))
         return root / 'engine', root / 'sdk'
 
@@ -73,29 +78,34 @@ class ImeLifecyclePatchTest(unittest.TestCase):
             patch.patch(engine, sdk)
             self.assertEqual(final, (snapshot(engine, (MANAGER,) + HELPERS), (sdk / IME_MANAGER).read_bytes()))
 
-    def test_prepared_roots_compose_in_either_order(self):
+    def test_prepared_roots_compose_in_any_build_position(self):
         sdk_patch = load_patch()
-        localization = load('patch_stock_scaleform_localization')
+        chain = [load(name) for name in BUILD_CHAIN]
         patch = load('patch_stock_ime_lifecycle')
         results = []
-        for order in ('existing-first', 'owner-first'):
+        # First, after glyph_cache as the central hunk places it, and last on a prepared root.
+        for position in (0, 3, len(chain)):
             with tempfile.TemporaryDirectory(prefix='ime-lifecycle-compose-') as directory:
                 engine, sdk = self.roots(directory)
-                if order == 'owner-first':
+                if position == 0:
                     patch.patch(engine, sdk)
                 sdk_patch.patch_engine(engine, sdk)
-                localization.patch(engine)
+                for index, module in enumerate(chain):
+                    if index == position and position:
+                        patch.patch(engine, sdk)
+                    module.patch(engine)
                 patch.patch(engine, sdk)
                 # The existing focus owner and translator seams are intact.
                 manager = text((engine / MANAGER).read_bytes())
                 self.assertEqual(manager.count('installStockTranslator( *pLoader_ );'), 1)
+                self.assertEqual(manager.count('glyphCacheParamsPending_'), 4)
                 self.assertEqual(manager.count('::wot::stock_language_bar::install( *pLoader_ );'), 1)
                 ime = text((engine / 'lib/scaleform/ime.cpp').read_bytes())
                 self.assertIn('Manager::instance().pLoader()->GetIMEManager()', ime)
                 self.assertIn('\t\ts_pFocussed->pMovieView()->HandleEvent( GFx::SetFocusEvent() );', ime)
-                results.append((snapshot(engine, (MANAGER, 'lib/scaleform/ime.cpp') + HELPERS),
-                                (sdk / IME_MANAGER).read_bytes()))
+                results.append((snapshot(engine, CHAIN_FILES + HELPERS), (sdk / IME_MANAGER).read_bytes()))
         self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0], results[2])
 
     def test_sdk_only_cli_matches_the_engine_build(self):
         with tempfile.TemporaryDirectory(prefix='ime-lifecycle-sdk-') as directory:
