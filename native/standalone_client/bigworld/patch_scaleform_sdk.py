@@ -89,6 +89,21 @@ def sdk_edits(sdk_root, edit):
     amf3_edits(sdk_root, edit)
     text_selection_edits(sdk_root, edit)
     translator_edits(sdk_root, edit)
+    drop_shadow_edits(sdk_root, edit)
+
+
+def drop_shadow_edits(sdk_root, edit):
+    # #1513 00de4030 reads the optional flags from argv[8..10]. The 4.2
+    # constructor instead reuses strength/quality as inner/knockout, which
+    # removes the foreground glyphs for the carousel's eight-argument filter.
+    source = sdk_root / 'Src/GFx/AS3/Obj/Filters/AS3_Obj_Filters_DropShadowFilter.cpp'
+    edit(source,
+         '        if ( argc >= 7 ) inner = argv[6].Convert2Boolean();\n'
+         '        if ( argc >= 8 ) knock = argv[7].Convert2Boolean();\n',
+         '        if ( argc >= 9 ) inner = argv[8].Convert2Boolean();\n'
+         '        if ( argc >= 10 ) knock = argv[9].Convert2Boolean();\n'
+         '        if ( argc >= 11 ) hide = argv[10].Convert2Boolean();\n',
+         'DropShadowFilter optional constructor flags')
 
 
 # 765fa706 incorrectly added these definitions to GFx_Loader.cpp: the pinned
