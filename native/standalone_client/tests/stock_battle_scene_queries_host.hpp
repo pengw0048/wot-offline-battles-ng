@@ -128,6 +128,7 @@ const int COLLIDE_ALL = COLLIDE_BEFORE | COLLIDE_AFTER;
 class CollisionCallback {
 public:
     virtual ~CollisionCallback() {}
+    virtual bool useHighestAvailableLod() { return false; }
     virtual int operator()(const CollisionObstacle &, const WorldTriangle &, float) = 0;
 };
 
@@ -136,6 +137,7 @@ struct HostSurface { CollisionObstacle obstacle; WorldTriangle triangle; float d
 struct HostVisit { SpaceID space; uint16 flags; float distance; int verdict; };
 extern std::vector<HostVisit> hostVisits;
 extern int hostLiveSpaces;
+extern std::vector<bool> hostHighestLod;
 
 class ClientSpace {
 public:
@@ -150,6 +152,7 @@ public:
     // BigWorld CollisionState: COLLIDE_BEFORE prunes farther surfaces unless
     // the fixture models a coarse BSP that still reports them.
     float collide(const Vector3 &, const Vector3 &, CollisionCallback & cc) {
+        hostHighestLod.push_back(cc.useHighestAvailableLod());
         const std::vector<HostSurface> visit = surfaces;
         bool onlyLess = false;
         float limit = -1.f;

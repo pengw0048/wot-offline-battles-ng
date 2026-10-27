@@ -90,6 +90,9 @@ public:
         return COLLIDE_BEFORE;
     }
 
+    // Vtable 0x174d058 slot 1 (00bce4c0): terrain answers at its highest LOD.
+    bool useHighestAvailableLod() override { return true; }
+
     bool found() const { return found_; }
     bool interrupted() const { return interrupted_; }
     bool failed() const { return failed_; }

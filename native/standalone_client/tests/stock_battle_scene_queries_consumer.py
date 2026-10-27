@@ -148,9 +148,11 @@ assert collide(1, UP, DOWN, 0) is None
 Host.clearSpace(1)
 assert collide(1, UP, DOWN, 0) is None and Host.visits() == []
 
-# One terrain surface: the exact six-item tuple.
+# One terrain surface: the exact six-item tuple, traversed at the highest terrain LOD.
 space(1, (material(3, TERRAIN), 4.0))
+Host.highestLod()
 hit = collide(1, UP, DOWN, 0)
+assert Host.highestLod() == [True]
 assert isinstance(hit, tuple) and len(hit) == 6, hit
 assert isinstance(hit[0], Vector3) and hit[0] == Vector3(0.0, 6.0, 0.0), hit[0]
 assert close(hit[1], (0.0, 1.0, 0.0)), hit[1]

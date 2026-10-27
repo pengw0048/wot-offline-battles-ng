@@ -14,6 +14,7 @@
 namespace BW {
 std::vector<HostVisit> hostVisits;
 int hostLiveSpaces = 0;
+std::vector<bool> hostHighestLod;
 ClientSpacePtr DeprecatedSpaceHelpers::camera;
 
 bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
@@ -194,6 +195,12 @@ PyObject * visits(PyObject *, PyObject *) {
     return list;
 }
 PyObject * liveSpaces(PyObject *, PyObject *) { return PyInt_FromLong(hostLiveSpaces); }
+PyObject * highestLod(PyObject *, PyObject *) {
+    PyObject * list = PyList_New(0);
+    for (bool value : hostHighestLod) PyList_Append(list, value ? Py_True : Py_False);
+    hostHighestLod.clear();
+    return list;
+}
 
 // addWater(transform16, size(x,z), tessellation, useEdgeAlpha, grid(x,z), alpha, bb(minx,minz,maxx,maxz), flags)
 PyObject * addWater(PyObject *, PyObject * args) {
@@ -245,7 +252,7 @@ PyMethodDef hostMethods[] = {
     {"clearSpace", clearSpace, METH_VARARGS, NULL}, {"setPrune", setPrune, METH_VARARGS, NULL},
     {"setBounds", setBounds, METH_VARARGS, NULL}, {"setCamera", setCamera, METH_VARARGS, NULL},
     {"addSurface", addSurface, METH_VARARGS, NULL}, {"visits", visits, METH_NOARGS, NULL},
-    {"liveSpaces", liveSpaces, METH_NOARGS, NULL}, {"addWater", addWater, METH_VARARGS, NULL},
+    {"liveSpaces", liveSpaces, METH_NOARGS, NULL}, {"highestLod", highestLod, METH_NOARGS, NULL}, {"addWater", addWater, METH_VARARGS, NULL},
     {"clearWaters", clearWaters, METH_NOARGS, NULL}, {"waterDistance", waterDistance, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};
 }
