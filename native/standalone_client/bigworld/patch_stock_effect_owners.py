@@ -247,6 +247,17 @@ D3DXHANDLE SimpleGUIComponent::materialTechnique(
 '''
 
 
+PUBLIC_GUI_FACTOR = '\t\tpEffect->SetVector( constantHandle, &v4Colour_ );\n'
+STOCK_GUI_FACTOR = r'''		if (wot::is_stock_effect(pEffect))
+		{
+			// #1513 SimpleGUIComponent::drawSelf writes factor = (1,1,1,1)
+			// (0x008c27c1, 0x014b0590) and registers no GUIColour producer.
+			const Vector4 white( 1.f, 1.f, 1.f, 1.f );
+			return SUCCEEDED(pEffect->SetVector( constantHandle, &white ));
+		}
+''' + PUBLIC_GUI_FACTOR
+
+
 def patch_gui_materials(root):
     ashes = Path('lib/ashes')
     declaration = '\tstatic bool setupTechniqueTable( Moo::EffectMaterialPtr material );'
@@ -270,6 +281,12 @@ def patch_gui_materials(root):
          '\t\t\t\t\tERROR_MSG("GUI material is missing materialFX %d.\\n", i);\n'
          '\t\t\t\t\treturn false;\n'
          '\t\t\t\t}', 'GUI material table uses named techniques'),
+    ])
+    apply_file(root, ashes / 'simple_gui.cpp', [
+        ('#include "moo/effect_visual_context.hpp"\n',
+         '#include "moo/effect_visual_context.hpp"\n#include "stock_effect_adapter.hpp"\n',
+         'GUI colour producer adapter include'),
+        (PUBLIC_GUI_FACTOR, STOCK_GUI_FACTOR, 'original GUI factor'),
     ])
     apply_file(root, ashes / 'text_gui_component.cpp', [
         ('\ttechnique_ = material_->pEffect()->pEffect()->GetTechnique(materialFX()-FX_ADD);\n'
