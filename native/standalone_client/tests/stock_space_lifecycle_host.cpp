@@ -39,6 +39,7 @@
 namespace BW
 {
 using SpaceID=int;
+using uint=unsigned int;
 using string=std::string;
 const SpaceID NULL_SPACE_ID=0;
 using uint64=std::uint64_t;
