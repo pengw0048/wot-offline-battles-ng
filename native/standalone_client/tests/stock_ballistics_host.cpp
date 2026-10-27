@@ -14,6 +14,9 @@
 #include <vector>
 
 #define BW_BEGIN_NAMESPACE namespace BW {
+#define DECLARE_DEBUG_COMPONENT2(NAME, LEVEL)
+static int hostWarnings = 0;
+#define WARNING_MSG(...) (++hostWarnings, std::fprintf(stderr, __VA_ARGS__))
 #define BW_END_NAMESPACE }
 #define BW_STATIC_ASSERT(expression, message) static_assert(expression, #message)
 #define _stricmp strcasecmp
@@ -374,8 +377,8 @@ static PyObject * hostModel(PyObject *, PyObject *)
 static PyObject * hostState(PyObject *, PyObject *)
 {
 	const wot::stock_ballistics::Parameters & p = wot::stock_ballistics::parameters();
-	return Py_BuildValue("{s:i,s:i,s:(ffff),s:i,s:i,s:s,s:s,s:s}",
-		"deallocations", BW::hostDeallocations, "printed", BW::Script::hostPrintedErrors,
+	return Py_BuildValue("{s:i,s:i,s:i,s:(ffff),s:i,s:i,s:s,s:s,s:s}",
+		"deallocations", BW::hostDeallocations, "printed", BW::Script::hostPrintedErrors, "warnings", hostWarnings,
 		"fixed", p.hidingTime, p.timeAfterDeath, p.autoScaleDistance, p.serverTickLength,
 		"spaceID", int(p.spaceID), "autoScaleOff", int(p.autoScaleOff),
 		"simulatorType", BW::PyBallisticsSimulatorObject::s_type_.tp_name,

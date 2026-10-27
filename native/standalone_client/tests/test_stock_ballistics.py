@@ -103,7 +103,7 @@ class StockBallisticsTest(unittest.TestCase):
             text = text.replace(key, value)
         with tempfile.TemporaryDirectory(prefix='ballistics-cpython-') as directory:
             directory = Path(directory)
-            for fake in ('pch.hpp', 'app.hpp', 'cstdmf/bw_namespace.hpp', 'duplo/motor.hpp', 'duplo/pymodel.hpp',
+            for fake in ('pch.hpp', 'app.hpp', 'cstdmf/bw_namespace.hpp', 'cstdmf/debug.hpp', 'duplo/motor.hpp', 'duplo/pymodel.hpp',
                          'moo/render_context.hpp', 'pyscript/pyobject_plus.hpp', 'pyscript/script.hpp',
                          'pyscript/script_math.hpp', 'space/forward_declarations.hpp'):
                 (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
