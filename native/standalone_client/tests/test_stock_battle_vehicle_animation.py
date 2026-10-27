@@ -206,6 +206,12 @@ class StockBattleVehicleAnimationOracleTest(unittest.TestCase):
             self.assertEqual([state for state, under, over in aiming['sounds']],
                              ['upStart', 'upStop', 'downStart', 'downStop'])
         self.assertEqual(sorted({len(item['levers']) for unused, item in found['leveredSuspension']}), [8, 10])
+        # Every levered chassis also animates wheels; the two writers own disjoint nodes.
+        for where, item in found['leveredSuspension']:
+            lever_nodes = {name for lever in item['levers'] for name in lever[:3]}
+            self.assertTrue(item['wheels'], where)
+            self.assertFalse(lever_nodes & set(item['wheels']), where)
+            self.assertEqual(len(lever_nodes), 3 * len(item['levers']), where)
 
     def test_swinging_update_matches_original(self):
         oracle = self.oracle

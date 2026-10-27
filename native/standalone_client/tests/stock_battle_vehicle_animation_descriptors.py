@@ -75,7 +75,20 @@ def _hull_aiming(section):
     return {'angleLimit': math.radians(_floats(_child(audio, 'angleLimitValue'))[0]), 'sounds': sounds}
 
 
-def _levered(section):
+def _wheel_names(section):
+    # chassis_readers.readWheelsAndGroups: named wheels plus template groups.
+    names = []
+    for key, item in _children(section):
+        if key == 'wheel':
+            names.append(_text(_child(item, 'name')))
+        elif key == 'group':
+            template = _text(_child(item, 'template'))
+            start, count = int(_text(_child(item, 'startIndex'))), int(_text(_child(item, 'count')))
+            names += ['%s%d' % (template, index) for index in range(start, start + count)]
+    return names
+
+
+def _levered(section, wheels=None):
     levers = []
     for key, item in _children(section):
         if key != 'lever':
@@ -84,7 +97,8 @@ def _levered(section):
         levers.append((_text(_child(item, 'startNode')), _text(_child(item, 'jointNode')),
                        _text(_child(item, 'trackNode')), math.radians(limits[0]), math.radians(limits[1])))
     speed = _child(section, 'interpolationSpeedMul')
-    return {'levers': levers, 'interpolationSpeedMul': _floats(speed)[0] if speed is not None else 10.0}
+    return {'levers': levers, 'interpolationSpeedMul': _floats(speed)[0] if speed is not None else 10.0,
+            'wheels': _wheel_names(wheels) if wheels is not None else []}
 
 
 def collect(client):
@@ -97,6 +111,7 @@ def collect(client):
             if not data.startswith(b'\x45\x4e\xa1\x62'):
                 continue
             root = read_packed_xml(data)
+            sections = dict((path, item) for path, key, item in _walk(PackedValue(TYPE_ELEMENT, root), ''))
             for path, key, item in _walk(PackedValue(TYPE_ELEMENT, root), ''):
                 where = (member, path)
                 if key == 'swinging' and path.startswith('/hull/'):
@@ -108,5 +123,6 @@ def collect(client):
                 elif key == 'hullAiming':
                     found['hullAiming'].append((where, _hull_aiming(item)))
                 elif key == 'leveredSuspension':
-                    found['leveredSuspension'].append((where, _levered(item)))
+                    wheels = sections.get(path.rsplit('/', 1)[0] + '/wheels')
+                    found['leveredSuspension'].append((where, _levered(item, wheels)))
     return found
