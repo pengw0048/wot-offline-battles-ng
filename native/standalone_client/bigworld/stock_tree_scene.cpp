@@ -546,9 +546,10 @@ public:
         if (active) createHidingTargets();
     }
 
-    // 9c4c20 registers two A16B16G16R16F targets of size -2: 998990 halves
-    // the back buffer twice and truncates. Only the first one's depth is used:
-    // 9c4ed0 clears it.
+    // 9c4c20 registers two A16B16G16R16F targets of size -2 (998990: the back
+    // buffer halved twice, truncated) with depth mode 3: each owns a
+    // non-multisampled depth in the device depth format, and 99c1d0 clears the
+    // colour to zero on creation.
     void createHidingTargets()
     {
         const auto & size = Moo::rc().backBufferDesc();
@@ -558,8 +559,9 @@ public:
         for (unsigned i = 0; i < 2; ++i)
         {
             hidingTargets[i] = new Moo::RenderTarget( names[i] );
+            hidingTargets[i]->clearOnRecreate( true );
             if (!width || !height || !hidingTargets[i]->create( width, height, false, D3DFMT_A16B16G16R16F, NULL,
-                i ? D3DFMT_UNKNOWN : D3DFMT_D24S8, false ))
+                D3DFMT_UNKNOWN, false ))
             {
                 hidingTargets[i] = NULL;
                 fail( "Cannot create the original tree-hiding target" );

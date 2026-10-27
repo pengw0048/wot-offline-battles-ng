@@ -303,3 +303,94 @@ class OptimiserStage(TreeHidingOracle):
         size = self.alloc(8, struct.pack('<2i', -2, -2))
         self.run(0x998990, (size, size + 4))
         return list(struct.unpack('<2i', self.uc.mem_read(size, 8)))
+
+
+POOL_REGISTER, POOL_ADD, POOL_ADD_CREATE, POOL_ADD_CREATED = 0x9c4c20, 0x999fc0, 0x99a13a, 0x99a250
+FORMAT_NAMES = 0x1851600
+
+
+class PoolTargets(TreeHidingOracle):
+    """9c4c20's registrations created through 999fc0 -> 99c1d0 -> 998b80 -> 998170.
+
+    999fc0's pool-map lookup is replaced by a fresh entry as 0x99a0e0 pushes it;
+    from 0x99a13a its mode/levels selection and the creation chain run as
+    original instructions. Texture and surface creation are recorded boundaries.
+    """
+
+    def format_name(self, value):
+        """The WG format enum's name in the (enum, name) table at 01851600."""
+        for index in range(0x80):
+            if self.word(FORMAT_NAMES + 8 * index) == value:
+                return self.text(self.word(FORMAT_NAMES + 8 * index + 4))
+        raise KeyError(value)
+
+    def pool_targets(self, width, height, depth_format):
+        self.created = []
+        record = lambda item: self.created.append(item)
+        if not getattr(self, 'pool_ready', False):
+            self.pool_ready = True
+
+            def add(x):
+                self.registrations.append([x._arg(i) for i in range(1, 8)])
+                x.put_word(self.slot, len(self.registrations) - 1)
+                x._return(self.slot, 0x20)
+
+            def created(x, kind, count):
+                args = [x._arg(i) for i in range(count)]
+                record([kind] + args[2:-1])
+                x.put_word(args[0], x.alloc(16))
+                x._return(0, 4 * count)
+
+            def assign(x):
+                x.put_word(x.uc.reg_read(x.x86.UC_X86_REG_ECX), x.word(x._arg(0)))
+                x._return(0, 4)
+
+            def depth(x):
+                # 8372f0 stores the depth view in the +0x50 holder; 998170 tests +0x58.
+                x.put_word(x.uc.reg_read(x.x86.UC_X86_REG_ECX) + 8, 1)
+                x._return(0, 4)
+            for address, handler in (
+                    (POOL_ADD, add), (0x9977b0, lambda x: x._return(x.uc.reg_read(x.x86.UC_X86_REG_ECX), 8)),
+                    (0x998d40, lambda x: (record(['release']), x._return())), (0x9294e0, lambda x: x._return(1, 4)),
+                    (0x923960, lambda x: created(x, 'texture', 9)), (0x923ad0, lambda x: created(x, 'surface', 12)),
+                    (0x997730, assign), (0x94abc0, lambda x: x._return(0x6200)), (0x91fb00, lambda x: x._return(0, 4)),
+                    (0x921b90, lambda x: x._return(x.alloc(16), 16)), (0x8372f0, depth),
+                    (0x7abbb0, lambda x: x._return()), (0x74cea0, lambda x: x._return()),
+                    (0x116dc40, lambda x: (record(['clear on create']), x._return(0))),
+                    (0x9ad720, lambda x: x._return()), (0x13d801e, lambda x: x._return())):
+                self.handle(address, handler)
+        self.registrations = []
+        self.slot = self.alloc(4)
+        context = self.alloc(0x1000)
+        self.put_word(RENDER_CONTEXT, context)
+        device = self.alloc(0x200)
+        self.put_word(context + 0x310, device)
+        self.put_word(device + 0x100 + 0x1c, width)
+        self.put_word(device + 0x100 + 0x20, height)
+        self.put_word(device + 0x16c, depth_format)
+        self.run(POOL_REGISTER, (0x6300,), ecx=self.alloc(8))
+        targets = []
+        for owner, w, h, fmt, mode, index, levels in self.registrations:
+            self.created = []
+            size = self.alloc(8, struct.pack('<2I', w, h))
+            self.run(0x998990, (size, size + 4))
+            entry = self.alloc(12, struct.pack('<IHxxI', 0, 1, 0))
+            pool, node = self.alloc(0x200), self.alloc(0x20)
+            self.put_word(pool + 0x18c, entry)
+            ebp = self.STACK + 0xf0400
+            frame = {-0x3c: pool, -0x38: self.word(size), -0x34: self.word(size + 4), -0x50: owner,
+                     0x18: fmt, 0x1c: mode, 0x20: index, 0x24: levels}
+            for offset, value in frame.items():
+                self.put_word(ebp + offset, value)
+            x86 = self.x86
+            self.uc.reg_write(x86.UC_X86_REG_EBP, ebp)
+            self.uc.reg_write(x86.UC_X86_REG_ESP, ebp - 0x64)
+            self.uc.reg_write(x86.UC_X86_REG_ESI, node)
+            self.uc.reg_write(x86.UC_X86_REG_EDI, pool)
+            self.uc.reg_write(x86.UC_X86_REG_FPCW, MSVC_X87)
+            self.uc.emu_start(POOL_ADD_CREATE, POOL_ADD_CREATED, count=2000000)
+            target = self.word(entry)
+            targets.append(dict(index=index, requested=mode, mode=self.word(target + 0x6c),
+                                clear=[self.byte(target + 0x84)] + self.floats(target + 0x88, 4),
+                                calls=self.created))
+        return targets

@@ -1414,41 +1414,112 @@ class OptimiserStageTests(unittest.TestCase):
         self.assertEqual(normalise_production(produced[10]), normalise_original(original[1])[:9] + ['fail'])
 
 
-QUARTER_HOST = r"""
+POOL_HOST = r"""
+#include <array>
 #include <cstdio>
+#include <string>
 typedef unsigned uint;
+enum D3DFORMAT { D3DFMT_UNKNOWN = 0, D3DFMT_D24S8 = 75, D3DFMT_D24X8 = 77, D3DFMT_A16B16G16R16F = 113 };
 float mulTreeScalar( float a, float b ) { volatile float result = a * b; return result; }
-struct Size { uint Width, Height; } size;
+namespace Moo
+{
+struct Size { uint Width, Height; };
+struct PresentParameters { D3DFORMAT AutoDepthStencilFormat; };
+struct RenderContext
+{
+    Size size; PresentParameters present;
+    const Size & backBufferDesc() const { return size; }
+    const PresentParameters & presentParameters() const { return present; }
+} context;
+RenderContext & rc() { return context; }
+// lib/moo/render_target.cpp: create() only records; allocate() creates a
+// non-multisampled depth in AutoDepthStencilFormat unless overridden, or
+// reuses the main one, and clears the colour when clearOnRecreate is set.
+struct RenderTarget
+{
+    std::string name; bool autoClear = false;
+    explicit RenderTarget( const char * label ) : name( label ) {}
+    void clearOnRecreate( bool enable ) { autoClear = enable; }
+    bool create( int width, int height, bool reuseZ, D3DFORMAT pixel, RenderTarget * parent, D3DFORMAT depth,
+        bool discard )
+    {
+        const D3DFORMAT used = depth != D3DFMT_UNKNOWN ? depth : rc().presentParameters().AutoDepthStencilFormat;
+        std::printf( "%d %d %d %d %d %d %d %d\n", width, height, pixel, reuseZ || parent ? -1 : used, 0,
+            int( autoClear ), int( discard ), 0 );
+        return true;
+    }
+};
+typedef RenderTarget * RenderTargetPtr;
+}
+struct Owner
+{
+    std::array<Moo::RenderTargetPtr, 2> hidingTargets;
+    void fail( const char * message ) { std::printf( "fail %s\n", message ); }
+@BODY@
+};
 int main()
 {
-    while (std::scanf( "%u %u", &size.Width, &size.Height ) == 2)
+    uint width, height, depth;
+    while (std::scanf( "%u %u %u", &width, &height, &depth ) == 3)
     {
-@SIZE@
-        std::printf( "%u %u\n", width, height );
+        Moo::context.size = { width, height };
+        Moo::context.present.AutoDepthStencilFormat = D3DFORMAT( depth );
+        Owner().createHidingTargets();
     }
 }
 """
 
+# WG format enum (01851600) -> D3DFORMAT, for the formats these targets use.
+D3D_FORMATS = {'D24S8': 75, 'D24X8': 77, 'A16B16G16R16F': 113}
 
-class HidingTargetSizeTests(unittest.TestCase):
-    def test_quarter_targets_match_the_original_resolution(self):
+
+class HidingTargetPoolTests(unittest.TestCase):
+    def test_private_targets_match_the_original_pool_creation(self):
+        """9c4c20 -> 999fc0 -> 99c1d0 -> 998170, against production createHidingTargets."""
         requirements(self)
-        sizes = [(1600, 900), (1366, 768), (1921, 1081), (3, 7), (2560, 1440), (1023, 767)]
+        cases = [(1600, 900, 'D24S8'), (1366, 768, 'D24X8'), (1921, 1081, 'D24S8'), (3, 7, 'D24S8'),
+                 (2560, 1440, 'D24X8'), (1023, 767, 'D24S8')]
         script = ('import json, sys\nsys.path.insert(0, sys.argv[1])\n'
-                  'from stock_tree_hiding_oracle import OptimiserStage\n'
-                  'o = OptimiserStage(sys.argv[2])\n'
-                  'print(json.dumps([o.quarter(w, h) for w, h in %r]))' % sizes)
-        original = json.loads(run_oracle_script(script))
+                  'from stock_tree_hiding_oracle import PoolTargets\n'
+                  'o = PoolTargets(sys.argv[2])\n'
+                  'print(json.dumps([[o.format_name(f) for f in (0x1b, 0x1c, 0x24)]] +\n'
+                  '    [o.pool_targets(w, h, {"D24S8": 0x1b, "D24X8": 0x1c}[d]) for w, h, d in %r]))' % cases)
+        names, *original = json.loads(run_oracle_script(script))
+        self.assertEqual(names, ['D24S8', 'D24X8', 'A16B16G16R16F'])
+        wg = {0x1b: 'D24S8', 0x1c: 'D24X8', 0x24: 'A16B16G16R16F'}
+        expected = []
+        for (width, height, depth), targets in zip(cases, original):
+            self.assertEqual([t['index'] for t in targets], [0, 1])
+            for target in targets:
+                # Both registrations ask for depth mode 3: an own depth surface.
+                self.assertEqual((target['requested'], target['mode']), (3, 3))
+                release, texture, surface, clear = target['calls']
+                self.assertEqual((release, clear), (['release'], ['clear on create']))
+                self.assertEqual(texture[3:], [1, 12, 0x28, 0x24])
+                self.assertEqual(surface[1:3], texture[1:3])
+                # Depth: kind 8, bind 0x40, the device format, no multisampling.
+                self.assertEqual(surface[3:7] + surface[8:], [1, 8, 0, 0x40, 0, 0])
+                self.assertEqual(wg[surface[7]], depth)
+                self.assertEqual(target['clear'], [1, 0.0, 0.0, 0.0, 0.0])
+                expected.append([texture[1], texture[2], D3D_FORMATS[wg[texture[6]]], D3D_FORMATS[depth], 0,
+                                 target['clear'][0]])
+        self.assertEqual(original[0][0]['calls'][1][1:3], [400, 225])
         scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
         body = function(scene, 'void createHidingTargets()')
-        lines = [line for line in body.splitlines() if 'const uint width' in line or 'const uint height' in line]
-        self.assertEqual(len(lines), 2)
         with tempfile.TemporaryDirectory() as folder:
-            binary = compile_host(Path(folder), QUARTER_HOST.replace('@SIZE@', '\n'.join(lines)), 'quarter')
-            result = subprocess.run([str(binary)], input=''.join('%d %d\n' % s for s in sizes),
-                                    capture_output=True, text=True)
-        self.assertEqual([list(map(int, line.split())) for line in result.stdout.splitlines()], original)
-        self.assertEqual(original[0], [400, 225])
+            binary = compile_host(Path(folder), POOL_HOST.replace('@BODY@', body), 'pool_targets')
+            result = subprocess.run([str(binary)], input=''.join(
+                '%d %d %d\n' % (w, h, D3D_FORMATS[d]) for w, h, d in cases), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Discard (column 7) has no original equivalent to compare: every bind clears depth first.
+        produced = [line.split()[0] if line.startswith('fail') else list(map(int, line.split()))[:6]
+                    for line in result.stdout.splitlines()]
+        # Deliberate difference below 4 pixels: 999fc0 truncates the quarter to 0
+        # and 998bc0 re-resolves 0 as the full back buffer; production refuses it.
+        tiny = cases.index((3, 7, 'D24S8'))
+        self.assertEqual(expected[2 * tiny:2 * tiny + 2], [[3, 1, 113, 75, 0, 1]] * 2)
+        expected[2 * tiny:2 * tiny + 2] = ['fail'] * 2
+        self.assertEqual(produced, expected)
 
 
 def run_oracle_script(script):
