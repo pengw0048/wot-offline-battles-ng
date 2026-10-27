@@ -10,6 +10,7 @@ namespace BW {
 }
 #include "stock_battle_vehicle_animation.cpp"
 #include "stock_battle_vehicle_animation_reference.hpp"
+#include "stock_battle_vehicle_levered_reference.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -60,6 +61,52 @@ PY_BEGIN_ATTRIBUTES(MatrixProvider)
 PY_END_ATTRIBUTES()
 
 const wot::StockAnimationMath & stockBattleAnimationMath() { return referenceAnimationMath(); }
+const wot::StockLeveredMath & stockBattleLeveredMath() { return referenceLeveredMath(); }
+
+// Camera space and a flat ground plane stand in for the SceneObstaclesCollider.
+bool hostCamera = true;
+float hostGround = 0.f;
+int hostPrepares = 0;
+ClientSpace hostSpace;
+ClientSpacePtr DeprecatedSpaceHelpers::cameraSpace() { return hostCamera ? ClientSpacePtr(&hostSpace) : ClientSpacePtr(); }
+class HostGround : public wot::VehicleCollisionProvider {
+public:
+    bool prepare(const wot::VehicleCollisionBounds &, std::uint32_t space, std::uint32_t) override {
+        ++hostPrepares; prepared = space == hostSpace.id(); return prepared; }
+    bool query_ray(const wot::VehicleCollisionRay & ray, wot::VehicleCollisionRayHit & hit) override {
+        if (!prepared || ray.direction.y >= 0.f) return false;
+        const float distance = (ray.origin.y - hostGround) / -ray.direction.y;
+        if (distance < 0.f || distance > ray.length) return false;
+        hit.distance = distance; hit.normal = {0.f, 1.f, 0.f}; hit.is_terrain = true;
+        return true;
+    }
+    bool prepared = false;
+};
+std::unique_ptr<wot::VehicleCollisionProvider> makeStockGroundCollisionProvider() {
+    return std::unique_ptr<wot::VehicleCollisionProvider>(new HostGround());
+}
+
+// DataLink<LodState>: samples owner.distance/owner.priority.
+class HostLodLink : public PyObjectPlus {
+    Py_Header(HostLodLink, PyObjectPlus)
+public:
+    HostLodLink(PyObject * o) : PyObjectPlus(&s_type_), owner(o) {}
+    PyObjectPtr owner;
+};
+PY_TYPEOBJECT(HostLodLink)
+PY_BEGIN_METHODS(HostLodLink)
+PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES(HostLodLink)
+PY_END_ATTRIBUTES()
+bool sampleStockLodLink(PyObject * link, uint32 & priority, float & distance) {
+    if (!link || !HostLodLink::Check(link)) return false;
+    PyObject * owner = static_cast<HostLodLink *>(static_cast<PyObjectPlus *>(link))->owner.get();
+    PyObjectPtr d(PyObject_GetAttrString(owner, "distance"), PyObjectPtr::STEAL_REFERENCE);
+    PyObjectPtr p(PyObject_GetAttrString(owner, "priority"), PyObjectPtr::STEAL_REFERENCE);
+    if (!d || !p) { PyErr_Clear(); return false; }
+    distance = float(PyFloat_AsDouble(d.get())); priority = uint32(PyInt_AsLong(p.get()));
+    return true;
+}
 
 StockAudioSource createStockAudioSource(const BW::string & name, bool) {
     hostAudio.push_back("create " + name);
@@ -118,7 +165,19 @@ class HostCompound : public PyObjectPlus {
     Py_Header(HostCompound, PyObjectPlus)
 public:
     HostCompound() : PyObjectPlus(&s_type_) {}
-    struct Node { std::string name; Matrix local; MatrixProviderPtr source; int writes = 0; };
+    struct Node { std::string name; Matrix local; MatrixProviderPtr source; int writes = 0; int parent = -1; };
+    Matrix world(int index) const {
+        Matrix result = nodes[index].local;
+        if (nodes[index].parent >= 0) {
+            const Matrix parent = world(nodes[index].parent);
+            Matrix out;
+            for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j)
+                out.m[i][j] = result.m[i][0] * parent.m[0][j] + result.m[i][1] * parent.m[1][j] +
+                    result.m[i][2] * parent.m[2][j] + result.m[i][3] * parent.m[3][j];
+            result = out;
+        }
+        return result;
+    }
     std::vector<Node> nodes;
     PyObjectPtr matrixProvider;
     bool active = true;
@@ -132,6 +191,7 @@ public:
     PY_METHOD_DECLARE(py_local)
     PY_METHOD_DECLARE(py_writes)
     PY_METHOD_DECLARE(py_reset)
+    PY_METHOD_DECLARE(py_world)
     PyObject * pyGet_matrix() { return Script::getData(matrixProvider); }
     int pySet_matrix(PyObject * o) { matrixProvider = o; return 0; }
     static PyObject * New(PyObject *, PyObject * args) {
@@ -141,9 +201,10 @@ public:
         for (Py_ssize_t i = 0; i < PySequence_Size(list); ++i) {
             PyObjectPtr item(PySequence_GetItem(list, i), PyObjectPtr::STEAL_REFERENCE);
             Node node;
-            PyObject * name; PyObject * local;
-            if (!PyArg_ParseTuple(item.get(), "OO", &name, &local) || Script::setData(name, node.name, "name") ||
+            PyObject * name; PyObject * local; const char * parent = NULL;
+            if (!PyArg_ParseTuple(item.get(), "OO|s", &name, &local, &parent) || Script::setData(name, node.name, "name") ||
                 Script::setData(local, node.local, "local")) { Py_DECREF(result); return NULL; }
+            if (parent) node.parent = result->find(parent);
             result->nodes.push_back(node);
         }
         HostMatrix * root = new HostMatrix();
@@ -191,6 +252,11 @@ PyObject * HostCompound::py_writes(PyObject * args) {
     return PyInt_FromLong(nodes[this->find(name)].writes);
 }
 PyObject * HostCompound::py_reset(PyObject *) { active = false; Py_RETURN_NONE; }
+PyObject * HostCompound::py_world(PyObject * args) {
+    const char * name;
+    if (!PyArg_ParseTuple(args, "s", &name) || this->find(name) < 0) return NULL;
+    return Script::getData(this->world(this->find(name)));
+}
 PY_TYPEOBJECT(HostCompound)
 PY_BEGIN_METHODS(HostCompound)
     PY_METHOD(node)
@@ -198,6 +264,7 @@ PY_BEGIN_METHODS(HostCompound)
     PY_METHOD(local)
     PY_METHOD(writes)
     PY_METHOD(reset)
+    PY_METHOD(world)
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES(HostCompound)
     PY_ATTRIBUTE(matrix)
@@ -209,6 +276,23 @@ bool stockVehicleCompoundNodeLocal(PyObject * compound, const BW::string & name,
     const int index = c->find(name);
     if (!c->active || index < 0) return false;
     local = c->nodes[index].local;
+    return true;
+}
+bool stockVehicleCompoundNode(PyObject * compound, const BW::string & name, Matrix & authored,
+    Matrix & parentWorld, Matrix & world) {
+    if (!HostCompound::Check(compound)) return false;
+    HostCompound * c = static_cast<HostCompound *>(static_cast<PyObjectPlus *>(compound));
+    const int index = c->find(name);
+    if (!c->active || index < 0) return false;
+    authored = c->nodes[index].local;
+    parentWorld = c->nodes[index].parent >= 0 ? c->world(c->nodes[index].parent) : Matrix::identity;
+    world = c->world(index);
+    return true;
+}
+bool stockVehicleCompoundContext(PyObject * compound, uint32 & spaceID, BoundingBox & bounds) {
+    if (!HostCompound::Check(compound) || !static_cast<HostCompound *>(static_cast<PyObjectPlus *>(compound))->active)
+        return false;
+    spaceID = 1; bounds.lo = Vector3(-3.f, -1.f, -5.f); bounds.hi = Vector3(3.f, 2.f, 5.f);
     return true;
 }
 bool writeStockVehicleCompoundNodeLocal(PyObject * compound, const BW::string & name, const Matrix & local) {
@@ -250,6 +334,19 @@ PyObject * tickSounds(PyObject *, PyObject * args) {
     float dt; if (!PyArg_ParseTuple(args, "f", &dt)) return NULL;
     tickStockSuspensionSounds(dt); Py_RETURN_NONE;
 }
+PyObject * tickLevered(PyObject *, PyObject * args) {
+    float dt; if (!PyArg_ParseTuple(args, "f", &dt)) return NULL;
+    tickStockLeveredSuspensions(dt); Py_RETURN_NONE;
+}
+PyObject * setGround(PyObject *, PyObject * args) {
+    PyObject * camera; if (!PyArg_ParseTuple(args, "fO", &hostGround, &camera)) return NULL;
+    hostCamera = PyObject_IsTrue(camera) == 1; Py_RETURN_NONE;
+}
+PyObject * prepares(PyObject *, PyObject *) { return PyInt_FromLong(hostPrepares); }
+PyObject * lodLink(PyObject *, PyObject * args) {
+    PyObject * owner; if (!PyArg_ParseTuple(args, "O", &owner)) return NULL;
+    return new HostLodLink(owner);
+}
 PyObject * providerCount(PyObject *, PyObject *) { return PyInt_FromLong(long(providerStore.size())); }
 PyObject * outputOf(PyObject *, PyObject * args) {
     PyObject * provider;
@@ -267,6 +364,10 @@ PyMethodDef hostMethods[] = {
     {"tickLinked", tickLinked, METH_NOARGS, NULL},
     {"tickSounds", tickSounds, METH_VARARGS, NULL},
     {"providerCount", providerCount, METH_NOARGS, NULL},
+    {"tickLevered", tickLevered, METH_VARARGS, NULL},
+    {"setGround", setGround, METH_VARARGS, NULL},
+    {"prepares", prepares, METH_NOARGS, NULL},
+    {"lodLink", lodLink, METH_VARARGS, NULL},
     {"output", outputOf, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};
 }

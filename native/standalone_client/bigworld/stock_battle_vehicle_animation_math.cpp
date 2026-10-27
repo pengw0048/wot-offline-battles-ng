@@ -5,6 +5,7 @@
 #include <d3dx9math.h>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 
 BW_BEGIN_NAMESPACE
 namespace stock_battle_animation_math
@@ -12,6 +13,8 @@ namespace stock_battle_animation_math
 // 0078a3b2/0078c0e6 call UCRT __libm_sse2_asinf (xmm0 in and out), not the
 // x87 asin entry that std::asin reaches under /fp:strict.
 void * g_asinEntry = NULL;
+void * g_cosEntry = NULL;
+void * g_sinEntry = NULL;
 
 __declspec(naked) float __cdecl sse2Asin( float )
 {
@@ -24,11 +27,59 @@ __declspec(naked) float __cdecl sse2Asin( float )
         ret
     }
 }
+
+// 007860c0 calls __libm_sse2_cosf/__libm_sse2_sinf with the same convention.
+__declspec(naked) float __cdecl sse2Cos( float )
+{
+    __asm
+    {
+        movss xmm0, dword ptr [esp + 4]
+        call dword ptr [g_cosEntry]
+        movss dword ptr [esp + 4], xmm0
+        fld dword ptr [esp + 4]
+        ret
+    }
+}
+
+__declspec(naked) float __cdecl sse2Sin( float )
+{
+    __asm
+    {
+        movss xmm0, dword ptr [esp + 4]
+        call dword ptr [g_sinEntry]
+        movss dword ptr [esp + 4], xmm0
+        fld dword ptr [esp + 4]
+        ret
+    }
+}
+
+// 00787710/00789060 evaluate fld y; fld x; fpatan; fstp dword.
+float x87Atan2( float y, float x )
+{
+    float result;
+    __asm
+    {
+        fld dword ptr [y]
+        fld dword ptr [x]
+        fpatan
+        fstp dword ptr [result]
+    }
+    return result;
+}
+
+void * ucrtEntry( const char * name )
+{
+    HMODULE module = GetModuleHandleW( L"ucrtbase.dll" );
+    if (!module) module = LoadLibraryW( L"api-ms-win-crt-math-l1-1-0.dll" );
+    void * entry = module ? reinterpret_cast<void *>( GetProcAddress( module, name ) ) : NULL;
+    if (!entry)
+        throw std::runtime_error( std::string( "UCRT " ) + name + " is unavailable" );
+    return entry;
+}
 }
 
 namespace
 {
-using stock_battle_animation_math::g_asinEntry;
 using stock_battle_animation_math::sse2Asin;
 
 D3DXMATRIX native( const wot::StockAnimationMatrix & value )
@@ -108,16 +159,21 @@ wot::StockAnimationMatrix multiply( const wot::StockAnimationMatrix & first,
 
 const wot::StockAnimationMath & stockBattleAnimationMath()
 {
-    if (!g_asinEntry)
-    {
-        HMODULE module = GetModuleHandleW( L"ucrtbase.dll" );
-        if (!module) module = LoadLibraryW( L"api-ms-win-crt-math-l1-1-0.dll" );
-        g_asinEntry = module ? reinterpret_cast<void *>( GetProcAddress( module, "__libm_sse2_asinf" ) ) : NULL;
-        if (!g_asinEntry)
-            throw std::runtime_error( "UCRT __libm_sse2_asinf is unavailable" );
-    }
+    if (!stock_battle_animation_math::g_asinEntry)
+        stock_battle_animation_math::g_asinEntry = stock_battle_animation_math::ucrtEntry( "__libm_sse2_asinf" );
     static const wot::StockAnimationMath result = { &transform, &transformNormal, &inverse,
         &normalize, &rotationYawPitchRoll, &rotationX, &multiply, &sse2Asin };
+    return result;
+}
+
+const wot::StockLeveredMath & stockBattleLeveredMath()
+{
+    using namespace stock_battle_animation_math;
+    if (!g_cosEntry)
+        g_cosEntry = ucrtEntry( "__libm_sse2_cosf" );
+    if (!g_sinEntry)
+        g_sinEntry = ucrtEntry( "__libm_sse2_sinf" );
+    static const wot::StockLeveredMath result = { stockBattleAnimationMath(), &sse2Cos, &sse2Sin, &x87Atan2 };
     return result;
 }
 BW_END_NAMESPACE

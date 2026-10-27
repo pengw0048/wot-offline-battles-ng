@@ -343,6 +343,102 @@ def check_suspension_sound():
     expect(ValueError, getattr, sound, 'vehicleState')
 
 
+def rotation_x(angle, x, y, z):
+    c, s_ = math.cos(angle), math.sin(angle)
+    return (1., 0., 0., 0., 0., c, s_, 0., 0., -s_, c, 0., x, y, z, 1.)
+
+
+def levered_compound():
+    nodes = [('', translated(0, 0, 0)), ('hull', translated(0, .9, 0), '')]
+    for side, x in (('L', -1.4), ('R', 1.4)):
+        for index, z in enumerate((2., 1., -1., -2.)):
+            suffix = '%s%d' % (side, index)
+            nodes += [('Lever_Start_' + suffix, translated(x, -.2, z), 'hull'),
+                      ('Lever_Joint_' + suffix, rotation_x(.3, 0, -.4, -.3), 'Lever_Start_' + suffix),
+                      ('Track_' + suffix, translated(0, -.3, 0), 'Lever_Joint_' + suffix),
+                      ('W_' + suffix, translated(0, 0, 0), 'Track_' + suffix)]
+    return Host.Compound(nodes)
+
+
+def check_levered_suspension():
+    import collections
+    Lever = collections.namedtuple('SuspensionLever', 'startNodeName jointNodeName trackNodeName minAngle maxAngle')
+    levers = [Lever('Lever_Start_%s%d' % (side, index), 'Lever_Joint_%s%d' % (side, index),
+                    'Track_%s%d' % (side, index), math.radians(lo), math.radians(hi))
+              for side in 'LR' for index, (lo, hi) in enumerate(((-42., 62.), (186.5, 155.), (-6.5, 25.), (222., 118.)))]
+    config = Struct(levers=levers, interpolationSpeedMul=10., lodSettings=(100., None))
+    compound = levered_compound()
+    lod = Struct(distance=10., priority=1)
+    create = load('STOCK_MODEL_ASSEMBLER_PYC', 'createLeveredSuspension', {'Vehicular': Vehicular})
+    if create is not None:
+        assert create(compound, Struct(chassis=Struct(leveredSuspension=None)), Host.lodLink(lod)) is None
+        suspension = create(compound, Struct(chassis=Struct(leveredSuspension=config)), Host.lodLink(lod))
+    else:
+        suspension = Vehicular.LeveredSuspension(compound, levers, 10.)
+        suspension.setupLodLink(Host.lodLink(lod))
+        suspension.setupLodSettings((100., None))
+    post = load('STOCK_VEHICLE_ASSEMBLER_PYC', '__postSetupFilter', {})
+    if post is not None:
+        # A non-None levered owner replaces the filter's ground placement.
+        for owner, expected in ((suspension, False), (None, True)):
+            appearance = Struct(suspension=None, leveredSuspension=owner, filter=Struct())
+            post(appearance)
+            assert appearance.filter.placingOnGround is expected
+    expect(TypeError, Vehicular.LeveredSuspension, compound, [('a', 'b')], 10.)
+    expect(TypeError, Vehicular.LeveredSuspension, compound, 'levers', 10.)
+    expect(ValueError, Vehicular.LeveredSuspension, compound, [Lever('missing', 'b', 'c', 0., 1.)], 10.)
+    expect(ValueError, Vehicular.LeveredSuspension, compound, [], 10.)
+    expect(TypeError, suspension.setupLodSettings, (1., 2, 3))
+    expect(TypeError, suspension.setupLodLink, 3.)
+    authored = dict((name, compound.local(name)) for name in ('Lever_Start_L0', 'Track_L0', 'W_L0'))
+    Host.tickLevered(1 / 60.)
+    assert compound.writes('Track_L0') == 0  # inactive until the system activates it
+    system = Svarog.ComponentSystem()
+    system.addComponent(suspension, 'leveredSuspension')
+    system.activate()
+    Host.setGround(-1.2, True)
+    prepares = Host.prepares()
+    Host.tickLevered(1 / 60.)
+    assert Host.prepares() == prepares + 1
+    assert compound.writes('Lever_Start_L0') == 1 and compound.writes('Track_L0') == 1
+    assert compound.writes('Lever_Joint_L0') == 0 and compound.writes('W_L0') == 0
+    start = compound.local('Lever_Start_L0')
+    assert start[12:15] == authored['Lever_Start_L0'][12:15] and start != authored['Lever_Start_L0']
+    # A separate wheel writer owns W_L0; both contributions survive one evaluate.
+    spin = Host.Matrix(rotation_x(1.1, 0, 0, 0))
+    compound.node('W_L0', spin)
+    compound.evaluate()
+    Host.tickLevered(1 / 60.)
+    compound.evaluate()
+    assert compound.local('W_L0') == spin.value and compound.local('Track_L0') != authored['Track_L0']
+    wheel_world = compound.world('W_L0')
+    track_world = compound.world('Track_L0')
+    assert close(wheel_world[12:15], track_world[12:15], 1e-5)
+    # Leaving LOD restores the authored lever locals exactly once.
+    lod.distance = 500.
+    restored = compound.writes('Track_L0')
+    Host.tickLevered(1 / 60.)
+    assert compound.local('Track_L0') == authored['Track_L0'] and compound.writes('Track_L0') == restored + 1
+    Host.tickLevered(1 / 60.)
+    assert compound.writes('Track_L0') == restored + 1
+    lod.distance = 10.
+    # Without a camera space the collider is not prepared; misses keep the lever bounded.
+    Host.setGround(-1.2, False)
+    Host.tickLevered(1 / 60.)
+    assert Host.errors() == ['LeveredSuspension cannot prepare its ground-query space\n']
+    Host.setGround(-1.2, True)
+    system.deactivate()
+    written = compound.writes('Track_L0')
+    Host.tickLevered(1 / 60.)
+    assert compound.writes('Track_L0') == written
+    system.activate()
+    compound.reset()
+    Host.tickLevered(1 / 60.)
+    assert Host.errors() == ['LeveredSuspension lost its compound nodes\n']
+    system.destroy()
+    expect(ValueError, suspension.setupLodSettings, (1., 2))
+
+
 compound, animator = check_swinging_producer()
 check_swinging_provider(compound, animator)
 check_receive_shot_impulse(animator)
@@ -353,4 +449,5 @@ compound.node('hull', Host.Matrix())
 assert Host.providerCount() == count - 1
 check_linked_nodes()
 check_suspension_sound()
+check_levered_suspension()
 assert Host.errors() == [], Host.errors()

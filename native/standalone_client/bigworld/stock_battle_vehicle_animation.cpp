@@ -4,10 +4,15 @@
 #include "stock_vehicle_visuals.hpp"
 #include "stock_audio_source.hpp"
 #include "vehicle_appearance.hpp"
+#include "stock_scene_collision.hpp"
 
 #include "pyscript/script_math.hpp"
+#include "math/boundbox.hpp"
+#include "space/client_space.hpp"
+#include "space/deprecated_space_helpers.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -802,12 +807,358 @@ void tickStockSuspensionSounds( float frameTime )
     }
 }
 
+// ---------------------------------------------------------------------------
+// Vehicular.LeveredSuspension (00769920, manager 005adf50 phase 2).
+namespace
+{
+// Node index space of one component: 0 = compound root, 1 = "hull" (the
+// 00769920 frame node), then each lever's start/joint/track node.
+struct LeveredState : public StockComponentState
+{
+    LeveredState() : maxDistance( FLT_MAX ), maxPriority( 0xffffffffu ), active( false ) {}
+    virtual void activate();
+    virtual void deactivate();
+    // 007873e0 releases the pool records; it never restores node locals.
+    virtual void destroy()
+    {
+        this->deactivate();
+        valid_ = false;
+        compound = WeakPyPtr<PyObjectPlus>();
+        lodLink = NULL;
+    }
+    virtual PyObject * wrap( bool owning );
+    bool snapshot( PyObject * model );
+    void fail( const char * what )
+    {
+        ERROR_MSG( "LeveredSuspension %s\n", what );
+        this->deactivate();
+    }
+
+    WeakPyPtr<PyObjectPlus> compound;
+    std::vector<BW::string> names;
+    std::vector<wot::StockAnimationMatrix> locals;
+    std::vector<wot::StockAnimationMatrix> worlds;
+    wot::StockLeveredSuspension kernel;
+    PyObjectPtr lodLink;
+    float maxDistance;
+    uint32 maxPriority;
+    bool active;
+};
+std::vector<std::weak_ptr<LeveredState> > activeLevered;
+std::unique_ptr<wot::VehicleCollisionProvider> leveredCollision;
+
+void LeveredState::activate()
+{
+    if (!valid_ || active)
+        return;
+    active = true;
+    activeLevered.push_back( std::static_pointer_cast<LeveredState>( this->shared_from_this() ) );
+}
+void LeveredState::deactivate()
+{
+    if (!active)
+        return;
+    active = false;
+    for (size_t index = 0; index < activeLevered.size(); ++index)
+        if (activeLevered[index].lock().get() == this)
+        {
+            activeLevered[index] = activeLevered.back();
+            activeLevered.pop_back();
+            break;
+        }
+}
+
+// The original reads one stored node array per frame; read locals and
+// worlds once so this frame's writes never feed back into its own reads.
+bool LeveredState::snapshot( PyObject * model )
+{
+    for (size_t index = 0; index < names.size(); ++index)
+    {
+        Matrix local;
+        Matrix authored;
+        Matrix parent;
+        Matrix world;
+        if (!stockVehicleCompoundNodeLocal( model, names[index], local ) ||
+            !stockVehicleCompoundNode( model, names[index], authored, parent, world ))
+            return false;
+        locals[index] = portable( local );
+        worlds[index] = portable( world );
+    }
+    return true;
+}
+
+bool parseLever( PyObject * object, std::vector<BW::string> & names, float & minimum, float & maximum )
+{
+    if (!PyTuple_Check( object ) || PyTuple_GET_SIZE( object ) != 5)
+    {
+        PyErr_SetString( PyExc_TypeError,
+            "LeveredSuspension() argument 2 element must be set to a SuspensionLever tuple" );
+        return false;
+    }
+    static const char * const fields[3] = { "startNodeName", "jointNodeName", "trackNodeName" };
+    for (int index = 0; index < 3; ++index)
+    {
+        BW::string name;
+        if (Script::setData( PyTuple_GET_ITEM( object, index ), name, fields[index] ) != 0)
+            return false;
+        names.push_back( name );
+    }
+    return Script::setData( PyTuple_GET_ITEM( object, 3 ), minimum, "minAngle" ) == 0 &&
+        Script::setData( PyTuple_GET_ITEM( object, 4 ), maximum, "maxAngle" ) == 0;
+}
+}
+
+class LeveredSuspension : public StockComponentWrapper
+{
+    Py_Header( LeveredSuspension, StockComponentWrapper )
+public:
+    LeveredSuspension( const std::shared_ptr<StockComponentState> & state, bool owning ) :
+        StockComponentWrapper( state, &s_type_, owning ) {}
+    std::shared_ptr<LeveredState> state() const
+    {
+        std::shared_ptr<LeveredState> value = std::dynamic_pointer_cast<LeveredState>( this->component() );
+        if (!value)
+            PyErr_SetString( PyExc_ValueError, "LeveredSuspension has been destroyed" );
+        return value;
+    }
+    PY_METHOD_DECLARE( py_setupLodLink )
+    PY_METHOD_DECLARE( py_setupLodSettings )
+    PY_FACTORY_DECLARE()
+};
+
+PyObject * LeveredState::wrap( bool owning )
+{
+    return new LeveredSuspension( this->shared_from_this(), owning );
+}
+
+PyObject * LeveredSuspension::pyNew( PyObject * args )
+{
+    PyObject * model;
+    PyObject * levers;
+    float speed;
+    if (!PyArg_ParseTuple( args, "OOf:LeveredSuspension", &model, &levers, &speed ))
+        return NULL;
+    Matrix root;
+    if (!stockVehicleCompoundNodeLocal( model, BW::string(), root ))
+    {
+        PyErr_SetString( PyExc_TypeError, "LeveredSuspension requires an active PyCompoundModel" );
+        return NULL;
+    }
+    // 007693a0: any sequence, each element converted by 00769e50.
+    if (!PySequence_Check( levers ) || PyString_Check( levers ))
+    {
+        PyErr_SetString( PyExc_TypeError,
+            "LeveredSuspension() argument 2 must be set to a sequence of NodeChainConfig" );
+        return NULL;
+    }
+    std::shared_ptr<LeveredState> state = std::make_shared<LeveredState>();
+    state->names.push_back( BW::string() );
+    state->names.push_back( "hull" );
+    std::vector<wot::StockLeverInput> inputs;
+    const Py_ssize_t count = PySequence_Size( levers );
+    for (Py_ssize_t index = 0; index < count; ++index)
+    {
+        PyObjectPtr item( PySequence_GetItem( levers, index ), PyObjectPtr::STEAL_REFERENCE );
+        wot::StockLeverInput input;
+        const int first = static_cast<int>( state->names.size() );
+        if (!item || !parseLever( item.get(), state->names, input.minAngle, input.maxAngle ))
+            return NULL;
+        input.startNode = first;
+        input.jointNode = first + 1;
+        input.trackNode = first + 2;
+        inputs.push_back( input );
+    }
+    state->locals.resize( state->names.size() );
+    state->worlds.resize( state->names.size() );
+    for (size_t index = 0; index < state->names.size(); ++index)
+    {
+        Matrix local;
+        if (!stockVehicleCompoundNodeLocal( model, state->names[index], local ))
+        {
+            // The original reads an unresolved index out of bounds; refuse it here.
+            PyErr_Format( PyExc_ValueError, "LeveredSuspension cannot find compound node %s",
+                state->names[index].c_str() );
+            return NULL;
+        }
+        state->locals[index] = portable( local );
+    }
+    if (!wot::buildStockLeveredSuspension( state->kernel, inputs, state->locals, speed, stockBattleLeveredMath() ))
+    {
+        PyErr_SetString( PyExc_ValueError, "LeveredSuspension requires 1 to 32 resolvable levers" );
+        return NULL;
+    }
+    state->compound = WeakPyPtr<PyObjectPlus>( static_cast<PyObjectPlus *>( model ) );
+    // Svarog components start inactive; the appearance system activates them.
+    return new LeveredSuspension( state, true );
+}
+
+PyObject * LeveredSuspension::py_setupLodLink( PyObject * args )
+{
+    PyObject * link;
+    if (!PyArg_ParseTuple( args, "O:setupLodLink", &link ))
+        return NULL;
+    uint32 priority;
+    float distance;
+    if (link != Py_None && !sampleStockLodLink( link, priority, distance ))
+    {
+        PyErr_SetString( PyExc_TypeError,
+            "setupLodLink() argument 1 must be set to a DataLinks::DataLink<LodProcessing::LodState>::Type" );
+        return NULL;
+    }
+    std::shared_ptr<LeveredState> value = this->state();
+    if (!value)
+        return NULL;
+    value->lodLink = link == Py_None ? NULL : link;
+    Py_RETURN_NONE;
+}
+
+// 0077efe0: a tuple of up to two items; a missing or None maxPriority keeps
+// 0xffffffff and an empty tuple keeps both FLT_MAX defaults.
+PyObject * LeveredSuspension::py_setupLodSettings( PyObject * args )
+{
+    PyObject * settings;
+    if (!PyArg_ParseTuple( args, "O:setupLodSettings", &settings ))
+        return NULL;
+    if (!PyTuple_Check( settings ) || PyTuple_GET_SIZE( settings ) > 2)
+    {
+        PyErr_SetString( PyExc_TypeError, "Invalid args count" );
+        return NULL;
+    }
+    float distance = FLT_MAX;
+    uint32 priority = 0xffffffffu;
+    const Py_ssize_t size = PyTuple_GET_SIZE( settings );
+    if (size > 0 && Script::setData( PyTuple_GET_ITEM( settings, 0 ), distance, "maxLodDistance" ) != 0)
+        return NULL;
+    if (size > 1 && PyTuple_GET_ITEM( settings, 1 ) != Py_None &&
+        Script::setData( PyTuple_GET_ITEM( settings, 1 ), priority, "maxPriority" ) != 0)
+        return NULL;
+    std::shared_ptr<LeveredState> value = this->state();
+    if (!value)
+        return NULL;
+    value->maxDistance = distance;
+    value->maxPriority = priority;
+    Py_RETURN_NONE;
+}
+PY_TYPEOBJECT( LeveredSuspension )
+PY_BEGIN_METHODS( LeveredSuspension )
+    PY_METHOD( setupLodLink )
+    PY_METHOD( setupLodSettings )
+PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES( LeveredSuspension )
+PY_END_ATTRIBUTES()
+PY_FACTORY( LeveredSuspension, Vehicular )
+
+// 00788fe0: the ground pass (00783a60) for every active entry, then the
+// update (00787f50) for every entry, then the node writes (00789060).
+void tickStockLeveredSuspensions( float frameTime )
+{
+    const std::vector<std::weak_ptr<LeveredState> > snapshot = activeLevered;
+    if (snapshot.empty())
+        return;
+    if (!leveredCollision)
+        leveredCollision = makeStockGroundCollisionProvider();
+    const wot::StockLeveredMath & math = stockBattleLeveredMath();
+    std::vector<std::shared_ptr<LeveredState> > states;
+    std::vector<PyObjectPtr> models;
+    for (size_t index = 0; index < snapshot.size(); ++index)
+    {
+        std::shared_ptr<LeveredState> state = snapshot[index].lock();
+        if (!state || !state->valid() || !state->active)
+            continue;
+        PyObjectPtr model( const_cast<PyObject *>( state->compound.getPyObj() ) );
+        // 00781f70: an unbound LOD link always passes.
+        bool allowed = true;
+        if (state->lodLink)
+        {
+            uint32 priority;
+            float distance;
+            if (!sampleStockLodLink( state->lodLink.get(), priority, distance ))
+            {
+                state->fail( "lost its native LOD state" );
+                continue;
+            }
+            allowed = state->maxDistance >= distance && state->maxPriority >= priority;
+        }
+        state->kernel.history = wot::advanceStockLeveredHistory( state->kernel.history, allowed );
+        if (!model || !state->snapshot( model.get() ))
+        {
+            state->fail( "lost its compound nodes" );
+            continue;
+        }
+        states.push_back( state );
+        models.push_back( model );
+    }
+    for (size_t index = 0; index < states.size(); ++index)
+    {
+        LeveredState & state = *states[index];
+        if (!(state.kernel.history & 1))
+            continue;
+        uint32 spaceID;
+        BoundingBox bounds;
+        if (!stockVehicleCompoundContext( models[index].get(), spaceID, bounds ) || bounds.insideOut())
+        {
+            state.fail( "lost its active compound bounds" );
+            continue;
+        }
+        const std::array<float, 6> box = {{ bounds.minBounds().x, bounds.minBounds().y, bounds.minBounds().z,
+            bounds.maxBounds().x, bounds.maxBounds().y, bounds.maxBounds().z }};
+        wot::groundStockLevered( state.kernel, state.worlds[1], box,
+            []( const std::array<float, 6> & value )
+            {
+                // 00783a60 prepares the collider in the camera space only.
+                ClientSpacePtr camera = DeprecatedSpaceHelpers::cameraSpace();
+                wot::VehicleCollisionBounds queryBounds;
+                queryBounds.minimum = { value[0], value[1], value[2] };
+                queryBounds.maximum = { value[3], value[4], value[5] };
+                if (!camera || !leveredCollision->prepare( queryBounds, camera->id(), UINT32_MAX ))
+                    ERROR_MSG( "LeveredSuspension cannot prepare its ground-query space\n" );
+            },
+            []( const wot::StockAnimationVector & origin, const wot::StockAnimationVector & direction,
+                float length, float & distance, wot::StockAnimationVector & normal )
+            {
+                wot::VehicleCollisionRay ray;
+                ray.origin = { origin[0], origin[1], origin[2] };
+                ray.direction = { direction[0], direction[1], direction[2] };
+                ray.length = length;
+                wot::VehicleCollisionRayHit hit;
+                if (!leveredCollision->query_ray( ray, hit ))
+                    return false;
+                distance = hit.distance;
+                normal = {{ hit.normal.x, hit.normal.y, hit.normal.z }};
+                return true;
+            },
+            math );
+    }
+    for (size_t index = 0; index < states.size(); ++index)
+        if (states[index]->active)
+            wot::updateStockLevered( states[index]->kernel, frameTime, states[index]->worlds[1], math );
+    for (size_t index = 0; index < states.size(); ++index)
+    {
+        LeveredState & state = *states[index];
+        if (!state.active)
+            continue;
+        std::vector<wot::StockLeveredNodeWrite> writes;
+        wot::writeStockLeveredNodes( state.kernel, state.worlds[1], state.locals, state.worlds, writes, math );
+        // The compound stays the sole node-local owner; wheels write their
+        // own child nodes, so the two writers compose through the hierarchy.
+        for (size_t write = 0; write < writes.size(); ++write)
+            if (!writeStockVehicleCompoundNodeLocal( models[index].get(),
+                    state.names[writes[write].node], native( writes[write].local ) ))
+            {
+                state.fail( "cannot commit its compound node" );
+                break;
+            }
+    }
+}
+
 namespace
 {
 class BattleAnimationScriptShutdown : public Script::FiniTimeJob
 {
     virtual void fini()
     {
+        activeLevered.clear();
+        leveredCollision.reset();
         activeLinkedNodes.clear();
         activeSuspensionSounds.clear();
     }

@@ -204,6 +204,10 @@ inline int setData(PyObject * o, uint16 & value, const char * name = "") {
     if (v < 0 || v > 0xffff) { PyErr_SetString(PyExc_ValueError, "Integer is out of range"); return -1; }
     value = uint16(v); return 0;
 }
+inline int setData(PyObject * o, uint32 & value, const char * name = "") {
+    if (!PyInt_Check(o) || PyInt_AsLong(o) < 0) { PyErr_Format(PyExc_TypeError, "%s must be set to an unsigned int", name); return -1; }
+    value = uint32(PyInt_AsLong(o)); return 0;
+}
 inline int setData(PyObject * o, BW::string & value, const char * name = "") {
     if (!PyString_Check(o)) { PyErr_Format(PyExc_TypeError, "%s must be set to a string", name); return -1; }
     value = PyString_AsString(o); return 0;
@@ -255,5 +259,19 @@ inline bool call(PyObject * fn, PyObject * args, const char *) {
 namespace StockAudioDetail { struct Source { std::string name; bool alive; }; struct Voice {}; }
 extern std::vector<std::string> hostAudio;
 struct ResourceRefs;
-struct BoundingBox;
+struct BoundingBox {
+    Vector3 lo, hi;
+    const Vector3 & minBounds() const { return lo; }
+    const Vector3 & maxBounds() const { return hi; }
+    bool insideOut() const { return lo.x > hi.x || lo.y > hi.y || lo.z > hi.z; }
+};
+struct ClientSpace { uint32 id_ = 1; uint32 id() const { return id_; } };
+struct ClientSpacePtr {
+    ClientSpace * p = nullptr;
+    ClientSpacePtr(ClientSpace * s = nullptr) : p(s) {}
+    ClientSpace * operator->() const { return p; }
+    explicit operator bool() const { return p != nullptr; }
+    bool operator!() const { return p == nullptr; }
+};
+namespace DeprecatedSpaceHelpers { ClientSpacePtr cameraSpace(); }
 }

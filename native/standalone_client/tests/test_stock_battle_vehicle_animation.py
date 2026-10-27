@@ -112,7 +112,7 @@ class StockBattleVehicleAnimationKernelTest(unittest.TestCase):
 
 FAKE_HEADERS = ('pch.hpp', 'cstdmf/bw_namespace.hpp', 'pyscript/script.hpp', 'pyscript/script_math.hpp',
                 'pyscript/py_callback.hpp', 'romp/resource_ref.hpp', 'romp/py_resource_refs.hpp',
-                'math/boundbox.hpp')
+                'math/boundbox.hpp', 'space/client_space.hpp', 'space/deprecated_space_helpers.hpp')
 PYC_MEMBERS = (('vehicle_systems/model_assembler', 'STOCK_MODEL_ASSEMBLER_PYC'),
                ('vehicle_systems/vehicle_assembler', 'STOCK_VEHICLE_ASSEMBLER_PYC'),
                ('vehicle_systems/CompoundAppearance', 'STOCK_COMPOUND_APPEARANCE_PYC'))
@@ -139,9 +139,9 @@ class StockBattleVehicleAnimationHostTest(unittest.TestCase):
             flags = [f for f in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
                      if f != '-DNDEBUG']
             libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
-            subprocess.run(['c++', '-std=c++14', '-Wno-deprecated-register', '-Wno-writable-strings',
+            subprocess.run(['c++', '-std=c++17', '-Wno-register', '-Wno-deprecated-register', '-Wno-writable-strings',
                             '-UNDEBUG', '-ffp-contract=off', '-I', str(path / 'include'),
-                            '-I', str(ROOT / 'bigworld'), '-I', str(ROOT / 'tests'),
+                            '-I', str(ROOT / 'bigworld'), '-I', str(ROOT / 'tests'), '-I', str(ROOT / 'include'),
                             str(ROOT / 'tests/stock_battle_vehicle_animation_host.cpp'),
                             *flags, *libs, '-o', str(path / 'host')], check=True)
             environment = dict(os.environ)
