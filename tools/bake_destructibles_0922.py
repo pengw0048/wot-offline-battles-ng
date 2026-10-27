@@ -42,6 +42,7 @@ import navigation_graph_schema
 FORMAT_NAME = 'offline-lan-0922-destructible-catalog'
 FORMAT_VERSION = 9
 MANIFEST_FORMAT = FORMAT_NAME + '-manifest'
+EMPTY_ROWS_FORMAT = 'offline-lan-0922-wgde-empty-rows'
 GAME_VERSION = '0.9.22.0.1-cn-1513'
 DECODER_VERSION = '0.9.22.0.1'
 DECODER_REGION = 'RU'
@@ -263,51 +264,8 @@ def _item_scale(transform):
     return scale
 
 
-def native_wires(compiled, bsmi_count):
-    """Map referenced scene rows to native ``(chunk_id, item_index)`` wires.
-
-    Exact pinned #1513 enumeration contract, one rule per WGDE row class:
-
-    * Table "1" rows are ``(chunk_id, global_item_begin, item_count)``.  Sorted
-      by ``global_item_begin`` they must partition table "2" from zero, and no
-      chunk id may repeat.  File order is not significant, and the native item
-      index restarts at zero inside every chunk, so a streamed chunk produces
-      the same wires as the same chunk loaded at battle start.
-    * Table "2" rows are inclusive reference ranges ``[ref_begin, ref_end]``
-      into table "3" and must partition it from zero.  ``ref_end ==
-      ref_begin - 1`` is an authored empty row that references no scene
-      instance.
-    * An empty table "2" row does NOT consume a streamed native item index.
-      The provider enumerates only rows that reference at least one scene
-      instance, so the native item index of a row is the number of non-empty
-      rows before it inside its chunk.
-    * A table "3" reference selects an SpTr row when bit ``0x80000000`` is set
-      and a BSMI row otherwise.  Both classes are scene instances and consume
-      the same item index space: a SpeedTree row advances the index exactly
-      like a BSMI row.
-    * Several references in one row share one native item; that is how the
-      separate BSMO module rows of a structure collapse to one identity.  A
-      single reference may never appear in two rows.
-    * An ignored BSMO entry type (a type-2/type-3 authored effect) is still a
-      referenced scene instance, so its row consumes an item index even though
-      ``bake_compiled_map`` never makes it crushable.
-
-    The empty-row rule is the one class that pinned resource data alone cannot
-    settle, because a compiled empty row is indistinguishable from a row the
-    provider skipped.  It is fixed by exact live #1513 evidence: three separate
-    reports recovered a live destructible matrix whose quantized locator
-    signature is unique in the baked catalog, and in every case the live item
-    index equalled the non-empty-row count and not the table-2 position:
-
-    * ``11_murovanka`` chunk 32124 ``gaf001_WoodFence`` live item 7;
-    * ``18_cliff`` chunk 32893 ``bld704_shed`` live item 6;
-    * ``34_redshire`` chunk 33148 ``env422_WallLamp`` live item 58.
-
-    Counting the empty rows shifted exactly those three slots to 8, 7 and 59.
-    Empty rows exist in only six standard maps, and every reported live wire
-    mismatch came from three of those six; the other 35 maps are unaffected by
-    this rule and reported no wire mismatch.
-    """
+def _wgde_rows(compiled):
+    """Validated WGDE chunk ranges, per-row reference spans and table 3."""
     wgde = compiled.sections['WGDE']._data
     table1 = wgde.get('1')
     table2 = wgde.get('2')
@@ -315,7 +273,6 @@ def native_wires(compiled, bsmi_count):
     if not table1 or not isinstance(table2, list) or \
             not isinstance(table3, list):
         raise ValueError('WGDE destructible tables are unavailable')
-    sptr_count = len(compiled.sections['SpTr']._data['speedtree_list'])
     chunk_ranges = sorted((int(begin), int(count), int(chunk_id))
                           for chunk_id, begin, count in table1)
     item_cursor = 0
@@ -345,14 +302,64 @@ def native_wires(compiled, bsmi_count):
         ref_cursor = ref_end + 1
     if ref_cursor != len(table3):
         raise ValueError('WGDE item spans do not cover the reference table')
-    item_wires = [None] * len(table2)
+    return chunk_ranges, spans, table3
+
+
+def empty_wgde_rows(compiled):
+    """Per chunk id, the raw rows that reference no scene instance."""
+    chunk_ranges, spans, unused_table3 = _wgde_rows(compiled)
+    result = {}
     for begin, count, chunk_id in chunk_ranges:
-        native_index = 0
+        rows = [position - begin for position in range(begin, begin + count)
+                if spans[position] is None]
+        if rows:
+            result[chunk_id] = rows
+    return result
+
+
+def native_wires(compiled, bsmi_count):
+    """Map referenced scene rows to native ``(chunk_id, item_index)`` wires.
+
+    Exact pinned #1513 enumeration contract, one rule per WGDE row class:
+
+    * Table "1" rows are ``(chunk_id, global_item_begin, item_count)``.  Sorted
+      by ``global_item_begin`` they must partition table "2" from zero, and no
+      chunk id may repeat.  File order is not significant, and the native item
+      index restarts at zero inside every chunk, so a streamed chunk produces
+      the same wires as the same chunk loaded at battle start.
+    * Table "2" rows are inclusive reference ranges ``[ref_begin, ref_end]``
+      into table "3" and must partition it from zero.  ``ref_end ==
+      ref_begin - 1`` is an authored empty row that references no scene
+      instance.
+    * An empty row still consumes its native item index: the native item
+      index of a row is its raw position inside its chunk.
+    * A table "3" reference selects an SpTr row when bit ``0x80000000`` is set
+      and a BSMI row otherwise.  Both classes are scene instances and share
+      the same per-chunk index space.
+    * Several references in one row share one native item; that is how the
+      separate BSMO module rows of a structure collapse to one identity.  A
+      single reference may never appear in two rows.
+    * An ignored BSMO entry type (a type-2/type-3 authored effect) is still a
+      referenced scene instance with its row's index, even though
+      ``bake_compiled_map`` never makes it crushable.
+
+    This is the identity #1513 reports: DestructiblesSceneProvider bind
+    006bab30 keys every referenced scene object to ``(chunk id, raw row)``
+    (006bac8d skips an empty row's references, 006bad43 still advances the
+    row, 006bacbc stores it) and 006ba9b0 returns that key to collision
+    callbacks.  The forward lookups 006ba8f0/006baa10 read only a row's
+    ``ref_begin``, so querying an empty row returns the next row's first
+    object.  The earlier Murovanka (32124, 7), Cliff (32893, 6) and Redshire
+    (33148, 58) reports queried exactly such empty rows; their live matrices
+    are the next row's objects and cannot distinguish the two numberings.
+    """
+    chunk_ranges, spans, table3 = _wgde_rows(compiled)
+    sptr_count = len(compiled.sections['SpTr']._data['speedtree_list'])
+    item_wires = [None] * len(spans)
+    for begin, count, chunk_id in chunk_ranges:
         for position in range(begin, begin + count):
-            if spans[position] is None:
-                continue
-            item_wires[position] = (chunk_id, native_index)
-            native_index += 1
+            if spans[position] is not None:
+                item_wires[position] = (chunk_id, position - begin)
     row_wires = {}
     wire_rows = {}
     speedtree_wires = {}
@@ -786,6 +793,24 @@ def bake_map(client_root, map_name, destructibles_data=None,
                              destructibles_data, descriptors)
 
 
+def bake_empty_rows(client_root):
+    """Each map's empty raw WGDE rows, bound to its space.bin digest."""
+    maps = {}
+    for map_name in SUPPORTED_MAPS:
+        unused_scripts, map_path = _client_inputs(client_root, map_name)
+        with zipfile.ZipFile(map_path, 'r') as package:
+            space_data = package.read('spaces/%s/space.bin' % map_name)
+        compiled = CompiledSpace(io.BytesIO(space_data), DECODER_VERSION,
+                                 DECODER_REGION, ['WGDE'])
+        maps[map_name] = {
+            'space_bin_sha256': _sha256_bytes(space_data),
+            'empty_rows': dict((str(chunk_id), rows) for chunk_id, rows in
+                               sorted(empty_wgde_rows(compiled).items())),
+        }
+    return {'format': EMPTY_ROWS_FORMAT, 'version': 1,
+            'game_version': GAME_VERSION, 'maps': maps}
+
+
 def write_json(path, data):
     directory = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(directory):
@@ -895,11 +920,16 @@ def main(argv=None):
     parser.add_argument('--output', help='Single-map output JSON path')
     parser.add_argument('--output-dir', default=DEFAULT_OUTPUT_ROOT,
                         help='Complete batch destination')
+    parser.add_argument('--empty-rows-output',
+                        help='Write every map\'s empty WGDE rows instead')
     args = parser.parse_args(argv)
     if args.all and args.output:
         parser.error('--output can only be used with one --map')
     try:
-        if args.all:
+        if args.empty_rows_output:
+            write_json(args.empty_rows_output, bake_empty_rows(args.client))
+            print('wrote empty WGDE rows: %d standard maps' % len(SUPPORTED_MAPS))
+        elif args.all:
             digests = bake_all(args.client, args.output_dir)
             print('validated destructible batch: %d standard maps' %
                   len(digests))
