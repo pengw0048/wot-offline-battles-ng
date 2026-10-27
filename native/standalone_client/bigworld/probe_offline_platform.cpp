@@ -118,6 +118,43 @@ static void checkWindows()
     std::puts("Actual Win32 windows: no-activation / reentry / generation / destroyed identity / rollback PASS");
 }
 
+// Run with OFFLINE_LAN_0922_CLIENT_MODE=simulation_worker for the worker role.
+static void checkWorkerWindows()
+{
+    if (!wot::stockSimulationWorker()) {
+        CHECK(call("confirm_hidden_worker_window") == -ERROR_NOT_SUPPORTED);
+        std::puts("Actual Win32 player role: hidden-worker confirmation refused PASS");
+        return;
+    }
+    const HWND foreground = GetForegroundWindow();
+    CHECK(call("confirm_hidden_worker_window") == -ERROR_INVALID_WINDOW_HANDLE);
+    HWND worker = CreateWindowExW(0, L"WotOfflinePlatformProbe", L"Worker probe",
+        WS_OVERLAPPEDWINDOW, -10000, -10000, 100, 100, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    CHECK(worker != NULL);
+    // A foreign mark value is not this window's identity.
+    CHECK(SetPropW(worker, wot::stockWorkerWindowProperty(), (HANDLE)1));
+    CHECK(call("confirm_hidden_worker_window") == -ERROR_INVALID_WINDOW_HANDLE);
+    CHECK(SetPropW(worker, wot::stockWorkerWindowProperty(), worker));
+    CHECK(call("hide_process_windows") == 0);
+    CHECK(call("confirm_hidden_worker_window") == 1);
+    CHECK(call("confirm_hidden_worker_window") == 1);
+    CHECK(call("show_process_windows") == 0);
+    CHECK(!IsWindowVisible(worker));
+    // A visible worker window is hidden by the normal path, never confirmed,
+    // and restoration retires its record without showing it again.
+    ShowWindow(worker, SW_SHOWNOACTIVATE);
+    CHECK(call("confirm_hidden_worker_window") == -ERROR_INVALID_STATE);
+    CHECK(call("hide_process_windows") == 1);
+    CHECK(!IsWindowVisible(worker) && GetPropW(worker, WINDOW_GENERATION) != NULL);
+    CHECK(call("show_process_windows") == 0);
+    CHECK(!IsWindowVisible(worker) && GetPropW(worker, WINDOW_GENERATION) == NULL);
+    CHECK(call("confirm_hidden_worker_window") == 1);
+    CHECK(DestroyWindow(worker));
+    CHECK(call("confirm_hidden_worker_window") == -ERROR_INVALID_WINDOW_HANDLE);
+    CHECK(GetForegroundWindow() == foreground);
+    std::puts("Actual Win32 worker role: never-shown confirmation / visible refusal / no restore / destroyed PASS");
+}
+
 static void raiseRecorded()
 {
     __try { RaiseException(0xc0000094UL, 0, 0, NULL); }
@@ -264,8 +301,9 @@ int main(int argc, char **argv)
         CHECK(result == NULL && PyErr_ExceptionMatches(PyExc_TypeError));
         Py_XDECREF(result); PyErr_Clear();
     }
-    CHECK(methodCount == 3);
-    checkWindows();
+    CHECK(methodCount == 4);
+    if (!wot::stockSimulationWorker()) checkWindows();
+    checkWorkerWindows();
     WCHAR folder[MAX_PATH], path[MAX_PATH];
     CHECK(GetTempPathW(MAX_PATH, folder) != 0);
     CHECK(swprintf_s(path, L"%sWoT-platform-\x58f0\x97f3-%lu.log", folder, GetCurrentProcessId()) > 0);

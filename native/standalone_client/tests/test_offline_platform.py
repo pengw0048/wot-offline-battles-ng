@@ -8,6 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = ('install_exception_trail', 'hide_process_windows', 'show_process_windows')
+# The independent client's own never-shown worker window has no fork counterpart.
+LOCAL_NAMES = ('confirm_hidden_worker_window',)
 
 
 class OfflinePlatformTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class OfflinePlatformTests(unittest.TestCase):
             self.assertRegex(original, entry)
             self.assertRegex(adapted, entry)
         table = adapted.split('static PyMethodDef methods[] = {', 1)[1].split('};', 1)[0]
-        self.assertEqual(tuple(re.findall(r'\{\s*"([a-z_]+)"', table)), NAMES)
+        self.assertEqual(tuple(re.findall(r'\{\s*"([a-z_]+)"', table)), NAMES + LOCAL_NAMES)
         self.assertIn('#include "stock_offline_platform.hpp"', adapted)
         self.assertIn('#include <Python.h>', (ROOT / 'bigworld/stock_offline_platform.hpp').read_text())
         self.assertNotRegex(adapted, r'RVA_|EXPECTED_PE_|validate_host|VirtualProtect|FlushInstructionCache')

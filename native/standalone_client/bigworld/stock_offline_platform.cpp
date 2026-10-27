@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <tlhelp32.h>
 #include "stock_offline_platform.hpp"
+#include "stock_worker_runtime.hpp"
 
 namespace {
 static_assert(sizeof(void *) == 4, "The supported platform is Win32 x86");
@@ -42,6 +43,12 @@ typedef struct HideContext {
 	DWORD error_code;
 	unsigned int first_new_index;
 } HideContext;
+
+typedef struct WorkerWindowContext {
+	DWORD process_id;
+	unsigned int marked;
+	unsigned int visible;
+} WorkerWindowContext;
 
 typedef struct TrailModule {
 	uintptr_t base;
@@ -688,6 +695,11 @@ static DWORD window_error()
 static bool restore_window(HiddenWindow &record, DWORD &error)
 {
     if (!owns_window(record)) return true;
+    if (wot::stockSimulationWorker()) {
+        // A simulation worker's windows stay hidden for the whole process.
+        RemovePropW(record.handle, WINDOW_GENERATION);
+        return true;
+    }
     SetLastError(ERROR_SUCCESS);
     if (!SetWindowPlacement(record.handle, &record.placement)) {
         error = window_error();
@@ -783,9 +795,37 @@ static PyObject *show_process_windows(PyObject *, PyObject *)
         if (!restore_window(pending[i], error)) {
             g_hidden_windows[g_hidden_window_count++] = pending[i];
             if (!first_error) first_error = error;
-        } else if (live) ++restored;
+        } else if (live && !wot::stockSimulationWorker()) ++restored;
     }
     return PyInt_FromLong(first_error ? -(long)first_error : (long)restored);
+}
+
+static BOOL CALLBACK worker_window_callback(HWND handle, LPARAM parameter)
+{
+    WorkerWindowContext *context = (WorkerWindowContext *)parameter;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(handle, &pid);
+    if (pid != context->process_id) return TRUE;
+    if (IsWindowVisible(handle)) ++context->visible;
+    if (GetPropW(handle, wot::stockWorkerWindowProperty()) == (HANDLE)handle) ++context->marked;
+    return TRUE;
+}
+
+// Proves, without hiding anything, that this simulation worker's own window
+// exists and that no window of this process is visible.
+static PyObject *confirm_hidden_worker_window(PyObject *, PyObject *)
+{
+    WindowOperation operation;
+    if (!operation.owned) return PyInt_FromLong(-ERROR_BUSY);
+    if (g_closed) return PyInt_FromLong(-ERROR_OPERATION_ABORTED);
+    if (!wot::stockSimulationWorker()) return PyInt_FromLong(-ERROR_NOT_SUPPORTED);
+    WorkerWindowContext context = { GetCurrentProcessId(), 0, 0 };
+    SetLastError(ERROR_SUCCESS);
+    if (!EnumWindows(worker_window_callback, (LPARAM)&context))
+        return PyInt_FromLong(-(long)window_error());
+    if (context.marked != 1) return PyInt_FromLong(-ERROR_INVALID_WINDOW_HANDLE);
+    if (context.visible) return PyInt_FromLong(-ERROR_INVALID_STATE);
+    return PyInt_FromLong(1);
 }
 
 static PyMethodDef methods[] = {
@@ -795,6 +835,8 @@ static PyMethodDef methods[] = {
       "Hide visible top-level windows owned by this process." },
     { "show_process_windows", show_process_windows, METH_NOARGS,
       "Restore surviving windows previously hidden by this module." },
+    { "confirm_hidden_worker_window", confirm_hidden_worker_window, METH_NOARGS,
+      "Confirm that this simulation worker's own window was never shown." },
     { NULL, NULL, 0, NULL }
 };
 } // namespace

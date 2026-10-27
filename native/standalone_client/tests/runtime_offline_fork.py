@@ -62,8 +62,8 @@ def inspect_builtin():
     assert platform._wot_offline_fork_revision == expected['revision']
     methods = sorted(name for name in dir(platform) if not name.startswith('_'))
     assert methods == sorted(('install_exception_trail', 'hide_process_windows',
-        'show_process_windows', 'apply_standard_gameplay_mask',
-        'restore_standard_gameplay_mask')), methods
+        'show_process_windows', 'confirm_hidden_worker_window',
+        'apply_standard_gameplay_mask', 'restore_standard_gameplay_mask')), methods
     for name in methods:
         try:
             getattr(platform, name)(1)
@@ -99,6 +99,8 @@ def inspect_builtin():
     restored = policy.show_process_windows()
     assert 0 <= restored <= hidden
     REPORT['process_windows'] = {'hidden': hidden, 'restored': restored}
+    # This check runs as a visible player; only a native worker may confirm.
+    assert platform.confirm_hidden_worker_window() == -50
     REPORT['checks'].append('actual process services and reversible mapping scope')
 
 

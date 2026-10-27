@@ -20,23 +20,23 @@ PyObject * restoreMapping( PyObject *, PyObject * )
     return PyInt_FromLong( CompiledSpace::restoreStockStandardGameplayMapping() );
 }
 
-PyMethodDef runtimeMethods[6] = {};
+PyMethodDef runtimeMethods[7] = {};
 
 bool initRuntimeModule()
 {
     const PyMethodDef * platform = stockOfflinePlatformMethods();
-    for (size_t index = 0; index < 3; ++index)
+    for (size_t index = 0; index < 4; ++index)
     {
         if (!platform[index].ml_name) return false;
         runtimeMethods[index] = platform[index];
     }
-    if (platform[3].ml_name) return false;
+    if (platform[4].ml_name) return false;
     const PyMethodDef apply = { "apply_standard_gameplay_mask", applyMapping,
         METH_NOARGS, "Capture standard gameplay visibility for local geometry mappings." };
     const PyMethodDef restore = { "restore_standard_gameplay_mask", restoreMapping,
         METH_NOARGS, "Restore all-gameplay admission for subsequent local mappings." };
-    runtimeMethods[3] = apply;
-    runtimeMethods[4] = restore;
+    runtimeMethods[4] = apply;
+    runtimeMethods[5] = restore;
     PyObject * module = Py_InitModule( "offline_instance_guard_native", runtimeMethods );
     return module && PyModule_AddStringConstant( module, "_wot_offline_fork_revision",
         "144619f6eb2925f8da4b13637bf65b8550fc898f" ) == 0;
