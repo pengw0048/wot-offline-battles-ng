@@ -43,6 +43,11 @@ HOMING_UPDATE = 0x7a19e0
 SPEEDTREE_UPDATE = 0x7978e0
 
 ADVANCED_SIZE = 0x5c
+APP = 0x1d1ff60
+APP_GAME_DELTA = 0x57c
+WATERS = 0xa2cd40
+WATER_DISTANCE = 0xa302e0
+SCENE_SPACE = 0x7a3770
 
 # Branch targets the scenario sets must reach (0x7a5a65, a tangent sphere, is not).
 BRANCHES = {
@@ -53,7 +58,8 @@ BRANCHES = {
     0x7a6c79: 'front volume', 0x7a6d8d: 'last group', 0x7a6f84: 'rear volume', 0x7a70e4: 'rear nearer',
     0x7a0d92: 'pivot at start', 0x7a0da4: 'pivot advanced', 0x7a0df8: 'pivot clear',
     0x7a0e56: 'no collision', 0x7a1b3b: 'zero aim', 0x7a1bd0: 'clip clamp', 0x7a1d52: 'camera moved',
-    0x7a52c2: 'scroll ignored', 0x7a52bd: 'scroll clamp',
+    0x7a52c2: 'scroll ignored', 0x7a52bd: 'scroll clamp', 0x7a3507: 'advanced collider path',
+    0x7a352d: 'space check path', 0x7a373d: 'water lift', 0x7a4104: 'space box clamp',
 }
 
 
@@ -109,6 +115,13 @@ class OriginalBattleCamera(OriginalCursorCamera):
         self.put_word(self.space, self.vtable(*slots))
         self.put_word(self.space + 4, 1000)
         self.put_word(CAMERA_SPACE, self.space)
+        self.app = self.alloc(0x600)
+        self.put_word(APP, self.app)
+        self.waters = []
+        self.scene_check = (False, (0.0, 0.0, 0.0))
+        self.rehandle(WATERS, self._waters)
+        self.rehandle(SCENE_SPACE, self._scene_space)
+        self.rehandle(WATER_DISTANCE, self._water_distance)
         self.result = self.alloc(16)
         self.stop_x87 = self.STOP - 6
         self.uc.mem_write(self.stop_x87, b'\xd9\x1d' + struct.pack('<I', self.result))
@@ -161,6 +174,30 @@ class OriginalBattleCamera(OriginalCursorCamera):
     def _space_bounds(self, e):
         self.put_floats(e._arg(0), list(self.space_bounds[0]) + list(self.space_bounds[1]))
         e._return(e._arg(0), 4)
+
+    def _waters(self, e):
+        pointers = []
+        for depth in self.waters:
+            water = self.alloc(16)
+            self.put_floats(water + 4, [depth])
+            pointers.append(water)
+        array = self.alloc(4 * max(len(pointers), 1), struct.pack('<%dI' % len(pointers), *pointers))
+        vector = self.alloc(12)
+        self.uc.mem_write(vector, struct.pack('<III', array, array + 4 * len(pointers),
+                                              array + 4 * len(pointers)))
+        e._return(vector)
+
+    def _water_distance(self, e):
+        water = e.uc.reg_read(e.x86.UC_X86_REG_ECX)
+        e._return_x87(self.floats(water + 4, 1)[0], 12)
+
+    def _scene_space(self, e):
+        moved, offset = self.scene_check
+        if moved:
+            position = e._arg(0)
+            current = self.floats(position, 3)
+            self.put_floats(position, [f32(current[i] + offset[i]) for i in range(3)])
+        e._return(1 if moved else 0)
 
     def _hit_memory(self, hit):
         identifier, matrix, triangle, flags, distance = hit
@@ -245,11 +282,22 @@ class Scenario(object):
         elif name == 'space':
             e.put_word(CAMERA_SPACE, e.space if args[0] else 0)
         elif name == 'dtime':
-            raise RuntimeError('dtime is a host-only collider input')
+            e.put_floats(e.app + APP_GAME_DELTA, [args[0]])
         elif name == 'spacebounds':
             e.space_bounds = (tuple(args[0]), tuple(args[1]))
         elif name == 'waters':
-            raise RuntimeError('waters run only in the host collider')
+            e.waters = list(args[0])
+        elif name == 'scenecheck':
+            e.scene_check = (bool(args[0]), tuple(args[1]))
+        elif name == 'collide':
+            collider = e.alloc(0x68 + 0x10)
+            e.uc.mem_write(collider + 0xc, bytes(e.uc.mem_read(self.advanced, ADVANCED_SIZE)))
+            position = e.vector(args[0])
+            hit = e.call(COLLIDER_COLLIDE, [position, e.vector(args[1]), e.vector(args[2]),
+                                            e.vector(args[3]), 1 if args[4] else 0], ecx=collider) & 0xff
+            e.uc.mem_write(self.advanced, bytes(e.uc.mem_read(collider + 0xc, ADVANCED_SIZE)))
+            out += [str(hit)] + [hex_bits(v) for v in e.floats(position, 3)] + self.state()
+            e.sweep_calls = e.segment_calls = 0
         elif name in ('sweep', 'rear', 'segment'):
             setattr(e, name, list(args[0]))
         elif name == 'objbounds':

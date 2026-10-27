@@ -89,6 +89,8 @@ def host_text(command):
     name = command[0]
     out = [name]
     args = list(command[1:])
+    if name == 'waters':
+        return ' '.join(out + [str(len(args[0]))] + [hexf(v) for v in args[0]])
     if name == 'tpp':
         base = args[0]
         out += ['1'] + emit(base) if base is not None else ['0']
@@ -230,6 +232,27 @@ def advanced_commands(r):
     return commands
 
 
+def collide_commands(r):
+    commands = [('camera', 0.5, 1000.0, f32(1.2), f32(1.6)), ('space', 1),
+                ('spacebounds', (-60.0, -20.0, -60.0), (60.0, 40.0, 60.0))]
+    for scene in range(40):
+        commands.append(('advinit', 2.0, 1.0, 2.0, 0.1, 50.0))
+        for group in GROUPS:
+            commands.append(('advgroup',) + tuple(f32(v) for v in group[:7]) + (group[7],))
+        pivot = (0.0, 2.5, 0.0)
+        position = vec(r, 70.0) if r.random() < 0.3 else vec(r, 8.0)
+        hits = [obstacle(r, i, position) for i in range(r.choice([0, 2]))]
+        for i in range(len(hits)):
+            commands.append(('objbounds', i, (0.0, 0.0, 0.0), (8.0, 9.0, 8.0)))
+        commands += [('sweep', hits), ('rear', []), ('segment', []),
+                     ('dtime', f32(r.choice([0.016, 0.05]))),
+                     ('waters', [f32(r.choice([-1.0, 0.0, 0.7, 3.0])) for unused in range(r.choice([0, 1, 2]))]),
+                     ('scenecheck', r.random() < 0.5, vec(r, 0.5))]
+        direction = tuple(f32(v) for v in (0.0, -0.3, 0.95))
+        commands.append(('collide', position, pivot, direction, (0.0, 1.0, 0.0), r.random() < 0.7))
+    return commands
+
+
 def camera_commands(r):
     commands = [('camera', 0.5, 1000.0, f32(1.2), f32(1.6)), ('space', 1)]
     for unused in range(30):
@@ -291,6 +314,10 @@ class BattleCameraOracleTests(unittest.TestCase):
         count = self.compare(advanced_commands(random.Random(1515)))
         print('Advanced volume-group collider matched the original x86: %d commands' % count)
 
+    def test_collider_composition_matches_original(self):
+        count = self.compare(collide_commands(random.Random(1517)))
+        print('Camera collider composition and water lift matched the original x86: %d commands' % count)
+
     def test_camera_updates_match_original(self):
         count = self.compare(camera_commands(random.Random(1516)))
         print('ThirdPersonProvider and HomingCamera updates matched the original x86: %d commands'
@@ -299,7 +326,8 @@ class BattleCameraOracleTests(unittest.TestCase):
     def test_scenarios_reach_every_original_branch(self):
         oracle, executable = requirements(self)
         reached = set()
-        for commands in (advanced_commands(random.Random(1515)), camera_commands(random.Random(1516))):
+        for commands in (advanced_commands(random.Random(1515)), camera_commands(random.Random(1516)),
+                         collide_commands(random.Random(1517))):
             oracle.Scenario(executable, reached).run(commands)
         missing = sorted(name for address, name in oracle.BRANCHES.items() if address not in reached)
         self.assertEqual(missing, [])

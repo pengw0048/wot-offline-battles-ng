@@ -223,6 +223,23 @@ int main()
 			std::printf( " %d %d", w.sweepCalls, w.segmentCalls );
 			w.sweepCalls = w.segmentCalls = 0;
 		}
+		else if (command == "scenecheck")
+		{
+			w.sceneCheck = readInt() != 0;
+			w.sceneMove = readVector();
+		}
+		else if (command == "collide")
+		{
+			Vector3 position = readVector();
+			const Vector3 pivot = readVector(), direction = readVector(), up = readVector();
+			const bool useAdvanced = readInt() != 0;
+			StockCameraCollider collider( true );
+			collider.advanced() = advanced;
+			const int result = collider.collide( position, pivot, direction, up, useAdvanced );
+			advanced = collider.advanced();
+			std::printf( " %d", result ); put( position ); putState( advanced );
+			w.sweepCalls = w.segmentCalls = 0;
+		}
 		else if (command == "tpp")
 		{
 			ThirdPersonProvider tpp;
