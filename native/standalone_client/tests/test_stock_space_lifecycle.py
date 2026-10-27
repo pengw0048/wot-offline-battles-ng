@@ -30,6 +30,227 @@ else:raise AssertionError('Keywords must not be accepted')
 print('Actual CPython '+__import__('sys').version.split()[0]+': optional bool / 0..1 args / None / conversion failure before mutation PASS')
 '''
 
+CLIENT_BOUNDARY = r"""
+import BigWorld as B,gc,weakref
+LOCAL=1<<30
+def error(kind,text,call,*args,**keywords):
+    try:call(*args,**keywords)
+    except kind as caught:assert str(caught)==text,(str(caught),text)
+    else:raise AssertionError((call,args))
+B._reset()
+first=B.createSpace();second=B.createSpace()
+assert type(first) is int and LOCAL<=first<second and B.isClientSpace(first) is True
+error(TypeError,'createSpace() takes no arguments.',B.createSpace,1)
+for name in ('clearSpace','releaseSpace','isClientSpace'):
+    error(TypeError,name+'() expects 1 argument of type SpaceID',getattr(B,name))
+    error(TypeError,name+'() expects 1 argument of type SpaceID',getattr(B,name),first,first)
+    error(TypeError,'() argument 1 must be set to an int',getattr(B,name),'1')
+    error(TypeError,'() argument 1 must be set to an int',getattr(B,name),None)
+    error(TypeError,name+'() takes no keyword arguments',getattr(B,name),spaceID=first)
+error(TypeError,'clearAllSpaces() expects between 0 and 1 arguments of types bool',B.clearAllSpaces,1,2)
+error(TypeError,'resetEntityManager() expects between 0 and 2 arguments of types bool, bool',B.resetEntityManager,0,0,0)
+# Setting data converts SpaceID like the engine's int setter, floats truncate.
+assert B.isClientSpace(float(first)+0.75) is True and B.isClientSpace(1L*first) is True
+assert B.isClientSpace(424242) is False and B.isClientSpace(0) is False
+error(ValueError,'BigWorld.clearSpace(): No space ID 424242',B.clearSpace,424242)
+error(ValueError,'BigWorld.releaseSpace(): No space ID 424242',B.releaseSpace,424242)
+B._server(9)
+error(ValueError,'BigWorld.clearSpace(): Space ID 9 is not a client space (or is no longer held)',B.clearSpace,9)
+error(ValueError,'BigWorld.releaseSpace(): Space ID 9 is not a client space (or is no longer held)',B.releaseSpace,9)
+assert B.isClientSpace(9) is False
+# clear and release are distinct: clear keeps the held space and its entities.
+B._entity(first);B._entity(first)
+assert B.clearSpace(first) is None and B._space(first)==(1,1,1) and B._connection(first)==(2,0)
+assert B.clearSpace(first) is None and B._space(first)==(2,1,1)
+assert B.releaseSpace(first) is None and B._space(first) is None and B._connection(first) is None
+error(ValueError,'BigWorld.releaseSpace(): No space ID %d'%first,B.releaseSpace,first)
+assert B.isClientSpace(first) is False
+# clearAllSpaces: optional bool, geometry only, then a cyclic collection.
+for args in ((),(False,),(0,),('false',)):
+    B._reset();space=B.createSpace();B._server(3);B._entity(space)
+    assert B.clearAllSpaces(*args) is None and B._space(space)==(1,1,1) and B._space(3)[0]==1 and B._connection(space)==(1,0)
+for args in ((True,),(1,),('TRUE',)):
+    B._reset();space=B.createSpace();B._server(3)
+    assert B.clearAllSpaces(*args) is None and B._space(space)==(0,1,1) and B._space(3)[0]==1
+for args in ((None,),('yes',),([],)):
+    B._reset();space=B.createSpace();B._server(3)
+    try:B.clearAllSpaces(*args)
+    except TypeError:pass
+    else:raise AssertionError(args)
+    assert B._space(space)==(0,1,1) and B._space(3)[0]==0
+gc.disable()
+class Cycle(object):pass
+for quiting,expected in ((0,[1]),(1,[])):
+    B._quiting(quiting);hits=[];cycle=Cycle();cycle.self=cycle
+    reference=weakref.ref(cycle,lambda unused:hits.append(1));del cycle
+    B.clearAllSpaces();assert hits==expected,(quiting,hits)
+    gc.collect()
+B._quiting(0);gc.enable()
+# resetEntityManager parses both flags before rejecting keepPlayerAround.
+B._reset();B._offline(5);space=B.createSpace();B._entity(space)
+error(TypeError,'() argument 2 optionally must be set to a bool',B.resetEntityManager,True,[])
+error(ValueError,'Setting keepPlayerAround to True is now invalid',B.resetEntityManager,True)
+error(ValueError,'Setting keepPlayerAround to True is now invalid',B.resetEntityManager,'true',False)
+assert B._main()==(1,0)
+error(TypeError,'resetEntityManager() takes no keyword arguments',B.resetEntityManager,keepPlayerAround=False)
+assert B.resetEntityManager() is None and B._main() is None
+assert B._connection(space)==(1,0) and B._space(space)==(0,1,1) and B._space(5)[0]==0
+assert B.resetEntityManager(False,True) is None
+print('Actual CPython '+__import__('sys').version.split()[0]+': six client-space wrappers, conversions, errors and GC PASS')
+"""
+
+PYC_SEQUENCES = r"""
+import BigWorld as native,zipfile,marshal,types,sys,textwrap,__builtin__
+archive=zipfile.ZipFile(PACKAGE)
+def code(path,qualified):
+    result=marshal.loads(archive.read(path)[8:])
+    for part in qualified.split('.'):
+        result=[k for k in result.co_consts if isinstance(k,types.CodeType) and k.co_name==part][0]
+    return result
+log=[]
+class Stub(object):
+    def __init__(self,name):object.__setattr__(self,'_name',name)
+    def __getattr__(self,name):
+        if name.startswith('__'):raise AttributeError(name)
+        value=Stub(self._name+'.'+name);object.__setattr__(self,name,value);return value
+    def __call__(self,*args,**keywords):return Stub(self._name+'()')
+    def __getitem__(self,key):return Stub(self._name+'[]')
+    def __iter__(self):return iter(())
+    def __contains__(self,item):return False
+    def __format__(self,spec):return self._name
+    def __float__(self):return 0.0
+    def __int__(self):return 0
+    def __iadd__(self,other):return self
+    def __isub__(self,other):return self
+def importer(name,*args):return Stub(name)
+builtins=dict(vars(__builtin__));builtins['__import__']=importer
+def recorded(name):
+    function=getattr(native,name)
+    def call(*args):
+        log.append((name,)+args)
+        result=function(*args)
+        log.append(('->',name,result))
+        return result
+    return call
+NATIVE=('createSpace','clearSpace','releaseSpace','isClientSpace','clearAllSpaces','resetEntityManager','clearEntitiesAndSpaces')
+def bigworld():
+    world=Stub('BigWorld')
+    for name in NATIVE:object.__setattr__(world,name,recorded(name))
+    return world
+def run(path,qualified,overrides,*args):
+    target=code(path,qualified);names=set()
+    def collect(c):
+        names.update(c.co_names)
+        for k in c.co_consts:
+            if isinstance(k,types.CodeType):collect(k)
+    collect(target)
+    scope={'__builtins__':builtins,'__name__':'pyc'}
+    for name in names:
+        if name not in builtins:scope[name]=Stub(name)
+    scope.update(overrides)
+    return types.FunctionType(target,scope)(*args)
+def calls():return [entry for entry in log if entry[0]!='->']
+HANGAR='scripts/client/gui/ClientHangarSpace.pyc'
+class Hangar(Stub):pass
+# Exact ClientHangarSpace.create: createSpace, mapping, then HangarVehicle in that space.
+def hangar(mapping):
+    world=bigworld();created=[]
+    def addMapping(spaceID,matrix,path):
+        log.append(('addSpaceGeometryMapping',spaceID));return mapping(spaceID)
+    def createEntity(kind,spaceID,*args):
+        log.append(('createEntity',kind,spaceID));assert native.isClientSpace(spaceID);native._entity(spaceID);created.append(spaceID);return 501
+    object.__setattr__(world,'addSpaceGeometryMapping',addMapping)
+    object.__setattr__(world,'createEntity',createEntity)
+    object.__setattr__(world,'delSpaceGeometryMapping',lambda spaceID,mapping:log.append(('delSpaceGeometryMapping',spaceID,mapping)))
+    space=Hangar('hangar')
+    run(HANGAR,'ClientHangarSpace.create',{'BigWorld':world,'_HANGAR_CFGS':{}},space,False,None)
+    return world,space,created
+native._reset()
+for cycle in range(2):
+    del log[:]
+    world,space,created=hangar(lambda spaceID:7)
+    spaceID=space._ClientHangarSpace__spaceId
+    assert calls()==[('createSpace',),('addSpaceGeometryMapping',spaceID),('createEntity','HangarVehicle',spaceID)],calls()
+    assert created==[spaceID] and native._space(spaceID)==(0,1,1) and native._connection(spaceID)==(1,0)
+    assert space._ClientHangarSpace__spaceMappingId==7
+    del log[:]
+    run(HANGAR,'ClientHangarSpace.__destroy',{'BigWorld':world},space)
+    assert calls()==[('isClientSpace',spaceID),('delSpaceGeometryMapping',spaceID,7),('clearSpace',spaceID),('releaseSpace',spaceID)],calls()
+    assert native._space(spaceID) is None and native._connection(spaceID) is None and not native.isClientSpace(spaceID)
+    if cycle:assert spaceID>previous
+    previous=spaceID
+# The original destroy forgets its space ID; a released ID is not a client space.
+assert space._ClientHangarSpace__spaceId is None and native.isClientSpace(previous) is False
+del log[:];run(HANGAR,'ClientHangarSpace.__destroy',{'BigWorld':world},space)
+assert calls()==[],calls()
+# Partial startup: both mapping attempts fail; the original releases without clearing.
+def fail(spaceID):raise ValueError('no space.settings')
+del log[:];world,space,created=hangar(fail);spaceID=log[1][-1]
+assert calls()==[('createSpace',),('addSpaceGeometryMapping',spaceID),('addSpaceGeometryMapping',spaceID),('releaseSpace',spaceID)],calls()
+assert created==[] and native._space(spaceID) is None and not native.isClientSpace(spaceID)
+# Account.onBecomePlayer clears every space's geometry, not the Account itself.
+native._reset();del log[:]
+accountSpace=native.createSpace();native._entity(accountSpace);native._server(4)
+run('scripts/client/Account.pyc','PlayerAccount.onBecomePlayer',{'BigWorld':bigworld()},Stub('account'))
+assert calls()==[('clearAllSpaces',)],calls()
+assert native._space(accountSpace)==(1,1,1) and native._connection(accountSpace)==(1,0) and native._space(4)[0]==1
+# game.fini: resetEntityManager(False, False) then clearAllSpaces().
+native._reset();del log[:]
+native._offline(6);accountSpace=native.createSpace();native._entity(accountSpace)
+offline=Stub('OfflineMode');object.__setattr__(offline,'enabled',lambda:False)
+constants=Stub('constants');object.__setattr__(constants,'IS_CAT_LOADED',False)
+run('scripts/client/game.pyc','fini',{'BigWorld':bigworld(),'OfflineMode':offline,'constants':constants})
+assert calls()==[('resetEntityManager',False,False),('clearAllSpaces',)],calls()
+assert native._main() is None and native._space(6)[0]==1 and native._space(accountSpace)==(1,1,1)
+assert native._connection(accountSpace)==(1,0)
+# OfflineMapCreator.destroy releases the map through clearEntitiesAndSpaces first.
+native._reset();del log[:]
+mapSpace=native.createSpace();native._entity(mapSpace)
+creator=Stub('creator');object.__setattr__(creator,'_OfflineMapCreator__spaceId',mapSpace)
+object.__setattr__(creator,'_OfflineMapCreator__spaceMappingId',3)
+run('scripts/client/OfflineMapCreator.pyc','OfflineMapCreator.destroy',{'BigWorld':bigworld()},creator)
+assert calls()==[('clearEntitiesAndSpaces',),('isClientSpace',mapSpace)],calls()
+assert native._space(mapSpace) is None and native._connection(mapSpace) is None
+# Product compat Account producer, executed from its current source text.
+source=open(COMPAT).read()
+def method(name):
+    start=source.index('    def '+name+'(self):')
+    end=source.index('\n    def ',start+1)
+    return textwrap.dedent(source[start:end])
+namespace={'_OFFLINE_INIT_COMPLETE':'_offlineLANInitComplete','_OFFLINE_PLAYER_READY':'_offlineLANPlayerReady'}
+exec method('_discard_partial_account')+'\n'+method('_create_account_player') in namespace
+class Account(object):pass
+class Runtime(object):pass
+def compatibility(failing):
+    runtime=Runtime();world=bigworld();runtime.bigworld=world;runtime.account_module=Stub('Account')
+    entities={}
+    def createEntity(kind,spaceID,vehicleID,position,direction,properties):
+        log.append(('createEntity',kind,spaceID,vehicleID))
+        if failing:raise RuntimeError('partial Account')
+        native._entity(spaceID);account=Account();account._offlineLANInitComplete=True;account.spaceID=spaceID
+        entities[600]=account;return 600
+    def player(account):log.append(('player',account.spaceID));account._offlineLANPlayerReady=True
+    object.__setattr__(world,'createEntity',createEntity);object.__setattr__(world,'entities',entities)
+    object.__setattr__(world,'player',player)
+    owner=Runtime();owner._runtime=runtime;owner._connecting=False
+    for name in ('_discard_partial_account','_create_account_player'):
+        setattr(owner,name,types.MethodType(namespace[name],owner))
+    return owner
+native._reset();del log[:]
+account=compatibility(False)._create_account_player();spaceID=account.spaceID
+assert calls()==[('createSpace',),('createEntity','Account',spaceID,0),('player',spaceID)],calls()
+assert native.isClientSpace(spaceID) and native._space(spaceID)==(0,1,1) and native._connection(spaceID)==(1,0)
+del log[:]
+try:compatibility(True)._create_account_player()
+except RuntimeError:pass
+else:raise AssertionError('partial Account must fail')
+failed=log[1][2]
+assert calls()==[('createSpace',),('createEntity','Account',failed,0),('clearAllSpaces',)],calls()
+# The partial producer clears geometry but leaves its client space held.
+assert native._space(failed)==(1,1,1) and native._space(spaceID)==(1,1,1) and native._connection(spaceID)==(1,0)
+print('Exact #1513 PYC: ClientHangarSpace create/destroy/partial, Account, game.fini, OfflineMapCreator + compat producer PASS')
+"""
+
 
 def body(source, signature):
     start = source.index(signature)
@@ -60,7 +281,7 @@ class SpaceLifecycleTests(unittest.TestCase):
         with tarfile.open(cls.archive) as archive:
             cls.pristine = {}
             for name in ('client/script_bigworld.cpp', 'client/connection_control.hpp', 'client/connection_control.cpp',
-                         'lib/space/space_manager.hpp', 'lib/pyscript/script.cpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
+                         'lib/space/space_manager.hpp', 'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
                 member = next(m for m in archive.getmembers() if m.name.endswith('/programming/bigworld/' + name))
                 cls.pristine[name] = archive.extractfile(member).read()
         cls.engine = cls.directory / 'engine'
@@ -71,8 +292,24 @@ class SpaceLifecycleTests(unittest.TestCase):
         control = (cls.engine / 'client/connection_control.cpp').read_text()
         host = (ROOT / 'tests/stock_space_lifecycle_host.cpp').read_text()
         host = host.replace('@CONVERTER@', body(script, 'int Script::setData( PyObject * pObject, bool & rBool'))
+        host = host.replace('@INT_CONVERTER@', body(script, 'int Script::setData( PyObject * pObject, int & rInt'))
+        host = host.replace('@GETDATA_BOOL@', body(script, 'PyObject * Script::getData( const bool data )'))
+        host = host.replace('@GETDATA_INT@', body(script, 'PyObject * Script::getData( const int data )'))
+        host = host.replace('@ARGCOUNT@', body(script, 'PyObject * Script::argCountError( const char * fn, int optas, int allas, ... )'))
+        header = cls.pristine['lib/pyscript/script.hpp'].decode('utf-8-sig')
+        retdata = header.index('\ttemplate <class T>\n\tclass IsValidRetData')
+        host = host.replace('@RETDATA@', header[retdata:header.index('}', header.index('PyObject * getRetData( const T & data )')) + 1])
+        # The original wrappers are PY_AUTO_MODULE_FUNCTION codegen; host the
+        # pristine macros rather than a hand-written parser.
+        autoparse = header[header.index('// Section: Macros: Recursion utilities'):header.index('// Section: PyModuleLink')]
+        link = header[header.index('/// This macro defines an ordinary auto-parsed function'):
+                      header.index('/// This macro defines an alias')]
+        host = host.replace('@PYAUTO@', autoparse + link)
         host = host.replace('@CLEAR_SPACES@', body(control, 'void ConnectionControl::clearSpaces()'))
         host = host.replace('@TICK@', body(control, 'void ConnectionControl::tick( float dt )'))
+        host = host.replace('@NEXT_LOCAL_SPACE_ID@', body(control, 'SpaceID ConnectionControl::nextLocalSpaceID()'))
+        host = host.replace('@CREATE_LOCAL_SPACE@', body(control, 'SpaceID ConnectionControl::createLocalSpace()'))
+        host = host.replace('@GAME_TIME@', body(control, 'double ConnectionControl::gameTime() const'))
         original_control = cls.pristine['client/connection_control.cpp'].decode('utf-8-sig')
         host = host.replace('@LEGACY_CLEAR@', body(original_control, 'void ConnectionControl::clearSpaces()').replace('ConnectionControl::clearSpaces()', 'ConnectionControl::legacyClearSpaces()'))
         host = host.replace('@LEGACY_DESTROY@', body(control, 'void ConnectionControl::destroyMainConnection()'))
@@ -113,6 +350,15 @@ class SpaceLifecycleTests(unittest.TestCase):
 
     def test_real_python_boundary_and_production_owner_lifecycle(self):
         self.execute(BOUNDARY)
+
+    def test_real_python_client_space_boundary(self):
+        self.execute(CLIENT_BOUNDARY)
+
+    def test_original_pyc_and_product_producer_sequences(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client: self.skipTest('WOT_0922_CLIENT required for original scripts.pkg')
+        compat = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+        self.execute('PACKAGE=%r\nCOMPAT=%r\n' % (str(Path(client) / 'res/packages/scripts.pkg'), str(compat)) + PYC_SEQUENCES)
 
     def test_original_lobby_producer_selects_keep_from_real_hangar_guard(self):
         client = os.environ.get('WOT_0922_CLIENT')
@@ -173,6 +419,10 @@ print('Original LoginState _clearEntitiesAndSpaces PYC + actual CPython/native w
             script = (directory / 'client/script_bigworld.cpp').read_text()
             self.assertEqual(script.count('#include "stock_space_lifecycle.hpp"'), 1)
             self.assertEqual(script.count('StockSpaceLifecycle_token |'), 1)
+            for header in ('client/connection_control.hpp', 'lib/space/space_manager.hpp'):
+                self.assertEqual((directory / header).read_text().count('\tfriend class StockSpaceLifecycle;'), 1)
+            self.assertEqual((directory / 'client/connection_control.hpp').read_text().count(
+                '\tvoid clearStockMainSpace( bool keepLocalEntities = false );'), 1)
             space=(directory/'lib/space/client_space.cpp').read_text()
             self.assertEqual(script.count('#include "stock_space_sounds.hpp"'),1)
             self.assertEqual(space.count('#include "stock_space_sounds.hpp"'),1)

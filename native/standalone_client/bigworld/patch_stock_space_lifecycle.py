@@ -1,4 +1,4 @@
-"""Install the original entity/space clear boundary with real owner retirement."""
+"""Install the original client-space and entity/space clear owners with real retirement."""
 import argparse
 from pathlib import Path
 
@@ -61,13 +61,14 @@ def patch(root):
     files[path] = source
     path = root / 'client/connection_control.hpp'
     source = path.read_text(encoding='utf-8-sig')
-    source = replace(source, '\tvoid destroyMainConnection();', '\tvoid destroyMainConnection();\n\tvoid clearStockMainSpace();', '\tvoid clearStockMainSpace();')
+    source = replace(source, '\tvoid destroyMainConnection();', '\tvoid destroyMainConnection();\n\tvoid clearStockMainSpace( bool keepLocalEntities = false );', '\tvoid clearStockMainSpace( bool keepLocalEntities = false );')
     source = replace(source, 'private:\n', 'private:\n\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );\n', '\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );')
+    source = replace(source, 'private:\n', 'private:\n\tfriend class StockSpaceLifecycle;\n', '\tfriend class StockSpaceLifecycle;')
     source = replace(source, '\tvoid destroyMainConnection();', '\tuint64 stockMainSpaceRevision_ = 0;\n\tvoid destroyMainConnection();', '\tuint64 stockMainSpaceRevision_ = 0;')
     files[path] = source
     path = root / 'lib/space/space_manager.hpp'
     source = path.read_text(encoding='utf-8-sig')
-    source = replace(source, 'private:\n', 'private:\n\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );\n', '\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );')
+    source = replace(source, 'private:\n', 'private:\n\tfriend class StockSpaceLifecycle;\n', '\tfriend class StockSpaceLifecycle;')
     files[path] = source
     path = root / 'client/connection_control.cpp'
     source = path.read_text(encoding='utf-8-sig')
