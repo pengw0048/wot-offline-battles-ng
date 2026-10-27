@@ -64,6 +64,9 @@ Copy-Item -Path (Join-Path $SdkRoot "*") -Destination $PreparedSdkRoot -Recurse
 & python (Join-Path $RepositoryRoot "native\standalone_client\bigworld\patch_scaleform_sdk.py") `
     --sdk-only $PreparedSdkRoot
 if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the private SDK source seams." }
+& python (Join-Path $RepositoryRoot "native\standalone_client\bigworld\patch_stock_ime_lifecycle.py") `
+    --sdk-only $PreparedSdkRoot
+if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the SDK IME focus guards." }
 $FragmentPath = $Fragment.Replace('\', '/')
 if ($FragmentPath.Contains('"') -or $FragmentPath.Contains(';')) {
     throw "The CMake fragment path contains an unsupported quote or semicolon."

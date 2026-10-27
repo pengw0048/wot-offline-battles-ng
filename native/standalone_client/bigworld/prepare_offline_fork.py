@@ -20,11 +20,16 @@ _spec = importlib.util.spec_from_file_location(
     'stock_catalog_identity', Path(__file__).with_name('stock_catalog_identity.py'))
 stock_catalog_identity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stock_catalog_identity)
+_spec = importlib.util.spec_from_file_location(
+    'patch_stock_worker_runtime', Path(__file__).with_name('patch_stock_worker_runtime.py'))
+worker_runtime = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(worker_runtime)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
 BOOTSTRAP_PATH = NATIVE_MATH_PATH.with_name('bootstrap.py')
 COMPAT_PATH = NATIVE_MATH_PATH.with_name('compat.py')
+WORKER_PRESENTATION_PATH = NATIVE_MATH_PATH.with_name('worker_presentation.py')
 PINNED_RESOURCES = Path('src/res')
 RUNTIME_ROOT = Path('offline-res')
 ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.py'
@@ -187,6 +192,8 @@ ADAPTERS = {
     INSTANCE_GUARD_PATH: adapt_instance_guard,
     BOOTSTRAP_PATH: adapt_bootstrap,
     COMPAT_PATH: adapt_compat,
+    # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
+    WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
 
 

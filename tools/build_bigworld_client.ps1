@@ -181,6 +181,10 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-flash-input-mode-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_glyph_cache.py"),
         $EngineRoot) "stock-glyph-cache-patch.log"
+    # Installs the LangBar input-language owner and guards the SDK IME focus
+    # members it activates; both seams are separate from the SDK patch.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ime_lifecycle.py"),
+        $EngineRoot, $ScaleformRoot) "stock-ime-lifecycle-patch.log"
 
     $GlooxArchive = Join-Path $WorkRoot "gloox.tar.bz2"
     $GlooxRoot = Join-Path $WorkRoot "gloox"
@@ -277,6 +281,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "vehicle-compound-rendering-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio.py"),
         $EngineRoot) "stock-audio-patch.log"
+    # Keeps the simulation worker hidden; replaces its draw phase after audio.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_worker_runtime.py"),
+        $EngineRoot) "stock-worker-runtime-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_visuals.py"),
         $EngineRoot) "stock-vehicle-visuals-patch.log"
     # Ticks BigWorld.PyBallisticsSimulator tracer owners once per world frame.
