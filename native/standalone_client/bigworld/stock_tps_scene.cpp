@@ -974,8 +974,6 @@ void Runtime::tick( float elapsed )
     chunks.clear();visuals.clear();++generation;
     effects.insert(effects.end(),pendingEffects.begin(),pendingEffects.end());pendingEffects.clear();
     if (!std::isfinite( elapsed )) return;
-    // fa4034 takes the frozen update while paused; nothing is emitted or drawn.
-    if (!drawEnabled.load( std::memory_order_relaxed )) return;
     elapsed = std::max( 0.f, std::min( 1.f, elapsed ) );
     const ClientSpacePtr current = DeprecatedSpaceHelpers::cameraSpace();
     if (current && !current->cleared() && current->enviro().weather())
@@ -987,6 +985,9 @@ void Runtime::tick( float elapsed )
     space = current;
     effects.erase( std::remove_if( effects.begin(), effects.end(), [&](const std::shared_ptr<SceneEffect> & effect)
         { return effect->owningSpace && (effect->owningSpace != current || effect->owningSpace->cleared()); } ), effects.end() );
+    // fa4034 takes the frozen update while paused; a released space's effects
+    // are still dropped above, but nothing is simulated, emitted or drawn.
+    if (!drawEnabled.load( std::memory_order_relaxed )) return;
     fov = Moo::rc().camera().fov();
     camera = vector( Moo::rc().invView().applyToOrigin() );
     quality = stockParticleQuality().project( stockBinocularsEnabled(),

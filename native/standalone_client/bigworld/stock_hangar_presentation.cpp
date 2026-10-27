@@ -241,8 +241,8 @@ public:
     {
         prune();
         // 00af45fb: nothing to draw without members.
-        if (closed || (members[0].empty() && members[1].empty())) return true;
-        if (!ready()) return false;
+        // 00af4619: without the target (e.g. a 0x0 back buffer) the pass is silently skipped.
+        if (closed || (members[0].empty() && members[1].empty()) || !ready()) return true;
         if (!target->push()) return false;
         bool success = SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
         Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );

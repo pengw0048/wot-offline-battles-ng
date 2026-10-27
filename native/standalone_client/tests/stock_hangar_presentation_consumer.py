@@ -234,6 +234,64 @@ check(host.calls(), [])
 check(BigWorld.wg_setPyModelTexture(host.makeModel(1), 'missingProperty', 'a.dds'), True)
 check(host.calls(), ['Model.gatherMaterials:model1:*'])
 print 'texture:', expect_type_error(BigWorld.wg_setPyModelTexture, None, 'diffuseMap', 'a.dds')
+
+# ClientHangarSpace.__onFakeShadowLoaded: only one TankHangarShadowProxy reaches the texture.
+Proxy = type('TankHangarShadowProxy', (object,), {})
+shadow_namespace = {'BigWorld': BigWorld, '_CFG': {'shadow_model_name': 'shadow.model'},
+                    'TankHangarShadowProxy': Bag(TankHangarShadowProxy=Proxy),
+                    'LOG_ERROR': recorder('LOG_ERROR'), 'LOG_DEBUG': recorder('LOG_DEBUG')}
+loaded = method('scripts/client/gui/ClientHangarSpace.pyc', 'ClientHangarSpace', '__onFakeShadowLoaded',
+                shadow_namespace)
+get_model = method('scripts/client/gui/ClientHangarSpace.pyc', 'ClientHangarSpace', '__getFakeShadowModel',
+                   shadow_namespace)
+ENTITIES = {}
+
+
+def create_entity(kind, space, vehicle, position, orientation, properties):
+    CALLS.append(('createEntity', kind, space, position, orientation))
+    ENTITIES[77] = Bag()
+    return 77
+
+
+BigWorld.createEntity = create_entity
+BigWorld.entity = lambda entity: ENTITIES.get(entity)
+
+
+def proxy(x):
+    result = Proxy()
+    result.position, result.roll, result.pitch, result.yaw = (x, 0.0, 0.0), 0.0, 0.0, 1.5
+    return result
+
+
+class Refs(dict):
+    def __init__(self, items, failed):
+        dict.__init__(self, items)
+        self.failedIDs = failed
+
+
+for name, refs, objects, created in (
+        ('failed', Refs({'shadow.model': 1}, ['shadow.model']), [proxy(1.0)], False),
+        ('missing', Refs({}, []), [proxy(1.0)], False),
+        ('no proxy', None, [Bag()], False),
+        ('two proxies', None, [proxy(1.0), proxy(2.0)], False),
+        ('one proxy', None, [Bag(), proxy(3.0)], True)):
+    shadow = host.makeModel(1)
+    ENTITIES.clear()
+    BigWorld.userDataObjects = dict(enumerate(objects))
+    space = Bag(_ClientHangarSpace__spaceId=5, _ClientHangarSpace__fakeShadowId=None,
+                _ClientHangarSpace__fakeShadowScale=1.0, _ClientHangarSpace__fakeShadowAsset='shadow.dds',
+                modifyFakeShadowScale=recorder('modifyFakeShadowScale'))
+    space._ClientHangarSpace__getFakeShadowModel = lambda space=space: get_model(space)
+    space.modifyFakeShadowAsset = lambda asset, space=space: modify(space, asset)
+    loaded(space, refs if refs is not None else Refs({'shadow.model': shadow}, []))
+    assert (space._ClientHangarSpace__fakeShadowId == 77) == created, name
+    native = host.calls()
+    check(native, ['Model.gatherMaterials:model1:*', 'property.be:model1/shadow.diffuseMap:shadow.dds']
+          if created else [])
+    if created:
+        assert ENTITIES[77].model is shadow and ENTITIES[77].model.yaw == 1.5
+    del CALLS[:]
+print 'texture: __onFakeShadowLoaded reaches the model only with one shadow proxy'
 print 'texture: modifyFakeShadowAsset reaches every material of the model chain'
 
 # ---- GUI.syncMousePosition: Cursor.detachCursor / resetMousePosition ----

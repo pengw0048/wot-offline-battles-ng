@@ -426,6 +426,7 @@ public:
 
 struct PyModel : PyObject
 {
+    PyObject * dict;  // position and yaw written by __onFakeShadowLoaded.
     SuperModel * superModel;
     SuperModel * pSuperModel() const { return superModel; }
 };
@@ -575,6 +576,7 @@ PyObject * makeModel(PyObject *, PyObject * args)
     }
     if (parent) superModel->models.push_back(parent);
     BW::PyModel * object = PyObject_New(BW::PyModel, &BW::pyModelType);
+    object->dict = NULL;
     object->superModel = superModel;
     return object;
 }
@@ -642,6 +644,11 @@ int main(int argc, char ** argv)
     assert(argc >= 2);
     Py_Initialize();
     BW::pyModelType.tp_flags = Py_TPFLAGS_DEFAULT;
+    static BW::PyModel modelProbe;
+    BW::pyModelType.tp_dictoffset = reinterpret_cast<char *>(&modelProbe.dict) -
+        reinterpret_cast<char *>(static_cast<PyObject *>(&modelProbe));
+    BW::pyModelType.tp_getattro = PyObject_GenericGetAttr;
+    BW::pyModelType.tp_setattro = PyObject_GenericSetAttr;
     BW::pyEntityType.tp_flags = Py_TPFLAGS_DEFAULT;
     static BW::PyEntity probe;
     BW::pyEntityType.tp_dictoffset = reinterpret_cast<char *>(&probe.dict) -
