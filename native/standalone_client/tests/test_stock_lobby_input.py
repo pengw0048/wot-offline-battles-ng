@@ -139,6 +139,47 @@ class StockLobbyInputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             patch.patch_source(pristine.replace('\tbool isNumLockOn()\n', '\tbool isNumLockOn( )\n'))
 
+    def test_patch_rejects_every_partial_duplicate_or_mixed_state_without_writing(self):
+        patch = load_patch()
+        pristine = pinned_sources(self)['lib/scaleform/util.cpp']
+        patched = patch.patch_source(pristine)
+        names = [after for unused, after in patch.NAMES]
+        tables = [after for unused, after, unused in patch.TABLES]
+        mutations = {
+            'reverted RightShift': patched.replace('SF::Key::RightShift', 'SF::Key::Shift'),
+            'one reverted RightShift': patched.replace('SF::Key::RightShift', 'SF::Key::Shift', 1),
+            'reverted RightControl': patched.replace('SF::Key::RightControl', 'SF::Key::Control', 1),
+            'reverted RightAlt': patched.replace('SF::Key::RightAlt', 'SF::Key::Alt'),
+            'wrong right-hand value': patched.replace('SF::Key::RightAlt', 'SF::Key::RightControl'),
+            'old registration added': patched + 'PY_AUTO_MODULE_FUNCTION(RETDATA, isCapsLockOn, END, BigWorld)\n',
+            'old table entry added': patched + patch.TABLES[2][0],
+            'one name reverted': patched.replace(names[3], patch.NAMES[3][0]),
+            'pristine with one new name': pristine.replace(patch.NAMES[0][0], names[0]),
+            'pristine with one new entry': pristine.replace(patch.TABLES[2][0], tables[2]),
+            'duplicate pristine entry': pristine + patch.TABLES[0][0],
+        }
+        for index, line in enumerate(names + tables):
+            mutations['deleted final %d' % index] = patched.replace(line, '', 1)
+            mutations['duplicated final %d' % index] = patched + line
+        for token, unused in patch.TOKENS:
+            mutations['extra ' + token] = patched + '// ' + token + '\n'
+        with tempfile.TemporaryDirectory(prefix='lobby-input-patch-') as directory:
+            path = Path(directory) / 'lib/scaleform/util.cpp'
+            path.parent.mkdir(parents=True)
+            for name, source in mutations.items():
+                self.assertNotEqual(source, patched, name)
+                with self.assertRaises(ValueError, msg=name):
+                    patch.patch_source(source)
+                path.write_text(source, encoding='utf-8')
+                with self.assertRaises(ValueError, msg=name):
+                    patch.patch(directory)
+                self.assertEqual(path.read_text(encoding='utf-8'), source, name)
+            path.write_text(pristine, encoding='utf-8')
+            patch.patch(directory)
+            self.assertEqual(path.read_text(encoding='utf-8'), patched)
+            patch.patch(directory)
+            self.assertEqual(path.read_text(encoding='utf-8'), patched)
+
     def test_original_call_sites_reach_the_translator_through_the_real_binding(self):
         package = scripts_package(self)
         sources = pinned_sources(self)

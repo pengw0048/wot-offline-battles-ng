@@ -29,17 +29,39 @@ TABLES = (
 )
 
 
+# Each final token occurs only in its own declaration, registration or table entry.
+TOKENS = (('wg_setRedefineKeysMode', 2), ('wg_isCapsLockOn', 2), ('wg_isNumLockOn', 2),
+          ('wg_isScrollLockOn', 2), ('SF::Key::RightShift', 2), ('SF::Key::RightControl', 2),
+          ('SF::Key::RightAlt', 1))
+
+
+def counts(source):
+    pairs = [(before, after, 1) for before, after in NAMES] + list(TABLES)
+    old = [source.count(before) for before, unused, unused in pairs]
+    new = [source.count(after) for unused, after, unused in pairs]
+    tokens = [source.count(token) for token, unused in TOKENS]
+    return old, new, tokens, [count for unused, unused, count in pairs]
+
+
+def patched_state(source):
+    old, new, tokens, expected = counts(source)
+    return (not any(old) and new == expected and
+            tokens == [count for unused, count in TOKENS])
+
+
 def patch_source(source):
-    if all(after in source for unused, after in NAMES):
+    if patched_state(source):
         return source
+    old, new, tokens, expected = counts(source)
+    if old != expected or any(new) or any(tokens):
+        raise ValueError('Pinned Scaleform key-state seam is partial, duplicated or changed: '
+                         'old %r new %r tokens %r' % (old, new, tokens))
     for before, after in NAMES:
-        if source.count(before) != 1:
-            raise ValueError('Pinned Scaleform key-state seam changed: ' + repr(before))
         source = source.replace(before, after, 1)
-    for before, after, count in TABLES:
-        if source.count(before) != count:
-            raise ValueError('Pinned Scaleform key table changed: ' + repr(before))
+    for before, after, unused in TABLES:
         source = source.replace(before, after)
+    if not patched_state(source):
+        raise ValueError('Scaleform key-state patch did not reach its final state')
     return source
 
 

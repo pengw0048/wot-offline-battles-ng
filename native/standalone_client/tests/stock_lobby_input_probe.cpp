@@ -158,24 +158,34 @@ int main()
         std::printf(" %08lx", static_cast<unsigned long>(reinterpret_cast<ULONG_PTR>(layouts[i])));
     std::printf("\n");
     const HKL active = GetKeyboardLayout(0);
-    std::string live;
-    const bool read = wot::stock_lobby_input::languageCode(live);
+    const std::string live = wot::stock_lobby_input::languageCode();
     const LCID activeLocale = LOWORD(reinterpret_cast<ULONG_PTR>(active));
     char text[160];
     std::snprintf(text, sizeof(text), "active layout %08lx: wg_getLangCode=%s independent=%s",
                   static_cast<unsigned long>(reinterpret_cast<ULONG_PTR>(active)), live.c_str(),
                   independentCode(activeLocale).c_str());
-    check(read && live == independentCode(activeLocale), text);
+    check(live.size() == 2 && live == independentCode(activeLocale), text);
     for (LCID locale : {0x0409u, 0x0809u, 0x0419u, 0x0804u, 0x0404u, 0x0411u, 0x0c0cu, 0x0407u})
     {
-        std::string code;
-        const bool found = wot::stock_lobby_input::localeLanguageCode(locale, code);
+        const std::string code = wot::stock_lobby_input::localeLanguageCode(locale);
         std::snprintf(text, sizeof(text), "NLS LCID %04lx: %s independent=%s", static_cast<unsigned long>(locale),
                       code.c_str(), independentCode(locale).c_str());
-        check(found && code == independentCode(locale) && code.size() == 2, text);
+        check(code == independentCode(locale) && code.size() == 2, text);
     }
-    std::string missing;
-    check(!wot::stock_lobby_input::localeLanguageCode(0x0bad, missing), "unknown LCID reports failure");
+    // An LCID the OS cannot describe takes the contained failure path and yields "".
+    for (LCID locale : {0x0badu, 0x1000u})
+    {
+        SetLastError(0);
+        const int size = GetLocaleInfoW(locale, LOCALE_SABBREVLANGNAME, NULL, 0);
+        const DWORD error = GetLastError();
+        const std::string code = wot::stock_lobby_input::localeLanguageCode(locale);
+        std::snprintf(text, sizeof(text), "LCID %04lx: length query=%d error=%lu code='%s'",
+                      static_cast<unsigned long>(locale), size, static_cast<unsigned long>(error), code.c_str());
+        if (size <= 0)
+            check(code.empty(), text);
+        else
+            std::printf("info %s\n", text);
+    }
     std::printf("failures=%d\n", failures);
     return failures;
 }

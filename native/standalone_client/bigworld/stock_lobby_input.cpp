@@ -12,14 +12,8 @@ PyObject * py_wg_getLangCode( PyObject * args )
 {
     if (PyTuple_Size( args ) != 0)
         return Script::argCountError( "wg_getLangCode", 0, 0 );
-    std::string code;
-    if (!wot::stock_lobby_input::languageCode( code ))
-    {
-        // The original reads an unfilled buffer here; report the failed query instead.
-        PyErr_Format( PyExc_RuntimeError, "wg_getLangCode: GetLocaleInfoW failed (%lu)",
-            GetLastError() );
-        return NULL;
-    }
+    // An unavailable locale yields "" so the caller keeps polling.
+    const std::string code = wot::stock_lobby_input::languageCode();
     return PyString_FromStringAndSize( code.data(), static_cast<Py_ssize_t>( code.size() ) );
 }
 PY_MODULE_FUNCTION( wg_getLangCode, BigWorld )

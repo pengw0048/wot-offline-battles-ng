@@ -9,16 +9,17 @@ namespace wot
 namespace stock_lobby_input
 {
 // #1513 006f4820 for one LCID: LOCALE_SABBREVLANGNAME is converted to UTF-8 and
-// truncated to its first two bytes ("ENU" -> "EN"). Returns false only when the
-// locale query reports no text.
-inline bool localeLanguageCode(LCID locale, std::string & result)
+// truncated to its first two bytes ("ENU" -> "EN"). A failed UTF-8 conversion
+// yields "" as in the original; a failed locale query, where the original reads
+// an unfilled buffer, is contained to "" as well.
+inline std::string localeLanguageCode(LCID locale)
 {
     const int size = GetLocaleInfoW(locale, LOCALE_SABBREVLANGNAME, NULL, 0);
     if (size <= 0)
-        return false;
+        return std::string();
     std::wstring name(static_cast<size_t>(size), L'\0');
     if (GetLocaleInfoW(locale, LOCALE_SABBREVLANGNAME, &name[0], size) <= 0)
-        return false;
+        return std::string();
 
     // 00687780 (bw_wtoutf8): a failed conversion leaves the result empty.
     std::string utf8;
@@ -30,15 +31,14 @@ inline bool localeLanguageCode(LCID locale, std::string & result)
             NULL, NULL);
         utf8.resize(written > 0 ? static_cast<size_t>(written - 1) : 0);
     }
-    result.assign(utf8, 0, utf8.size() < 2 ? utf8.size() : 2);
-    return true;
+    return utf8.substr(0, 2);
 }
 
 // The calling thread's active input language, read live on every call; the
 // LCID is LOWORD(GetKeyboardLayout(0)).
-inline bool languageCode(std::string & result)
+inline std::string languageCode()
 {
-    return localeLanguageCode(LOWORD(reinterpret_cast<ULONG_PTR>(GetKeyboardLayout(0))), result);
+    return localeLanguageCode(LOWORD(reinterpret_cast<ULONG_PTR>(GetKeyboardLayout(0))));
 }
 }
 }

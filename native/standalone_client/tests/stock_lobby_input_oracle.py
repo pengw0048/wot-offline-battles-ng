@@ -138,6 +138,7 @@ class OriginalLobbyInput(object):
         if name == 'WideCharToMultiByte':
             page, flags, source, count, output, size = (self._arg(n) for n in range(1, 7))
             assert page == 65001 and flags == 0 and count == 0xffffffff
+            self.trace['calls'].append('WideCharToMultiByte:%d' % size)
             data = self._wstr(source).encode('utf-8') + b'\0'
             if size:
                 self.u.mem_write(output, data)

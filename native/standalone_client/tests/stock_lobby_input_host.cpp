@@ -43,6 +43,8 @@ std::map<int, int> keyStates;
 std::uintptr_t activeLayout = 0x04090409;
 std::map<unsigned, std::wstring> localeNames;
 DWORD lastError = 0;
+// 1: the length query fails, 2: the text query fails, 3: UTF-8 conversion fails.
+int localeFailure = 0;
 
 inline SHORT GetKeyState(int key)
 {
@@ -59,7 +61,8 @@ inline int GetLocaleInfoW(LCID locale, DWORD type, wchar_t * data, int size)
     hostCalls.push_back("GetLocaleInfoW:" + std::to_string(locale) + ":" + std::to_string(type) + ":" +
                         std::to_string(size));
     std::map<unsigned, std::wstring>::const_iterator found = localeNames.find(locale);
-    if (found == localeNames.end() || type != LOCALE_SABBREVLANGNAME)
+    if (found == localeNames.end() || type != LOCALE_SABBREVLANGNAME ||
+        localeFailure == (size == 0 ? 1 : 2))
     {
         lastError = 87;
         return 0;
@@ -79,6 +82,12 @@ inline int WideCharToMultiByte(unsigned page, DWORD, LPCWCH text, int count, LPS
                                LPCCH, BOOL *)
 {
     assert(page == CP_UTF8 && count == -1);
+    hostCalls.push_back("WideCharToMultiByte:" + std::to_string(size));
+    if (localeFailure == 3)
+    {
+        lastError = 1113;
+        return 0;
+    }
     std::string utf8;
     for (const wchar_t * c = text; ; ++c)
     {
@@ -232,6 +241,13 @@ PyObject * setLocaleName(PyObject *, PyObject * args)
     Py_RETURN_NONE;
 }
 
+PyObject * setLocaleFailure(PyObject *, PyObject * args)
+{
+    if (!PyArg_ParseTuple(args, "i", &localeFailure))
+        return NULL;
+    Py_RETURN_NONE;
+}
+
 PyObject * calls(PyObject *, PyObject *)
 {
     PyObject * result = PyList_New(0);
@@ -250,6 +266,7 @@ PyMethodDef inputMethods[] = {
     {"setKeyState", setKeyState, METH_VARARGS, NULL},
     {"setLayout", setLayout, METH_VARARGS, NULL},
     {"setLocaleName", setLocaleName, METH_VARARGS, NULL},
+    {"setLocaleFailure", setLocaleFailure, METH_VARARGS, NULL},
     {"calls", calls, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}};
 }

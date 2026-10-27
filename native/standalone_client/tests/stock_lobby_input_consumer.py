@@ -226,13 +226,27 @@ _input.setLocaleName(0x0001, u'A')
 _input.setLocaleName(0x0002, u'\u00e9\u00e9')
 _input.calls()
 assert BigWorld.wg_getLangCode() == 'EN' and type(BigWorld.wg_getLangCode()) is str
-assert _input.calls()[:3] == ['GetKeyboardLayout:0', 'GetLocaleInfoW:1033:3:0', 'GetLocaleInfoW:1033:3:4']
+assert _input.calls()[:5] == ['GetKeyboardLayout:0', 'GetLocaleInfoW:1033:3:0', 'GetLocaleInfoW:1033:3:4',
+                              'WideCharToMultiByte:0', 'WideCharToMultiByte:4']
 for layout, expected in ((0x04190419, 'RU'), (0xf0080804, 'CH'), (0x040c0c0c, 'FR'), (0x0001, 'A'),
                          (0x0002, '\xc3\xa9')):
     _input.setLayout(layout)
     assert BigWorld.wg_getLangCode() == expected, (hex(layout), BigWorld.wg_getLangCode())
-_input.setLayout(0x0bad)
-raises(RuntimeError, 'wg_getLangCode: GetLocaleInfoW failed (87)', BigWorld.wg_getLangCode)
+# Containment of the original's unfilled-buffer path: an unavailable locale is ''.
+_input.setLayout(0x04091000)
+_input.calls()
+assert BigWorld.wg_getLangCode() == ''
+assert _input.calls() == ['GetKeyboardLayout:0', 'GetLocaleInfoW:4096:3:0']
+_input.setLayout(0x04090409)
+for failure, calls in ((1, ['GetLocaleInfoW:1033:3:0']),
+                       (2, ['GetLocaleInfoW:1033:3:0', 'GetLocaleInfoW:1033:3:4']),
+                       (3, ['GetLocaleInfoW:1033:3:0', 'GetLocaleInfoW:1033:3:4', 'WideCharToMultiByte:0'])):
+    _input.setLocaleFailure(failure)
+    assert BigWorld.wg_getLangCode() == '', failure
+    assert _input.calls() == ['GetKeyboardLayout:0'] + calls, (failure, _input.calls())
+    _input.setLocaleFailure(0)
+    assert BigWorld.wg_getLangCode() == 'EN'
+    _input.calls()
 
 LOGIN = 'scripts/client/gui/Scaleform/daapi/view/login/LoginView.pyc'
 callbacks = []
@@ -266,4 +280,35 @@ _input.setKeyState(0x14, 0)
 callbacks[-1][1]()
 assert log == [('caps', False), ('lang', 'EN'), ('caps', True), ('lang', 'RU'), ('caps', False)], log
 assert [delay for delay, unused in callbacks] == [0.1] * 4 and login._LoginView__capsLockCallbackID == 4
-print('patched: wg_ names, setter-to-translator tables, right-hand codes, lock bits and live language')
+
+# Each failed language query delivers '' and schedules the next poll; later
+# Caps Lock and language changes still arrive.
+steps = (
+    ('unavailable LCID', lambda: _input.setLayout(0x04091000), 1, ('lang', '')),
+    ('recover', lambda: _input.setLayout(0x04090409), 0, ('lang', 'EN')),
+    ('length query', None, 1, ('lang', '')),
+    ('recover', None, 0, ('lang', 'EN')),
+    ('text query', None, 2, ('lang', '')),
+    ('recover', lambda: _input.setLayout(0x04190419), 0, ('lang', 'RU')),
+    ('conversion', None, 3, ('lang', '')),
+    ('recover', lambda: _input.setLayout(0x04090409), 0, ('lang', 'EN')))
+for index, (name, change, failure, delivered) in enumerate(steps):
+    log[:] = []
+    if change:
+        change()
+    _input.setLocaleFailure(failure)
+    caps = index % 2 == 0
+    _input.setKeyState(0x14, int(caps))
+    before = len(callbacks)
+    callbacks[-1][1]()
+    assert len(callbacks) == before + 1 and callbacks[-1][0] == 0.1, name
+    assert login._LoginView__capsLockCallbackID == len(callbacks), name
+    assert log == [('caps', caps), delivered], (name, log)
+_input.setLocaleFailure(0)
+_input.setKeyState(0x14, 1)
+log[:] = []
+callbacks[-1][1]()
+assert log == [('caps', True)] and len(callbacks) == 13, (log, len(callbacks))
+_input.setKeyState(0x14, 0)
+print('patched: wg_ names, setter-to-translator tables, right-hand codes, lock bits, live language '
+      'and LoginView polling across failed language queries')
