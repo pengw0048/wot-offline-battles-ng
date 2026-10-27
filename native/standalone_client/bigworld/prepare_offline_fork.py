@@ -25,6 +25,8 @@ PINNED_RESOURCES = Path('src/res')
 RUNTIME_ROOT = Path('offline-res')
 ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.py'
 ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
+SERVICES_SOURCE = ENTRY_SOURCE.with_name('OfflineOptionalServices.py')
+SERVICES_PATH = ENTRY_PATH.with_name(SERVICES_SOURCE.name)
 ACCOUNT_ATTEMPT = (Path(__file__).with_name('offline_entry') /
                    'compat_account_attempt.txt')
 OLD_LOADER = '''    path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
@@ -192,16 +194,17 @@ def stage_runtime(source, staged):
             shutil.copyfile(path, output)
     if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
         raise ValueError('The pinned payload is missing an adapted consumer')
-    entry = runtime / ENTRY_PATH
-    if entry.exists():
-        raise ValueError('The pinned payload already owns the independent entry')
-    shutil.copyfile(ENTRY_SOURCE, entry)
+    for source_path, path in ((ENTRY_SOURCE, ENTRY_PATH), (SERVICES_SOURCE, SERVICES_PATH)):
+        if (runtime / path).exists():
+            raise ValueError('The pinned payload already owns the independent entry')
+        shutil.copyfile(source_path, runtime / path)
     (staged / 'offline-res.json').write_text(json.dumps({
         'revision': PINNED_COMMIT,
         'source': PINNED_RESOURCES.as_posix(),
         'adapted': sorted(adapted),
         'entry': ENTRY_PATH.as_posix(),
-        'files': len(files) + 1,
+        'services': SERVICES_PATH.as_posix(),
+        'files': len(files) + 2,
     }, indent=2, sort_keys=True) + '\n')
 
 

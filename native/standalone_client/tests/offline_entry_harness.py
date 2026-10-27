@@ -246,8 +246,13 @@ def case_mods():
     mods = exact('gui.mods', 'scripts/client/gui/mods/__init__.pyc', package=True)
     personality = module('gui.shared.personality', guiModsInit=mods.init,
                          guiModsFini=mods.fini, guiModsSendEvent=mods.sendEvent)
+    # The service policies have their own exact-consumer harness.
+    services = module('OfflineOptionalServices', install=lambda: record('services.install', None),
+                      uninstall=lambda: record('services.uninstall', None))
     entry_dir = entry.MODS_DIRECTORY
+    del LOG[:]
     assert entry.install() and entry.install()
+    assert calls('services.install') == [('services.install', None)], LOG
     assert mods.__path__[-1] == entry_dir and mods.__path__.count(entry_dir) == 1
     assert personality.guiModsInit is not mods.init
     del LOG[:]
@@ -265,16 +270,32 @@ def case_mods():
     assert mods._mods == {'gui.mods.mod_offline_lan_0922': mod}
     assert mod.calls[-1] == 'init' and mod.calls.count('init') == 2, mod.calls
     personality.guiModsFini()
+    del LOG[:]
+    entry.uninstall()
     entry.uninstall()
     assert personality.guiModsInit is mods.init and entry_dir not in mods.__path__
+    assert calls('services.install', 'services.uninstall') == [('services.uninstall', None)], LOG
     # The original binding is the only accepted seam.
     personality.guiModsInit = lambda: None
+    del LOG[:]
     try:
         entry.install()
     except RuntimeError:
         pass
     else:
         raise AssertionError('a replaced guiModsInit binding must be refused')
+    assert calls('services.install') == [], LOG
+    # A refused service policy leaves no partial entry binding.
+    personality.guiModsInit = mods.init
+    services.install = lambda: 1 / 0
+    try:
+        entry.install()
+    except ZeroDivisionError:
+        pass
+    else:
+        raise AssertionError('a service policy failure must fail the entry')
+    assert personality.guiModsInit is mods.init and entry_dir not in mods.__path__
+    assert entry._installed is None and entry._route is None
     personality.guiModsInit = mods.init
     print('Exact #1513 gui.mods: explicit offline mod init/sendEvent/fini at guiModsInit PASS')
 

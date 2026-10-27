@@ -3,8 +3,9 @@
 The independent EXE has no retail intro, login view or WGC owner. The native
 personality hook calls install() after the original game import and before
 game.init. It mounts the generated mod at the original guiModsInit seam,
-routes LOGIN through a view-less state, and publishes the offline LOGGED_ON
-transition to the retained connection consumers only.
+routes LOGIN through a view-less state, publishes the offline LOGGED_ON
+transition to the retained connection consumers only, and installs the
+offline policies for optional retail services.
 """
 import os
 import sys
@@ -34,6 +35,8 @@ def install():
     original = personality.__dict__.get('guiModsInit')
     if original is None or original is not mods.__dict__.get('init'):
         raise RuntimeError('The original guiModsInit binding has changed')
+    import OfflineOptionalServices
+    OfflineOptionalServices.install()
     install_route()
 
     def gui_mods_init():
@@ -43,7 +46,7 @@ def install():
     if MODS_DIRECTORY not in mods.__path__:
         mods.__path__.append(MODS_DIRECTORY)
     personality.guiModsInit = gui_mods_init
-    _installed = (personality, original, gui_mods_init, mods)
+    _installed = (personality, original, gui_mods_init, mods, OfflineOptionalServices)
     return True
 
 
@@ -51,11 +54,12 @@ def uninstall():
     global _installed
     installed, _installed = _installed, None
     if installed is not None:
-        personality, original, wrapper, mods = installed
+        personality, original, wrapper, mods, services = installed
         if personality.__dict__.get('guiModsInit') is wrapper:
             personality.guiModsInit = original
         if MODS_DIRECTORY in mods.__path__:
             mods.__path__.remove(MODS_DIRECTORY)
+        services.uninstall()
     uninstall_route()
 
 
