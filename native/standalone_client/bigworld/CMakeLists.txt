@@ -97,6 +97,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_bigworld_ipc.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_glyph_cache.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_screener.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_runtime_services.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_light_fx.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_lobby_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_components.cpp"
