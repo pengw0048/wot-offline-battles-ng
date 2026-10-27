@@ -2,13 +2,14 @@
 
 The patch tests run the SDK and engine patchers over the pinned sources in build
 order. The host runs the production owner over the public Script/FxDelegate text
-and the patched SDK 4.2.22 Translator, driven by the original helpers.i18n and
+and the existing SDK 4.2.22 Translator, driven by the original helpers.i18n and
 gettext PYC with the original MO files. Neither proves GFx text rendering.
 """
 from pathlib import Path
 import importlib.util
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -29,8 +30,10 @@ PUBLIC_FILES = ('lib/pyscript/script.cpp', 'lib/script/init_time_job.hpp', 'lib/
                 'lib/scaleform/fx_game_delegate.cpp')
 SEAM_FILES = ('lib/scaleform/manager.cpp', 'lib/scaleform/py_movie_view.cpp')
 LOADER = 'Src/GFx/GFx_Loader.cpp'
+LOADER_IMPL = 'Src/GFx/GFx_LoaderImpl.cpp'
 HOST_SDK_FILES = ('Src/GFx/GFx_Loader.h', 'Src/Kernel/SF_Std.cpp', 'Src/Kernel/SF_UTF8Util.cpp',
-                  'Src/Kernel/SF_WString.h', 'Src/Kernel/SF_WString.cpp', 'Src/GFx/GFx_TextField.cpp')
+                  'Src/Kernel/SF_WString.h', 'Src/Kernel/SF_WString.cpp', 'Src/GFx/GFx_TextField.cpp',
+                  LOADER_IMPL)
 
 
 def load(name):
@@ -95,36 +98,104 @@ def prepared_engine(test, root):
 
 
 class ScaleformLocalizationPatchTest(unittest.TestCase):
-    def test_sdk_definitions_are_idempotent_and_fail_closed(self):
+    def test_sdk_definitions_keep_the_existing_owner_and_migrate_old_trees(self):
         patch = load_patch()
         with tempfile.TemporaryDirectory(prefix='scaleform-translator-patch-') as directory:
             root = Path(directory)
             files = pinned_sdk(self, SDK_FILES)
-            self.assertNotIn(b'TranslateInfo::SetResult', files[LOADER])
-            self.assertNotIn(b'Translator::OnWordWrapping', files[LOADER])
+            original = text(files[LOADER])
+            owner = text(files[LOADER_IMPL])
+            self.assertNotIn('Translator::', original)
+            self.assertEqual(owner.count('void Translator::TranslateInfo::SetResult('), 2)
+            self.assertEqual(owner.count('bool Translator::OnWordWrapping('), 1)
             write(root, files)
             patch.patch_sdk(root)
             final = snapshot(root, SDK_FILES)
-            loader = final[LOADER].decode()
-            self.assertEqual(loader.count(patch.TRANSLATOR_DEFINITIONS), 1)
-            self.assertEqual(loader.count('void Translator::TranslateInfo::SetResult('), 2)
-            self.assertEqual(loader.count('bool Translator::OnWordWrapping('), 1)
+            self.assertEqual(final[LOADER], files[LOADER])
+            self.assertEqual(final[LOADER_IMPL], files[LOADER_IMPL])
             patch.patch_sdk(root)
             self.assertEqual(final, snapshot(root, SDK_FILES))
-            changed = (
-                loader.replace(patch.TRANSLATOR_DEFINITIONS, patch.TRANSLATOR_DEFINITIONS * 2),
-                loader.replace('    pResult->Resize(resultLen + 1);\n', '    pResult->Resize(resultLen);\n'),
-                loader.replace('// ***** URLBuilder implementation\n', '// ***** URLBuilder\n'),
-                loader.replace(patch.TRANSLATOR_DEFINITIONS,
-                               patch.TRANSLATOR_DEFINITIONS[:patch.TRANSLATOR_DEFINITIONS.index('// 00b51fd0')]),
-            )
-            for index, data in enumerate(changed):
+
+            # Upgrade an SDK already prepared by 765fa706 without losing its owner.
+            legacy = patch.LEGACY_TRANSLATOR_DEFINITIONS
+            anchor = '// ***** URLBuilder implementation\n'
+            previous = original.replace(anchor, legacy + anchor, 1)
+            (root / LOADER).write_text(previous)
+            patch.patch_sdk(root)
+            migrated = snapshot(root, SDK_FILES)
+            self.assertEqual(text(migrated[LOADER]), original)
+            self.assertEqual(migrated[LOADER_IMPL], files[LOADER_IMPL])
+            patch.patch_sdk(root)
+            self.assertEqual(migrated, snapshot(root, SDK_FILES))
+
+            changed = [
+                (LOADER, previous.replace(legacy, legacy * 2)),
+                (LOADER, previous.replace('    pResult->Resize(resultLen + 1);\n',
+                                          '    pResult->Resize(resultLen);\n')),
+                (LOADER, previous.replace(anchor, '// ***** URLBuilder\n')),
+                (LOADER, previous.replace(legacy, legacy[:legacy.index('// 00b51fd0')])),
+                (LOADER_IMPL, owner.replace('bool Translator::OnWordWrapping(',
+                                            'bool Translator::MissingOnWordWrapping(')),
+                (LOADER_IMPL, owner + owner[owner.index('bool Translator::OnWordWrapping('):]),
+            ]
+            for index, (name, data) in enumerate(changed):
                 write(root, final)
-                (root / LOADER).write_text(data)
+                (root / name).write_text(data)
                 before = snapshot(root, SDK_FILES)
                 with self.assertRaises(ValueError, msg=index):
                     patch.patch_sdk(root)
                 self.assertEqual(before, snapshot(root, SDK_FILES), index)
+
+    def test_real_sdk_loader_objects_link_with_one_translator_owner(self):
+        compiler = shutil.which('i686-w64-mingw32-g++')
+        linker = shutil.which('i686-w64-mingw32-ld')
+        if not compiler or not linker:
+            self.skipTest('i686 MinGW compiler/linker required for the SDK object-link regression')
+        checkout = Path(os.environ.get('WOT_SCALEFORM_SDK_GIT',
+                                       '/Users/peng/.cache/wot-independent-client/scaleform-sdk-4.2'))
+        with tempfile.TemporaryDirectory(prefix='scaleform-translator-link-') as directory:
+            root = Path(directory)
+            archive = subprocess.run(['git', '-C', str(checkout), 'archive', REVISION,
+                                      'Src', 'Include', '3rdParty/libpng-1.5.13/png.h'],
+                                     check=True, capture_output=True).stdout
+            subprocess.run(['tar', '-x', '-C', str(root)], input=archive, check=True)
+            patch = load_patch()
+            patch.patch_sdk(root)
+            # The pinned MinGW branch lacks C++ inline on header definitions;
+            # MSVC's __forceinline supplies it. Match that compiler behavior in
+            # this private fixture without changing any production SDK body.
+            types = root / 'Src/Kernel/SF_Types.h'
+            source = types.read_text()
+            before = '# define SF_INLINE          __attribute__((always_inline))'
+            self.assertEqual(source.count(before), 1)
+            types.write_text(source.replace(before,
+                             '# define SF_INLINE          inline __attribute__((always_inline))', 1))
+
+            def compile_source(source, output):
+                command = [compiler, '-std=c++14', '-w', '-c', '-DSF_BUILD_STATICLIB',
+                           '-DSF_BUILD_SHIPPING', '-ISrc', '-IInclude', '-ISrc/GFx', source,
+                           '-o', output]
+                result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+
+            compile_source(LOADER, 'loader.o')
+            compile_source(LOADER_IMPL, 'owner.o')
+            # A relocatable link permits unrelated SDK imports but still rejects
+            # duplicate strong definitions across the two real SDK objects.
+            command = [linker, '-r', 'loader.o', 'owner.o', '-o', 'combined.o']
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            # The old injection must fail at the same ownership boundary.
+            loader = root / LOADER
+            loader.write_text(loader.read_text().replace('// ***** URLBuilder implementation\n',
+                              patch.LEGACY_TRANSLATOR_DEFINITIONS + '// ***** URLBuilder implementation\n', 1))
+            compile_source(LOADER, 'loader.o')
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('multiple definition', result.stderr)
+            self.assertIn('SetResult', result.stderr)
+            self.assertIn('OnWordWrapping', result.stderr)
 
     def test_engine_seams_follow_the_sdk_patch_in_either_order(self):
         localization = load('patch_stock_scaleform_localization')
@@ -240,10 +311,11 @@ class ScaleformLocalizationOwnerTest(unittest.TestCase):
         config = python.with_name('python2.7-config')
         if not config.exists():
             self.skipTest('Pinned CPython 2.7 development files unavailable')
-        patch = load_patch()
         sdk = pinned_sdk(self, HOST_SDK_FILES)
         public = pinned_engine(self, PUBLIC_FILES)
-        set_result = between(patch.TRANSLATOR_DEFINITIONS, '// 00b51f70', '// 00b52030', False)
+        set_result = between(text(sdk[LOADER_IMPL]),
+                             'void Translator::TranslateInfo::SetResult(const wchar_t*',
+                             '}} // Scaleform::GFx', False)
         with tempfile.TemporaryDirectory(prefix='scaleform-localization-host-') as directory:
             root = Path(directory)
             (root / 'host.cpp').write_text(generated_host(sdk, public, set_result))

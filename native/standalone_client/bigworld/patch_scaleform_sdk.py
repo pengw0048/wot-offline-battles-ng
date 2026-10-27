@@ -91,11 +91,10 @@ def sdk_edits(sdk_root, edit):
     translator_edits(sdk_root, edit)
 
 
-# GFx_Loader.h declares Translator::TranslateInfo::SetResult and
-# Translator::OnWordWrapping, but the pinned 4.2.22 source defines neither;
-# #1513's WGGFxStringTranslator links the 4.6.34 bodies (00b51f70, 00b51fd0,
-# 00b52030).
-TRANSLATOR_DEFINITIONS = (
+# 765fa706 incorrectly added these definitions to GFx_Loader.cpp: the pinned
+# SDK already owns them in GFx_LoaderImpl.cpp. Retain the exact old block only
+# to migrate prepared SDK trees back to one owner, without changing its bodies.
+LEGACY_TRANSLATOR_DEFINITIONS = (
     '// ***** Translator implementation\n\n'
     '// 00b51f70: copy the wide result and mark the text translated.\n'
     'void Translator::TranslateInfo::SetResult(const wchar_t* presultText, UPInt resultLen)\n'
@@ -157,11 +156,24 @@ TRANSLATOR_DEFINITIONS = (
 
 def translator_edits(sdk_root, edit):
     loader = sdk_root / 'Src/GFx/GFx_Loader.cpp'
+    owner = sdk_root / 'Src/GFx/GFx_LoaderImpl.cpp'
+    signatures = (
+        'void Translator::TranslateInfo::SetResult(const wchar_t* presultText, UPInt resultLen)',
+        'void Translator::TranslateInfo::SetResult(const char* presultTextUTF8, UPInt resultUTF8Len)',
+        'bool Translator::OnWordWrapping(LineFormatDesc* pdesc)',
+    )
+    original = read_source(owner)
+    if any(original.count(signature) != 1 for signature in signatures):
+        raise ValueError('Pinned Translator definitions must have one GFx_LoaderImpl.cpp owner')
+
+    source = read_source(loader)
+    legacy_count = source.count(LEGACY_TRANSLATOR_DEFINITIONS)
+    clean = source.replace(LEGACY_TRANSLATOR_DEFINITIONS, '')
     anchor = 'namespace Scaleform { namespace GFx {\n\n// ***** URLBuilder implementation\n'
-    edit(loader, anchor, anchor.replace('// ***** URLBuilder', TRANSLATOR_DEFINITIONS + '// ***** URLBuilder'),
-         'Translator definitions')
-    # A duplicated definition block is rejected rather than accepted.
-    edit(loader, TRANSLATOR_DEFINITIONS, TRANSLATOR_DEFINITIONS, 'Translator definitions final state')
+    if legacy_count > 1 or clean.count(anchor) != 1 or 'Translator::' in clean:
+        raise ValueError('Pinned GFx_Loader.cpp Translator cleanup seam is partial, duplicated or changed')
+    if legacy_count:
+        edit(loader, LEGACY_TRANSLATOR_DEFINITIONS, '', 'Remove duplicate Translator definitions')
 
 
 # #1513 4.6.34 scaleform.gfx.TextFieldEx (table 015e4b58..015e4c08) adds the

@@ -20,7 +20,7 @@ SDK_FILES = ('Src/GFx/AMP/Amp_Server.h', '3rdParty/libpng-1.5.13/png.h', 'Src/Ke
              'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_ByteArray.h', 'Src/GFx/AS3/Obj/AS3_Obj_Date.h',
              'Src/GFx/AS3/Obj/Utils/AS3_Obj_Utils_Dictionary.h',
              'Src/GFx/AS3/Obj/Gfx/AS3_Obj_Gfx_TextFieldEx.h', 'Src/GFx/AS3/Obj/Gfx/AS3_Obj_Gfx_TextFieldEx.cpp',
-             'Src/GFx/GFx_Loader.cpp')
+             'Src/GFx/GFx_Loader.cpp', 'Src/GFx/GFx_LoaderImpl.cpp')
 BODIES = (('    void MovieClip::currentLabelsGet(', '    void MovieClip::enabledGet('),
           ('    void MovieClip::scenesGet(', '    void MovieClip::totalFramesGet('),
           ('    SPtr<Instances::fl_display::Scene> MovieClip::CreateFakeScene()',
