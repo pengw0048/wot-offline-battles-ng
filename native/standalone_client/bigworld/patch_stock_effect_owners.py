@@ -226,8 +226,62 @@ def patch_properties(root):
     ])
 
 
+GUI_MATERIAL_TECHNIQUE = r'''
+D3DXHANDLE SimpleGUIComponent::materialTechnique(
+    Moo::EffectMaterialPtr material, eMaterialFX fx )
+{
+    // ARIE enumerates techniques by name; legacy D3DX uses source order.
+    // materialFX is a GUI enum, never an ordinal in either effect namespace.
+    static const char * const names[] = {
+        "FX_ADD", "FX_BLEND", "FX_BLEND_COLOUR", "FX_BLEND_INVERSE_COLOUR",
+        "FX_SOLID", "FX_MODULATE2X", "FX_ALPHA_TEST", "FX_BLEND_INVERSE_ALPHA",
+        "FX_BLEND2X", "FX_ADD_SIGNED"
+    };
+    const int index = int(fx) - int(FX_ADD);
+    if (index < 0 || index >= int(sizeof(names) / sizeof(names[0])) ||
+        !material || !material->pEffect() || !material->pEffect()->pEffect())
+        return NULL;
+    return material->pEffect()->pEffect()->GetTechniqueByName(names[index]);
+}
+
+'''
+
+
+def patch_gui_materials(root):
+    ashes = Path('lib/ashes')
+    declaration = '\tstatic bool setupTechniqueTable( Moo::EffectMaterialPtr material );'
+    apply_file(root, ashes / 'simple_gui_component.hpp', [
+        (declaration, declaration + '\n\tstatic D3DXHANDLE materialTechnique(\n'
+         '\t\tMoo::EffectMaterialPtr material, eMaterialFX fx );',
+         'shared GUI material technique lookup'),
+    ])
+    signature = 'bool SimpleGUIComponent::setupTechniqueTable( Moo::EffectMaterialPtr material )'
+    apply_file(root, ashes / 'simple_gui_component.cpp', [
+        (signature, GUI_MATERIAL_TECHNIQUE + signature, 'GUI material technique names'),
+        ('\t// Additionally, the GUI effect lists its techniques in order based on \n'
+         '\t// materialFX enum',
+         '\t// Resolve each GUI mode by name for both ARIE and legacy D3DX effects.',
+         'GUI effect enumeration contract'),
+        ('\t\t\t\tD3DXHANDLE handle = pEffect->GetTechnique( i );',
+         '\t\t\t\tD3DXHANDLE handle = materialTechnique(material, static_cast<eMaterialFX>(i));\n'
+         '\t\t\t\tif (!handle)\n'
+         '\t\t\t\t{\n'
+         '\t\t\t\t\ts_techniqueTable.clear();\n'
+         '\t\t\t\t\tERROR_MSG("GUI material is missing materialFX %d.\\n", i);\n'
+         '\t\t\t\t\treturn false;\n'
+         '\t\t\t\t}', 'GUI material table uses named techniques'),
+    ])
+    apply_file(root, ashes / 'text_gui_component.cpp', [
+        ('\ttechnique_ = material_->pEffect()->pEffect()->GetTechnique(materialFX()-FX_ADD);\n'
+         '\treturn true;',
+         '\ttechnique_ = materialTechnique(material_, materialFX());\n'
+         '\treturn technique_ != NULL;', 'font GUI uses the same materialFX names'),
+    ])
+
+
 def patch(root):
     moo = Path("lib/moo")
+    patch_gui_materials(root)
     patch_properties(root)
     apply_file(root, moo / "managed_effect.hpp", [
         ("ID3DXEffect* pEffect();", "ID3DXEffect* pEffect();\n\tbool selectMaterialBinding(ComObjectWrap<ID3DXEffect>& binding,\n\t\tComObjectWrap<ID3DXEffect>& definition, CompileMark& mark);", "binding selection API"),

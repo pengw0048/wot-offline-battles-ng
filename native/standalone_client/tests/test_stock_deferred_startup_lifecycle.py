@@ -911,7 +911,7 @@ STARTUP_PATCHERS = ('shader_compiler', 'stock_effect_owners', 'stock_graphics_se
                     'stock_deferred_lighting', 'stock_dynamic_resolution', 'stock_decals',
                     'stock_deferred_buffers', 'stock_antialiasing', 'stock_vehicle_traces',
                     'stock_space_decals', 'stock_dynamic_decals', 'stock_local_lighting')
-STARTUP_SOURCES = ('client/', 'lib/moo/', 'lib/romp/', 'lib/duplo/', 'lib/terrain/', 'lib/speedtree/',
+STARTUP_SOURCES = ('client/', 'lib/ashes/', 'lib/moo/', 'lib/romp/', 'lib/duplo/', 'lib/terrain/', 'lib/speedtree/',
                    'lib/chunk/', 'lib/space/', 'lib/compiled_space/', 'lib/scene/', 'lib/model/',
                    'lib/particle/', 'lib/cstdmf/', 'lib/resmgr/', 'lib/pyscript/', 'lib/math/', 'lib/physics2/')
 
