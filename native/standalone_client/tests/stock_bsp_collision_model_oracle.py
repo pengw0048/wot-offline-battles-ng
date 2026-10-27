@@ -170,8 +170,9 @@ def hexes(values):
 
 
 def compare(executable, directory):
+    import unittest
     from test_stock_bsp_collision_model import ROOT, build_host
-    probe = build_host(None, directory, ROOT / 'tests/stock_bsp_collision_model_probe.cpp')
+    probe = build_host(unittest.TestCase(), directory, ROOT / 'tests/stock_bsp_collision_model_probe.cpp')
     process = subprocess.Popen([str(probe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
     def ask(line):
