@@ -547,8 +547,8 @@ public:
     }
 
     // 9c4c20 registers two A16B16G16R16F targets of size -2: 998990 halves
-    // the back buffer twice and truncates. Only the first carries the depth
-    // that 9c4ed0 clears.
+    // the back buffer twice and truncates. Only the first one's depth is used:
+    // 9c4ed0 clears it.
     void createHidingTargets()
     {
         const auto & size = Moo::rc().backBufferDesc();
@@ -1223,7 +1223,8 @@ public:
             FAILED( Moo::rc().setRenderTarget( 0, surface ) )) return false;
         for (unsigned i = 1; i < 4; ++i)
             if (FAILED( Moo::rc().setRenderTarget( i, NULL ) )) return false;
-        // 998ad0: the pool target's viewport follows the scene resolution.
+        // 999220 binds the whole pool target; its DRR use (blur +0x28) keeps the
+        // scene-resolution rectangle.
         DX::Viewport viewport = { 0, 0, static_cast<DWORD>( target->width() ), static_cast<DWORD>( target->height() ), 0.f, 1.f };
         if (FAILED( setStockSceneViewport( &viewport, true ) )) return false;
         Moo::rc().screenWidth( target->width() );
