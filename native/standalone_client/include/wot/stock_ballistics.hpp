@@ -30,35 +30,37 @@ Parameters & parameters();
 
 const std::uint32_t INVALID_HANDLE = 0x00ffffffu;
 
-// One f642b0 hit: result+4 point, +0x1c material kind, +0x30 item identity.
+// One f642b0 hit: result+4 point, +0x1c material kind, +0x30 identity.
+// The identity is 0 when absent, else chunkID | itemIndex16 << 32 | 1 << 48
+// (f63ac0); it is compared whole and never unpacked here.
 struct SceneHit
 {
     Vec3 point;
     std::uint32_t materialKind;
-    std::uint64_t itemID;
+    std::uint64_t identity;
 };
-// f642b0 surface filter; this owner reads only the item identity.
-typedef std::function<bool( std::uint64_t itemID )> SceneFilter;
+// ClosestCcbNative surface filter; this owner reads only the identity. An
+// empty filter accepts every surface.
+typedef std::function<bool( std::uint64_t identity )> SceneFilter;
 
-// Native core of wg_collideSegment (f642b0) and wg_collideWater (f645e0).
+// The battle scene-query owner's native f642b0 and f645e0 (false mode).
 class Scene
 {
 public:
     virtual ~Scene() {}
+    // start == end asks whether a surface is still present at that point.
     virtual bool collideSegment( std::int32_t spaceID, const Vec3 & start,
         const Vec3 & end, std::uint16_t flags, const SceneFilter & filter,
         SceneHit & hit ) = 0;
     // Distance from start to the first water surface, or a negative value.
     virtual float collideWater( const Vec3 & start, const Vec3 & end ) = 0;
 };
-void setScene( Scene * scene );
-Scene * scene();
 
 struct Point
 {
     Vec3 position;
     float time;
-    std::uint64_t itemID;
+    std::uint64_t identity;
     std::uint32_t materialKind;
     bool final;
 };
@@ -99,7 +101,7 @@ class Simulator
 {
 public:
     Simulator( Callbacks callbacks, std::function<float()> clock,
-        std::function<Vec3()> cameraPosition );
+        std::function<Vec3()> cameraPosition, Scene & scene );
 
     AddResult add( std::uint32_t & handle, std::int32_t shotID, float gravity,
         const Vec3 & refStart, const Vec3 & refVelocity, const Vec3 & start,
@@ -119,7 +121,7 @@ public:
 
     // Exposed for exact-instruction comparison.
     static bool update( Projectile & projectile, float now, const Parameters & parameters,
-        Scene * scene, const Vec3 & camera );
+        Scene & scene, const Vec3 & camera );
     static void setMatrix( Projectile & projectile, const Vec3 & position,
         const Parameters & parameters, const Vec3 & camera );
     static void subdivide( Vec3 & endPosition, Vec3 & endVelocity, std::vector<Vec3> & chords,
@@ -141,6 +143,7 @@ private:
     Callbacks callbacks_;
     std::function<float()> clock_;
     std::function<Vec3()> cameraPosition_;
+    Scene * scene_;
     std::vector<Slot> slots_;
     std::uint32_t freeHead_;
     std::uint32_t freeTail_;

@@ -2,6 +2,7 @@
 // (0xc4 bytes, points 0x20 bytes) so the oracle can compare raw bytes.
 #include "wot/stock_ballistics.hpp"
 
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -26,7 +27,7 @@ struct RawPoint
 {
     float position[3];
     float time;
-    std::uint64_t item;
+    std::uint64_t identity;
     std::uint32_t material;
     std::uint8_t final, pad[3];
 };
@@ -41,7 +42,7 @@ Projectile load( const Raw & raw, const RawPoint * points, int count )
     p.shotID = raw.shotID;
     p.handle = raw.handle;
     for (int i = 0; i < count; ++i)
-        p.points.push_back( Point{ v3( points[i].position ), points[i].time, points[i].item,
+        p.points.push_back( Point{ v3( points[i].position ), points[i].time, points[i].identity,
             points[i].material, points[i].final != 0 } );
     p.plane = Plane{ raw.plane[0], raw.plane[1], raw.plane[2], raw.plane[3] };
     std::memcpy( &p.matrix, raw.matrix, sizeof( p.matrix ) );
@@ -64,6 +65,14 @@ void store( Raw & raw, const Projectile & p )
     raw.holdTime = p.holdTime; raw.deathTime = p.deathTime;
     raw.visible = p.visible ? 1 : 0;
 }
+
+// The compared cases hold final points only; f642b0 must not be reached.
+struct NoQueries : public Scene
+{
+    bool collideSegment( std::int32_t, const Vec3 &, const Vec3 &, std::uint16_t,
+        const SceneFilter &, SceneHit & ) override { std::abort(); }
+    float collideWater( const Vec3 &, const Vec3 & ) override { std::abort(); }
+};
 
 Parameters params( const float * values, int autoScaleOff )
 {
@@ -112,7 +121,8 @@ int sb_update( void * record, const void * points, int count, float now, const f
 {
     Raw & raw = *static_cast<Raw *>( record );
     Projectile p = load( raw, static_cast<const RawPoint *>( points ), count );
-    const bool terminal = Simulator::update( p, now, params( values, autoScaleOff ), NULL,
+    NoQueries scene;
+    const bool terminal = Simulator::update( p, now, params( values, autoScaleOff ), scene,
         v3( camera ) );
     store( raw, p );
     return terminal ? 1 : 0;

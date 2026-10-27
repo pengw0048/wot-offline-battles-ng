@@ -45,6 +45,36 @@ def engine_sources(test):
     return sources
 
 
+SCENE_FAKE_HEADERS = (
+    'pch.hpp', 'cstdmf/bw_namespace.hpp', 'cstdmf/bw_string.hpp', 'cstdmf/stdmf.hpp',
+    'math/vector3.hpp', 'math/vector4.hpp', 'physics2/worldtri.hpp',
+    'physics2/collision_callback.hpp', 'physics2/collision_obstacle.hpp',
+    'pyscript/script.hpp', 'pyscript/script_math.hpp', 'romp/water.hpp',
+    'space/forward_declarations.hpp', 'space/client_space.hpp',
+    'space/deprecated_space_helpers.hpp', 'space/space_manager.hpp')
+
+
+def scene_owner(test):
+    """The battle scene-query owner's sources: this tree once integrated, else BQ's."""
+    for candidate in (ROOT / 'bigworld', Path(os.environ.get(
+            'WOT_BQ_STANDALONE', '/Users/peng/.codex/worktrees/claude-battle-scene-queries/'
+            'wot-offline-battles/native/standalone_client')) / 'bigworld'):
+        source = candidate / 'stock_battle_scene_queries.cpp'
+        if source.is_file() and 'collideStockSegmentNative' in source.read_text():
+            return candidate
+    test.skipTest('The battle scene-query owner with collideStockSegmentNative is required')
+
+
+def python27_flags(test):
+    python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
+    config = python.with_name('python2.7-config')
+    if not config.exists():
+        test.skipTest('Pinned CPython 2.7 development files unavailable')
+    flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
+             if flag != '-DNDEBUG']
+    return flags, shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
+
+
 def client(test):
     path = os.environ.get('WOT_0922_CLIENT')
     if not path:
@@ -103,7 +133,7 @@ class StockBallisticsTest(unittest.TestCase):
             text = text.replace(key, value)
         with tempfile.TemporaryDirectory(prefix='ballistics-cpython-') as directory:
             directory = Path(directory)
-            for fake in ('pch.hpp', 'app.hpp', 'cstdmf/bw_namespace.hpp', 'cstdmf/debug.hpp', 'duplo/motor.hpp', 'duplo/pymodel.hpp',
+            for fake in ('pch.hpp', 'app.hpp', 'cstdmf/bw_namespace.hpp', 'duplo/motor.hpp', 'duplo/pymodel.hpp',
                          'moo/render_context.hpp', 'pyscript/pyobject_plus.hpp', 'pyscript/script.hpp',
                          'pyscript/script_math.hpp', 'space/forward_declarations.hpp'):
                 (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +154,35 @@ class StockBallisticsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('ProjectileMover.pyc over production binding', result.stdout)
         print(result.stdout.strip())
+
+    def test_real_scene_owner_with_the_core(self):
+        owner = scene_owner(self)
+        flags, libs = python27_flags(self)
+        effects = (ROOT / 'bigworld/stock_ground_effects.cpp').read_text()
+        begin = effects.index('float Water::stockGroundRayDistance(')
+        water = 'namespace BW {\n' + effects[begin:effects.index('\nnamespace\n{', begin)] + '\n}\n'
+        with tempfile.TemporaryDirectory(prefix='ballistics-scene-') as directory:
+            directory = Path(directory)
+            for fake in SCENE_FAKE_HEADERS:
+                (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
+                (directory / 'include' / fake).write_text('#pragma once\n')
+            (directory / 'include/stock_ground_water_query.inc').write_text(water)
+            core = directory / 'core.o'
+            subprocess.run(['c++', *STRICT, '-g', '-fsanitize=address,undefined', '-c', *CORE, '-o', str(core)],
+                           check=True)
+            binary = directory / 'cross'
+            subprocess.run(['c++', '-std=c++14', '-g', '-UNDEBUG', *flags, '-fsanitize=address,undefined',
+                            '-ffp-contract=off', '-Wall', '-Werror', '-Wno-deprecated-register',
+                            '-Wno-unused-function', '-Wno-writable-strings',
+                            '-I', str(directory / 'include'), '-I', str(owner), '-I', str(ROOT / 'bigworld'),
+                            '-I', str(ROOT / 'include'), '-I', str(ROOT / 'tests'),
+                            str(ROOT / 'tests/stock_ballistics_scene_cross.cpp'), str(core), *libs,
+                            '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True,
+                                    env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('BQ native scene with BP presenter passed', result.stdout)
+        print('Scene owner: %s' % owner)
 
     def test_tick_patch_is_exact_and_idempotent(self):
         import importlib.util

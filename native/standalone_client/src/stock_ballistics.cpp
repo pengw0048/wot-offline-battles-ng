@@ -16,7 +16,6 @@ const float PREDICTION_TIME = 1000.f;
 const float CHORD_TOLERANCE = 0.03f;
 const std::uint16_t STATIC_FLAGS = 0x80;
 const int STATIC_ITERATIONS = 100;
-Scene * s_scene = NULL;
 
 Vec3 sub( const Vec3 & a, const Vec3 & b ) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
 
@@ -155,13 +154,10 @@ Parameters & parameters()
     return s_parameters;
 }
 
-void setScene( Scene * scene ) { s_scene = scene; }
-Scene * scene() { return s_scene; }
-
 Simulator::Simulator( Callbacks callbacks, std::function<float()> clock,
-        std::function<Vec3()> cameraPosition ) :
+        std::function<Vec3()> cameraPosition, Scene & scene ) :
     callbacks_( std::move( callbacks ) ), clock_( std::move( clock ) ),
-    cameraPosition_( std::move( cameraPosition ) ),
+    cameraPosition_( std::move( cameraPosition ) ), scene_( &scene ),
     freeHead_( INVALID_HANDLE ), freeTail_( INVALID_HANDLE ), growth_( 50u ),
     indices_( 20, -1 )
 {
@@ -325,27 +321,27 @@ bool Simulator::predict( Projectile & projectile, const Vec3 & gunPosition,
                     referenceTime( hit, projectile.refStart, projectile.refVelocity ) );
                 return true;
             }
-            if (Scene * owner = scene())
             {
+                Scene & owner = *scene_;
                 std::set<std::uint64_t> seen;
                 for (int i = 0; i < STATIC_ITERATIONS; ++i)
                 {
                     SceneHit result;
-                    const SceneFilter unseen = [&seen]( std::uint64_t item )
-                        { return seen.find( item ) == seen.end(); };
-                    if (!owner->collideSegment( context.spaceID, context.segmentStart,
+                    const SceneFilter unseen = [&seen]( std::uint64_t identity )
+                        { return seen.find( identity ) == seen.end(); };
+                    if (!owner.collideSegment( context.spaceID, context.segmentStart,
                             context.segmentEnd, STATIC_FLAGS, unseen, result ))
                         break;
                     Point meta = { result.point, 0.f, 0u, 0u, true };
                     // Destructible material kinds 0x49..0x56 do not end the trace.
                     if (result.materialKind - 0x49u <= 0xdu)
                     {
-                        meta.itemID = result.itemID;
+                        meta.identity = result.identity;
                         meta.materialKind = result.materialKind;
                         meta.final = false;
-                        seen.insert( result.itemID );
+                        seen.insert( result.identity );
                     }
-                    if (pushCandidate( context, *owner, result.point,
+                    if (pushCandidate( context, owner, result.point,
                             distance( result.point, context.segmentStart ), meta ))
                         return true;
                 }
@@ -534,7 +530,7 @@ void Simulator::setMatrix( Projectile & projectile, const Vec3 & position,
 }
 
 // 8ab9b0: true when the record reaches a terminal point this frame.
-bool Simulator::update( Projectile & p, float now, const Parameters & params, Scene * owner,
+bool Simulator::update( Projectile & p, float now, const Parameters & params, Scene & owner,
     const Vec3 & camera )
 {
     float elapsed = now;
@@ -548,11 +544,11 @@ bool Simulator::update( Projectile & p, float now, const Parameters & params, Sc
     {
         if (point.time > elapsed) break;
         if (point.final) { hit = &point; break; }
-        if (!owner) continue;
-        const std::uint64_t item = point.itemID;
+        // 008aba63: a zero-length query at the point, for this identity only.
+        const std::uint64_t identity = point.identity;
         SceneHit result;
-        if (owner->collideSegment( params.spaceID, point.position, point.position,
-                STATIC_FLAGS, [item]( std::uint64_t other ) { return other == item; },
+        if (owner.collideSegment( params.spaceID, point.position, point.position,
+                STATIC_FLAGS, [identity]( std::uint64_t other ) { return other == identity; },
                 result ))
         {
             hit = &point;
@@ -613,7 +609,7 @@ void Simulator::tick()
     {
         Projectile * p = const_cast<Projectile *>( lookup( handle ) );
         if (!p || !(0.f > p->deathTime)) continue;
-        if (!update( *p, now, parameters(), scene(), camera )) continue;
+        if (!update( *p, now, parameters(), *scene_, camera )) continue;
         p->deathTime = now;
         if (callbacks_.kill)
         {

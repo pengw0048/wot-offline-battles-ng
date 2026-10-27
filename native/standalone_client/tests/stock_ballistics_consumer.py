@@ -233,9 +233,7 @@ def main():
     expect(1 in projectiles and len(PLAYER.models) == 1, 'add registers one model')
     motor = projectiles[1]['motor']
     expect(type(motor).__name__ == 'PyProjectileMotor', 'returned native motor')
-    fire(mover, 99)
-    expect(host.state()['warnings'] == 1, 'unbound scene owner reported once')
-    mover.hide(99, Vector3(0, 1, 1))
+    expect(host.state()['sceneQueries'] > 0, 'prediction queried the bound scene')
     expect(('attach', 'flying', True) in LOG and ('flock', 0.0) in LOG, 'flying effect attached')
     first = advance(100.03)[0]
     expect(first['visible'] == 0 and first['transforms'] == 1, 'hidden before hidingTime %r' % first)

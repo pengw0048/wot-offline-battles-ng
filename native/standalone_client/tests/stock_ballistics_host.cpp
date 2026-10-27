@@ -13,10 +13,9 @@
 #include <strings.h>
 #include <vector>
 
+#include "wot/stock_ballistics.hpp"
+
 #define BW_BEGIN_NAMESPACE namespace BW {
-#define DECLARE_DEBUG_COMPONENT2(NAME, LEVEL)
-static int hostWarnings = 0;
-#define WARNING_MSG(...) (++hostWarnings, std::fprintf(stderr, __VA_ARGS__))
 #define BW_END_NAMESPACE }
 #define BW_STATIC_ASSERT(expression, message) static_assert(expression, #message)
 #define _stricmp strcasecmp
@@ -348,6 +347,26 @@ HostRenderContext & rc() { static HostRenderContext context; return context; }
 }
 }
 
+namespace BW {
+// The BQ scene owner is exercised with BP's core in test_stock_ballistics_scene;
+// this host checks the Python contract over a scene without geometry.
+int hostSceneQueries = 0;
+struct HostScene : public wot::stock_ballistics::Scene
+{
+	bool collideSegment(std::int32_t, const wot::stock_ballistics::Vec3 &, const wot::stock_ballistics::Vec3 &,
+		std::uint16_t, const wot::stock_ballistics::SceneFilter &, wot::stock_ballistics::SceneHit &) override
+	{
+		++hostSceneQueries;
+		return false;
+	}
+	float collideWater(const wot::stock_ballistics::Vec3 &, const wot::stock_ballistics::Vec3 &) override
+	{
+		return -1.f;
+	}
+};
+wot::stock_ballistics::Scene & stockBallisticsScene() { static HostScene scene; return scene; }
+}
+
 #include "stock_ballistics_simulator.cpp"
 
 static PyObject * hostSetTime(PyObject *, PyObject * args)
@@ -378,7 +397,7 @@ static PyObject * hostState(PyObject *, PyObject *)
 {
 	const wot::stock_ballistics::Parameters & p = wot::stock_ballistics::parameters();
 	return Py_BuildValue("{s:i,s:i,s:i,s:(ffff),s:i,s:i,s:s,s:s,s:s}",
-		"deallocations", BW::hostDeallocations, "printed", BW::Script::hostPrintedErrors, "warnings", hostWarnings,
+		"deallocations", BW::hostDeallocations, "printed", BW::Script::hostPrintedErrors, "sceneQueries", BW::hostSceneQueries,
 		"fixed", p.hidingTime, p.timeAfterDeath, p.autoScaleDistance, p.serverTickLength,
 		"spaceID", int(p.spaceID), "autoScaleOff", int(p.autoScaleOff),
 		"simulatorType", BW::PyBallisticsSimulatorObject::s_type_.tp_name,

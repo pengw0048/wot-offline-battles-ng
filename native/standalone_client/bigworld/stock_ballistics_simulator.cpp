@@ -1,10 +1,10 @@
 #include "pch.hpp"
 #include "stock_ballistics_simulator.hpp"
+#include "stock_ballistics_scene.hpp"
 
 #include "wot/stock_ballistics.hpp"
 
 #include "app.hpp"
-#include "cstdmf/debug.hpp"
 #include "duplo/motor.hpp"
 #include "duplo/pymodel.hpp"
 #include "moo/render_context.hpp"
@@ -16,8 +16,6 @@
 #include <cstring>
 #include <memory>
 #include <vector>
-
-DECLARE_DEBUG_COMPONENT2( "StockBallistics", 0 )
 
 BW_BEGIN_NAMESPACE
 
@@ -159,13 +157,6 @@ public:
 		const Vector3 & refVelocity, const Vector3 & start, float maxDistance,
 		bool autoScale, const Vector3 & gunPosition, const Vector3 & tracerCamera )
 	{
-		static bool s_reportedSceneOwner = false;
-		if (ballistics::scene() == NULL && !s_reportedSceneOwner)
-		{
-			s_reportedSceneOwner = true;
-			WARNING_MSG( "PyBallisticsSimulator: no scene-query owner is bound; tracer "
-				"prediction stops only at range or arena boundary\n" );
-		}
 		std::uint32_t handle = ballistics::INVALID_HANDLE;
 		const ballistics::AddResult result = simulator_->add( handle, shotID, gravity,
 			portable( refStart ), portable( refVelocity ), portable( start ), maxDistance,
@@ -274,7 +265,7 @@ static PyObject * PyBallisticsSimulator( const ScriptObject & boundary,
 	callbacks.erase = deleteCallback( erase );
 	std::shared_ptr< ballistics::Simulator > simulator =
 		std::make_shared< ballistics::Simulator >( std::move( callbacks ),
-			frameTime, cameraPosition );
+			frameTime, cameraPosition, stockBallisticsScene() );
 	simulators().push_back( simulator );
 	return new PyBallisticsSimulatorObject( simulator );
 }
@@ -338,11 +329,6 @@ void tickStockBallistics()
 	registered.swap( kept );
 	for (const std::shared_ptr< ballistics::Simulator > & simulator : live)
 		simulator->tick();
-}
-
-void setStockBallisticsScene( ballistics::Scene * scene )
-{
-	ballistics::setScene( scene );
 }
 
 BW_END_NAMESPACE

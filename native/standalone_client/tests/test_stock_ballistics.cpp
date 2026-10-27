@@ -23,8 +23,52 @@ bool near( const Vec3 & a, const Vec3 & b, float tolerance = 1e-4f )
 }
 Vec3 position( const Projectile & p ) { return { p.matrix.m[3][0], p.matrix.m[3][1], p.matrix.m[3][2] }; }
 
+// A plane-per-surface scene along +z. Like #1513 f642b0 (WorldTriangle::intersects
+// rejects a zero determinant), a zero-length query never reports a surface.
+struct FakeScene : public Scene
+{
+    struct Surface { float z; std::uint32_t material; std::uint64_t identity; bool alive; };
+    std::vector<Surface> surfaces;
+    float water = -1.f;
+    int segmentQueries = 0;
+    int pointQueries = 0;
+
+    bool collideSegment( std::int32_t, const Vec3 & start, const Vec3 & end, std::uint16_t flags,
+        const SceneFilter & filter, SceneHit & hit ) override
+    {
+        CHECK( flags == 0x80 );
+        if (start.x == end.x && start.y == end.y && start.z == end.z)
+        {
+            ++pointQueries;
+            return false;
+        }
+        ++segmentQueries;
+        const Surface * best = NULL;
+        for (const Surface & s : surfaces)
+        {
+            if (!s.alive || s.z < std::fmin( start.z, end.z ) || s.z > std::fmax( start.z, end.z ))
+                continue;
+            if (filter && !filter( s.identity )) continue;
+            if (!best || std::fabs( s.z - start.z ) < std::fabs( best->z - start.z )) best = &s;
+        }
+        if (!best) return false;
+        const float f = (best->z - start.z) / (end.z - start.z);
+        hit = SceneHit{ Vec3{ start.x + (end.x - start.x) * f, start.y + (end.y - start.y) * f,
+            best->z }, best->material, best->identity };
+        return true;
+    }
+    float collideWater( const Vec3 &, const Vec3 & ) override { return water; }
+};
+
+// f63ac0 composite identity.
+std::uint64_t identity( std::uint32_t chunk, std::uint16_t index )
+{
+    return std::uint64_t( chunk ) | (std::uint64_t( index ) << 32) | (std::uint64_t( 1 ) << 48);
+}
+
 struct Harness
 {
+    FakeScene scene;
     float now = 10.f;
     Vec3 camera = { 0.f, 2.f, -5.f };
     std::vector<std::string> events;
@@ -54,7 +98,7 @@ struct Harness
     }
     Simulator make()
     {
-        return Simulator( callbacks(), [this] { return now; }, [this] { return camera; } );
+        return Simulator( callbacks(), [this] { return now; }, [this] { return camera; }, scene );
     }
 };
 
@@ -213,7 +257,8 @@ void testBoundaryAndDegenerate()
     CHECK( degenerate == INVALID_HANDLE && s.projectiles().size() == 1 );
 
     // Missing boundary owner is reported, not treated as no boundary.
-    Simulator missing( Callbacks(), [] { return 1.f; }, [] { return Vec3{ 0.f, 0.f, 0.f }; } );
+    FakeScene empty;
+    Simulator missing( Callbacks(), [] { return 1.f; }, [] { return Vec3{ 0.f, 0.f, 0.f }; }, empty );
     std::uint32_t none = 0;
     CHECK( fire( missing, none, 3 ) == AddResult::NO_BOUNDARY && missing.projectiles().empty() );
     // Unless range ends inside the first chord, as in #1513.
@@ -268,90 +313,84 @@ void testSubdivision()
     CHECK( chords.size() == 1 );
 }
 
-struct FakeScene : public Scene
-{
-    struct Surface { float z; std::uint32_t material; std::uint64_t item; bool alive; };
-    std::vector<Surface> surfaces;
-    float water = -1.f;
-    int segmentQueries = 0;
-    int pointQueries = 0;
-
-    bool collideSegment( std::int32_t, const Vec3 & start, const Vec3 & end, std::uint16_t flags,
-        const SceneFilter & filter, SceneHit & hit ) override
-    {
-        CHECK( flags == 0x80 );
-        if (start.z == end.z && start.x == end.x && start.y == end.y)
-        {
-            ++pointQueries;
-            for (const Surface & s : surfaces)
-                if (s.alive && near( s.z, start.z, 0.01f ) && (!filter || filter( s.item )))
-                {
-                    hit = SceneHit{ start, s.material, s.item };
-                    return true;
-                }
-            return false;
-        }
-        ++segmentQueries;
-        const Surface * best = NULL;
-        for (const Surface & s : surfaces)
-        {
-            if (!s.alive || s.z < std::fmin( start.z, end.z ) || s.z > std::fmax( start.z, end.z ))
-                continue;
-            if (filter && !filter( s.item )) continue;
-            if (!best || std::fabs( s.z - start.z ) < std::fabs( best->z - start.z )) best = &s;
-        }
-        if (!best) return false;
-        const float f = (best->z - start.z) / (end.z - start.z);
-        hit = SceneHit{ Vec3{ start.x + (end.x - start.x) * f, start.y + (end.y - start.y) * f,
-            best->z }, best->material, best->item };
-        return true;
-    }
-    float collideWater( const Vec3 &, const Vec3 & ) override { return water; }
-};
-
 void testSceneCandidates()
 {
     resetParameters();
-    FakeScene scene;
-    // A destructible fence (0x49) in front of a wall (material 3).
-    scene.surfaces.push_back( { 20.f, 0x49u, 77u, true } );
-    scene.surfaces.push_back( { 40.f, 3u, 0u, true } );
-    setScene( &scene );
     Harness h;
+    // A destructible fence (0x49) in front of a wall (material 3, no identity).
+    const std::uint64_t fence = identity( 7u, 3u );
+    h.scene.surfaces.push_back( { 20.f, 0x49u, fence, true } );
+    h.scene.surfaces.push_back( { 40.f, 3u, 0u, true } );
     Simulator s = h.make();
     std::uint32_t handle = 0;
     CHECK( fire( s, handle, 1, 1000.f ) == AddResult::ADDED );
     const Projectile * p = s.lookup( handle );
     CHECK( p->points.size() == 2 );
-    CHECK( !p->points[0].final && p->points[0].itemID == 77u && p->points[0].materialKind == 0x49u );
+    CHECK( !p->points[0].final && p->points[0].identity == fence && p->points[0].materialKind == 0x49u );
     CHECK( p->points[1].final && near( p->points[1].position.z, 40.f, 1e-3f ) );
-    // The fence still stands when reached: the tracer ends there.
+    // The zero-length recheck at the standing fence runs and, as in #1513,
+    // never re-hits: the tracer passes on to the wall.
     h.now = 10.05f; s.tick();
-    CHECK( h.events.size() == 1 && near( position( *s.lookup( handle ) ).z, 19.99f, 0.02f ) );
-
-    // A fence destroyed before arrival lets the tracer pass to the wall.
-    scene.surfaces[0].alive = true;
-    std::uint32_t passing = 0;
-    CHECK( fire( s, passing, 2, 1000.f ) == AddResult::ADDED );
-    scene.surfaces[0].alive = false;
+    CHECK( h.events.empty() && h.scene.pointQueries == 1 );
     h.now = 10.1f; s.tick();
-    CHECK( h.events.size() == 1 );
-    h.now = 10.2f; s.tick();
-    CHECK( h.events.size() == 2 && near( position( *s.lookup( passing ) ).z, 39.99f, 0.02f ) );
+    CHECK( h.events.size() == 1 && h.scene.pointQueries == 2 );
+    CHECK( near( position( *s.lookup( handle ) ).z, 39.99f, 0.02f ) );
+}
 
-    // Water in front of the wall replaces it as the final point (segment path).
-    scene.surfaces[0].alive = false;
-    scene.water = 1.5f;
-    Harness dry;
-    Simulator w( dry.callbacks(), [] { return 0.f; }, [] { return Vec3{ 0.f, 0.f, 0.f }; } );
-    std::uint32_t wet = 0;
-    CHECK( w.add( wet, 3, 9.81f, Vec3{ 0.f, 1.f, 0.f }, Vec3{ 0.f, 0.f, 500.f },
+void testCandidateIdentity()
+{
+    resetParameters();
+    // Destructibles whose identities differ in one half only, known (0, 0) and an
+    // unsigned-high chunk are each recorded; a repeated identity in the same
+    // chord is filtered out, so the farther wall is still found.
+    const std::uint64_t ids[] = { identity( 0u, 0u ), identity( 0u, 1u ), identity( 1u, 0u ),
+        identity( 0x80000000u, 0u ) };
+    Harness h;
+    for (int i = 0; i < 4; ++i) h.scene.surfaces.push_back( { 20.f + i, 0x49u + i, ids[i], true } );
+    h.scene.surfaces.push_back( { 24.f, 0x50u, ids[2], true } );
+    h.scene.surfaces.push_back( { 25.f, 2u, 0u, true } );
+    Simulator s = h.make();
+    std::uint32_t handle = 0;
+    CHECK( fire( s, handle, 1, 1000.f ) == AddResult::ADDED );
+    const Projectile * p = s.lookup( handle );
+    CHECK( p->points.size() == 5 );
+    for (int i = 0; i < 4 && p->points.size() == 5; ++i)
+        CHECK( p->points[i].identity == ids[i] && !p->points[i].final );
+    CHECK( p->points.size() == 5 && p->points[4].final && near( p->points[4].position.z, 25.f, 1e-3f ) );
+
+    // Absent identity (0) is one value too. After an unidentified destructible,
+    // 014ef060 filters every unidentified surface for the rest of that chord,
+    // including the wall behind it; the next chord's wall still stops it.
+    Harness a;
+    a.scene.surfaces.push_back( { 20.f, 0x49u, 0u, true } );
+    a.scene.surfaces.push_back( { 21.f, 0x49u, 0u, true } );
+    a.scene.surfaces.push_back( { 22.f, 2u, 0u, true } );
+    a.scene.surfaces.push_back( { 70.f, 2u, 0u, true } );
+    Simulator t = a.make();
+    CHECK( fire( t, handle, 1, 1000.f ) == AddResult::ADDED );
+    p = t.lookup( handle );
+    CHECK( p->points.size() == 2 && p->points[0].identity == 0u && !p->points[0].final &&
+        p->points[1].final && near( p->points[1].position.z, 70.f, 1e-3f ) );
+
+    // Water ahead of the wall replaces it as the final point (segment path).
+    Harness w;
+    w.scene.surfaces.push_back( { 40.f, 3u, 0u, true } );
+    w.scene.water = 1.5f;
+    Simulator wet = w.make();
+    std::uint32_t splash = 0;
+    CHECK( wet.add( splash, 3, 9.81f, Vec3{ 0.f, 1.f, 0.f }, Vec3{ 0.f, 0.f, 500.f },
         Vec3{ 0.f, 1.f, 0.f }, 1000.f, false, Vec3{ 0.f, 1.f, 0.f }, Vec3{ 0.f, 2.f, -5.f } ) ==
         AddResult::ADDED );
-    const Projectile * q = w.lookup( wet );
+    const Projectile * q = wet.lookup( splash );
     CHECK( q->points.size() == 1 && q->points[0].final );
     CHECK( q->points[0].position.z > 0.f && q->points[0].position.z < 40.f );
-    setScene( NULL );
+    // Water behind the wall does not.
+    w.scene.water = 100.f;
+    std::uint32_t dry = 0;
+    CHECK( wet.add( dry, 4, 9.81f, Vec3{ 0.f, 1.f, 0.f }, Vec3{ 0.f, 0.f, 500.f },
+        Vec3{ 0.f, 1.f, 0.f }, 1000.f, false, Vec3{ 0.f, 1.f, 0.f }, Vec3{ 0.f, 2.f, -5.f } ) ==
+        AddResult::ADDED );
+    CHECK( near( wet.lookup( dry )->points[0].position.z, 40.f, 1e-3f ) );
 }
 
 void testReentrancyAndDetach()
@@ -424,6 +463,7 @@ int main()
     testVelocityRecompute();
     testSubdivision();
     testSceneCandidates();
+    testCandidateIdentity();
     testReentrancyAndDetach();
     testMatrixAndScale();
     testPlaneIntersection();
