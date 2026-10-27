@@ -1264,6 +1264,33 @@ private:
     bool saved_;
 };
 
+// Shared per-screen constants applied under a quarter target stay cached after
+// its scope pops. 9c511d reapplies them for the scene target; every earlier
+// exit does the same once the target scopes have restored the screen size.
+class HidingScreenConstants
+{
+public:
+    HidingScreenConstants() = default;
+    HidingScreenConstants( const HidingScreenConstants & ) = delete;
+    HidingScreenConstants & operator=( const HidingScreenConstants & ) = delete;
+    ~HidingScreenConstants() { restore(); }
+    // 9c4fa8 and the blur passes: the bound quarter target's size.
+    void apply()
+    {
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+        quarter_ = true;
+    }
+    // 9c511d: the restored scene target's size.
+    void restore()
+    {
+        if (!quarter_) return;
+        quarter_ = false;
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+    }
+private:
+    bool quarter_ = false;
+};
+
 Vector4 hidingTargetProjection( const Moo::RenderTargetPtr & target )
 {
     // 998e30: the DRR projection of the pool target, as targetProjection.
@@ -1282,7 +1309,7 @@ void setHidingAlpha( TreeRenderingOwner & owner, bool value )
 
 // 9d62e0 with 9c5080's parameters: identical to a69bb7's Gaussian except
 // +0x28, which takes the DRR source projection instead of (1,1,0,0).
-bool blurHidingTarget( TreeRenderingOwner & owner )
+bool blurHidingTarget( TreeRenderingOwner & owner, HidingScreenConstants & constants )
 {
     const Moo::RenderTargetPtr inputs[] = { owner.hidingTargets[0], owner.hidingTargets[1] };
     const Moo::RenderTargetPtr outputs[] = { owner.hidingTargets[1], owner.hidingTargets[0] };
@@ -1294,7 +1321,7 @@ bool blurHidingTarget( TreeRenderingOwner & owner )
         HidingTargetScope target;
         // a69bb7's blur binds no depth; this pass has no depth test either.
         if (!target.bind( outputs[pass], false ) || !material->hTechnique( techniques[pass] )) return false;
-        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+        constants.apply();
         ID3DXEffect * effect = material->pEffect()->pEffect();
         const Vector4 screen( float( width ), float( height ), 1.f / width, 1.f / height );
         const Vector4 projection = hidingTargetProjection( inputs[pass] );
@@ -1334,6 +1361,7 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
         drawStockTreeSemitransparent( true );
         return;
     }
+    HidingScreenConstants constants;
     {
         HidingTargetScope target;
         if (!target.bind( targets[0], true ))
@@ -1344,7 +1372,7 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
         }
         // 9c4fa8: the draw context's vslot 0x14(2) applies the per-screen
         // shared constants for the quarter target (2 = CONSTANTS_PER_SCREEN).
-        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+        constants.apply();
         // 998ad0 clears the colour to 99daa0's packed zero; 998a20 clears the
         // depth target with flags 3 (depth and stencil) to 1 and 0.
         if (FAILED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
@@ -1358,7 +1386,7 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
         drawStockTreeSemitransparent( skipDrawing );
         setHidingAlpha( *owner, false );
     }
-    if (blur && !blurHidingTarget( *owner ))
+    if (blur && !blurHidingTarget( *owner, constants ))
     {
         owner->fail( "Cannot blur the original tree-hiding target" );
         return;
@@ -1366,7 +1394,7 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
     // 9c511d: per-screen constants again for the restored scene target, then
     // UPSAMPLE_RT samples the quarter target (99b8e0 also binds its DRR
     // parameters).
-    Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+    constants.restore();
     auto & material = owner->upsampleMaterial;
     ID3DXEffect * effect = material->pEffect()->pEffect();
     const Vector4 projection = hidingTargetProjection( targets[0] );

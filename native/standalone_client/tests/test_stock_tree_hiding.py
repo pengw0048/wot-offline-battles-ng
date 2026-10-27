@@ -1120,7 +1120,7 @@ template <class T> struct ComObjectWrap
     T * pComObject() const { return p; }
     operator T * () const { return p; }
 };
-int failBind = 0, failClear = 0, failBlur = 0;
+int failBind = 0, failClear = 0, failBlur = 0, failTechnique = 0;
 struct Device
 {
     HRESULT SetDepthStencilSurface( DX::Surface * depth )
@@ -1154,7 +1154,12 @@ struct EffectMaterial
     std::string name;
     std::unique_ptr<ManagedEffect> managed{ new ManagedEffect };
     ManagedEffect * pEffect() { return managed.get(); }
-    bool hTechnique( const char * technique ) { event( "technique " + name + " " + technique ); return true; }
+    bool hTechnique( const char * technique )
+    {
+        event( "technique " + name + " " + technique );
+        const char * failing[] = { "", "HORIZONTAL_PASS", "VERTICAL_PASS", "UPSAMPLE_RT" };
+        return std::strcmp( technique, failing[failTechnique] ) != 0;
+    }
 };
 typedef std::shared_ptr<EffectMaterial> EffectMaterialPtr;
 struct RenderTarget
@@ -1169,7 +1174,8 @@ struct RenderTarget
     DX::Texture * pTexture() { return &texture; }
 };
 typedef std::shared_ptr<RenderTarget> RenderTargetPtr;
-struct EffectVisualContext { void updateSharedConstants( int kind ); };
+// The provider caches PerScreen data at each update; a target pop does not.
+struct EffectVisualContext { float perScreen[2] = { 1600, 900 }; void updateSharedConstants( int kind ); };
 struct FullscreenQuad
 {
     bool drawChecked( EffectMaterial & material, uint w, uint h )
@@ -1200,6 +1206,11 @@ inline RenderContext & rc() { static RenderContext value; return value; }
 inline void EffectVisualContext::updateSharedConstants( int kind )
 {
     event( "constants " + std::to_string( kind ) + " " + number( rc().screenWidth() ) + "x" + number( rc().screenHeight() ) );
+    if (kind & CONSTANTS_PER_SCREEN)
+    {
+        perScreen[0] = rc().screenWidth();
+        perScreen[1] = rc().screenHeight();
+    }
 }
 }
 HRESULT setStockSceneViewport( DX::Viewport * v, bool scene )
@@ -1228,8 +1239,8 @@ int main()
     while (std::fgets( line, sizeof( line ), stdin ))
     {
         int hide, optimiser, draw, blur, hasOwner, resources;
-        std::sscanf( line, "%d %d %d %d %d %d %d %d %d", &hide, &optimiser, &draw, &blur, &hasOwner, &resources,
-            &failBind, &failClear, &failBlur );
+        std::sscanf( line, "%d %d %d %d %d %d %d %d %d %d", &hide, &optimiser, &draw, &blur, &hasOwner, &resources,
+            &failBind, &failClear, &failBlur, &failTechnique );
         treeHiding().settings.hideClosest = hide != 0;
         owner.reset();
         if (hasOwner)
@@ -1258,10 +1269,14 @@ int main()
         events.clear();
         Moo::rc().width_ = 1600;
         Moo::rc().height_ = 900;
+        Moo::rc().context_.perScreen[0] = 1600;
+        Moo::rc().context_.perScreen[1] = 900;
         drawStockTreeSemitransparentStage( !draw, optimiser != 0, blur != 0 );
         std::printf( "S" );
         for (const auto & e : events) std::printf( "|%s", e.c_str() );
         std::printf( "\n" );
+        std::printf( "R screen=%gx%g PerScreen=%gx%g stack=%d\n", Moo::rc().width_, Moo::rc().height_,
+            Moo::rc().context_.perScreen[0], Moo::rc().context_.perScreen[1], int( Moo::rc().saved.size() ) );
     }
     return 0;
 }
@@ -1370,18 +1385,25 @@ class OptimiserStageTests(unittest.TestCase):
         original = json.loads(run.stdout)
         rows = []
         for case in cases + [dict(hide=True, owner=False), dict(hide=True, resources=False),
-                             dict(hide=True, clear=False), dict(hide=True, blurred=False)]:
-            rows.append('%d %d %d %d %d %d %d %d %d' % (
+                             dict(hide=True, clear=False), dict(hide=True, blurred=False),
+                             dict(hide=True, technique=1), dict(hide=True, technique=2),
+                             dict(hide=True, technique=3)]:
+            rows.append('%d %d %d %d %d %d %d %d %d %d' % (
                 case['hide'], case.get('optimiser', True), case.get('draw', True), case.get('blur', True),
                 case.get('owner', True), case.get('resources', True), not case.get('bound', True),
-                not case.get('clear', True), not case.get('blurred', True)))
+                not case.get('clear', True), not case.get('blurred', True), case.get('technique', 0)))
         with tempfile.TemporaryDirectory() as folder:
             source = stage_host_source().replace('#include "wot/stock_dynamic_resolution.hpp"',
                                                  (ROOT / 'include/wot/stock_dynamic_resolution.hpp').read_text())
             binary = compile_host(Path(folder), '#include <array>\n' + source, 'tree_hiding_stage')
             result = subprocess.run([str(binary)], input='\n'.join(rows) + '\n', capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        produced = result.stdout.splitlines()
+        produced = [line for line in result.stdout.splitlines() if line.startswith('S')]
+        restored = [line for line in result.stdout.splitlines() if line.startswith('R ')]
+        # Every exit, including clear, blur and technique failures after the
+        # quarter apply, leaves the scene screen, the cached PerScreen data and
+        # an empty target stack.
+        self.assertEqual(restored, ['R screen=1600x900 PerScreen=1600x900 stack=0'] * len(rows))
         # Every legal path, including skip and blur off, has the original order.
         for index in range(6):
             self.assertEqual(normalise_production(produced[index]), normalise_original(original[index]),
@@ -1422,8 +1444,19 @@ class OptimiserStageTests(unittest.TestCase):
         self.assertEqual(normalise_production(produced[7]), ['trees 0'])
         self.assertEqual(normalise_production(produced[8]), ['fail', 'trees 1'])
         self.assertEqual(normalise_production(produced[9]),
-                         ['bind', 'constants 2', 'clear colour 0', 'clear depth 1 0 3', 'fail', 'trees 1', 'end'])
-        self.assertEqual(normalise_production(produced[10]), normalise_original(original[1])[:9] + ['fail'])
+                         ['bind', 'constants 2', 'clear colour 0', 'clear depth 1 0 3', 'fail', 'trees 1', 'end',
+                          'constants 2'])
+        self.assertEqual(normalise_production(produced[10]),
+                         normalise_original(original[1])[:9] + ['fail', 'constants 2'])
+        for index in (9, 10, 11, 12):
+            self.assertEqual(produced[index].split('|')[-1], 'constants 2 1600x900', produced[index])
+        # A failed upsample technique comes after the 9c511d restore: no second one.
+        self.assertEqual(normalise_production(produced[13])[-3:], ['constants 2', 'upsample', 'fail'])
+        self.assertEqual(produced[13].count('constants 2 1600x900'), 1)
+        # The successful path keeps exactly the two original vslot 0x14(2)
+        # calls outside the blur owner.
+        self.assertEqual([e for e in normalise_production(produced[1]) if e.startswith('constants')],
+                         ['constants 2', 'constants 2'])
 
 
 POOL_HOST = r"""
