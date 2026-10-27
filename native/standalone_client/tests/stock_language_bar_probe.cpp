@@ -1,7 +1,8 @@
 // Hidden real-SDK probe of the original gui/flash/LangBar.swf: without and with
 // the stock LangBar owner, a real SDK Stage mouseDown and later Stage listener.
 // Console only: no window, renderer, client, worker or server. Usage:
-//   stock_language_bar_probe.exe LangBar.swf baseline|owner|focus-before-activation
+//   stock_language_bar_probe.exe LangBar.swf baseline|owner|focus-before-activation|guard-method
+// LangBar.swf imports gfxfontlib.swf; keep the exact gui.pkg copy beside it.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4244 4100 4189 4458 4005)
@@ -13,6 +14,7 @@
 #include <GFx/AS3/AS3_MovieRoot.h>
 #include <GFx/AS3/AS3_AvmDisplayObjContainer.h>
 #include <GFx/AS3/Obj/AS3_Obj_Global.h>
+#include <GFx/AS3/Obj/Display/AS3_Obj_Display_DisplayObject.h>
 #include <Kernel/HeapPT/HeapPT_SysAllocWinAPI.h>
 // Defines ClassRegistrationTable, which libgfx_as3 expects from exactly one TU.
 #include <AS3/AS3_Global.h>
@@ -39,6 +41,13 @@ void check( const char * name, bool passed, const std::string & detail )
     if (!passed)
         ++g_failures;
     std::printf( "CHECK %s %s %s\n", name, passed ? "PASS" : "FAIL", detail.c_str() );
+    std::fflush( stdout );
+}
+
+// A check this process context cannot exercise; neither a pass nor a failure.
+void skip( const char * name, const std::string & detail )
+{
+    std::printf( "CHECK %s SKIP %s\n", name, detail.c_str() );
     std::fflush( stdout );
 }
 
@@ -170,12 +179,26 @@ struct Instance
         Call( target, "addEventListener", 2, args );
     }
 
-    // The centre of a LangBar tab, in Stage coordinates.
-    void Centre( const char * name, float & x, float & y )
+    // NotifyMouseState takes viewport pixels. The 200x200 LangBar stage is shown
+    // scaled in the 1024x768 viewport, so map the tab centre through the SDK.
+    Render::PointF TabCentre( const char * name )
     {
         AS3::Value tab = Get( main, name );
-        x = float( Number( Get( tab, "x" ) ) + Number( Get( tab, "width" ) ) / 2 );
-        y = float( Number( Get( tab, "y" ) ) + Number( Get( tab, "height" ) ) / 2 );
+        const Render::PointF local( float( Number( Get( tab, "x" ) ) + Number( Get( tab, "width" ) ) / 2 ),
+            float( Number( Get( tab, "y" ) ) + Number( Get( tab, "height" ) ) / 2 ) );
+        const Render::PointF screen = movie->TranslateToScreen( local );
+        std::printf( "%s centre root=%.1f,%.1f screen=%.1f,%.1f hitShapes=%d\n", name, local.x, local.y,
+            screen.x, screen.y, int( movie->HitTest( screen.x, screen.y, Movie::HitTest_Shapes ) ) );
+        return screen;
+    }
+
+    GFx::InteractiveObject * Interactive( const AS3::Value & v )
+    {
+        if (IsNull( v ))
+            return NULL;
+        GFx::DisplayObject * object =
+            static_cast<AS3::Instances::fl_display::DisplayObject *>( v.GetObject() )->pDispObj;
+        return object != NULL ? object->CharToInteractiveObject() : NULL;
     }
 
     void Click( float x, float y )
@@ -275,6 +298,12 @@ void selection( Instance & a )
     std::string os;
     for (size_t i = 0; i < names.size(); ++i)
         os += std::string( i ? "|" : "" ) + names[i];
+    if (names.empty())
+    {
+        skip( "installed-languages", "GetKeyboardLayoutList is empty in this process context; shown=" + shown );
+        a.Click( 900.0f, 600.0f );
+        return;
+    }
     check( "installed-languages", shown == os && count == names.size(), "shown=" + shown + " os=" + os );
 
     const HKL original = GetKeyboardLayout( 0 );
@@ -311,19 +340,24 @@ bool initAgain( Instance & a )
 // its ancestors before Stage dispatch, as every lobby click does.
 void activeTabClick( Instance & a, CountingLog & log, size_t languages )
 {
-    float x = 0, y = 0;
-    a.Centre( "InputLangTab_mc", x, y );
-    Ptr<Counter> later = *new Counter;
+    const Render::PointF at = a.TabCentre( "InputLangTab_mc" );
+    Ptr<Counter> later = *new Counter, onTab = *new Counter;
     a.Listen( *later, a.stage, "mouseDown" );
+    a.Listen( *onTab, a.Get( a.main, "InputLangTab_mc" ), "mouseDown" );
     const unsigned before = log.nullReferences;
-    a.Click( x, y );
+    a.Click( at.x, at.y );
     const std::string pending = a.Exception();
     const unsigned rows = a.Count( a.Get( a.main, "NumRows" ) );
     char detail[256];
-    std::snprintf( detail, sizeof( detail ), "at=%.1f,%.1f pending=%s #1009=%u laterListener=%u rows=%u os=%u",
-        x, y, pending.c_str(), log.nullReferences - before, later->calls, rows, unsigned( languages ) );
-    check( "active-tab-click", pending == "none" && log.nullReferences == before && later->calls == 1 &&
-        rows == languages, detail );
+    std::snprintf( detail, sizeof( detail ), "pending=%s #1009=%u tabListener=%u laterListener=%u",
+        pending.c_str(), log.nullReferences - before, onTab->calls, later->calls );
+    check( "active-tab-click", pending == "none" && log.nullReferences == before && onTab->calls == 1 &&
+        later->calls == 1, detail );
+    std::snprintf( detail, sizeof( detail ), "rows=%u os=%u", rows, unsigned( languages ) );
+    if (languages == 0)
+        skip( "active-tab-list", std::string( detail ) + "; GetKeyboardLayoutList is empty in this process context" );
+    else
+        check( "active-tab-list", rows == languages, detail );
     a.Click( 900.0f, 600.0f );
     std::snprintf( detail, sizeof( detail ), "#1009=%u laterListener=%u rows=%u",
         log.nullReferences - before, later->calls, a.Count( a.Get( a.main, "NumRows" ) ) );
@@ -397,16 +431,39 @@ int main( int argc, char ** argv )
         Instance a;
         if (!create( *def, a ))
             return 4;
+        if (mode == "guard-method")
+        {
+            // Method level, no mouse input: the guarded IMEManagerBase members
+            // called directly while the owner has no active movie.
+            AS3::Value tab = a.Get( a.main, "InputLangTab_mc" );
+            GFx::InteractiveObject * item = a.Interactive( tab );
+            Ptr<IMEManagerBase> manager = loader.GetIMEManager();
+            std::printf( "guard method: begin item=%p\n", static_cast<void *>( item ) );
+            std::fflush( stdout );
+            GFx::InteractiveObject * chosen = manager->HandleFocus( a.movie, NULL, item, item );
+            const bool anyFocused = manager->IsTextFieldFocused();
+            const bool itemFocused = manager->IsTextFieldFocused( item );
+            check( "guard-method", item != NULL && chosen == item && !anyFocused && !itemFocused,
+                "method-level, not mouse integration" );
+            tab.SetUndefined();
+            a.Release();
+            return g_failures;
+        }
         if (mode == "focus-before-activation")
         {
-            // No SetFocusEvent yet, so the owner has no active movie. A click on the
-            // tab moves mouse focus through MovieImpl::QueueSetFocusTo and HandleFocus.
-            float x = 0, y = 0;
-            a.Centre( "InputLangTab_mc", x, y );
-            std::printf( "focus before activation: begin at=%.1f,%.1f\n", x, y );
+            // No SetFocusEvent yet, so the owner has no active movie. A press on the
+            // tab reaches MovieImpl::QueueSetFocusTo and HandleFocus before the AS3
+            // mouse events are generated.
+            const Render::PointF at = a.TabCentre( "InputLangTab_mc" );
+            Ptr<Counter> onTab = *new Counter;
+            a.Listen( *onTab, a.Get( a.main, "InputLangTab_mc" ), "mouseDown" );
+            std::printf( "focus before activation: begin\n" );
             std::fflush( stdout );
-            a.Click( x, y );
-            check( "focus-before-activation", true, "returned exception=" + a.Exception() );
+            a.Click( at.x, at.y );
+            char detail[128];
+            std::snprintf( detail, sizeof( detail ), "tabListener=%u exception=%s", onTab->calls,
+                a.Exception().c_str() );
+            check( "focus-before-activation", onTab->calls == 1, detail );
             a.Release();
             return g_failures;
         }
