@@ -81,6 +81,12 @@ public:
         retired->clearAllEntities();
         if (!deferDeletion) delete retired;
     }
+
+    // 63f610, shared with clearEntitiesAndSpaces' main-connection stage.
+    static void clearMainSpace(bool keepLocalEntities)
+    {
+        ConnectionControl::instance().clearStockMainSpace(keepLocalEntities);
+    }
 };
 
 void ConnectionControl::clearStockMainSpace(bool keepLocalEntities)
@@ -215,7 +221,7 @@ static void clearAllSpaces(bool keepClientOnlySpaces)
 }
 PY_AUTO_MODULE_FUNCTION(RETVOID, clearAllSpaces, OPTARG(bool, false, END), BigWorld)
 
-// 651030 parses both flags before rejecting keepPlayerAround, then runs 63f610.
+// 651030 parses both flags before rejecting keepPlayerAround.
 static PyObject* resetEntityManager(bool keepPlayerAround, bool keepLocalEntities)
 {
     if (keepPlayerAround)
@@ -223,7 +229,7 @@ static PyObject* resetEntityManager(bool keepPlayerAround, bool keepLocalEntitie
         PyErr_SetString(PyExc_ValueError, "Setting keepPlayerAround to True is now invalid");
         return NULL;
     }
-    ConnectionControl::instance().clearStockMainSpace(keepLocalEntities);
+    StockSpaceLifecycle::clearMainSpace(keepLocalEntities);
     Py_RETURN_NONE;
 }
 PY_AUTO_MODULE_FUNCTION(RETOWN, resetEntityManager, OPTARG(bool, false, OPTARG(bool, false, END)), BigWorld)
