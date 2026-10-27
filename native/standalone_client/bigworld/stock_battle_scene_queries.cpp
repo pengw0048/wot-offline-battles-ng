@@ -128,19 +128,19 @@ public:
     const StockSegmentHit & hit() const { return hit_; }
 
 private:
-    // The WGDE static-item owner is the identity source; a miss is absent.
+    // The chunk-model or compiled WGDE1 identity owner; a miss is absent.
     bool identity( const CollisionObstacle & obstacle, bool & known, uint32 & chunkID,
         uint16 & itemIndex )
     {
-        StockObstacleIdentity value;
-        known = readStockObstacleIdentity( obstacle, value );
+        uint32 chunk = 0, item = 0;
+        known = readStockObstacleItem( obstacle, chunk, item );
         if (PyErr_Occurred())
         {
             failed_ = true;
             return false;
         }
-        chunkID = known ? value.chunkID : 0;
-        itemIndex = known ? uint16( value.itemIndex ) : 0;
+        chunkID = known ? chunk : 0;
+        itemIndex = known ? uint16( item ) : 0;
         return true;
     }
 

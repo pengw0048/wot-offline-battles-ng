@@ -20,4 +20,10 @@ struct StockObstacleIdentity {
 bool readStockObstacleIdentity(const CollisionObstacle& obstacle,
     StockObstacleIdentity& output);
 
+// The original static-item key alone, for scene queries: a chunk model's
+// authored identity or a compiled instance's WGDE1 row (006ba9b0). False
+// means the obstacle has no source identity.
+bool readStockObstacleItem(const CollisionObstacle& obstacle,
+    uint32& chunkID, uint32& itemIndex);
+
 BW_END_NAMESPACE

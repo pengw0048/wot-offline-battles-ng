@@ -199,6 +199,25 @@ _BigWorld.wg_collideSegment(2, (0.0, 10.0, 0.0), (0.0, -10.0, 0.0), 0, teardown)
 '''
 
 
+IDENTITY_PROBE = r'''
+#include "stock_scene_identity_data.hpp"
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
+int main(int, char** argv) {
+    std::ifstream file(argv[1], std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    wot::StockSpaceSoundIdentities wgde;
+    std::string error;
+    if (!wgde.read(bytes.data(), bytes.size(), error)) { std::puts(error.c_str()); return 1; }
+    const auto items = wot::stockSceneItemIdentities(wgde, std::stoul(argv[2]));
+    for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].known) std::printf("%zu %u %u\n", i, items[i].chunkID, items[i].itemIndex);
+}
+'''
+
+
 class StockBattleSceneQueriesTest(unittest.TestCase):
     def test_production_kernel(self):
         with tempfile.TemporaryDirectory(prefix='scene-query-kernel-') as directory:
@@ -381,6 +400,90 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
         self.assertEqual(len(production), len(cases))
         self.assertGreater(accepted, 200)
         print('Original f5c1d0 Ccb_: %d sequences, %d accepted surfaces PASS' % (len(cases), accepted))
+
+    def test_compiled_instance_identity_wiring(self):
+        """The compiled scene collision object reaches the WGDE1 identity owner."""
+        scene = (ROOT / 'bigworld/stock_static_model_scene.cpp').read_text()
+        identity = (ROOT / 'bigworld/stock_scene_identity.cpp').read_text()
+        query = (ROOT / 'bigworld/stock_battle_scene_queries.cpp').read_text()
+        load = function(scene, 'bool StockStaticModelSceneLoader::State::load(')
+        self.assertLess(load.index('object.type<Instance>();'), load.index('return loadItemIdentities( file );'))
+        self.assertIn('wot::stockSceneItemIdentities( wgde, instances.size() )',
+                      function(scene, 'bool StockStaticModelSceneLoader::State::loadItemIdentities('))
+        self.assertIn('CollisionObstacle obstacle( &instance.world, &instance.inverse, object );', scene)
+        self.assertIn('object.isType<State::Instance>()',
+                      function(scene, 'bool StockStaticModelSceneLoader::itemIdentity('))
+        reader = function(identity, 'bool readStockObstacleItem(')
+        self.assertIn('object.isType<ChunkItem>()', reader)
+        self.assertIn('StockStaticModelSceneLoader::itemIdentity( object, chunkID, itemIndex )', reader)
+        self.assertIn('readStockObstacleItem( obstacle, chunk, item )', query)
+        self.assertNotIn('readStockObstacleIdentity(', query)
+
+    def test_original_x86_compiled_instance_identities_on_every_space(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original space data')
+        try:
+            import stock_battle_scene_queries_oracle as oracle
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for the original instruction oracle')
+        import struct
+        import zipfile
+        sys.path.insert(0, str(ROOT.parents[1] / 'tools'))
+        from space_bin_0922 import CompiledSpace
+        executable = Path(client) / 'WorldOfTanks.exe'
+        with tempfile.TemporaryDirectory(prefix='scene-query-wgde-') as directory:
+            path = Path(directory)
+            (path / 'probe.cpp').write_text(IDENTITY_PROBE)
+            subprocess.run([CXX, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'bigworld'),
+                            str(path / 'probe.cpp'), '-o', str(path / 'probe')], check=True)
+            spaces = keys = shifted = 0
+            lakeville = None
+            for package in sorted((Path(client) / 'res/packages').glob('*.pkg')):
+                with zipfile.ZipFile(package) as archive:
+                    for name in archive.namelist():
+                        if not name.endswith('/space.bin'):
+                            continue
+                        space = CompiledSpace(archive.read(name))
+                        payload = space.section_data('WGDE')
+                        bsmi = struct.unpack_from('<II', space.section_data('BSMI'))[1]
+                        (path / 'wgde').write_bytes(payload)
+                        output = subprocess.check_output([str(path / 'probe'), str(path / 'wgde'), str(bsmi)],
+                                                         text=True)
+                        ours = {}
+                        for line in output.split('\n'):
+                            if line:
+                                index, chunk, row = map(int, line.split())
+                                ours[index] = (chunk, row)
+                        native = oracle.compiled_item_identities(executable, payload, bsmi)
+                        self.assertEqual(ours, native, name)
+                        spaces += 1
+                        keys += len(ours)
+                        # Rows after an empty row differ from a compacted count.
+                        count = struct.unpack_from('<II', payload)[1]
+                        chunks = [struct.unpack_from('<III', payload, 8 + i * 12) for i in range(count)]
+                        offset = 8 + count * 12
+                        items = [struct.unpack_from('<II', payload, offset + 8 + i * 8)
+                                 for i in range(struct.unpack_from('<II', payload, offset)[1])]
+                        for chunk, first, rows in chunks:
+                            empty = 0
+                            for row in range(rows):
+                                begin, end = items[first + row]
+                                if end == (begin - 1) & 0xffffffff:
+                                    empty += 1
+                                elif empty:
+                                    shifted += 1
+                        if name.startswith('spaces/07_lakeville/'):
+                            begin = [first for chunk, first, rows in chunks if chunk == 33149][0]
+                            self.assertEqual(items[begin + 188][1], (items[begin + 188][0] - 1) & 0xffffffff)
+                            object_index = struct.unpack_from(
+                                '<I', payload, offset + 8 + len(items) * 8 + 8 + items[begin + 189][0] * 4)[0]
+                            lakeville = ours.get(object_index)
+            self.assertEqual(spaces, 52)
+            self.assertEqual(lakeville, (33149, 189))
+            self.assertGreater(shifted, 0)
+            print('Original 6ba4f0/6baa10 compiled identities: %d spaces, %d BSMI keys exact; '
+                  '%d rows follow an empty row; lakeville 33149 row 189 PASS' % (spaces, keys, shifted))
 
     def test_original_x86_zero_direction_and_identity_word(self):
         client = os.environ.get('WOT_0922_CLIENT')

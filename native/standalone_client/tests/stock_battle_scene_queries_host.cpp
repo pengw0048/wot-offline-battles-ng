@@ -63,14 +63,14 @@ float HostSpace::doCollide(const Vector3 & start, const Vector3 & end, Collision
     return state.dist;
 }
 
-bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
+bool readStockObstacleItem(const CollisionObstacle & obstacle, uint32 & chunkID, uint32 & itemIndex) {
     if (obstacle.identity.raises) {
         PyErr_SetString(PyExc_RuntimeError, "host identity owner failed");
         return false;
     }
     if (!obstacle.identity.known) return false;
-    output.chunkID = obstacle.identity.chunkID;
-    output.itemIndex = obstacle.identity.itemIndex;
+    chunkID = obstacle.identity.chunkID;
+    itemIndex = obstacle.identity.itemIndex;
     return true;
 }
 

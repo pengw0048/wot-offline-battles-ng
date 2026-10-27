@@ -297,3 +297,32 @@ def filter_cases():
         ((0, 0, False), (-1, False)),
         ((1 << 24, 5, False), (-1, False)),           # a long is not an int subclass
     ]
+
+
+def compiled_item_identities(executable, payload, bsmi_count):
+    """Reverse BSMI keys from the original 6ba4f0 load and 6baa10 per reference.
+
+    The (chunk, row, reference) walk is 006bab30's loop over the same arrays;
+    each object comes from the unchanged forward lookup, last key wins.
+    """
+    from stock_space_sounds_oracle import OriginalSpaceSoundReader
+    reader = compiled_item_identities.reader = getattr(
+        compiled_item_identities, 'reader', None) or OriginalSpaceSoundReader(executable)
+    reader.identities(payload, [])
+    count = struct.unpack_from('<II', payload, 0)[1]
+    chunks = [struct.unpack_from('<III', payload, 8 + i * 12) for i in range(count)]
+    offset = 8 + count * 12
+    items_count = struct.unpack_from('<II', payload, offset)[1]
+    items = [struct.unpack_from('<II', payload, offset + 8 + i * 8) for i in range(items_count)]
+    output = reader.feature + 0x40
+    result = {}
+    for chunk, first, rows in chunks:
+        for row in range(rows):
+            begin, end = items[first + row]
+            for reference in range((end - begin + 1) & 0xffffffff):
+                reader.call(0x6baa10, (output, chunk, row, reference), this=reader.owner + 0x10)
+                handle = reader.word(output)
+                kind = reader.machine.mem_read(output + 4, 1)[0]
+                if handle != 0xffffffff and kind == 0x33 and handle < bsmi_count:
+                    result[handle] = (chunk, row)
+    return result

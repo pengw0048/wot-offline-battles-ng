@@ -5,6 +5,7 @@
 
 BW_BEGIN_NAMESPACE
 class Scene;
+class SceneObject;
 namespace CompiledSpace
 {
 // The original mapping owns BSMI2 instances, BSMO1 definitions and BSMA1
@@ -16,6 +17,8 @@ public:
     virtual ~StockStaticModelSceneLoader();
     virtual bool loadMustSucceed() const { return true; }
     static void registerHandlers( Scene & scene );
+    // The WGDE1 (chunk id, row) of a compiled instance, as 006ba9b0 reads it.
+    static bool itemIdentity( const SceneObject & object, uint32 & chunkID, uint32 & itemIndex );
 
 protected:
     virtual bool doLoadFromSpace( ClientSpace * space, BinaryFormat & file,

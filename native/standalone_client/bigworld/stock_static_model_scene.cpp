@@ -2,6 +2,7 @@
 #include "stock_static_model_scene.hpp"
 #include "stock_space_sounds.hpp"
 #include "stock_space_sounds_data.hpp"
+#include "stock_scene_identity_data.hpp"
 #include "wot/stock_static_model_binary.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/compiled_space.hpp"
@@ -63,6 +64,7 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
         BoundingBox visibility, collision;
         SceneObject object;
         bool active = false;
+        wot::StockSceneItemIdentity item;   // 006ba9b0 static-item identity
     };
     struct DrawHandler;
     struct SpatialHandler;
@@ -108,6 +110,7 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
             Vector3( source.maximum[0], source.maximum[1], source.maximum[2] ) );
     }
     bool load( BinaryFormat & file, const StringTable & strings, uint32 mappingMask );
+    bool loadItemIdentities( BinaryFormat & file );
     bool loadMaterials( const StringTable & strings );
     bool loadModels( const StringTable & strings );
     bool loadAnimations( const StringTable & strings );
@@ -391,6 +394,28 @@ bool StockStaticModelSceneLoader::State::load( BinaryFormat & file,
         object.flags().isCastingDynamicShadow( (flags & 1) != 0 );
     }
     membership.reserve( instances.size() );
+    return loadItemIdentities( file );
+}
+
+bool StockStaticModelSceneLoader::State::loadItemIdentities( BinaryFormat & file )
+{
+    // The same mapping's WGDE1 arrays the DestructiblesSceneProvider binds.
+    const size_t section = file.findSection( FourCC( "WGDE" ) );
+    if (section == BinaryFormat::NOT_FOUND) return true;
+    if (file.sectionVersion( section ) != 1)
+        return fail( "Incompatible original WGDE static-item identities" );
+    auto * stream = file.openSection( section, true );
+    if (!stream) return fail( "Cannot map original WGDE static-item identities" );
+    const size_t size = stream->size();
+    const void * bytes = stream->readRaw( size );
+    wot::StockSpaceSoundIdentities wgde;
+    std::string error;
+    const bool read = bytes && wgde.read( bytes, size, error );
+    file.closeSection( stream );
+    if (!read) return fail( error.empty() ? "Cannot read original WGDE static-item identities" : error.c_str() );
+    const auto items = wot::stockSceneItemIdentities( wgde, instances.size() );
+    for (size_t index = 0; index < instances.size(); ++index)
+        instances[index].item = items[index];
     return true;
 }
 
@@ -557,6 +582,17 @@ void StockStaticModelSceneLoader::registerHandlers( Scene & scene )
 StockStaticModelSceneLoader::StockStaticModelSceneLoader( uint32 mappingMask ) :
     mappingMask_( mappingMask ) {}
 StockStaticModelSceneLoader::~StockStaticModelSceneLoader() { doUnload(); }
+
+bool StockStaticModelSceneLoader::itemIdentity( const SceneObject & object,
+    uint32 & chunkID, uint32 & itemIndex )
+{
+    if (!object.isType<State::Instance>()) return false;
+    const State::Instance * instance = object.getAs<State::Instance>();
+    if (!instance || !instance->item.known) return false;
+    chunkID = instance->item.chunkID;
+    itemIndex = instance->item.itemIndex;
+    return true;
+}
 
 bool StockStaticModelSceneLoader::doLoadFromSpace( ClientSpace * space, BinaryFormat & file,
     const DataSectionPtr &, const Matrix &, const StringTable & strings )

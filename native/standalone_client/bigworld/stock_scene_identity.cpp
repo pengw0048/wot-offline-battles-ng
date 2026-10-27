@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_scene_identity.hpp"
+#include "stock_static_model_scene.hpp"
 
 #include "chunk/chunk.hpp"
 #include "chunk/chunk_model.hpp"
@@ -94,6 +95,23 @@ bool readStockObstacleIdentity( const CollisionObstacle & obstacle,
     if (!std::isfinite( identity.scale ) || identity.scale <= 0.f) return false;
     output = identity;
     return true;
+}
+
+bool readStockObstacleItem( const CollisionObstacle & obstacle,
+    uint32 & chunkID, uint32 & itemIndex )
+{
+    const SceneObject & object = obstacle.sceneObject();
+    if (object.isType<ChunkItem>())
+    {
+        const StockChunkModel * model = dynamic_cast<const StockChunkModel *>(
+            object.getAs<ChunkItem>() );
+        StockObstacleIdentity identity;
+        if (!model || !model->identity( identity )) return false;
+        chunkID = identity.chunkID;
+        itemIndex = identity.itemIndex;
+        return true;
+    }
+    return CompiledSpace::StockStaticModelSceneLoader::itemIdentity( object, chunkID, itemIndex );
 }
 
 BW_END_NAMESPACE
