@@ -123,6 +123,26 @@ void exercise(const Effect& effect, bool producersAtLoad) {
         handles[parameter.Name] = handle;
     }
     registered = !producersAtLoad;
+    // A fresh material must not copy existing Definition values, selections or textures.
+    D3DXMATRIX definitionMatrix;
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c)
+        definitionMatrix.m[r][c] = float(100 + 4*r + c);
+    const D3DXVECTOR4 definitionColour = {0.125f, 0.25f, 0.375f, 0.5f};
+    check(definition->SetMatrix(handles.at("worldViewProj"), &definitionMatrix) == S_OK,
+          "seed Definition matrix before material creation");
+    check(definition->SetVector(handles.at("factor"), &definitionColour) == S_OK,
+          "seed Definition factor before material creation");
+    check(definition->SetBool(handles.at("pixelSnapEnabled"), TRUE) == S_OK,
+          "seed Definition selection before material creation");
+    if (handles.count("uvDivisor"))
+        check(definition->SetFloat(handles.at("uvDivisor"), 3.f) == S_OK,
+              "seed Definition font divisor before material creation");
+    if (handles.count("diffuseMap")) {
+        auto* definitionTexture = new IDirect3DBaseTexture9;
+        check(definition->SetTexture(handles.at("diffuseMap"), definitionTexture) == S_OK,
+              "seed Definition texture before material creation");
+        definitionTexture->Release();
+    }
     ID3DXEffect* binding = nullptr;
     ID3DXEffect* sibling = nullptr;
     check(SUCCEEDED(wot::create_stock_effect_material(definition, &binding)) &&
