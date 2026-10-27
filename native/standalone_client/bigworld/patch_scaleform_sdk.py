@@ -87,6 +87,96 @@ def sdk_edits(sdk_root, edit):
          'Date floating-point absolute value')
     class_alias_edits(sdk_root, edit)
     amf3_edits(sdk_root, edit)
+    text_selection_edits(sdk_root, edit)
+
+
+# #1513 4.6.34 scaleform.gfx.TextFieldEx (table 015e4b58..015e4c08) adds the
+# selection colours after getNoTranslate; original TextAreaSimple, TextInput,
+# TextManager and RssNewsFeedRenderer call the four setters as (TextField, uint).
+TEXT_SELECTION_SETTERS = (
+    ('setSelectionTextColor', 'SetActiveSelectionTextColor', '00e25ae0', '+0x74'),
+    ('setSelectionBkgColor', 'SetActiveSelectionBackgroundColor', '00e25c00', '+0x70'),
+    ('setInactiveSelectionTextColor', 'SetInactiveSelectionTextColor', '00e25d20', '+0x7c'),
+    ('setInactiveSelectionBkgColor', 'SetInactiveSelectionBackgroundColor', '00e25e40', '+0x78'),
+)
+
+
+def text_selection_edits(sdk_root, edit):
+    header = sdk_root / 'Src/GFx/AS3/Obj/Gfx/AS3_Obj_Gfx_TextFieldEx.h'
+    names = [name for name, unused, unused, unused in TEXT_SELECTION_SETTERS]
+    edit(header, '        enum { ThunkInfoNum = 10 };\n', '        enum { ThunkInfoNum = 14 };\n',
+         'TextFieldEx thunk count')
+    edit(header, '            mid_getNoTranslate, \n        };\n',
+         '            mid_getNoTranslate, \n' + ''.join('            mid_%s, \n' % name for name in names) +
+         '        };\n', 'TextFieldEx selection method IDs')
+    # 4.2.22's ThunkFunc2 passes a non-TextField through as a pointer, so the
+    # setters take the Value and apply 4.6.34's TextField coercion.
+    getter = '        void getNoTranslate(bool& result, Instances::fl_text::TextField* textField);\n'
+    edit(header, getter, getter + ''.join(
+        '        void %s(const Value& result, const Value& textField, UInt32 color);\n' % name
+        for name in names), 'TextFieldEx selection declarations')
+
+    source = sdk_root / 'Src/GFx/AS3/Obj/Gfx/AS3_Obj_Gfx_TextFieldEx.cpp'
+    edit(source, '#include "GFx/AS3/AS3_AvmTextField.h"\n',
+         '#include "GFx/AS3/AS3_AvmTextField.h"\n#include "../Text/AS3_Obj_Text_TextField.h"\n',
+         'TextFieldEx selection includes')
+    body_anchor = '//##protect##"class_::TextFieldEx::getNoTranslate()"\n    }\n'
+    bodies = (
+        '    // #1513 00e25ae0/00e25c00/00e25d20/00e25e40 behind the TextField coercion of\n'
+        '    // the first argument: null is #1507, extensions off or no EditorKit return,\n'
+        '    // and an EditorKit is never created here.\n'
+        '    static Text::EditorKit* SelectionEditorKit(VM& vm, const Value& textField)\n'
+        '    {\n'
+        '        if (vm.IsException())\n'
+        '            return NULL;\n'
+        '        if (textField.IsNullOrUndefined())\n'
+        '        {\n'
+        '            vm.ThrowArgumentError(VM::Error(VM::eNullArgumentError, vm SF_DEBUG_ARG("textField")));\n'
+        '            return NULL;\n'
+        '        }\n'
+        '        AS3::Object* object = textField.IsObject() ? textField.GetObject() : NULL;\n'
+        '        if (!object || !AreDisplayObjectTraits(object) ||\n'
+        '            static_cast<Instances::fl_display::DisplayObject*>(object)->pDispObj->GetType() !=\n'
+        '                CharacterDef::TextField)\n'
+        '        {\n'
+        '            vm.ThrowTypeError(VM::Error(VM::eCheckTypeFailedError, vm\n'
+        '                SF_DEBUG_ARG(textField) SF_DEBUG_ARG("flash.text.TextField")));\n'
+        '            return NULL;\n'
+        '        }\n'
+        '        if (!static_cast<ASVM&>(vm).ExtensionsEnabled)\n'
+        '            return NULL;\n'
+        '        return static_cast<Instances::fl_text::TextField*>(object)->GetTextField()->GetEditorKit();\n'
+        '    }\n')
+    for name, setter, address, offset in TEXT_SELECTION_SETTERS:
+        bodies += (
+            '    // %s: EditorKit%s, then InvalidateSelectionColors (00caeeb0).\n'
+            '    void TextFieldEx::%s(const Value& result, const Value& textField, UInt32 color)\n'
+            '    {\n'
+            '        SF_UNUSED1(result);\n'
+            '        Text::EditorKit* editor = SelectionEditorKit(GetVM(), textField);\n'
+            '        if (editor)\n'
+            '            editor->%s(color);\n'
+            '    }\n' % (address, offset, name, setter))
+    edit(source, body_anchor, body_anchor + bodies, 'TextFieldEx selection setters')
+    method_anchor = ('template <> const TFunc_Classes_TextFieldEx_getNoTranslate::TMethod '
+                     'TFunc_Classes_TextFieldEx_getNoTranslate::Method = '
+                     '&Classes::fl_gfx::TextFieldEx::getNoTranslate;\n')
+    thunks = ''.join(
+        'typedef ThunkFunc2<Classes::fl_gfx::TextFieldEx, Classes::fl_gfx::TextFieldEx::mid_%s, const Value, '
+        'const Value&, UInt32> TFunc_Classes_TextFieldEx_%s;\n'
+        'template <> const TFunc_Classes_TextFieldEx_%s::TMethod TFunc_Classes_TextFieldEx_%s::Method = '
+        '&Classes::fl_gfx::TextFieldEx::%s;\n' % (name, name, name, name, name) for name in names)
+    edit(source, method_anchor, method_anchor + thunks, 'TextFieldEx selection thunks')
+    entry_anchor = ('        {TFunc_Classes_TextFieldEx_getNoTranslate::Func, &AS3::fl::BooleanTI, '
+                    '"getNoTranslate", NULL, Abc::NS_Public, CT_Method, 1, 1},\n')
+    entries = entry_anchor + ''.join(
+        '        {TFunc_Classes_TextFieldEx_%s::Func, NULL, "%s", NULL, Abc::NS_Public, CT_Method, 2, 2},\n'
+        % (name, name) for name in names)
+    edit(source, entry_anchor, entries, 'TextFieldEx selection registration')
+    # A duplicated or reordered family is rejected rather than completed.
+    for path, final in ((header, '        enum { ThunkInfoNum = 14 };\n'),
+                        (source, entries + '    };\n')):
+        edit(path, final, final, 'TextFieldEx selection final state')
 
 
 def class_alias_edits(sdk_root, edit):
