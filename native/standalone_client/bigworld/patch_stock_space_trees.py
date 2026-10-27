@@ -1,4 +1,5 @@
-"""Install the actual old-ST4 scene renderer's lifecycle and scene operations.
+"""Install the actual old-ST4 scene renderer's lifecycle, scene operations and
+semitransparent pipeline stage.
 
 The #1513 compiled mapping owns the visibility mask and invokes the handler
 directly for SpTr3. This patch does not pretend BWSS/VLOS sections exist.
@@ -39,12 +40,44 @@ def patch(root):
     scene = replace_once(scene, '''#if SPEEDTREE_SUPPORT
 \tStaticSceneSpeedTreeHandler::registerHandlers( scene );
 #endif''', '''\tStockTreeSceneHandler::registerHandlers( scene );''')
+    deferred_path = root / 'lib/moo/deferred_pipeline.cpp'
+    deferred = deferred_path.read_text(encoding='utf-8-sig')
+    deferred = replace_once(deferred, '#include "speedtree/speedtree_renderer.hpp"',
+                            '#include "speedtree/speedtree_renderer.hpp"\n#include "stock_tree_scene.hpp"')
+    deferred = replace_once(deferred, '''void SpeedTreeOptimizer::draw()
+{
+    BW_GUARD;
+
+#if 0''', '''void SpeedTreeOptimizer::draw()
+{
+    BW_GUARD;
+
+    // #1513 009c4ed0 draws the faded old-ST4 trees directly unless near-camera
+    // tree hiding is on; that mode's half-resolution path is not restored.
+    drawStockTreeSemitransparent( !g_drawSemiTransparentTrees );
+
+#if 0''')
+    forward_path = root / 'lib/moo/forward_pipeline.cpp'
+    forward = forward_path.read_text(encoding='utf-8-sig')
+    forward = replace_once(forward, '#include "speedtree/speedtree_renderer.hpp"',
+                           '#include "speedtree/speedtree_renderer.hpp"\n#include "stock_tree_scene.hpp"')
+    forward = replace_once(forward, '''void ForwardPipeline::endSemitransparentDraw()
+{
+    BW_GUARD;
+}''', '''void ForwardPipeline::endSemitransparentDraw()
+{
+    BW_GUARD;
+    // #1513 009c69c0 always draws the faded old-ST4 trees.
+    drawStockTreeSemitransparent( false );
+}''')
     # Stage every edit before publishing any file, including the shared header.
     header = Path(__file__).with_name('stock_tree_scene.hpp').read_bytes()
     chunk_path.write_text(chunk, encoding='utf-8')
     scene_path.write_text(scene, encoding='utf-8')
+    deferred_path.write_text(deferred, encoding='utf-8')
+    forward_path.write_text(forward, encoding='utf-8')
     (root / 'lib/stock_tree_scene.hpp').write_bytes(header)
-    print('Original old-ST4 renderer lifecycle and scene operations installed')
+    print('Original old-ST4 renderer lifecycle, scene operations and faded-tree stage installed')
 
 
 if __name__ == '__main__':

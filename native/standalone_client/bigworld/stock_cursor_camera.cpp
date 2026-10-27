@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_cursor_camera.hpp"
+#include "stock_tree_scene.hpp"
 
 #include "duplo/pymodel.hpp"
 #include "math/boundbox.hpp"
@@ -54,21 +55,6 @@ private:
     Vector3 normal_;
     float offset_;
 };
-
-// #1513 00b030b0 holds the tree target strongly. The focus target is raw in
-// #1513 (0096ea70); retaining it prevents a renderer read after release.
-struct StockCursorCameraHiding
-{
-    MatrixProviderPtr treeTarget;
-    MatrixProviderPtr focusTarget;
-};
-
-StockCursorCameraHiding & hiding()
-{
-    // Never destroyed: a static destructor must not release Python objects.
-    static StockCursorCameraHiding * pHiding = new StockCursorCameraHiding;
-    return *pHiding;
-}
 }
 
 
@@ -183,30 +169,13 @@ bool collideStockCursorCameraModels( const BW::vector< PyObjectPtr > & owners,
 
 void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )
 {
-    // Release replaced targets last: their destructors may run Python.
-    MatrixProviderPtr tree( enabled ? target : NULL );
-    MatrixProviderPtr focus( target );
-    StockCursorCameraHiding & state = hiding();
-    std::swap( state.treeTarget, tree );
-    std::swap( state.focusTarget, focus );
-}
-
-
-MatrixProvider * stockTreeHidingTarget()
-{
-    return hiding().treeTarget.get();
-}
-
-
-MatrixProvider * stockCameraFocusTarget()
-{
-    return hiding().focusTarget.get();
+    setStockTreeCameraTarget( enabled ? target : NULL );
 }
 
 
 void finiStockCursorCameraHiding()
 {
-    publishStockCursorCameraHiding( NULL, true );
+    setStockTreeCameraTarget( NULL );
 }
 
 BW_END_NAMESPACE

@@ -6,6 +6,7 @@
 #include <memory>
 
 BW_BEGIN_NAMESPACE
+class MatrixProvider;
 class Scene;
 
 // The compiled-space owner replaces the disabled SDK handler. It consumes the
@@ -13,6 +14,10 @@ class Scene;
 bool initialiseStockTreeSceneRendering();
 void tickStockTreeSceneRendering( float dTime );
 void finaliseStockTreeSceneRendering();
+// #1513 00b030b0: trees between the camera and this target fade in the
+// colour pass and are drawn by drawStockTreeSemitransparent (00afef30).
+void setStockTreeCameraTarget( MatrixProvider * target );
+void drawStockTreeSemitransparent( bool skipDrawing );
 
 namespace CompiledSpace
 {

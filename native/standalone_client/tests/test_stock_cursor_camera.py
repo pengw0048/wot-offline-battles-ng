@@ -963,10 +963,8 @@ public:
 private:
 	MatrixProvider * p_;
 };
-namespace
-{
+namespace wot { struct StockTreeHidingFrame {}; }
 @STATE@
-}
 @PRODUCTION@
 int main()
 {
@@ -979,10 +977,8 @@ int main()
 	{
 		if (target < 0) finiStockCursorCameraHiding();
 		else publishStockCursorCameraHiding( targets[target], enabled != 0 );
-		MatrixProvider * tree = stockTreeHidingTarget();
-		MatrixProvider * focus = stockCameraFocusTarget();
-		std::printf("%d %d %d %d\n", tree ? tree->label : 0, focus ? focus->label : 0,
-			first.references, second.references);
+		MatrixProvider * tree = treeCameraTarget().target.get();
+		std::printf("%d %d %d\n", tree ? tree->label : 0, first.references, second.references);
 	}
 	return 0;
 }
@@ -1047,30 +1043,34 @@ print(json.dumps(out))
         # 0079b640 clears the renderer targets before releasing its owners.
         self.assertEqual(out['destruct'], [['hiding', 0, 1], ['trees'], ['models'], ['base']])
         self.assertEqual(out['released'], [99, 99, 99])
+        # Both slots store enabled ? target : NULL into 1d59f74 and the SRT
+        # owner field; only the deferred slot writes the raw focus target.
         renderer = [step[4:6] + [step[6]] for step in out['renderer']]
         self.assertEqual(renderer, [[1, 1, [1, 1]], [0, 0, [1, 1]], [2, 2, [2, 2]], [1, 1, [2, 2]],
                                     [0, 0, [2, 2]], [1, 0, [1, 1]], [0, 0, [0, 0]]])
 
+        # Production publishes exactly the 1d59f74 outcome to the old-ST4 owner.
+        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        state = scene[scene.index('struct TreeCameraTarget'):]
+        state = state[:state.index('\n}\n', state.index('TreeCameraTarget & treeCameraTarget()')) + 3]
         source = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
-        state = source[source.index('struct StockCursorCameraHiding'):]
-        state = state[:state.index('\n}\n', state.index('StockCursorCameraHiding & hiding()')) + 3]
-        production = '\n'.join(function(source, signature) for signature in (
-            'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )',
-            'MatrixProvider * stockTreeHidingTarget()', 'MatrixProvider * stockCameraFocusTarget()',
-            'void finiStockCursorCameraHiding()'))
+        production = function(scene, 'void setStockTreeCameraTarget( MatrixProvider * target )') + '\n' + \
+            '\n'.join(function(source, signature) for signature in (
+                'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )',
+                'void finiStockCursorCameraHiding()'))
         with tempfile.TemporaryDirectory() as folder:
             binary = compile_host(Path(folder), HIDING_HOST.replace('@STATE@', state)
                                   .replace('@PRODUCTION@', production), 'hiding_host')
-            # The deferred renderer slot's tree and focus owners for each published pair.
-            steps = [(1, 1), (1, 0), (2, 1), (2, 0), (0, 1), (-1, 0), (-1, 0)]
-            result = subprocess.run([str(binary)], input=''.join('%d %d\n' % (t if t < 0 else (t or 3) - 1, e)
+            steps = [step[1:3] for step in out['renderer']] + [(-1, 0), (-1, 0)]
+            labels = {0: 3, 1: 1, 2: 2}
+            result = subprocess.run([str(binary)], input=''.join('%d %d\n' % (-1 if t < 0 else labels[t] - 1, e)
                                                                  for t, e in steps),
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             rows = [list(map(int, line.split())) for line in result.stdout.splitlines()]
-            self.assertEqual([row[:2] for row in rows[:3]], [[1, 1], [0, 1], [2, 2]])
-            self.assertEqual(rows, [[1, 1, 3, 1], [0, 1, 2, 1], [2, 2, 1, 3], [0, 2, 1, 2], [0, 0, 1, 1],
-                                    [0, 0, 1, 1], [0, 0, 1, 1]])
+            self.assertEqual([row[0] for row in rows[:7]], [step[4] for step in out['renderer']])
+            self.assertEqual(rows, [[1, 2, 1], [0, 1, 1], [2, 1, 2], [1, 2, 1], [0, 1, 1], [1, 2, 1], [0, 1, 1],
+                                    [0, 1, 1], [0, 1, 1]])
 
 
 PYC_AUDIT = r'''

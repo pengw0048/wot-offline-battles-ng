@@ -20,10 +20,9 @@ bool collideStockCursorCameraModels( const BW::vector< PyObjectPtr > & owners,
     const BW::vector< const BSPTree * > & trees, Vector3 & idealPosition,
     const Vector3 & direction, const Vector3 & up );
 
-// #1513 009c5dd0/009c6a40: the renderer targets every CursorCamera update
-// publishes. Tree hiding follows sptHiding; the camera focus target does not.
+// #1513 009c5dd0/009c6a40: each update hands the old-ST4 tree renderer its
+// target while sptHiding is set. The SRT owner (00748150) and the deferred
+// shadow focus (0096ea70) are not restored, so nothing else is published.
 void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled );
-MatrixProvider * stockTreeHidingTarget();
-MatrixProvider * stockCameraFocusTarget();
 void finiStockCursorCameraHiding();
 BW_END_NAMESPACE

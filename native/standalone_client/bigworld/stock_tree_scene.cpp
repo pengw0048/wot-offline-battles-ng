@@ -3,6 +3,7 @@
 #include "stock_scene_settings.hpp"
 #include "stock_deferred_buffers.hpp"
 #include "stock_tree_geometry.hpp"
+#include "stock_tree_hiding.hpp"
 #include "stock_tree_scene_data.hpp"
 #include "stock_tree_lod.hpp"
 #include "stock_tree_materials.hpp"
@@ -15,6 +16,7 @@
 #include "moo/complex_effect_material.hpp"
 #include "moo/device_callback.hpp"
 #include "moo/draw_context.hpp"
+#include "moo/effect_material.hpp"
 #include "moo/effect_visual_context.hpp"
 #include "moo/graphics_settings.hpp"
 #include "moo/index_buffer.hpp"
@@ -38,16 +40,19 @@
 #include "physics2/bsp.hpp"
 #include "physics2/collision_obstacle.hpp"
 #include "physics2/sweep_helpers.hpp"
+#include "pyscript/script_math.hpp"
 #include "space/deprecated_space_helpers.hpp"
 #include "space/client_space.hpp"
 
 #include <atomic>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -131,6 +136,7 @@ struct TreeType
     // The retail old-ST4 constructor b00477 initialises this nullable owner.
     // Collision operations must consult it rather than substituting bounds.
     std::shared_ptr<BSPTree> collision;
+    bool bush = false;
     std::string error;
 
     void releaseGpu()
@@ -299,6 +305,27 @@ public:
     virtual void onOptionSelected( int ) {}
 };
 
+// b08c9d: faded leaves are drawn only while this boolean option is ON.
+class SemitransparentLeavesSetting : public Moo::GraphicsSetting
+{
+public:
+    SemitransparentLeavesSetting() :
+        GraphicsSetting( "SEMITRANSPARENT_LEAVES_ENABLED", "Semitransparent leaves", 0, false, false )
+    {
+        addOption( "OFF", "Off", true );
+        addOption( "ON", "On", true );
+    }
+    virtual void onOptionSelected( int ) {}
+};
+
+struct TreeInstance;
+
+struct TreeDrawItem
+{
+    TreeInstance * instance;
+    wot::StockTreeLodValues lod;
+};
+
 struct TreeConfiguration
 {
     float mode = -2.f, nearDistance = 50.f, farDistance = 300.f;
@@ -347,6 +374,21 @@ public:
             quality = new TreeQualitySetting;
             Moo::GraphicsSetting::add( quality );
         }
+        semitransparentLeaves = Moo::GraphicsSetting::getFromLabel( "SEMITRANSPARENT_LEAVES_ENABLED" );
+        if (!semitransparentLeaves)
+        {
+            semitransparentLeaves = new SemitransparentLeavesSetting;
+            Moo::GraphicsSetting::add( semitransparentLeaves );
+        }
+        // b05940: lower-cased section names of the optional bush list.
+        if (DataSectionPtr list = BWResource::openSection( "speedtree/bushes.xml" ))
+            for (int i = 0; i < list->countChildren(); ++i)
+            {
+                const BW::string section = list->openChild( i )->sectionName();
+                std::string name( section.data(), section.size() );
+                for (auto & c : name) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+                bushes.push_back( name );
+            }
         createManagedObjects();
         return gpuReady;
     }
@@ -374,6 +416,11 @@ public:
             fail( type->error );
             return std::shared_ptr<TreeType>();
         }
+        const BW::string path = engineString( resource );
+        const BW::StringRef file = BWResource::getFilename( path );
+        std::string lower( file.data(), file.size() );
+        for (auto & c : lower) c = static_cast<char>( std::tolower( static_cast<unsigned char>( c ) ) );
+        type->bush = wot::stockTreeIsBush( bushes, lower );
         std::lock_guard<std::mutex> lock( mutex );
         if (!active) return std::shared_ptr<TreeType>();
         auto inserted = types.emplace( key, type );
@@ -461,6 +508,8 @@ public:
     {
         deleteGpuObjects();
         for (auto & material : materials) material = NULL;
+        for (auto & state : semitransparentMaterials)
+            for (auto & material : state) material = NULL;
     }
 
     void deleteGpuObjects()
@@ -504,6 +553,22 @@ public:
                 return;
             }
         }
+        // b0978c: the depth and alpha states of the faded-tree pass.
+        const char * techniques[2][4] = { { "BRANCH_DEPTH", "FROND_DEPTH", "LEAF_DEPTH", "BILLBOARD_DEPTH" },
+            { "BRANCH_ALPHA", "FROND_ALPHA", "LEAF_ALPHA", "BILLBOARD_ALPHA" } };
+        for (unsigned state = 0; state < 2; ++state)
+            for (unsigned part = 0; part < 4; ++part)
+            {
+                auto & material = semitransparentMaterials[state][part];
+                material = new Moo::EffectMaterial;
+                if (!material->initFromEffect( "shaders/speedtree/semitransparent.fx" ) ||
+                    !material->hTechnique( techniques[state][part] ))
+                {
+                    fail( "Cannot load original semitransparent tree technique" );
+                    deleteManagedObjects();
+                    return;
+                }
+            }
         createGpuObjects();
     }
 
@@ -533,6 +598,7 @@ public:
     void shutdown()
     {
         active = false;
+        semitransparent.clear();
         deleteManagedObjects();
         std::lock_guard<std::mutex> lock( mutex );
         pending.clear();
@@ -540,9 +606,14 @@ public:
     }
 
     TreeConfiguration configuration;
-    Moo::GraphicsSetting::GraphicsSettingPtr quality;
+    Moo::GraphicsSetting::GraphicsSettingPtr quality, semitransparentLeaves;
+    std::vector<std::string> bushes;
     std::shared_ptr<TreeWindOwner> defaultWind;
     std::array<SmartPointer<Moo::ComplexEffectMaterial>, 4> materials;
+    std::array<std::array<Moo::EffectMaterialPtr, 4>, 2> semitransparentMaterials;
+    // afde73 keeps the colour pass camera; afef60 drains the faded trees.
+    Matrix alphaPassView = Matrix::identity, alphaPassProjection = Matrix::identity;
+    std::vector<TreeDrawItem> semitransparent;
     std::array<Moo::VertexDeclaration *, 4> vertexDeclarations = {};
     ComObjectWrap<DX::Texture> atlas;
     std::atomic<bool> active{ true };
@@ -585,6 +656,8 @@ struct TreeInstance
     Matrix inverse;
     std::shared_ptr<TreeType> type;
     TreeInstanceConstants constants = {};
+    // afe460 [record+38]/[record+3c]: leaf and branch fades of the last colour pass.
+    float leavesAlpha = 1.f, branchAlpha = 1.f;
 };
 
 uint32 treeRandom( void * ) { return static_cast<uint32>( std::rand() ); }
@@ -608,13 +681,15 @@ bool advanceTreeWind( TreeRenderingOwner & owner, TreeWindOwner & wind, const Ve
     return true;
 }
 
+// distance is afe910's out value: 1e6 unless the authored distance mode ran.
 bool selectInstanceLods( TreeRenderingOwner & owner, TreeInstance & instance,
-    const Vector3 & camera, wot::StockTreeLodValues & lod )
+    const Vector3 & camera, wot::StockTreeLodValues & lod, float & distance )
 {
     const auto & config = owner.configuration;
     const auto & type = *instance.type;
     const auto & constants = instance.constants;
     float level = config.mode;
+    distance = 1e6f;
     if (level == -2.f)
     {
         const unsigned quality = static_cast<unsigned>( std::max( 0, std::min( 3, owner.quality->activeOption() ) ) );
@@ -625,7 +700,7 @@ bool selectInstanceLods( TreeRenderingOwner & owner, TreeInstance & instance,
         const float dz = subTreeScalar( constants.position[2], camera.z );
         const float squared = addTreeScalar( addTreeScalar( mulTreeScalar( dx, dx ), mulTreeScalar( dy, dy ) ), mulTreeScalar( dz, dz ) );
         const float zoom = Moo::rc().lodZoomFactor();
-        const float distance = mulTreeScalar( std::sqrt( squared ), std::min( mulTreeScalar( 7.f - quality, zoom ), 1.f ) );
+        distance = mulTreeScalar( std::sqrt( squared ), std::min( mulTreeScalar( 7.f - quality, zoom ), 1.f ) );
         const float nearDistance = mulTreeScalar( config.qualityBias[quality], config.nearDistance );
         const float farDistance = mulTreeScalar( config.qualityBias[quality], config.farDistance );
         level = addTreeScalar( subTreeScalar( 1.f, divTreeScalar( subTreeScalar( distance, nearDistance ),
@@ -703,11 +778,22 @@ bool setTreeTypeConstants( TreeRenderingOwner & owner, TreeType & type, unsigned
     return result;
 }
 
-struct TreeDrawItem
+// The active LODs of one part and their alpha-test references.
+bool selectPartLods( unsigned part, const wot::StockTreeLodValues & lod, std::int32_t (&lods)[2], float (&alphas)[2] )
 {
-    TreeInstance * instance;
-    wot::StockTreeLodValues lod;
-};
+    lods[0] = lods[1] = -1;
+    alphas[0] = alphas[1] = -1.f;
+    if (part == wot::treeBranch) { lods[0] = lod.branch; alphas[0] = lod.branchAlpha * .003921569f; }
+    if (part == wot::treeFrond) { lods[0] = lod.frond; alphas[0] = lod.frondAlpha * .003921569f; }
+    if (part == wot::treeLeaf)
+        for (unsigned i = 0; i < 2; ++i) { lods[i] = lod.leaves[i]; alphas[i] = lod.leafAlpha[i] * .003921569f; }
+    if (part == wot::treeBillboard && lod.billboardFade > 0.f)
+    {
+        lods[0] = 0;
+        alphas[0] = addTreeScalar( mulTreeScalar( subTreeScalar( divTreeScalar( 84.f, 255.f ), 1.f ), lod.billboardFade ), 1.f );
+    }
+    return lods[0] >= 0 || lods[1] >= 0;
+}
 
 bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPassType pass,
     const std::vector<TreeDrawItem> & items, const float (&billboardRotation)[4], float reflectionCorrection )
@@ -728,18 +814,9 @@ bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPas
             const auto & source = type.geometry.parts[part];
             auto & gpu = type.gpu[part];
             if (!source.vertexCount) continue;
-            std::int32_t lods[2] = { -1, -1 };
-            float alphas[2] = { -1.f, -1.f };
-            if (part == wot::treeBranch) { lods[0] = item.lod.branch; alphas[0] = item.lod.branchAlpha * .003921569f; }
-            if (part == wot::treeFrond) { lods[0] = item.lod.frond; alphas[0] = item.lod.frondAlpha * .003921569f; }
-            if (part == wot::treeLeaf)
-                for (unsigned i = 0; i < 2; ++i) { lods[i] = item.lod.leaves[i]; alphas[i] = item.lod.leafAlpha[i] * .003921569f; }
-            if (part == wot::treeBillboard && item.lod.billboardFade > 0.f)
-            {
-                lods[0] = 0;
-                alphas[0] = addTreeScalar( mulTreeScalar( subTreeScalar( divTreeScalar( 84.f, 255.f ), 1.f ), item.lod.billboardFade ), 1.f );
-            }
-            if (lods[0] < 0 && lods[1] < 0) continue;
+            std::int32_t lods[2];
+            float alphas[2];
+            if (!selectPartLods( part, item.lod, lods, alphas )) continue;
             result = setTreeTypeConstants( owner, type, part, effect, billboardRotation );
             if (pass == Moo::RENDERING_PASS_REFLECTION)
                 result = result && setTreeValue( effect, "g_reflCorrection", &reflectionCorrection, sizeof( reflectionCorrection ) );
@@ -772,6 +849,128 @@ bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPas
     return result || owner.fail( "Cannot upload/draw original tree part constants and geometry" );
 }
 
+// #1513 SpeedTreeRenderer::s_pTarget 01d59f74 and its b035a0 snapshot.
+struct TreeCameraTarget
+{
+    MatrixProviderPtr target;
+    wot::StockTreeHidingFrame frame;
+};
+
+TreeCameraTarget & treeCameraTarget()
+{
+    // Never destroyed: a static destructor must not release a Python provider.
+    static TreeCameraTarget * state = new TreeCameraTarget;
+    return *state;
+}
+
+// The D3DX calls of afe460, so Windows reproduces the original arithmetic.
+struct TreeHidingD3DX
+{
+    static void transformNormal( float * out, const float * v, const float * m )
+    {
+        D3DXVec3TransformNormal( reinterpret_cast<D3DXVECTOR3 *>( out ),
+            reinterpret_cast<const D3DXVECTOR3 *>( v ), reinterpret_cast<const D3DXMATRIX *>( m ) );
+    }
+    static void inverse( float * m )
+    {
+        D3DXMatrixInverse( reinterpret_cast<D3DXMATRIX *>( m ), NULL, reinterpret_cast<const D3DXMATRIX *>( m ) );
+    }
+    static void transformPoint( float * out, const float * v, const float * m )
+    {
+        D3DXVECTOR4 result;
+        D3DXVec3Transform( &result, reinterpret_cast<const D3DXVECTOR3 *>( v ), reinterpret_cast<const D3DXMATRIX *>( m ) );
+        out[0] = result.x;
+        out[1] = result.y;
+        out[2] = result.z;
+    }
+};
+
+// afe460 for one colour-pass instance. A faded tree waits for the
+// semitransparent stage instead of the opaque batches (b05560).
+bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )
+{
+    const TreeCameraTarget & hiding = treeCameraTarget();
+    const wot::StockTreeFade fade = wot::computeStockTreeFade<TreeHidingD3DX>(
+        wot::StockTreeHidingSettings(), hiding.target ? &hiding.frame : NULL, input );
+    instance.leavesAlpha = fade.leaves;
+    instance.branchAlpha = fade.branches;
+    return fade.faded();
+}
+
+void treeBillboardRotation( float (&rotation)[4] )
+{
+    D3DXVECTOR3 forward( Moo::rc().invView().applyToUnitAxisVector( 2 ) );
+    D3DXVec3Normalize( &forward, &forward );
+    const D3DXVECTOR3 up = std::fabs( forward.y ) <= .999999f ? D3DXVECTOR3( 0, 1, 0 ) : D3DXVECTOR3( 1, 0, 0 );
+    D3DXVECTOR3 right, vertical;
+    D3DXVec3Cross( &right, &forward, &up );
+    D3DXVec3Normalize( &right, &right );
+    D3DXVec3Cross( &vertical, &right, &forward );
+    D3DXVec3TransformNormal( &right, &right, &Moo::rc().view() );
+    D3DXVec3TransformNormal( &vertical, &vertical, &Moo::rc().view() );
+    D3DXVec3Normalize( &right, &right );
+    D3DXVec3Normalize( &vertical, &vertical );
+    rotation[0] = right.x;
+    rotation[1] = vertical.x;
+    rotation[2] = right.y;
+    rotation[3] = vertical.y;
+}
+
+// b07e90/b08030/b081d0/b07e30: one part of one faded tree with a
+// semitransparent.fx state. Leaves take the leaf fade, billboards stay opaque.
+bool drawSemitransparentPart( TreeRenderingOwner & owner, Moo::EffectMaterial & material, unsigned part,
+    const TreeDrawItem & item, const float (&billboardRotation)[4] )
+{
+    auto & instance = *item.instance;
+    auto & type = *instance.type;
+    const auto & source = type.geometry.parts[part];
+    auto & gpu = type.gpu[part];
+    std::int32_t lods[2];
+    float alphas[2];
+    if (!source.vertexCount || !selectPartLods( part, item.lod, lods, alphas )) return true;
+    instance.constants.blend = part == wot::treeLeaf ? instance.leavesAlpha :
+        (part == wot::treeBillboard ? 1.f : instance.branchAlpha);
+    instance.constants.material = static_cast<float>( type.materialHandle * 4 + part );
+    ID3DXEffect * effect = material.pEffect()->pEffect();
+    D3DXHANDLE instanceHandle = effect->GetParameterByName( NULL, "g_instance" );
+    Moo::rc().setVertexDeclaration( owner.vertexDeclarations[part]->declaration() );
+    bool result = instanceHandle && SUCCEEDED( gpu.vertices.set( 0, 0, source.vertexStride ) ) &&
+        setTreeTypeConstants( owner, type, part, effect, billboardRotation ) && material.begin();
+    if (!result) return owner.fail( "Cannot prepare original semitransparent tree part" );
+    // a54fa0: every pass carries the SpeedTree deferred material conversions.
+    const auto conversion = stockDeferredMaterialSettings().categories[wot::stock_speedtree];
+    for (unsigned i = 0; result && i < 2; ++i)
+    {
+        const std::int32_t lod = lods[i];
+        if (lod < 0) continue;
+        if (static_cast<std::size_t>( lod ) >= gpu.lods.size()) { result = false; break; }
+        const auto & indices = source.lodIndices[lod];
+        if (indices.empty()) continue;
+        instance.constants.alpha = alphas[i];
+        for (uint32 effectPass = 0; result && effectPass < material.numPasses(); ++effectPass)
+        {
+            if (!material.beginPass( effectPass )) continue;
+            result = setTreeValue( effect, "g_albedoConversions", conversion.albedo.data(), sizeof( conversion.albedo ) ) &&
+                setTreeValue( effect, "g_glossConversions", conversion.gloss.data(), sizeof( conversion.gloss ) ) &&
+                setTreeValue( effect, "g_metallicConversions", conversion.metallic.data(), sizeof( conversion.metallic ) ) &&
+                SUCCEEDED( effect->SetValue( instanceHandle, &instance.constants, sizeof( instance.constants ) ) ) &&
+                SUCCEEDED( gpu.lods[lod].set() ) && material.commitChanges();
+            if (result)
+            {
+                const bool strip = part == wot::treeBranch || part == wot::treeFrond;
+                const uint32 primitives = static_cast<uint32>( strip ? indices.size() - 2 : indices.size() / 3 );
+                Moo::rc().drawIndexedPrimitive( strip ? D3DPT_TRIANGLESTRIP : D3DPT_TRIANGLELIST,
+                    0, 0, source.vertexCount, 0, primitives );
+            }
+            material.endPass();
+        }
+    }
+    setTreeTexture( effect, "g_diffuseMap", NULL );
+    setTreeTexture( effect, "g_normalMap", NULL );
+    material.end();
+    return result || owner.fail( "Cannot draw original semitransparent tree part" );
+}
+
 class TreeDrawHandler : public IDrawOperationTypeHandler
 {
 public:
@@ -789,6 +988,14 @@ public:
         if (!inverseView.invert( context.lodCameraView() )) return;
         const Vector3 camera = inverseView.applyToOrigin();
         const auto pass = context.drawContext().renderingPassType();
+        const bool colour = pass == Moo::RENDERING_PASS_COLOR;
+        if (colour)
+        {
+            owner->alphaPassView = Moo::rc().view();
+            owner->alphaPassProjection = Moo::rc().projection();
+        }
+        // afe460 only fades in the colour pass; its eye is the drawing camera.
+        const Vector3 eye = Moo::rc().invView().applyToOrigin();
         const int decorLevel = stockDecorLevel();
         std::vector<TreeDrawItem> items;
         items.reserve( count );
@@ -805,7 +1012,28 @@ public:
             if (!instance->type->wind || !advanceTreeWind( *owner, *instance->type->wind, weather )) continue;
             TreeDrawItem item;
             item.instance = instance;
-            if (selectInstanceLods( *owner, *instance, camera, item.lod )) items.push_back( item );
+            float lodDistance;
+            if (!selectInstanceLods( *owner, *instance, camera, item.lod, lodDistance )) continue;
+            if (colour)
+            {
+                const auto & type = *instance->type;
+                const auto & parts = type.geometry.parts;
+                wot::StockTreeFadeInput input = {};
+                input.world = reinterpret_cast<const float *>( &instance->definition.world );
+                for (unsigned axis = 0; axis < 3; ++axis)
+                {
+                    input.boundsMin[axis] = type.geometry.minimumBounds[axis];
+                    input.boundsMax[axis] = type.geometry.maximumBounds[axis];
+                    input.eye[axis] = eye[axis];
+                }
+                input.lodDistance = lodDistance;
+                input.bush = type.bush;
+                input.model3d = (item.lod.branch >= 0 && parts[wot::treeBranch].vertexCount) ||
+                    (item.lod.frond >= 0 && parts[wot::treeFrond].vertexCount) ||
+                    ((item.lod.leaves[0] >= 0 || item.lod.leaves[1] >= 0) && parts[wot::treeLeaf].vertexCount);
+                if (fadeTreeInstance( *instance, input )) { owner->semitransparent.push_back( item ); continue; }
+            }
+            items.push_back( item );
         }
         // Native batches traverse the actual filename/seed registry order.
         std::stable_sort( items.begin(), items.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
@@ -822,18 +1050,8 @@ public:
             if (!wot::stockTreeReflectionCorrection( settings.categories[wot::stock_speedtree].albedo, reflectionCorrection, error ))
             { owner->fail( error ); return; }
         }
-        D3DXVECTOR3 forward( Moo::rc().invView().applyToUnitAxisVector( 2 ) );
-        D3DXVec3Normalize( &forward, &forward );
-        const D3DXVECTOR3 up = std::fabs( forward.y ) <= .999999f ? D3DXVECTOR3( 0, 1, 0 ) : D3DXVECTOR3( 1, 0, 0 );
-        D3DXVECTOR3 right, vertical;
-        D3DXVec3Cross( &right, &forward, &up );
-        D3DXVec3Normalize( &right, &right );
-        D3DXVec3Cross( &vertical, &right, &forward );
-        D3DXVec3TransformNormal( &right, &right, &Moo::rc().view() );
-        D3DXVec3TransformNormal( &vertical, &vertical, &Moo::rc().view() );
-        D3DXVec3Normalize( &right, &right );
-        D3DXVec3Normalize( &vertical, &vertical );
-        const float billboardRotation[] = { right.x, vertical.x, right.y, vertical.y };
+        float billboardRotation[4];
+        treeBillboardRotation( billboardRotation );
         Moo::rc().effectVisualContext().worldMatrix( NULL );
         Moo::rc().effectVisualContext().isOutside( true );
         Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_VIEW );
@@ -912,9 +1130,62 @@ bool initialiseStockTreeSceneRendering()
 
 void tickStockTreeSceneRendering( float dTime )
 {
+    // b035a0 snapshots the target first. matrix() may run Python, so the
+    // provider stays referenced even if the camera replaces it meanwhile.
+    TreeCameraTarget & hiding = treeCameraTarget();
+    if (MatrixProviderPtr target = hiding.target)
+    {
+        Matrix world;
+        target->matrix( world );
+        const Vector3 camera = Moo::rc().invView().applyToOrigin();
+        const float eye[3] = { camera.x, camera.y, camera.z };
+        wot::captureStockTreeHiding( reinterpret_cast<const float *>( &world ), eye, hiding.frame );
+    }
     auto owner = currentRenderingOwner();
     if (owner && owner->active)
         owner->time = addTreeScalar( owner->time, std::min( dTime, .05f ) );
+}
+
+void setStockTreeCameraTarget( MatrixProvider * target )
+{
+    // b030b0 publishes the new target before the old one can be released.
+    MatrixProviderPtr previous( target );
+    std::swap( treeCameraTarget().target, previous );
+}
+
+void drawStockTreeSemitransparent( bool skipDrawing )
+{
+    auto owner = currentRenderingOwner();
+    if (!owner) return;
+    // afef60 drains every collected tree, including when drawing is skipped.
+    std::vector<TreeDrawItem> trees;
+    trees.swap( owner->semitransparent );
+    if (skipDrawing || trees.empty() || !owner->active || !owner->gpuReady) return;
+    std::sort( trees.begin(), trees.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
+        return a.instance->leavesAlpha > b.instance->leavesAlpha;
+    } );
+    auto * pipeline = Renderer::instance().pipeline();
+    if (!pipeline) return;
+    float billboardRotation[4];
+    treeBillboardRotation( billboardRotation );
+    Moo::rc().view( owner->alphaPassView );
+    Moo::rc().projection( owner->alphaPassProjection );
+    Moo::rc().updateViewTransforms();
+    Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_VIEW );
+    pipeline->setupSystemStencil( IRendererPipeline::STENCIL_USAGE_SPEEDTREE );
+    const bool leaves = owner->semitransparentLeaves && owner->semitransparentLeaves->activeOption() != 0;
+    bool result = true;
+    for (const auto & tree : trees)
+        for (unsigned state = 0; result && state < 2; ++state)
+        {
+            auto & materials = owner->semitransparentMaterials[state];
+            if (leaves)
+                result = drawSemitransparentPart( *owner, *materials[wot::treeLeaf], wot::treeLeaf, tree, billboardRotation );
+            const unsigned parts[] = { wot::treeFrond, wot::treeBranch, wot::treeBillboard };
+            for (unsigned part : parts)
+                result = result && drawSemitransparentPart( *owner, *materials[part], part, tree, billboardRotation );
+        }
+    pipeline->restoreSystemStencil();
 }
 
 void finaliseStockTreeSceneRendering()
@@ -1093,6 +1364,17 @@ bool StockTreeSceneHandler::bind()
 
 void StockTreeSceneHandler::unload()
 {
+    // Faded trees of this frame must not outlive their scene instances.
+    if (auto owner = currentRenderingOwner())
+    {
+        const auto & instances = implementation_->instances;
+        auto & faded = owner->semitransparent;
+        faded.erase( std::remove_if( faded.begin(), faded.end(), [&instances]( const TreeDrawItem & item ) {
+            const std::less<const TreeInstance *> before;
+            return !instances.empty() && !before( item.instance, instances.data() ) &&
+                before( item.instance, instances.data() + instances.size() );
+        } ), faded.end() );
+    }
     implementation_->objects.clear();
     implementation_->instances.clear();
     implementation_->loaded = false;
