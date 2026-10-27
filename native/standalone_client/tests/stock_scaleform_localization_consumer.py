@@ -203,7 +203,9 @@ make_string, make_json = host.cache()
 assert make_string is i18n.makeString and make_json is i18n.makeStringJSON
 counts = sys.getrefcount(i18n.makeString), sys.getrefcount(i18n.makeStringJSON)
 del make_string, make_json
-host.fini()
+# The real fini loop also invokes a later-rung caption/formatted callback before
+# Script::isFinalised becomes true. Neither may refill the released helper cache.
+assert host.fini() == 1
 assert host.cache() == (None, None)
 assert (sys.getrefcount(i18n.makeString), sys.getrefcount(i18n.makeStringJSON)) == (counts[0] - 2, counts[1] - 2)
 # After Script::fini nothing calls into Python or imports again.

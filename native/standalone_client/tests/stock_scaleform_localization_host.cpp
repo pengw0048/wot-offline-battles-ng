@@ -455,10 +455,32 @@ static PyObject * py_cache(PyObject *, PyObject *)
     return Py_BuildValue("(NN)", first, second);
 }
 
+// Script::fini runs later jobs (including Personality at INT_MAX) before setting
+// isFinalised. Exercise both entry points in that actual fini-loop interval.
+class LateLocalizationFini : public BW::Script::FiniTimeJob
+{
+public:
+    LateLocalizationFini() : BW::Script::FiniTimeJob(2), calls(0) {}
+    void fini()
+    {
+        ++calls;
+        assert(!BW::Script::isFinalised());
+        TranslateInfo info("late-fini-caption");
+        info.SetKey("#dialogs:EULA/title");
+        loader->GetTranslator()->Translate(&info);
+        Movie movie;
+        const GFx::Value args[] = {GFx::Value("#dialogs:EULA/title"), GFx::Value("{}")};
+        delegate->Callback(&movie, "WG.getFormattedLocalizedString", args, 2);
+        assert(!info.IsTranslated() && movie.retCount == 0);
+    }
+    int calls;
+};
+
 static PyObject * py_fini(PyObject *, PyObject *)
 {
+    static LateLocalizationFini laterJob;
     BW::Script::runFiniTimeJobs();
-    Py_RETURN_NONE;
+    return PyInt_FromLong(laterJob.calls);
 }
 
 static PyObject * py_set_finalised(PyObject *, PyObject * args)

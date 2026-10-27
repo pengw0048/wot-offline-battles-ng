@@ -14,6 +14,7 @@ namespace
 // makeStringJSON (01d59494), imported on first use.
 PyObject * s_makeString = NULL;
 PyObject * s_makeStringJSON = NULL;
+bool s_closing = false;
 
 // Drops the cached helpers while Python is still alive.
 class LocalizationFini : public Script::FiniTimeJob
@@ -21,6 +22,9 @@ class LocalizationFini : public Script::FiniTimeJob
 public:
     void fini()
     {
+        // Later fini jobs may still update Flash while Script is not finalised.
+        // Close before DECREF, which can also re-enter Python.
+        s_closing = true;
         Py_CLEAR( s_makeString );
         Py_CLEAR( s_makeStringJSON );
     }
@@ -29,7 +33,7 @@ LocalizationFini s_localizationFini;
 
 bool pythonAvailable()
 {
-    return Py_IsInitialized() && !Script::isFinalised();
+    return !s_closing && Py_IsInitialized() && !Script::isFinalised();
 }
 
 // 006f5286/00ab38de. A failed import or lookup is reported and retried on the
