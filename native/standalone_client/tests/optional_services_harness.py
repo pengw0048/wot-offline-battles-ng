@@ -62,8 +62,12 @@ def logged(*names):
 
 class Logs(types.ModuleType):
     def __getattr__(self, name):
-        if name.startswith('LOG_'):
+        if name == 'LOG_CURRENT_EXCEPTION':
+            return lambda *args: LOG.append((name, repr(sys.exc_info()[1])))
+        if name.startswith('LOG_') or name == 'CRITICAL_ERROR':
             return recorder(name)
+        if name == 'deprecated':
+            return lambda function: function
         raise AttributeError(name)
 
 
@@ -176,11 +180,64 @@ def connection_manager(periphery=0):
                      peripheryID=periphery)
 
 
+class Codes(object):
+    def __getattr__(self, name):
+        return name
+
+
+LOBBY_PACKAGES = ('gui.Scaleform.daapi.view.lobby', 'messenger.gui.Scaleform.view.lobby',
+                  'gui.Scaleform.daapi.view.lobby.ny')
+ENTRIES = []
+
+
+def gui_entry(name):
+    from messenger.gui.interfaces import IGUIEntry
+
+    class Entry(IGUIEntry):
+        """Records the GUIDecorator lifecycle of one stock scope entry."""
+        channelsCtrl = name + '.channelsCtrl'
+
+        def __init__(self):
+            ENTRIES.append(self)
+            LOG.append((name + '.__init__',))
+
+        def __getattribute__(self, attr):
+            if attr in ('init', 'clear', 'show', 'close', 'handleKey', 'isFocused',
+                        'addClientMessage'):
+                LOG.append((name + '.' + attr,))
+            return object.__getattribute__(self, attr)
+    Entry.__name__ = name
+    return Entry
+
+
+def scaleform_leaf():
+    """Exact daapi config and messenger GUI registration; entries record calls."""
+    if 'messenger.gui.entry_decorator' in sys.modules:
+        return sys.modules['messenger.gui.entry_decorator']
+    if 'gui' not in sys.modules:
+        gui_leaf()
+    constants = sys.modules['constants']
+    constants.HAS_DEV_RESOURCES, constants.ARENA_GUI_TYPE = False, Codes()
+    module('helpers.i18n', makeString=lambda key, *a, **k: key)
+    module('gui.Scaleform', True)
+    module('gui.Scaleform.daapi', True)
+    module('gui.Scaleform.daapi.settings', True)
+    from gui.Scaleform.daapi.settings import config  # exact
+    assert config.LOBBY_PACKAGES.count('messenger.gui.Scaleform.view.lobby') == 1
+    if 'messenger' not in sys.modules:
+        module('messenger', True)
+    import messenger.gui.interfaces  # noqa: F401  exact
+    module('messenger.gui.Scaleform.battle_entry', BattleEntry=gui_entry('BattleEntry'))
+    module('messenger.gui.Scaleform.lobby_entry', LobbyEntry=gui_entry('LobbyEntry'))
+    from messenger.gui import entry_decorator  # exact, with exact setGUIEntries
+    return entry_decorator
+
+
 def messenger_leaf():
-    """Only the install-order invariant is read outside the messenger case."""
-    module('messenger', True)
+    """Only the install-order invariants are read outside the messenger case."""
+    decorator = scaleform_leaf().GUIDecorator()
     storage = Namespace(_StorageDecorator__storageCache=None)
-    module('messenger.MessengerEntry', g_instance=Namespace(storage=storage))
+    module('messenger.MessengerEntry', g_instance=Namespace(storage=storage, gui=decorator))
     return storage
 
 
@@ -354,18 +411,15 @@ def _messenger(temporary):
     for name in ('init', 'fini', 'update', 'resetUserPreferences'):
         setattr(settings, name, recorder('settings.' + name))
     module('messenger', True, g_settings=settings, error=type('error', (Exception,), {}))
-    module('messenger.m_constants', MESSENGER_SCOPE=Namespace(
-        UNKNOWN=0, LOGIN=1, LOBBY=2, BATTLE=3))
     service_channel = Namespace(onReceiveSysMessage=recorder('serviceChannel'))
     protos = Namespace(BW=Namespace(serviceChannel=service_channel))
     for name in ('init', 'clear', 'setFilters', 'connect', 'view', 'disconnect',
                  'goToReplay'):
         setattr(protos, name, recorder('protos.' + name))
     module('messenger.proto', ProtoPluginsDecorator=lambda: protos)
-    leaves = {'messenger.gui.entry_decorator': 'GUIDecorator',
-              'messenger.ext.player_helpers': 'CurrentPlayerHelper',
+    leaves = {'messenger.ext.player_helpers': 'CurrentPlayerHelper',
               'messenger.ext.filters': 'MessageFiltersChain'}
-    module('messenger.gui', True)
+    entry_decorator = scaleform_leaf()
     module('messenger.ext', True)
     for name, cls in leaves.items():
         owner = Storage(cls)
@@ -415,7 +469,31 @@ def _messenger(temporary):
     assert not hasattr(bigworld, 'WGVibration')
     assert sys.modules['gui.login'].getLoginManagerConfig.__name__ == 'record'
     storage._StorageDecorator__storageCache = None
+    from gui.Scaleform.daapi.settings import config
+    from messenger.m_constants import MESSENGER_SCOPE
+    LOBBY, BATTLE = MESSENGER_SCOPE.LOBBY, MESSENGER_SCOPE.BATTLE
+    lobby_packages, set_entries = config.LOBBY_PACKAGES, entry_decorator.setGUIEntries
+    # Control: the stock registration builds and initializes both scope entries.
+    del LOG[:]
+    entry.gui.init()
+    assert logged('LobbyEntry.__init__', 'BattleEntry.__init__') == [
+        ('LobbyEntry.__init__',), ('BattleEntry.__init__',)], LOG
+    # A GUI initialized before the entry is refused without any binding.
+    try:
+        services.install()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('an initialized messenger GUI must be refused')
+    assert services._installed is None and config.LOBBY_PACKAGES is lobby_packages
+    entry.gui.clear()
+    assert not entry.gui._GUIDecorator__entries
     assert services.install() and services.install()
+    assert entry_decorator.setGUIEntries is services._set_battle_gui_entry
+    assert 'messenger.gui.Scaleform.view.lobby' not in config.LOBBY_PACKAGES
+    assert set(lobby_packages) - set(config.LOBBY_PACKAGES) == set([
+        'messenger.gui.Scaleform.view.lobby'])
+    assert 'messenger.gui.Scaleform.view.battle' in config.BATTLE_PACKAGES
 
     del LOG[:]
     # Partial startup: init, disconnect before any Account, then fini.
@@ -436,6 +514,17 @@ def _messenger(temporary):
         events.onAvatarBecomeNonPlayer()
     events.onAccountBecomePlayer()
     events.onAccountShowGUI({})
+    # Lobby callers reach the stock unknown entry: no channels, keys or focus.
+    assert entry.gui.channelsCtrl is None and entry.gui.handleKey(None) is False
+    assert entry.gui.isFocused() is False and entry.gui.addClientMessage('text') is None
+    events.onAvatarBecomePlayer()
+    entry.onAvatarInitGUI()
+    # Battle team/common chat keeps the original battle entry.
+    assert entry.gui.channelsCtrl == 'BattleEntry.channelsCtrl'
+    assert entry.gui.handleKey(None) is False and logged('BattleEntry.handleKey')
+    events.onAvatarBecomeNonPlayer()
+    events.onAccountBecomePlayer()
+    events.onAccountShowGUI({})
     service_channel.onReceiveSysMessage({'data': {}})
     connection.onDisconnected()
     entry.fini()
@@ -444,11 +533,17 @@ def _messenger(temporary):
     assert not [e for e in LOG if e[0].endswith(('makeRecordInCache', 'restoreFromCache'))]
     for name in ('ChannelsStorage', 'UsersStorage', 'PlayerCtxStorage'):
         # Every in-memory storage is switched and cleared by the original owner.
-        assert logged(name + '.switch') == [(name + '.switch', 2), (name + '.switch', 3)] * 2 + [
-            (name + '.switch', 2)], LOG
+        assert logged(name + '.switch') == [(name + '.switch', LOBBY), (name + '.switch', BATTLE)] * 3 + [
+            (name + '.switch', LOBBY)], LOG
         assert len(logged(name + '.clear')) == 4, LOG
-    assert logged('protos.view') == [('protos.view', 2), ('protos.view', 2),
-                                     ('protos.view', 3)] * 2 + [('protos.view', 2)], LOG
+    assert logged('protos.view') == [('protos.view', LOBBY), ('protos.view', LOBBY),
+                                     ('protos.view', BATTLE)] * 2 + [
+        ('protos.view', LOBBY), ('protos.view', LOBBY)], LOG
+    # Two init/fini pairs each built, initialized and cleared one battle entry only.
+    assert logged('LobbyEntry.__init__') == [], LOG
+    assert [e[0] for e in LOG if e[0] in ('BattleEntry.__init__', 'BattleEntry.init',
+                                          'BattleEntry.clear')] == [
+        'BattleEntry.__init__', 'BattleEntry.init', 'BattleEntry.clear'] * 2, LOG
     assert logged('serviceChannel') and len(logged('protos.disconnect')) == 2
     assert len(logged('protos.clear')) == 2
     for event in vars(events).values() + [connection.onDisconnected]:
@@ -456,10 +551,14 @@ def _messenger(temporary):
     assert tree() == files
 
     services.uninstall()
+    services.uninstall()
     assert 'restoreFromCache' not in storage.__dict__
     assert storage.restoreFromCache.__func__ is storage_module.StorageDecorator.__dict__[
         'restoreFromCache']
-    print('Exact #1513 MessengerEntry/StorageDecorator: in-memory chat, no encrypted cache PASS')
+    assert config.LOBBY_PACKAGES is lobby_packages
+    assert entry_decorator.setGUIEntries is set_entries
+    print('Exact #1513 MessengerEntry/GUIDecorator/StorageDecorator: battle chat entry only, '
+          'no lobby chat or encrypted cache PASS')
 
 
 class Vehicle(object):
@@ -620,5 +719,70 @@ def case_xmpp():
     print('Exact #1513 XmppServerSettings: the pinned offline payload keeps XMPP disabled PASS')
 
 
+class NativeVOIP(object):
+    """BigWorld.VOIP: records every native voice call the stock owners make."""
+
+    def __getattr__(self, name):
+        return recorder('VOIP.' + name)
+
+
+def case_voice():
+    module('ResMgr', openSection=lambda path: None)
+    import Settings
+    Settings.g_instance = Namespace(userPrefs=Section())
+    gui_leaf()
+    bigworld.VOIP = NativeVOIP()
+    module('helpers.i18n', makeString=lambda key, *a, **k: key)
+    sys.modules['constants'].SERVER_TICK_LENGTH = 0.1
+    player = Namespace(serverSettings=DATA['pinned_server_settings'])
+    bigworld.player = lambda: player
+    module('BattleReplay', g_replayCtrl=Namespace(isPlaying=False))
+    module('CommandMapping', g_instance=Namespace())
+    module('SoundGroups', g_instance=Namespace())
+    module('account_helpers', True)
+    module('account_helpers.settings_core', True)
+    module('account_helpers.settings_core.settings_constants', SOUND=Codes())
+    module('skeletons.account_helpers', True)
+    module('skeletons.account_helpers.settings_core', ISettingsCore=type(
+        'ISettingsCore', (object,), {}))
+    module('messenger', True)
+    module('messenger.proto', True, proto_getter=lambda proto: property)
+    users = Namespace(onUsersListReceived=Event.Event(), onUserActionReceived=Event.Event())
+    module('messenger.proto.events', g_messengerEvents=Namespace(users=users))
+    module('messenger.proto.shared_find_criteria', MutedFindCriteria=object)
+    module('messenger.storage', storage_getter=lambda name: property)
+    module('messenger.proto.bw_chat2', True)  # the package plugin is not under test
+    from messenger.proto.bw_chat2.VOIPChatController import VOIPChatController  # exact
+    import VOIP  # exact getVOIPManager and VOIPManager
+
+    # BW_CHAT2.connect starts and disconnect stops the controller; repeat it.
+    for unused_connection in range(2):
+        del LOG[:]
+        controller = VOIPChatController()
+        controller.start()
+        manager = VOIP.getVOIPManager()
+        assert manager.isNotInitialized() and not controller.isReady()
+        assert ('LOG_WARNING', 'Initialize. Vivox is not supported') in LOG, LOG
+        assert not logged('LOG_CURRENT_EXCEPTION'), LOG
+        # Only the stock handler registration reaches the native object: no
+        # initialise, login, channel, capture-device or microphone call.
+        assert [e for e in LOG if e[0].startswith('VOIP.')] in (
+            [('VOIP.setHandler', manager)], []), LOG
+        controller.stop()
+        for name in ('onInitialized', 'onFailedToConnect', 'onCaptureDevicesUpdated',
+                     'onPlayerSpeaking', 'onStateToggled', 'onJoinedChannel'):
+            assert handlers(getattr(manager, name)) == 0, name
+    # Control: an explicit voice domain would initialise the native service.
+    injected['ISettingsCore'] = Namespace(options=Namespace(getSetting=lambda name: Namespace(
+        initFromPref=recorder('initFromPref'))))
+    player.serverSettings = dict(DATA['pinned_server_settings'], voipDomain='voice.example',
+                                 voipUserDomain='users.example')
+    del LOG[:]
+    controller = VOIPChatController()
+    controller.start()
+    assert logged('VOIP.initialise'), LOG
+    print('Exact #1513 VOIPChatController/VOIPManager: pinned payload never initialises voice PASS')
+
+
 {'preferences': case_preferences, 'messenger': case_messenger,
- 'vibration': case_vibration, 'xmpp': case_xmpp}[CASE]()
+ 'vibration': case_vibration, 'xmpp': case_xmpp, 'voice': case_voice}[CASE]()

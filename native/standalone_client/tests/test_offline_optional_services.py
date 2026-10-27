@@ -79,7 +79,7 @@ class OptionalServiceConsumerTests(unittest.TestCase):
     def test_login_preferences_keep_defaults_without_credential_io(self):
         self.harness('preferences')
 
-    def test_messenger_keeps_in_memory_chat_without_encrypted_cache(self):
+    def test_messenger_keeps_battle_chat_without_lobby_chat_or_cache(self):
         self.harness('messenger')
 
     def test_vibration_owner_runs_the_stock_disconnected_lifecycle(self):
@@ -87,12 +87,19 @@ class OptionalServiceConsumerTests(unittest.TestCase):
         self.assertIn('move_low_veff', {effect['name'] for effect in data['effects']})
         self.harness('vibration', data)
 
-    def test_pinned_offline_payload_keeps_xmpp_disabled(self):
+    def pinned_settings(self):
         source = os.environ.get('WOT_FORK_0101_SOURCE')
         if not source:
             self.skipTest('The fixed v0.10.1 source input is required')
-        source = Path(source)
-        settings = pinned_server_settings(source)
+        return Path(source), pinned_server_settings(Path(source))
+
+    def test_pinned_offline_payload_never_initialises_voice(self):
+        unused, settings = self.pinned_settings()
+        self.assertFalse([key for key in settings if key.startswith('voip')])
+        self.harness('voice', {'pinned_server_settings': settings})
+
+    def test_pinned_offline_payload_keeps_xmpp_disabled(self):
+        source, settings = self.pinned_settings()
         self.assertFalse([key for key in settings if key.startswith('xmpp')])
         # Account.__synchronizeServerSettings is the only later updater; the
         # pinned account service never sends a serverSettings diff.
