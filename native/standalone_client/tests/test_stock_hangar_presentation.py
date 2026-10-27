@@ -19,7 +19,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 ENGINE_FILES = ('lib/pyscript/script.hpp', 'lib/pyscript/script.cpp', 'lib/ashes/mouse_cursor.hpp',
-                'lib/ashes/mouse_cursor.cpp', 'client/gui_app.cpp', 'lib/pyscript/pyobject_plus.hpp')
+                'lib/ashes/mouse_cursor.cpp', 'client/gui_app.cpp', 'client/lens_app.cpp',
+                'lib/pyscript/pyobject_plus.hpp')
 SET_DATA = ('bool & rBool,', 'float & rFloat,', 'double & rDouble,', 'BW::string & rString,')
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore the #1513 MouseCursor.inFocus state and the GUIApp background owner."""
+"""Restore the #1513 MouseCursor.inFocus state, the GUIApp background and the EdgeDrawer pass."""
 import argparse
 from pathlib import Path
 
@@ -28,13 +28,22 @@ EDITS = (
     ('client/gui_app.cpp', '    SimpleGUI::instance().draw();\n',
      '    if (!drawStockGUIBackground())\n'
      '        ERROR_MSG("WGBackgroundImage: background draw failed\\n");\n', True),
+    # 00630e2b/00630e77 draw the EdgeDrawer z-pass and transfer after the
+    # semitransparent scene, before lens effects and the PPAA resolve.
+    ('client/lens_app.cpp', '#include "romp/lens_effect_manager.hpp"\n',
+     '#include "stock_hangar_presentation.hpp"\n', True),
+    ('client/lens_app.cpp', '    rp->endSemitransparentDraw();\n',
+     '    if (!drawStockEdgeDetection())\n'
+     '        ERROR_MSG("EdgeDrawer: edge detection draw failed\\n");\n', False),
 )
 # Each final token occurs only in its own edit.
 TOKENS = (('lib/ashes/mouse_cursor.hpp', 's_inFocus_', 2),
           ('lib/ashes/mouse_cursor.cpp', 's_inFocus_', 2),
           ('lib/ashes/mouse_cursor.cpp', 'inFocus', 3),
           ('client/gui_app.cpp', 'StockHangarPresentation', 2),
-          ('client/gui_app.cpp', 'StockGUIBackground', 1))
+          ('client/gui_app.cpp', 'StockGUIBackground', 1),
+          ('client/lens_app.cpp', 'stock_hangar_presentation', 1),
+          ('client/lens_app.cpp', 'StockEdgeDetection', 1))
 FILES = tuple(sorted({path for path, unused, unused, unused in EDITS}))
 
 

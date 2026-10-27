@@ -3,20 +3,26 @@
 #include "stock_hangar_presentation.hpp"
 #include "stock_tps_scene.hpp"
 #include "ashes/simple_gui.hpp"
+#include "entity.hpp"
+#include "py_entity.hpp"
 #include "duplo/pymodel.hpp"
 #include "input/input.hpp"
 #include "model/model.hpp"
 #include "model/super_model.hpp"
 #include "moo/base_texture.hpp"
 #include "moo/device_callback.hpp"
+#include "moo/draw_context.hpp"
 #include "moo/effect_material.hpp"
 #include "moo/fullscreen_quad.hpp"
 #include "moo/moo_utilities.hpp"
 #include "moo/render_context.hpp"
+#include "moo/render_target.hpp"
 #include "moo/texture_manager.hpp"
 #include "moo/visual.hpp"
 #include "pyscript/script.hpp"
+#include "space/entity_embodiment.hpp"
 #endif
+#include <algorithm>
 #include <memory>
 
 BW_BEGIN_NAMESPACE
@@ -66,6 +72,217 @@ public:
 };
 std::unique_ptr<GUIBackground> background;
 
+// 00af33d0 EdgeDrawer. Members are the entity embodiments present at the add;
+// drawMode 0 is list +4, modes 1 and 2 list +0x10. Each carries its z_pass
+// parameters (00af4035..00af4103).
+struct EdgeMember
+{
+    EntityPtr entity;
+    IEntityEmbodimentPtr embodiment;
+    uint colorIndex;
+    uint drawMode;
+    bool flag;  // Stored at member +0x10 by 00af3c50; no consumer was traced.
+};
+
+class EdgeDetector : public Moo::DeviceCallback
+{
+public:
+    // 00af34cf..00af3531: blue, red, green, white.
+    BW::vector<Vector4> colors;
+    std::vector<EdgeMember> members[2];
+    Moo::EffectMaterialPtr transfer;
+    std::shared_ptr<Moo::DrawContext::OverrideBlock> zPass;
+    Moo::RenderTargetPtr target;
+    bool closed = false;
+
+    EdgeDetector()
+    {
+        colors.push_back( Vector4( 0.f, 0.f, 1.f, 1.f ) );
+        colors.push_back( Vector4( 1.f, 0.f, 0.f, 1.f ) );
+        colors.push_back( Vector4( 0.f, 1.f, 0.f, 1.f ) );
+        colors.push_back( Vector4( 1.f, 1.f, 1.f, 1.f ) );
+    }
+    ~EdgeDetector() { close(); }
+    void close()
+    {
+        closed = true;
+        members[0].clear();
+        members[1].clear();
+        deleteUnmanagedObjects();
+        deleteManagedObjects();
+    }
+    virtual void createManagedObjects()
+    {
+        if (closed) return;
+        if (!Moo::createEffect( transfer, "shaders/edgeDetect/transfer.fx" ))
+            ERROR_MSG( "EdgeDrawer: transfer effect could not be loaded\n" );
+        // 00af3ef3 builds each member's override from shaders/edgeDetect/z_pass.
+        zPass = std::make_shared<Moo::DrawContext::OverrideBlock>(
+            BW::StringRef( "shaders/edgeDetect/z_pass" ), false );
+        for (unsigned index = 0; index < 2; ++index)
+        {
+            Moo::ComplexEffectMaterial * material = zPass->stockMaterial( index != 0 );
+            if (!material || !material->baseMaterial() || !material->baseMaterial()->pEffect())
+            {
+                ERROR_MSG( "EdgeDrawer: %s z_pass effect could not be loaded\n", index ? "skinned" : "rigid" );
+                zPass.reset();
+                break;
+            }
+        }
+    }
+    virtual void deleteManagedObjects()
+    {
+        transfer = NULL;
+        zPass.reset();
+    }
+    virtual void createUnmanagedObjects()
+    {
+        deleteUnmanagedObjects();
+        if (closed) return;
+        const auto & desc = Moo::rc().backBufferDesc();
+        if (!desc.Width || !desc.Height) return;
+        // The z-pass tests member depth against the scene's own depth buffer.
+        if (!Moo::createRenderTarget( target, desc.Width, desc.Height, D3DFMT_A8R8G8B8,
+                "stock/Edge detect", true, false ))
+            ERROR_MSG( "EdgeDrawer: edge target could not be created\n" );
+    }
+    virtual void deleteUnmanagedObjects()
+    {
+        // ID3DXEffect::SetTexture retains the default-pool target.
+        if (transfer && transfer->pEffect() && transfer->pEffect()->pEffect())
+            transfer->pEffect()->pEffect()->SetTexture( "g_edgeDetectedMap", NULL );
+        target = NULL;
+    }
+    virtual bool recreateForD3DExDevice() const { return true; }
+
+    // 00af3db1: additions are ignored until the drawer is attached and ready.
+    bool ready() const { return !closed && transfer && zPass && target && target->pTexture(); }
+
+    static bool attached( const EdgeMember & member )
+    {
+        const Entity * entity = member.entity.get();
+        if (!entity || entity->isDestroyed() || !entity->isInWorld()) return false;
+        if (entity->pPrimaryEmbodiment() == member.embodiment.get()) return true;
+        EntityEmbodiments & auxiliary = const_cast<Entity *>( entity )->auxiliaryEmbodiments();
+        return std::find_if( auxiliary.begin(), auxiliary.end(), [&]( const IEntityEmbodimentPtr & item )
+            { return item.get() == member.embodiment.get(); } ) != auxiliary.end();
+    }
+    void prune()
+    {
+        for (auto & list : members)
+            list.erase( std::remove_if( list.begin(), list.end(),
+                []( const EdgeMember & member ) { return !attached( member ); } ), list.end() );
+    }
+    // 00652c09 primary embodiment, then 00652c50 each auxiliary embodiment.
+    static std::vector<IEntityEmbodimentPtr> embodiments( Entity & entity )
+    {
+        std::vector<IEntityEmbodimentPtr> result;
+        if (entity.pPrimaryEmbodiment())
+            result.push_back( IEntityEmbodimentPtr( entity.pPrimaryEmbodiment() ) );
+        for (const IEntityEmbodimentPtr & embodiment : entity.auxiliaryEmbodiments())
+            if (embodiment) result.push_back( embodiment );
+        return result;
+    }
+    void erase( const IEntityEmbodimentPtr & embodiment )
+    {
+        for (auto & list : members)
+            list.erase( std::remove_if( list.begin(), list.end(),
+                [&]( const EdgeMember & member ) { return member.embodiment.get() == embodiment.get(); } ),
+                list.end() );
+    }
+    // 00af3c50 replaces a key already present in either list.
+    void add( const EntityPtr & entity, uint colorIndex, uint drawMode, bool flag )
+    {
+        if (!ready()) return;
+        prune();
+        for (const IEntityEmbodimentPtr & embodiment : embodiments( *entity.get() ))
+        {
+            erase( embodiment );
+            EdgeMember member = { entity, embodiment, colorIndex, drawMode, flag };
+            members[drawMode != 0].push_back( member );
+        }
+    }
+    // 00af4480 removes each current embodiment key; an absent key is a no-op.
+    void remove( Entity & entity )
+    {
+        for (const IEntityEmbodimentPtr & embodiment : embodiments( entity )) erase( embodiment );
+        prune();
+    }
+    bool parameters( const EdgeMember & member )
+    {
+        // 00af40c0 sets component colorIndex of a zero mask. An index past 3
+        // writes past the original's stack vector; here it leaves the mask zero.
+        Vector4 mask( 0.f, 0.f, 0.f, 0.f );
+        if (member.colorIndex < 4) mask[member.colorIndex] = 1.f;
+        // 00af3ea0..00af3ecf: mode 0 -> (0, False), 1 -> (3, True), else (1, False).
+        const int depthFunc = member.drawMode == 0 ? 0 : member.drawMode == 1 ? 3 : 1;
+        const bool occluded = member.drawMode == 1;
+        for (unsigned index = 0; index < 2; ++index)
+        {
+            Moo::ComplexEffectMaterial * complex = zPass->stockMaterial( index != 0 );
+            Moo::EffectMaterialPtr material;
+            if (complex) material = complex->baseMaterial();
+            ID3DXEffect * effect = NULL;
+            if (material && material->pEffect()) effect = material->pEffect()->pEffect();
+            if (!effect || FAILED( effect->SetVector( "g_colorMask", &mask ) ) ||
+                FAILED( effect->SetInt( "depthFunc", depthFunc ) ) ||
+                FAILED( effect->SetBool( "edgeDetectOccluded", occluded ) )) return false;
+            // A material property, when exposed, is applied again at begin().
+            Moo::EffectPropertyPtr value = material->getProperty( "g_colorMask" );
+            if (value) value->be( mask );
+            value = material->getProperty( "depthFunc" );
+            if (value) value->be( depthFunc );
+            value = material->getProperty( "edgeDetectOccluded" );
+            if (value) value->be( occluded );
+        }
+        return true;
+    }
+    bool draw()
+    {
+        prune();
+        // 00af45fb: nothing to draw without members.
+        if (closed || (members[0].empty() && members[1].empty())) return true;
+        if (!ready()) return false;
+        if (!target->push()) return false;
+        bool success = SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
+        Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );
+        context.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
+        context.pushImmediateMode();
+        context.pushOverrideBlock( zPass.get() );
+        for (const auto & list : members)
+            for (const EdgeMember & member : list)
+            {
+                if (!parameters( member )) { success = false; continue; }
+                member.embodiment->draw( context );
+            }
+        context.popOverrideBlock( zPass.get() );
+        context.popImmediateMode();
+        context.end( Moo::DrawContext::ALL_CHANNELS_MASK );
+        context.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
+        target->pop();
+        if (!success) return false;
+        // 00af45f0: the edge map and exactly four colours. Fewer than four reads
+        // past the original vector; here the missing colours are zero.
+        Vector4 palette[4] = { Vector4( 0.f, 0.f, 0.f, 0.f ), Vector4( 0.f, 0.f, 0.f, 0.f ),
+            Vector4( 0.f, 0.f, 0.f, 0.f ), Vector4( 0.f, 0.f, 0.f, 0.f ) };
+        std::copy( colors.begin(), colors.begin() + std::min<size_t>( colors.size(), 4 ), palette );
+        ID3DXEffect * effect = transfer->pEffect()->pEffect();
+        if (!effect || FAILED( effect->SetTexture( "g_edgeDetectedMap", target->pTexture() ) ) ||
+            FAILED( effect->SetVectorArray( "g_edgeColors",
+                reinterpret_cast<const D3DXVECTOR4 *>( palette ), 4 ) )) return false;
+        const auto & desc = Moo::rc().backBufferDesc();
+        return Moo::rc().fsQuad().drawChecked( *transfer, desc.Width, desc.Height );
+    }
+};
+std::unique_ptr<EdgeDetector> edgeDetector;
+
+void warning( const char * message )
+{
+    // 00652be0/00652f57: PyErr_Format( PyExc_Warning ), then PyErr_PrintEx( 0 ).
+    PyErr_SetString( PyExc_Warning, message );
+    PyErr_PrintEx( 0 );
+}
+
 // 006b45a0: every material of the first top model and its parent chain.
 void assignModelTexture( Model * model, const BW::string & property, const BW::string & texture )
 {
@@ -90,11 +307,17 @@ bool initialiseStockHangarPresentation()
     if (background) return true;
     background.reset( new GUIBackground );
     background->createManagedObjects();
+    // 0093fe47 creates EdgeDrawer with the renderer, before any Account event.
+    edgeDetector.reset( new EdgeDetector );
+    edgeDetector->createManagedObjects();
+    edgeDetector->createUnmanagedObjects();
     return true;
 }
 
 void finaliseStockHangarPresentation()
 {
+    if (edgeDetector) edgeDetector->close();
+    edgeDetector.reset();
     if (background) background->close();
     background.reset();
     backgroundTexture = NULL;
@@ -105,6 +328,71 @@ bool drawStockGUIBackground()
 {
     return !background || background->draw();
 }
+
+bool drawStockEdgeDetection()
+{
+    return !edgeDetector || edgeDetector->draw();
+}
+
+/**
+ *	#1513 00652ee0: an empty list raises Warning; more than four warns and is
+ *	still assigned. EdgeDetectColorController passes four on onAccountShowGUI.
+ */
+PyObject * wgSetEdgeDetectColors( const BW::vector<Vector4> & colors )
+{
+    if (colors.empty())
+    {
+        PyErr_Format( PyExc_Warning, "wgSetEdgeDetectColors - colors size is zero. "
+            "\t\t\t\t\t\t\t\t\tUsing defaults colors.\n" );
+        return NULL;
+    }
+    if (colors.size() > 4)
+        warning( "wgSetEdgeDetectColors - colors size is great then zero. "
+            "\t\t\t\t\t\t\t\t\tUsing the first three items.\n" );
+    if (edgeDetector) edgeDetector->colors = colors;
+    Py_RETURN_NONE;
+}
+PY_AUTO_MODULE_FUNCTION( RETOWN, wgSetEdgeDetectColors, ARG( BW::vector<Vector4>, END ), BigWorld )
+
+/**
+ *	#1513 00652ab0: an invalid mode or colour warns and is still added. The
+ *	original dereferences a None entity when the drawer exists.
+ */
+PyObject * wgAddEdgeDetectEntity( PyEntityPtr pyEntity, uint colorIndex, uint drawMode, bool flag )
+{
+    if (edgeDetector)
+    {
+        if (drawMode > 2) warning( "Incorrect draw mode (0, 1, 2 are only valid).\n" );
+        else if (colorIndex > 3) warning( "Incorrect color index (0-3 are only valid).\n" );
+        if (!pyEntity || !pyEntity->pEntity())
+        {
+            PyErr_SetString( PyExc_TypeError, "wgAddEdgeDetectEntity() argument 1 must be an entity" );
+            return NULL;
+        }
+        edgeDetector->add( pyEntity->pEntity(), colorIndex, drawMode, flag );
+    }
+    Py_RETURN_NONE;
+}
+PY_AUTO_MODULE_FUNCTION( RETOWN, wgAddEdgeDetectEntity, ARG( PyEntityPtr, ARG( uint,
+    OPTARG( uint, 0, OPTARG( bool, false, END ) ) ) ), BigWorld )
+
+/**
+ *	#1513 00652cf0: removes the entity's current embodiments.
+ */
+PyObject * wgDelEdgeDetectEntity( PyEntityPtr pyEntity )
+{
+    if (edgeDetector)
+    {
+        if (!pyEntity || !pyEntity->pEntity())
+        {
+            PyErr_SetString( PyExc_TypeError, "wgDelEdgeDetectEntity() argument 1 must be an entity" );
+            return NULL;
+        }
+        edgeDetector->remove( *pyEntity->pEntity().get() );
+    }
+    Py_RETURN_NONE;
+}
+PY_AUTO_MODULE_FUNCTION( RETOWN, wgDelEdgeDetectEntity, ARG( PyEntityPtr, END ), BigWorld )
 
 /**
  *	#1513 00633330 -> 006f9160: only the first flag is stored; BattleLoading

@@ -1,11 +1,14 @@
 """Execute the exact #1513 hangar presentation wrappers in Unicorn.
 
 SetDrawInflux 00aeb660, wg_enableGUIBackground 00633330, wg_setGUIBackground
-006333e0, wg_setPyModelTexture 006b3b30 and GUI.syncMousePosition 00aa8290 run
-unchanged, including the WGBackgroundImage store 006f9160 and the BW::string
-copies and destructors. PyTuple_Size/GetItem, the Script::setData converters,
-argCountError and the native owners past each wrapper (Influx f99d60, texture
-load 006f9090, model walk 006b45a0, SimpleGUI vtable +0x10) are recorded.
+006333e0, wg_setPyModelTexture 006b3b30, GUI.syncMousePosition 00aa8290 and
+wgSetEdgeDetectColors/wgAddEdgeDetectEntity/wgDelEdgeDetectEntity (00652ee0,
+00652ab0, 00652cf0) run unchanged, including the WGBackgroundImage store
+006f9160, the BW::string copies and destructors and the embodiment walk.
+PyTuple_Size/GetItem, the Script::setData converters, argCountError,
+PyErr_Format/PyErr_PrintEx and the native owners past each wrapper (Influx
+f99d60, texture load 006f9090, model walk 006b45a0, SimpleGUI vtable +0x10,
+EdgeDrawer colours af4d20, add af3c50 and remove af4480) are recorded.
 """
 from pathlib import Path
 import re
@@ -18,8 +21,12 @@ from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_ECX, UC_X86_REG_EIP, U
 
 FUNCTIONS = {'SetDrawInflux': 0xaeb660, 'wg_enableGUIBackground': 0x633330,
              'wg_setGUIBackground': 0x6333e0, 'wg_setPyModelTexture': 0x6b3b30,
-             'syncMousePosition': 0xaa8290}
-SET_DATA = {0x690570: 'bool', 0x68fe20: 'BW::string', 0x68fba0: 'float', 0x8f46f0: 'BW::PyModelPtr'}
+             'syncMousePosition': 0xaa8290, 'wgSetEdgeDetectColors': 0x652ee0,
+             'wgAddEdgeDetectEntity': 0x652ab0, 'wgDelEdgeDetectEntity': 0x652cf0}
+SET_DATA = {0x690570: 'bool', 0x68fe20: 'BW::string', 0x68fba0: 'float', 0x8f46f0: 'BW::PyModelPtr',
+            0x664990: 'PyEntityPtr', 0x68fad0: 'uint', 0x64e160: 'BW::vector<Vector4>'}
+ERR_FORMAT, PRINT_EX, FREE, WARNING_SLOT = 0xfc3720, 0xfc7680, 0x13d8019, 0x1a5db0c
+EDGE_SLOT, EDGE_COLORS, EDGE_ADD, EDGE_DEL = 0x1d20c70, 0xaf4d20, 0xaf3c50, 0xaf4480
 TUPLE_SIZE, TUPLE_ITEM, ARG_COUNT_ERROR, GET_BOOL = 0xfb3610, 0xfb3390, 0x68e100, 0x68ee00
 INFLUX, LOAD_BACKGROUND, MODEL_TEXTURE = 0xf99d60, 0x6f9090, 0x6b45a0
 INFLUX_FLAG, BACKGROUND_SLOT, GUI_SLOT = 0x1a1bfd0, 0x1a08620, 0x1d1fee0
@@ -29,6 +36,13 @@ STACK, GDT, MARKS = 0x6000000, 0x6300000, 0x6400000
 ARGS, ITEMS, BACKGROUND, GUI, VTABLE = MARKS + 0x100, MARKS + 0x200, MARKS + 0x400, MARKS + 0x500, MARKS + 0x600
 MODEL, SUPER_MODEL, TOP_MODEL = MARKS + 0x700, MARKS + 0x780, MARKS + 0x800
 DISPATCH, INCREMENT, DECREMENT, SENTINEL = MARKS + 0x900, MARKS + 0x904, MARKS + 0x908, MARKS + 0x90c
+DRAWER, PY_ENTITY, ENTITY, EMBODIMENTS = MARKS + 0xa00, MARKS + 0xa40, MARKS + 0xb00, MARKS + 0xc00
+AUXILIARY, VECTOR = MARKS + 0xd00, MARKS + 0xe00
+WARNINGS = {'zero': 'wgSetEdgeDetectColors - colors size is zero. ' + '\t' * 9 + 'Using defaults colors.\n',
+            'great': 'wgSetEdgeDetectColors - colors size is great then zero. ' + '\t' * 9 +
+            'Using the first three items.\n',
+            'mode': 'Incorrect draw mode (0, 1, 2 are only valid).\n',
+            'colour': 'Incorrect color index (0-3 are only valid).\n'}
 PRODUCTION = Path(__file__).resolve().parents[1] / 'bigworld/stock_hangar_presentation.cpp'
 STRINGS = {0: 'background.dds', 1: 'diffuseMap', 2: 'shadow.dds'}
 
@@ -56,6 +70,8 @@ class OriginalWrappers(object):
                       INFLUX: self._influx, LOAD_BACKGROUND: self._load_background,
                       MODEL_TEXTURE: self._model_texture, DISPATCH: self._dispatch,
                       INCREMENT: lambda: self._counter(1), DECREMENT: lambda: self._counter(-1),
+                      ERR_FORMAT: self._format, PRINT_EX: self._print_ex, FREE: lambda: self._return(0),
+                      EDGE_COLORS: self._edge_colors, EDGE_ADD: self._edge_add, EDGE_DEL: self._edge_del,
                       SENTINEL: lambda: u.emu_stop()}
         for address, kind in SET_DATA.items():
             self.hooks[address] = (lambda kind: lambda: self._set_data(kind))(kind)
@@ -96,9 +112,43 @@ class OriginalWrappers(object):
         elif kind == 'BW::string':
             text = STRINGS[index].encode('latin1')
             self.u.mem_write(target, text.ljust(16, b'\0') + struct.pack('<II', len(text), 15))
+        elif kind == 'uint':
+            self.u.mem_write(target, struct.pack('<I', self.values[index]))
+        elif kind == 'PyEntityPtr':
+            self.u.mem_write(target, struct.pack('<I', PY_ENTITY if self.values[index] else 0))
+        elif kind == 'BW::vector<Vector4>':
+            count = self.values[index]
+            self.u.mem_write(VECTOR, struct.pack('<4f', 0.5, 0.25, 0.125, 1.0) * count)
+            self.u.mem_write(target, struct.pack('<III', VECTOR, VECTOR + 16 * count, VECTOR + 16 * count))
         else:
             self.u.mem_write(target, struct.pack('<I', MODEL if self.values[index] else 0))
         self._return(0)
+
+    def _format(self):
+        kind = 'Warning' if self._arg(1) == self._word(WARNING_SLOT) else hex(self._arg(1))
+        message = self._cstr(self._arg(2))
+        self.calls.append(['PyErr_Format', kind] + [name for name, text in WARNINGS.items() if text == message])
+        self._return(0)
+
+    def _print_ex(self):
+        self.calls.append(['PyErr_PrintEx', self._arg(1)])
+        self._return(0)
+
+    def _edge_colors(self):
+        vector = self._arg(1)
+        first, last = struct.unpack('<II', self.u.mem_read(vector, 8))
+        self.calls.append(['edge.colors', self.u.reg_read(UC_X86_REG_ECX) == DRAWER, (last - first) // 16])
+        self._return(0, 4)
+
+    def _edge_add(self):
+        key = self._word(self._arg(1))
+        self.calls.append(['edge.add', self.u.reg_read(UC_X86_REG_ECX) == DRAWER, key, self._arg(2),
+                           self._arg(3), self._arg(4) & 0xff])
+        self._return(0, 16)
+
+    def _edge_del(self):
+        self.calls.append(['edge.del', self.u.reg_read(UC_X86_REG_ECX) == DRAWER, self._word(self._arg(1))])
+        self._return(0, 4)
 
     def _arg_count_error(self):
         total = self._arg(3)
@@ -139,9 +189,17 @@ class OriginalWrappers(object):
         self.u.mem_write(address, struct.pack('<I', value))
         self._return(value, 4)
 
-    def run(self, function, argc, fail_at=None, values=(1, 1, 1)):
+    def run(self, function, argc, fail_at=None, values=(1, 1, 1), drawer=True):
         u = self.u
         self.argc, self.fail_at, self.values, self.calls = argc, fail_at, values, []
+        # PyEntity +8 -> Entity: primary +0xe8, auxiliary vector +0xec/+0xf0; each
+        # embodiment's key is the dword at +0x10 (00b4e280).
+        u.mem_write(EDGE_SLOT, struct.pack('<I', DRAWER if drawer else 0))
+        u.mem_write(PY_ENTITY, struct.pack('<III', 5, 0, ENTITY))
+        u.mem_write(ENTITY + 0xe8, struct.pack('<III', EMBODIMENTS, AUXILIARY, AUXILIARY + 8))
+        u.mem_write(AUXILIARY, struct.pack('<II', EMBODIMENTS + 0x20, EMBODIMENTS + 0x40))
+        for index in range(3):
+            u.mem_write(EMBODIMENTS + 0x20 * index + 0x10, struct.pack('<I', 101 + index))
         u.mem_write(INFLUX_FLAG, b'\x07')
         u.mem_write(BACKGROUND, struct.pack('<IIII', 0x14b062c, 0, 0, 0x07))
         u.mem_write(BACKGROUND_SLOT, struct.pack('<I', BACKGROUND))
@@ -165,7 +223,7 @@ class OriginalWrappers(object):
             outcome = {0: 'NULL', NONE: 'None', TRUE: 'True'}[u.reg_read(UC_X86_REG_EAX)]
         state = [bytes(u.mem_read(INFLUX_FLAG, 1))[0], bytes(u.mem_read(BACKGROUND + 12, 1))[0],
                  self._word(TOP_MODEL + 4)]
-        return [function, argc, fail_at, list(values), outcome, state, self.calls]
+        return [function, argc, fail_at, list(values), drawer, outcome, state, self.calls]
 
 
 def signatures():
@@ -188,12 +246,20 @@ def cases():
         if function not in FUNCTIONS:
             continue
         for argc in range(len(kinds) + 2):
-            result.append((function, argc, None, (1, 1, 1)))
-        result.extend((function, len(kinds), index, (1, 1, 1)) for index in range(len(kinds)))
+            result.append((function, argc, None, (1, 1, 1, 1), True))
+        result.extend((function, len(kinds), index, (1, 1, 1, 1), True) for index in range(len(kinds)))
         if kinds[0] in ('bool', 'BW::PyModelPtr'):
-            result.append((function, len(kinds), None, (0, 1, 1)))
+            result.append((function, len(kinds), None, (0, 1, 1, 1), True))
         if function == 'syncMousePosition':
-            result.append((function, 2, None, (0.25, -0.5, 0)))
+            result.append((function, 2, None, (0.25, -0.5, 0, 0), True))
+    for drawer in (True, False):
+        for count in (0, 1, 4, 5):
+            result.append(('wgSetEdgeDetectColors', 1, None, (count,), drawer))
+        for values in ((1, 0, 0, 0), (1, 3, 2, 1), (1, 4, 0, 0), (1, 1, 3, 0), (1, 9, 9, 1), (0, 1, 0, 0)):
+            for argc in (2, 3, 4):
+                result.append(('wgAddEdgeDetectEntity', argc, None, values, drawer))
+        for values in ((1,), (0,)):
+            result.append(('wgDelEdgeDetectEntity', 1, None, values, drawer))
     return result
 
 
@@ -201,20 +267,47 @@ def expected():
     """The same cases through the production PY_AUTO expansion and native owners."""
     result, declared = [], signatures()
     assert set(FUNCTIONS) <= set(declared), declared
-    for function, argc, fail_at, values in cases():
+    for function, argc, fail_at, values, drawer in cases():
         ret, kinds = declared[function]
         state, calls = [7, 7, 2], []
-        if argc != len(kinds):
-            calls, outcome = [['argCountError', function, len(kinds), len(kinds)] + list(kinds)], 'NULL'
-            result.append([function, argc, fail_at, list(values), outcome, state, calls])
+        required = len(kinds) - (2 if function == 'wgAddEdgeDetectEntity' else 0)
+        if not required <= argc <= len(kinds):
+            calls, outcome = [['argCountError', function, required, len(kinds)] + list(kinds)], 'NULL'
+            result.append([function, argc, fail_at, list(values), drawer, outcome, state, calls])
             continue
         outcome = 'None'
-        for index, kind in enumerate(kinds):
-            calls.append(['setData', kind, index, '() argument %d' % (index + 1)])
+        for index, kind in enumerate(kinds[:argc]):
+            calls.append(['setData', kind, index, '() argument %d%s' % (index + 1,
+                                                                         ' optionally' if index >= required else '')])
             if index == fail_at:
                 outcome = 'NULL'
                 break
-        if outcome == 'None':
+        if outcome == 'NULL':
+            pass
+        elif function == 'wgSetEdgeDetectColors':
+            if values[0] == 0:
+                calls.append(['PyErr_Format', 'Warning', 'zero'])
+                outcome = 'NULL'
+            else:
+                if values[0] > 4:
+                    calls += [['PyErr_Format', 'Warning', 'great'], ['PyErr_PrintEx', 0]]
+                if drawer:
+                    calls.append(['edge.colors', True, values[0]])
+        elif function in ('wgAddEdgeDetectEntity', 'wgDelEdgeDetectEntity'):
+            colour, mode, flag = (list(values[1:argc]) + [0, 0, 0])[:3] if function == 'wgAddEdgeDetectEntity' \
+                else (0, 0, 0)
+            if drawer and function == 'wgAddEdgeDetectEntity':
+                if mode > 2 or colour > 3:
+                    calls += [['PyErr_Format', 'Warning', 'mode' if mode > 2 else 'colour'], ['PyErr_PrintEx', 0]]
+            if drawer and not values[0]:
+                # Production raises TypeError here instead of dereferencing None.
+                calls.append(['crash'])
+                outcome = 'crash'
+            elif drawer:
+                for key in (101, 102, 103):
+                    calls.append(['edge.add', True, key, colour, mode, flag] if function == 'wgAddEdgeDetectEntity'
+                                 else ['edge.del', True, key])
+        elif outcome == 'None':
             if function == 'SetDrawInflux':
                 state[0] = values[0]
                 calls.append(['influx', values[0], 1])
@@ -231,7 +324,7 @@ def expected():
             else:
                 calls += [['modelTexture', True, STRINGS[1], STRINGS[2]], ['getData', 1]]
                 outcome = 'True'
-        result.append([function, argc, fail_at, list(values), outcome, state, calls])
+        result.append([function, argc, fail_at, list(values), drawer, outcome, state, calls])
     return result
 
 

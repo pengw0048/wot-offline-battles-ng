@@ -154,8 +154,10 @@ def battle_loading(icon):
 
 check(host.drawBackground(), True)  # no GUIApp owner yet: a legitimate no-draw
 check(host.calls(), [])
+EDGE_INIT = ['createEffect:shaders/edgeDetect/transfer.fx', 'OverrideBlock:shaders/edgeDetect/z_pass',
+             'effect.SetTexture:g_edgeDetectedMap:NULL', 'createRenderTarget:stock/Edge detect:1280x720:21:10']
 assert host.initialise() and host.initialise()
-check(host.calls(), ['createEffect:shaders/post_processing/background.fx'])
+check(host.calls(), ['createEffect:shaders/post_processing/background.fx'] + EDGE_INIT)
 view = battle_loading('gui/maps/icons/map/screen/05_prohorovka.dds')
 view._populate()
 check(host.calls(), ['TextureManager.get:gui/maps/icons/map/screen/05_prohorovka.dds:111:Art/File Textures/'])
@@ -190,10 +192,16 @@ check(host.calls(), [])
 missing._dispose()
 host.finalise()
 host.finalise()
+check(host.calls(), ['effect.SetTexture:g_edgeDetectedMap:NULL'])  # the target is unbound once
 host.setEffectLoads(0)
 assert host.initialise()
 check(host.calls(), ['createEffect:shaders/post_processing/background.fx',
-                     'ERROR:WGBackgroundImage: background effect could not be loaded\n'])
+                     'ERROR:WGBackgroundImage: background effect could not be loaded\n',
+                     'createEffect:shaders/edgeDetect/transfer.fx',
+                     'ERROR:EdgeDrawer: transfer effect could not be loaded\n',
+                     'OverrideBlock:shaders/edgeDetect/z_pass',
+                     'ERROR:EdgeDrawer: rigid z_pass effect could not be loaded\n',
+                     'createRenderTarget:stock/Edge detect:1280x720:21:10'])
 view._populate()
 host.calls()
 check(host.drawBackground(), True)
@@ -253,3 +261,201 @@ host.setGUI(0)
 check(GUI.syncMousePosition(3, 4), None)
 check(host.calls(), [])
 print 'cursor: detach/reset dispatch a zero-delta event through SimpleGUI'
+
+# ---- wgSetEdgeDetectColors / wgAdd / wgDel: Account event, Hangar and highlights ----
+import StringIO
+
+
+def warnings_of(function, *args):
+    saved, sys.stderr = sys.stderr, StringIO.StringIO()
+    try:
+        result = function(*args)
+    finally:
+        captured, sys.stderr = sys.stderr.getvalue(), saved
+    return result, captured
+
+
+class Event(object):
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
+        return self
+
+    def __call__(self, *args):
+        for handler in list(self.handlers):
+            handler(*args)
+
+
+class PlayerAccount(object):
+    pass
+
+
+EDGE = 'scripts/client/helpers/EdgeDetectColorController.pyc'
+player_events = Bag(onAccountShowGUI=Event())
+edge_namespace = {'BigWorld': BigWorld, 'g_playerEvents': player_events, 'PlayerAccount': PlayerAccount}
+Controller = type('EdgeDetectColorController', (object,), dict(
+    (name, method(EDGE, 'EdgeDetectColorController', name, edge_namespace))
+    for name in ('create', 'updateColors', '__onAccountShowGUI', '__changeColor')))
+for name in ('__onAccountShowGUI', '__changeColor'):
+    setattr(Controller, '_EdgeDetectColorController' + name, getattr(Controller, name))
+PLAYER = [PlayerAccount()]
+BigWorld.player = lambda: PLAYER[0]
+palette = {'hangar': (0.1, 0.2, 0.3, 1.0), 'self': (0.4, 0.5, 0.6, 1.0), 'enemy': (1.0, 0.0, 0.0, 1.0),
+           'friend': (0.0, 1.0, 0.0, 1.0), 'flag': (1.0, 1.0, 0.0, 1.0)}
+controller = Controller()
+controller.settingsCore = Bag(onSettingsChanged=Event(), getSetting=lambda name: False)
+controller._EdgeDetectColorController__colors = {'common': palette, 'colorBlind': palette}
+
+# Without an EdgeDrawer the colours are still validated and None is returned.
+host.finalise()
+check(host.calls(), [])
+check(warnings_of(BigWorld.wgSetEdgeDetectColors, [(1, 1, 1, 1)] * 5)[1].count('Using the first three'), 1)
+check(BigWorld.wgAddEdgeDetectEntity(None, 9, 9), None)
+check(BigWorld.wgDelEdgeDetectEntity(None), None)
+check(host.drawEdges(), True)
+check(host.calls(), [])
+assert host.initialise()
+check(host.calls(), ['createEffect:shaders/post_processing/background.fx'] + EDGE_INIT)
+try:
+    BigWorld.wgSetEdgeDetectColors([])
+except Warning as error:
+    check(str(error), 'wgSetEdgeDetectColors - colors size is zero. ' + '\t' * 9 + 'Using defaults colors.\n')
+else:
+    raise AssertionError('empty colours did not raise Warning')
+check(host.calls(), [])
+check(host.drawEdges(), True)  # no members: nothing is drawn
+check(host.calls(), [])
+
+
+def member_calls(mask, depth, occluded, name):
+    single = ['effect.SetVector:g_colorMask:' + mask, 'effect.SetInt:depthFunc:%d' % depth,
+              'effect.SetBool:edgeDetectOccluded:%d' % occluded]
+    return single * 2 + ['embodiment.draw:%s:override' % name]
+
+
+def frame(members, colours):
+    return (['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+             'context.pushImmediateMode', 'context.pushOverrideBlock'] + members +
+            ['context.popOverrideBlock', 'context.popImmediateMode', 'context.end:7', 'context.flush:7',
+             'target.pop:stock/Edge detect', 'effect.SetTexture:g_edgeDetectedMap:stock/Edge detect',
+             'effect.SetVectorArray:g_edgeColors:' + colours,
+             'fsQuad.drawChecked:shaders/edgeDetect/transfer.fx:1280x720:stock/Edge detect'])
+
+
+# EdgeDetectColorController.create subscribes; onAccountShowGUI sets Hangar colours.
+controller.create()
+player_events.onAccountShowGUI({})
+check(host.calls(), [])
+hangar_colours = '0.1,0.2,0.3,1|1,0,0,1|0,1,0,1|1,1,0,1'
+SELECTABLE = 'scripts/client/ClientSelectableObject.pyc'
+highlight = method(SELECTABLE, 'ClientSelectableObject', 'highlight', {'BigWorld': BigWorld})
+selectable = host.makeEntity('hangarTank', 'hangarTankDecal')
+selectable._ClientSelectableObject__enabled = True
+selectable._ClientSelectableObject__edged = False
+selectable._ClientSelectableObject__edgeMode = 2
+selectable.onMouseEnter = recorder('onMouseEnter')
+selectable.onMouseLeave = recorder('onMouseLeave')
+highlight(selectable, True)
+assert selectable._ClientSelectableObject__edged
+check(host.drawEdges(), True)
+check(host.calls(), frame(member_calls('1,0,0,0', 1, 0, 'hangarTank') +
+                          member_calls('1,0,0,0', 1, 0, 'hangarTankDecal'), hangar_colours))
+highlight(selectable, False)
+assert not selectable._ClientSelectableObject__edged
+check(host.drawEdges(), True)
+check(host.calls(), [])
+# A battle player swaps to the self colour.
+PLAYER[0] = object()
+player_events.onAccountShowGUI({})
+battle_colours = '0.4,0.5,0.6,1|1,0,0,1|0,1,0,1|1,1,0,1'
+
+# Highlighter (colour, mode, flag): ally (2,0,False), enemy (1,0,False), own (0,1,True).
+HIGHLIGHTER = 'scripts/client/vehicle_systems/components/highlighter.pyc'
+highlighter_names = ('highlight', 'deactivate', '__doHighlightOperation')
+Highlighter = type('Highlighter', (object,), dict(
+    (name, method(HIGHLIGHTER, 'Highlighter', name, {'BigWorld': BigWorld})) for name in highlighter_names))
+Highlighter._Highlighter__doHighlightOperation = Highlighter.__dict__['__doHighlightOperation']
+Highlighter.HIGHLIGHT_OFF, Highlighter.HIGHLIGHT_ON, Highlighter.HIGHLIGHT_SIMPLE = 0, 1, 2
+ALLY = [True]
+vehicles = []
+for name, ally in (('ally', True), ('enemy', False)):
+    vehicle = host.makeEntity(name)
+    vehicle.publicInfo = {'team': 1}
+    item = Highlighter()
+    item._Highlighter__vehicle, item._Highlighter__highlightStatus = vehicle, 0
+    item._Highlighter__isPlayersVehicle = False
+    item.sessionProvider = Bag(getArenaDP=lambda ally=ally: Bag(isAllyTeam=lambda team: ally))
+    item.highlight(True, False)
+    vehicles.append((item, vehicle))
+check(host.drawEdges(), True)
+ALLY_CALLS, ENEMY_CALLS = member_calls('0,0,1,0', 0, 0, 'ally'), member_calls('0,1,0,0', 0, 0, 'enemy')
+check(host.calls(), frame(ALLY_CALLS + ENEMY_CALLS, battle_colours))
+# Re-highlighting removes the old key first: the ally appears once, last.
+vehicles[0][0].highlight(True, False)
+check(host.drawEdges(), True)
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS, battle_colours))
+own = Highlighter()
+own_vehicle = host.makeEntity('player')
+own._Highlighter__vehicle, own._Highlighter__highlightStatus, own._Highlighter__isPlayersVehicle = own_vehicle, 0, True
+own.highlight(True, False)
+check(host.drawEdges(), True)
+# Mode 1 is the second list, drawn after every mode-0 member.
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('1,0,0,0', 3, 1, 'player'), battle_colours))
+own.deactivate()
+assert own._Highlighter__vehicle is None
+
+# Invalid values warn and are still added; an index past 3 has no mask bit.
+result, text = warnings_of(BigWorld.wgAddEdgeDetectEntity, own_vehicle, 7, 5, True)
+check((result, text.count('Incorrect draw mode'), text.count('Incorrect color index')), (None, 1, 0))
+result, text = warnings_of(BigWorld.wgAddEdgeDetectEntity, own_vehicle, 7)
+check((result, text.count('Incorrect color index')), (None, 1))
+check(host.drawEdges(), True)
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('0,0,0,0', 0, 0, 'player'), battle_colours))
+result, text = warnings_of(BigWorld.wgAddEdgeDetectEntity, own_vehicle, 3, 5)
+check(text.count('Incorrect draw mode'), 1)
+check(host.drawEdges(), True)
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('0,0,0,1', 1, 0, 'player'), battle_colours))
+print 'edge: invalid', expect_type_error(BigWorld.wgAddEdgeDetectEntity, None, 0)
+print 'edge: invalid', expect_type_error(BigWorld.wgDelEdgeDetectEntity, None)
+print 'edge: invalid', expect_type_error(BigWorld.wgAddEdgeDetectEntity, own_vehicle, -1)
+BigWorld.wgDelEdgeDetectEntity(own_vehicle)
+BigWorld.wgDelEdgeDetectEntity(own_vehicle)
+
+# Leaving the world or replacing the model drops the stale key; no draw follows.
+host.setEntity(vehicles[1][1], 0, 0)
+host.setEntity(vehicles[0][1], 1, 0, 'allyReloaded')
+check(host.drawEdges(), True)
+check(host.calls(), [])
+vehicles[0][0].deactivate()
+vehicles[1][0].deactivate()
+
+# More than four colours warn and are kept; the transfer receives four.
+result, text = warnings_of(BigWorld.wgSetEdgeDetectColors, [(0.5, 0.5, 0.5, 1)] * 5)
+check((result, text.count('Using the first three items.')), (None, 1))
+BigWorld.wgAddEdgeDetectEntity(own_vehicle, 2)
+check(host.drawEdges(), True)
+check(host.calls(), frame(member_calls('0,0,1,0', 0, 0, 'player'), '|'.join(['0.5,0.5,0.5,1'] * 4)))
+# Fewer than four: the missing transfer colours are zero.
+BigWorld.wgSetEdgeDetectColors([(1, 0, 1, 1)])
+check(host.drawEdges(), True)
+check(host.calls()[-2], 'effect.SetVectorArray:g_edgeColors:1,0,1,1|0,0,0,0|0,0,0,0|0,0,0,0')
+
+# Teardown drops members; a drawer without its target ignores additions.
+host.finalise()
+host.finalise()
+check(host.drawEdges(), True)
+host.setTargetCreates(0)
+assert host.initialise()
+host.calls()
+BigWorld.wgAddEdgeDetectEntity(own_vehicle, 1)
+check(host.drawEdges(), True)
+check(host.calls(), [])
+host.finalise()
+host.setTargetCreates(1)
+print 'edge: Account colours, selection and highlight membership reach the z-pass and transfer'

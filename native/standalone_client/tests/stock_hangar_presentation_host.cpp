@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
+#include <cstddef>
 #include <cstring>
 #include <map>
 #include <sstream>
@@ -82,12 +83,28 @@ class StringRef
 {
 public:
     StringRef(const std::string & text) : text_(text) {}
+    StringRef(const char * text) : text_(text) {}
     const std::string & str() const { return text_; }
 private:
     std::string text_;
 };
 
 struct Vector2 { Vector2(float a, float b) : x(a), y(b) {} float x, y; };
+struct Vector4
+{
+    Vector4(float a = 0.f, float b = 0.f, float c = 0.f, float d = 0.f) : x(a), y(b), z(c), w(d) {}
+    float & operator[](unsigned index) { return (&x)[index]; }
+    float x, y, z, w;
+};
+typedef Vector4 D3DXVECTOR4;
+std::string text(const Vector4 & v)
+{
+    std::ostringstream out;
+    out << v.x << ',' << v.y << ',' << v.z << ',' << v.w;
+    return out.str();
+}
+#define SUCCEEDED(hr) (((HRESULT)(hr)) >= 0)
+enum { D3DFMT_A8R8G8B8 = 21, D3DCLEAR_TARGET = 1 };
 
 // Public lib/input/input.hpp MouseEvent fields.
 class MouseEvent
@@ -127,6 +144,28 @@ struct ID3DXEffect
     {
         bound = texture ? static_cast<const char *>(texture) : "";
         record(std::string("effect.SetTexture:") + name + ":" + (texture ? bound : "NULL"));
+        return 0;
+    }
+    HRESULT SetVector(const char * name, const Vector4 * value)
+    {
+        record(std::string("effect.SetVector:") + name + ":" + text(*value));
+        return 0;
+    }
+    HRESULT SetInt(const char * name, int value)
+    {
+        record(std::string("effect.SetInt:") + name + ":" + std::to_string(value));
+        return 0;
+    }
+    HRESULT SetBool(const char * name, int value)
+    {
+        record(std::string("effect.SetBool:") + name + ":" + std::to_string(value));
+        return 0;
+    }
+    HRESULT SetVectorArray(const char * name, const Vector4 * values, unsigned count)
+    {
+        std::string list;
+        for (unsigned i = 0; i < count; ++i) list += (i ? "|" : "") + text(values[i]);
+        record(std::string("effect.SetVectorArray:") + name + ":" + list);
         return 0;
     }
 };
@@ -185,6 +224,9 @@ public:
         record("property.be:" + owner_ + ":" + value.str());
         return true;
     }
+    bool be(const Vector4 & value) { record("property.be:" + owner_ + ":" + text(value)); return true; }
+    bool be(const int & value) { record("property.be:" + owner_ + ":" + std::to_string(value)); return true; }
+    bool be(const bool & value) { record("property.be:" + owner_ + ":" + std::to_string(value)); return true; }
 private:
     std::string owner_;
 };
@@ -243,14 +285,117 @@ public:
         return true;
     }
 };
+struct Device
+{
+    HRESULT Clear(unsigned, const void *, unsigned flags, unsigned colour, float z, unsigned stencil)
+    {
+        std::ostringstream text;
+        text << "device.Clear:" << flags << ':' << colour << ':' << z << ':' << stencil;
+        record(text.str());
+        return 0;
+    }
+};
 class RenderContext
 {
 public:
     const BackBufferDesc & backBufferDesc() const { static BackBufferDesc desc = {1280, 720}; return desc; }
     FullscreenQuad & fsQuad() { static FullscreenQuad quad; return quad; }
+    Device * device() { static Device value; return &value; }
 };
 RenderContext & rc() { static RenderContext context; return context; }
+
+class RenderTarget
+{
+public:
+    explicit RenderTarget(const std::string & name) : name_(name) {}
+    bool push() { record("target.push:" + name_); return true; }
+    void pop() { record("target.pop:" + name_); }
+    void * pTexture() { return const_cast<char *>(name_.c_str()); }
+private:
+    std::string name_;
+};
+typedef Ptr<RenderTarget> RenderTargetPtr;
+bool targetCreates = true;
+bool createRenderTarget(RenderTargetPtr & target, uint width, uint height, int format, const std::string & name,
+                        bool mainZ, bool discardZ)
+{
+    std::ostringstream text;
+    text << "createRenderTarget:" << name << ':' << width << 'x' << height << ':' << format << ':' << mainZ << discardZ;
+    record(text.str());
+    target = targetCreates ? RenderTargetPtr(new RenderTarget(name)) : RenderTargetPtr();
+    return targetCreates;
 }
+
+enum ERenderingPassType { RENDERING_PASS_COLOR = 0 };
+class DrawContext
+{
+public:
+    enum ChannelMask { ALL_CHANNELS_MASK = 7 };
+    class OverrideBlock
+    {
+    public:
+        OverrideBlock(const StringRef & prefix, bool)
+        {
+            record("OverrideBlock:" + prefix.str());
+            for (int index = 0; index < 2; ++index)
+            {
+                EffectMaterial * material = effectLoads ?
+                    new EffectMaterial(prefix.str() + (index ? "_skinned.fx" : ".fx")) : NULL;
+                materials_[index] = material ? new ComplexEffectMaterial(material) : NULL;
+            }
+        }
+        ComplexEffectMaterial * stockMaterial(bool skinned) const { return materials_[skinned]; }
+    private:
+        ComplexEffectMaterial * materials_[2];
+    };
+    explicit DrawContext(ERenderingPassType) : override_(NULL) {}
+    void begin(unsigned mask) { record("context.begin:" + std::to_string(mask)); }
+    void end(unsigned mask) { record("context.end:" + std::to_string(mask)); }
+    void flush(unsigned mask) { record("context.flush:" + std::to_string(mask)); }
+    void pushImmediateMode() { record("context.pushImmediateMode"); }
+    void popImmediateMode() { record("context.popImmediateMode"); }
+    void pushOverrideBlock(OverrideBlock * block) { override_ = block; record("context.pushOverrideBlock"); }
+    void popOverrideBlock(OverrideBlock * block) { assert(override_ == block); override_ = NULL; record("context.popOverrideBlock"); }
+    OverrideBlock * override_;
+};
+}
+
+// lib/space IEntityEmbodiment and client Entity/PyEntity.
+class IEntityEmbodiment
+{
+public:
+    explicit IEntityEmbodiment(const std::string & name) : name_(name) {}
+    void draw(Moo::DrawContext & context)
+    {
+        record("embodiment.draw:" + name_ + (context.override_ ? ":override" : ":plain"));
+    }
+private:
+    std::string name_;
+};
+typedef Ptr<IEntityEmbodiment> IEntityEmbodimentPtr;
+typedef std::vector<IEntityEmbodimentPtr> EntityEmbodiments;
+
+class Entity
+{
+public:
+    Entity() : primary_(NULL), inWorld_(true), destroyed_(false) {}
+    IEntityEmbodiment * pPrimaryEmbodiment() const { return primary_; }
+    EntityEmbodiments & auxiliaryEmbodiments() { return auxiliary_; }
+    bool isInWorld() const { return inWorld_; }
+    bool isDestroyed() const { return destroyed_; }
+    IEntityEmbodiment * primary_;
+    EntityEmbodiments auxiliary_;
+    bool inWorld_, destroyed_;
+};
+typedef Ptr<Entity> EntityPtr;
+struct PyEntity : PyObject
+{
+    PyObject * dict;  // Script attributes such as ClientSelectableObject's own state.
+    Entity * entity;
+    EntityPtr pEntity() const { return EntityPtr(entity); }
+};
+typedef Ptr<PyEntity> PyEntityPtr;
+PyTypeObject pyEntityType = { PyVarObject_HEAD_INIT(&PyType_Type, 0) "PyEntity", sizeof(PyEntity) };
 
 // lib/model: gatherMaterials("*") over each model of the parent chain.
 class Model
@@ -305,6 +450,55 @@ int setData(PyObject * pObject, PyModelPtr & rModel, const char * varName = "")
         return -1;
     }
     rModel = PyModelPtr(static_cast<PyModel *>(pObject));
+    return 0;
+}
+int setData(PyObject * pObject, PyEntityPtr & rEntity, const char * varName = "")
+{
+    if (pObject == Py_None) { rEntity = PyEntityPtr(); return 0; }
+    if (Py_TYPE(pObject) != &pyEntityType)
+    {
+        PyErr_Format(PyExc_TypeError, "%s must be set to an Entity", varName);
+        return -1;
+    }
+    rEntity = PyEntityPtr(static_cast<PyEntity *>(pObject));
+    return 0;
+}
+// Public INT_ACCESSOR( uint, int64 ) over the int64 conversion.
+int setData(PyObject * pObject, uint & rInt, const char * varName = "")
+{
+    long long value = PyInt_Check(pObject) ? PyInt_AsLong(pObject) : -1;
+    if (!PyInt_Check(pObject))
+    {
+        PyErr_Format(PyExc_TypeError, "%s must be set to an int", varName);
+        return -1;
+    }
+    rInt = uint(value);
+    if (rInt != value)
+    {
+        PyErr_SetString(PyExc_TypeError, "Integer is out of range");
+        return -1;
+    }
+    return 0;
+}
+// setDataSequence of Vector4: a sequence of four-number sequences.
+int setData(PyObject * pObject, std::vector<Vector4> & rColors, const char * varName = "")
+{
+    if (!PySequence_Check(pObject))
+    {
+        PyErr_Format(PyExc_TypeError, "%s must be a sequence", varName);
+        return -1;
+    }
+    std::vector<Vector4> result;
+    for (Py_ssize_t i = 0; i < PySequence_Size(pObject); ++i)
+    {
+        PyObject * item = PySequence_GetItem(pObject, i);
+        Vector4 value;
+        const int ok = PyArg_ParseTuple(item, "ffff", &value.x, &value.y, &value.z, &value.w);
+        Py_DECREF(item);
+        if (!ok) return -1;
+        result.push_back(value);
+    }
+    rColors = result;
     return 0;
 }
 template <class T> PyObject * getRetData(const T & data) { return getData(data); }
@@ -385,7 +579,54 @@ PyObject * makeModel(PyObject *, PyObject * args)
     return object;
 }
 
+PyObject * setTargetCreates(PyObject *, PyObject * args)
+{
+    int creates;
+    if (!PyArg_ParseTuple(args, "i", &creates)) return NULL;
+    BW::Moo::targetCreates = creates != 0;
+    Py_RETURN_NONE;
+}
+
+PyObject * drawEdges(PyObject *, PyObject *) { return PyBool_FromLong(BW::drawStockEdgeDetection()); }
+
+// makeEntity(primary, auxiliaries...): a PyEntity with named embodiments.
+PyObject * makeEntity(PyObject *, PyObject * args)
+{
+    BW::Entity * entity = new BW::Entity;
+    for (Py_ssize_t i = 0; i < PyTuple_Size(args); ++i)
+    {
+        const char * name = PyString_AsString(PyTuple_GetItem(args, i));
+        if (!name) return NULL;
+        BW::IEntityEmbodiment * embodiment = new BW::IEntityEmbodiment(name);
+        if (i == 0) entity->primary_ = embodiment;
+        else entity->auxiliary_.push_back(BW::IEntityEmbodimentPtr(embodiment));
+    }
+    BW::PyEntity * object = PyObject_New(BW::PyEntity, &BW::pyEntityType);
+    object->dict = NULL;
+    object->entity = entity;
+    return object;
+}
+
+// setEntity(entity, inWorld, destroyed[, newPrimary]).
+PyObject * setEntity(PyObject *, PyObject * args)
+{
+    PyObject * object;
+    int inWorld, destroyed;
+    const char * primary = NULL;
+    if (!PyArg_ParseTuple(args, "O!ii|s", &BW::pyEntityType, &object, &inWorld, &destroyed, &primary))
+        return NULL;
+    BW::Entity * entity = static_cast<BW::PyEntity *>(object)->entity;
+    entity->inWorld_ = inWorld != 0;
+    entity->destroyed_ = destroyed != 0;
+    if (primary) entity->primary_ = new BW::IEntityEmbodiment(primary);
+    Py_RETURN_NONE;
+}
+
 PyMethodDef hostMethods[] = {
+    {"setTargetCreates", setTargetCreates, METH_VARARGS, NULL},
+    {"drawEdges", drawEdges, METH_NOARGS, NULL},
+    {"makeEntity", makeEntity, METH_VARARGS, NULL},
+    {"setEntity", setEntity, METH_VARARGS, NULL},
     {"calls", calls, METH_NOARGS, NULL},
     {"setGUI", setGUI, METH_VARARGS, NULL},
     {"setEffectLoads", setEffectLoads, METH_VARARGS, NULL},
@@ -401,6 +642,13 @@ int main(int argc, char ** argv)
     assert(argc >= 2);
     Py_Initialize();
     BW::pyModelType.tp_flags = Py_TPFLAGS_DEFAULT;
+    BW::pyEntityType.tp_flags = Py_TPFLAGS_DEFAULT;
+    static BW::PyEntity probe;
+    BW::pyEntityType.tp_dictoffset = reinterpret_cast<char *>(&probe.dict) -
+        reinterpret_cast<char *>(static_cast<PyObject *>(&probe));
+    BW::pyEntityType.tp_getattro = PyObject_GenericGetAttr;
+    BW::pyEntityType.tp_setattro = PyObject_GenericSetAttr;
+    assert(PyType_Ready(&BW::pyEntityType) == 0);
     assert(PyType_Ready(&BW::pyModelType) == 0);
     static std::map<std::string, std::vector<PyMethodDef> > modules;
     for (const BW::HostLink & link : BW::hostLinks())
