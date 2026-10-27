@@ -38,6 +38,8 @@ class ClosestMatKind : public CollisionCallback
 {
 public:
     wot::StockTerrainMatKindHit hit;
+    // ClosestCcbNative vtable 0174d070 slot 1 (00bce4c0): highest terrain LOD.
+    virtual bool useHighestAvailableLod() { return true; }
     virtual int operator()( const CollisionObstacle &, const WorldTriangle & triangle, float distance )
     {
         // f64630's WGMaterialDisabler branch cannot occur before that real type exists.

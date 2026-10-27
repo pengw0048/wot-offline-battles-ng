@@ -275,6 +275,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-audio-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_visuals.py"),
         $EngineRoot) "stock-vehicle-visuals-patch.log"
+    # Ticks BigWorld.PyBallisticsSimulator tracer owners once per world frame.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ballistics.py"),
+        $EngineRoot) "stock-ballistics-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_effect_owners.py"),
         $EngineRoot) "stock-effect-owners-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_startup_services.py"),
@@ -300,6 +303,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-lifecycle-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_sounds.py"),
         $EngineRoot) "stock-space-sounds-patch.log"
+    # Edits the ClientSpace::clear body the two space patchers above changed.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_geometry_retirement.py"),
+        $EngineRoot) "stock-geometry-retirement-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_display_modes.py"),
         $EngineRoot) "stock-display-modes-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings_consumers.py"),
@@ -314,6 +320,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-tps-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ground_effects.py"),
         $EngineRoot) "stock-ground-effects-patch.log"
+    # Declares the alpha-aware Water query beside the ground-effects one above.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_battle_scene_queries.py"),
+        $EngineRoot) "stock-battle-scene-queries-patch.log"
     # Requires the ground-effects Water query and Python teardown owner above.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_cursor_camera.py"),
         $EngineRoot) "stock-cursor-camera-patch.log"

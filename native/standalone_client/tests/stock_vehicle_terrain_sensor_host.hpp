@@ -286,6 +286,7 @@ const int COLLIDE_ALL = 3;
 class CollisionCallback {
 public:
     virtual ~CollisionCallback() {}
+    virtual bool useHighestAvailableLod() { return false; }
     virtual int operator()(const CollisionObstacle &, const WorldTriangle &, float) = 0;
 };
 struct HostTriangle { uint32 flags; float distance; };
@@ -299,6 +300,8 @@ struct ClientSpace {
     SpaceID id() const { return id_; }
     float collide(const Vector3 & s, const Vector3 & e, CollisionCallback & cc) {
         HostSegment segment{id_, {{s.x, s.y, s.z}}, {{e.x, e.y, e.z}}, {}};
+        // f642b0's ClosestCcbNative asks terrain for its highest LOD.
+        assert(cc.useHighestAvailableLod());
         if (!script.empty()) {
             CollisionObstacle obstacle;
             for (const HostTriangle & t : script[cursor++ % script.size()])

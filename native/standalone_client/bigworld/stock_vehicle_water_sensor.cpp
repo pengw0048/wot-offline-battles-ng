@@ -52,6 +52,8 @@ class HeavySplashHit : public CollisionCallback
 {
 public:
     bool found = false;
+    // ClosestCcbNative vtable 0174d070 slot 1 (00bce4c0): highest terrain LOD.
+    virtual bool useHighestAvailableLod() { return true; }
     virtual int operator()( const CollisionObstacle &, const WorldTriangle & triangle, float )
     {
         // ClosestCcbNative f62400 with collideSegment flags 0x82. Its
