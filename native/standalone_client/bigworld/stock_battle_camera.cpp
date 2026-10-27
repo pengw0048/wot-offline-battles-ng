@@ -134,9 +134,11 @@ void ThirdPersonProvider::update( bool collide )
         dirty_ = false;
     }
 
+    // A provider can re-enter Python and replace base_ while it answers.
+    const MatrixProviderPtr provider = base_;
     Matrix base = Matrix::identity;
-    if (base_)
-        base_->matrix( base );
+    if (provider)
+        provider->matrix( base );
     idealMatrix_ = local_;
     matrix_ = local_;
     const Vector3 height( 0.f, heightAboveBase_, 0.f );
@@ -326,18 +328,22 @@ void HomingCamera::update( float dTime )
     // restored, as for CursorCamera.
     SpeedTreeTargetedCamera::update( dTime );
 
+    // Providers can re-enter Python; hold the ones this update samples.
+    const Vector4ProviderPtr cameraProvider = cameraPositionProvider_;
+    const Vector4ProviderPtr aimProvider = aimPointProvider_;
+    const Vector4ProviderPtr pivotProvider = pivotPositionProvider_;
     Vector4 value;
     Vector3 position( 0.f, 0.f, 0.f );
-    if (cameraPositionProvider_)
+    if (cameraProvider)
     {
-        cameraPositionProvider_->output( value );
+        cameraProvider->output( value );
         position = Vector3( value.x, value.y, value.z );
     }
     // #1513 reads an uninitialised aim without a provider; aim at the camera.
     Vector3 aim = position;
-    if (aimPointProvider_)
+    if (aimProvider)
     {
-        aimPointProvider_->output( value );
+        aimProvider->output( value );
         aim = Vector3( value.x, value.y, value.z );
     }
     const float dx = aim.x - position.x;
@@ -367,9 +373,9 @@ void HomingCamera::update( float dTime )
     D3DXMatrixMultiply( &view_, &view_, &rotation );
     D3DXMatrixInverse( &invView_, NULL, &view_ );
 
-    if (!pivotPositionProvider_)
+    if (!pivotProvider)
         return;
-    pivotPositionProvider_->output( value );
+    pivotProvider->output( value );
     const Vector3 pivot( value.x, value.y, value.z );
     const Vector3 forward( invView_.m[2][0], invView_.m[2][1], invView_.m[2][2] );
     Vector3 moved = position;

@@ -789,7 +789,9 @@ bool StockCameraCollider::collideDynamic( Vector3 & position,
     const Vector3 nearPlane = camera.nearPlanePoint( 1.f, 1.f );
     const float halfWidth = nearPlane.x * 1.5f;
     const float halfHeight = nearPlane.y * 1.5f;
-    for (const StockCameraDynamicCollider & collider : dynamic_)
+    // Providers and links can re-enter Python and replace the list.
+    const BW::vector< StockCameraDynamicCollider > colliders = dynamic_;
+    for (const StockCameraDynamicCollider & collider : colliders)
     {
         // #1513 dereferences missing providers and links; skip them instead.
         if (!collider.node || !collider.bounds || !collider.geometry)

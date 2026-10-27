@@ -86,6 +86,8 @@ struct SpeedTreeTargetedCamera
 	void update( float ) { std::printf( " speedtree" ); }
 };
 
+typedef std::shared_ptr< HostVector4Provider > Vector4ProviderPtr;
+
 struct HomingCamera : SpeedTreeTargetedCamera
 {
 	std::shared_ptr< HostVector4Provider > pivotPositionProvider_, cameraPositionProvider_,
