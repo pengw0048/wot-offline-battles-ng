@@ -1489,8 +1489,22 @@ class _CompatBigWorld(object):
         entity_id = self._next_entity
         self._next_entity += 1
         self.entity_spaces[entity_id] = space_id
-        self.entities[entity_id] = self.account_type()
+        entity = self.account_type()
+        entity.spaceID = space_id
+        self.entities[entity_id] = entity
         return entity_id
+
+    def destroyEntity(self, entity_id):
+        # Public/#1513 destroyEntity: one client-only entity; a destroyed
+        # player is cleared without onBecomeNonPlayer.
+        if entity_id not in self.entities:
+            raise ValueError('Unknown entity id')
+        self.operations.append(('destroy_entity', entity_id))
+        self.entity_spaces.pop(entity_id, None)
+        entity = self.entities.pop(entity_id)
+        if entity is self._player:
+            self._player = None
+        entity.__dict__.clear()
 
     def isClientSpace(self, space_id):
         return space_id in self.client_spaces
@@ -5333,44 +5347,90 @@ class OfflineCompatibilityTests(unittest.TestCase):
         self.assertFalse(compatibility._fake_connected)
         compatibility.fini()
 
-    def _account_transaction(self, become_player=None):
+    def _account_transaction(self, become_player=None, become_non_player=None):
         compatibility_module = _load_port_source('compat')
         runtime, operations = self._runtime()
-        account_type = runtime.account_module.PlayerAccount
+        module = runtime.account_module
+        account_type = module.PlayerAccount
+        bigworld = runtime.bigworld
         if become_player is not None:
             # Replace the stock method before install() wraps it.
             stock_become_player = account_type.onBecomePlayer
             account_type.onBecomePlayer = (
                 lambda account: become_player(stock_become_player, account))
+        if become_non_player is not None:
+            stock_become_non_player = account_type.onBecomeNonPlayer
+            account_type.onBecomeNonPlayer = (
+                lambda account: become_non_player(stock_become_non_player,
+                                                  account))
+        closed = []
+
+        def delete_repository():
+            # Exact #1513 _delAccountRepository closes whichever is current.
+            current = module.g_accountRepository
+            if current is None:
+                return
+            closed.append(current)
+            module.g_accountRepository = None
+
+        stock_init = account_type.__init__
+
+        def init_with_repository(account):
+            # Exact PlayerAccount.__init__ L90-L101: replace a repository of
+            # another class, create one if none, otherwise reuse it.
+            class_name = type(account).__name__
+            current = module.g_accountRepository
+            if (current is not None and
+                    getattr(current, 'className', None) != class_name):
+                module._delAccountRepository()
+            if module.g_accountRepository is None:
+                module.g_accountRepository = self._repository(class_name)
+            stock_init(account)
+
+        account_type.__init__ = init_with_repository
+        module._delAccountRepository = delete_repository
+        module.g_accountRepository = None
         compatibility = compatibility_module.OfflineCompatibility(runtime)
         compatibility.install()
         compatibility._fake_connected = True
         compatibility._show_lobby = True
-        bigworld = runtime.bigworld
         bigworld.native_become_player = True
         unrelated = bigworld.createSpace()
-        deleted = []
+        return compatibility, runtime, operations, unrelated, closed
 
-        def delete_repository():
-            deleted.append(True)
-            runtime.account_module.g_accountRepository = None
+    @staticmethod
+    def _repository(class_name):
+        return types.SimpleNamespace(
+            className=class_name,
+            syncData=types.SimpleNamespace(
+                _AccountSyncData__persistentCache=types.SimpleNamespace(
+                    setAccount=lambda account: None)))
 
-        runtime.account_module._delAccountRepository = delete_repository
-        return compatibility, runtime, operations, unrelated, deleted
+    def _replacement(self, runtime, space_id=None):
+        """Create and promote another Account, as a callback could."""
+        bigworld = runtime.bigworld
+        if space_id is None:
+            space_id = bigworld.createSpace()
+        entity_id = bigworld.createEntity(
+            'Account', space_id, 0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), {})
+        replacement = bigworld.entities[entity_id]
+        bigworld._player = replacement
+        return space_id, replacement
 
-    def _assert_failed_account_released(self, runtime, operations, unrelated,
-                                        deleted):
+    def _assert_failed_account_released(self, runtime, operations, unrelated):
         bigworld = runtime.bigworld
         self.assertIsNone(bigworld.player())
         self.assertEqual({}, bigworld.entities)
         self.assertEqual({unrelated}, bigworld.client_spaces)
         self.assertNotIn(('clear_all_spaces',), operations)
         self.assertIsNone(runtime.chat_manager.playerProxy)
-        self.assertEqual([True], deleted)
 
     def test_failed_account_before_space_releases_nothing(self):
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction()
+        module = runtime.account_module
+        existing = self._repository('PlayerAccount')
+        module.g_accountRepository = existing
 
         def fail_space():
             raise RuntimeError('createSpace failed')
@@ -5378,12 +5438,15 @@ class OfflineCompatibilityTests(unittest.TestCase):
         runtime.bigworld.createSpace = fail_space
         with self.assertRaisesRegex(RuntimeError, 'createSpace failed'):
             compatibility._create_account_player()
-        self._assert_failed_account_released(
-            runtime, operations, unrelated, deleted)
+        self._assert_failed_account_released(runtime, operations, unrelated)
         self.assertNotIn('release_space', [item[0] for item in operations])
+        # The repository existed before the attempt; it is not this one's.
+        self.assertIs(existing, module.g_accountRepository)
+        self.assertEqual([], closed)
+        self.assertFalse(compatibility._connecting)
 
     def test_failed_account_entity_releases_its_new_space(self):
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction()
 
         def fail_entity(*unused_args):
@@ -5393,41 +5456,50 @@ class OfflineCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,
                                     'native Account creation failed'):
             compatibility._create_account_player()
-        self._assert_failed_account_released(
-            runtime, operations, unrelated, deleted)
+        self._assert_failed_account_released(runtime, operations, unrelated)
         self.assertIn(('release_space', unrelated + 1), operations)
+        self.assertEqual([], closed)
 
     def test_swallowed_account_constructor_failure_releases_its_entity(self):
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction()
-        account_type = runtime.account_module.PlayerAccount
-        native_create = runtime.bigworld.createEntity
+        module = runtime.account_module
+        account_type = module.PlayerAccount
+        bigworld = runtime.bigworld
+        repository_init = compatibility._original_account_init
 
-        def fail_native_init(account):
+        def fail_after_repository(account):
+            repository_init(account)
             raise RuntimeError('native Account init failed')
 
-        def swallow_create_error(*args):
-            account_type.__init__ = fail_native_init
+        def create_entity(unused_type, space_id, *unused_args):
+            # Native creation publishes the entity and prints the error.
+            entity_id = bigworld._next_entity
+            bigworld._next_entity += 1
+            entity = account_type.__new__(account_type)
+            entity.spaceID = space_id
+            bigworld.entity_spaces[entity_id] = space_id
+            bigworld.entities[entity_id] = entity
             try:
-                return native_create(*args)
+                account_type.__init__(entity)
             except RuntimeError:
-                # Native creation publishes the entity and prints the error.
-                entity_id = runtime.bigworld._next_entity
-                runtime.bigworld._next_entity += 1
-                runtime.bigworld.entity_spaces[entity_id] = args[1]
-                runtime.bigworld.entities[entity_id] = \
-                    account_type.__new__(account_type)
-                return entity_id
+                pass
+            return entity_id
 
-        runtime.bigworld.createEntity = swallow_create_error
+        compatibility._original_account_init = fail_after_repository
+        bigworld.createEntity = create_entity
         with self.assertRaisesRegex(RuntimeError, 'partial offline Account'):
             compatibility._create_account_player()
-        self._assert_failed_account_released(
-            runtime, operations, unrelated, deleted)
+        self.assertIsNone(bigworld.player())
+        self.assertEqual({}, bigworld.entities)
+        self.assertEqual({unrelated}, bigworld.client_spaces)
         self.assertNotIn('player', [item[0] for item in operations])
+        # The constructor published the repository before failing.
+        self.assertEqual(1, len(closed))
+        self.assertIsNone(module.g_accountRepository)
 
     def test_failed_player_promotion_releases_the_unpromoted_account(self):
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction()
 
         def fail_player(*unused_args):
@@ -5440,56 +5512,160 @@ class OfflineCompatibilityTests(unittest.TestCase):
         self.assertEqual({unrelated}, runtime.bigworld.client_spaces)
         self.assertNotIn('original_account_become_non_player',
                          [item[0] for item in operations])
-        self.assertEqual([True], deleted)
+        self.assertEqual(1, len(closed))
 
     def test_missing_ready_flag_retires_before_releasing_once(self):
         def partial_become_player(stock_become_player, account):
             stock_become_player(account)
             raise RuntimeError('stock Account promotion failed')
 
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction(partial_become_player)
         with self.assertRaisesRegex(RuntimeError, 'did not promote'):
             compatibility._create_account_player()
-        self._assert_failed_account_released(
-            runtime, operations, unrelated, deleted)
+        self._assert_failed_account_released(runtime, operations, unrelated)
         names = [item[0] for item in operations]
         self.assertEqual(1, names.count('original_account_become_non_player'))
         self.assertLess(names.index('original_account_become_non_player'),
                         names.index('release_space'))
+        self.assertEqual(1, len(closed))
+        self.assertIsNone(runtime.account_module.g_accountRepository)
 
         # Repeated cleanup of the same failed transaction is harmless.
-        compatibility._discard_partial_account(unrelated + 1, None)
+        compatibility._discard_partial_account({'space_id': unrelated + 1})
         self.assertEqual(1, names.count('release_space'))
         self.assertEqual({unrelated}, runtime.bigworld.client_spaces)
+        self.assertEqual(1, len(closed))
 
-    def test_failed_account_keeps_a_callback_created_replacement(self):
-        replacement = []
-
-        def replace_player(unused_stock_become_player, account):
-            account_type = type(account)
-            space_id = bigworld.createSpace()
-            entity_id = bigworld._next_entity
-            bigworld._next_entity += 1
-            other = account_type.__new__(account_type)
-            bigworld.entity_spaces[entity_id] = space_id
-            bigworld.entities[entity_id] = other
-            bigworld._player = other
-            replacement.extend((space_id, other))
-            raise RuntimeError('player replaced during promotion')
-
-        compatibility, runtime, operations, unrelated, deleted = \
-            self._account_transaction(replace_player)
+    def _assert_replacement_kept(self, runtime, operations, replacement,
+                                 space_id, unrelated, repository):
         bigworld = runtime.bigworld
+        self.assertIs(replacement, bigworld.player())
+        self.assertEqual([replacement], list(bigworld.entities.values()))
+        self.assertTrue(bigworld.isClientSpace(space_id))
+        self.assertTrue(bigworld.isClientSpace(unrelated))
+        self.assertIs(repository, runtime.account_module.g_accountRepository)
+
+    def test_failed_account_keeps_a_promotion_replacement(self):
+        for same_space in (False, True):
+            state = {}
+
+            def replace_player(unused_stock_become_player, account):
+                bigworld = state['runtime'].bigworld
+                target = account.spaceID if same_space else None
+                state['space'], state['replacement'] = self._replacement(
+                    state['runtime'], target)
+                raise RuntimeError('player replaced during promotion')
+
+            compatibility, runtime, operations, unrelated, closed = \
+                self._account_transaction(replace_player)
+            state['runtime'] = runtime
+            with self.assertRaisesRegex(RuntimeError, 'did not promote'):
+                compatibility._create_account_player()
+            repository = runtime.account_module.g_accountRepository
+            self.assertIsNotNone(repository)
+            self._assert_replacement_kept(
+                runtime, operations, state['replacement'], state['space'],
+                unrelated, repository)
+            self.assertEqual([], closed)
+            if same_space:
+                # Only this attempt's Account is destroyed; the shared space
+                # now belongs to the replacement.
+                self.assertNotIn('release_space',
+                                 [item[0] for item in operations])
+                self.assertIn('destroy_entity',
+                              [item[0] for item in operations])
+            else:
+                self.assertIn(('release_space', unrelated + 1), operations)
+            self.assertFalse(compatibility._connecting)
+
+    def test_failed_account_keeps_a_retirement_replacement(self):
+        for same_space in (False, True):
+            state = {}
+
+            def fail_promotion(stock_become_player, account):
+                stock_become_player(account)
+                raise RuntimeError('stock Account promotion failed')
+
+            def replace_on_retire(stock_become_non_player, account):
+                target = account.spaceID if same_space else None
+                stock_become_non_player(account)
+                if 'replacement' not in state:
+                    state['space'], state['replacement'] = \
+                        self._replacement(state['runtime'], target)
+
+            compatibility, runtime, operations, unrelated, closed = \
+                self._account_transaction(fail_promotion, replace_on_retire)
+            state['runtime'] = runtime
+            with self.assertRaisesRegex(RuntimeError, 'did not promote'):
+                compatibility._create_account_player()
+            self._assert_replacement_kept(
+                runtime, operations, state['replacement'], state['space'],
+                unrelated, runtime.account_module.g_accountRepository)
+            self.assertIsNotNone(runtime.account_module.g_accountRepository)
+            self.assertEqual([], closed)
+
+    def test_failed_account_keeps_a_repository_published_by_cleanup(self):
+        state = {}
+
+        def fail_promotion(stock_become_player, account):
+            stock_become_player(account)
+            raise RuntimeError('stock Account promotion failed')
+
+        def publish_on_retire(stock_become_non_player, account):
+            stock_become_non_player(account)
+            state['repository'] = self._repository('Other')
+            state['runtime'].account_module.g_accountRepository = \
+                state['repository']
+
+        compatibility, runtime, operations, unrelated, closed = \
+            self._account_transaction(fail_promotion, publish_on_retire)
+        state['runtime'] = runtime
         with self.assertRaisesRegex(RuntimeError, 'did not promote'):
             compatibility._create_account_player()
-        space_id, other = replacement
-        self.assertIs(other, bigworld.player())
-        self.assertEqual([other], list(bigworld.entities.values()))
-        self.assertEqual({unrelated, space_id}, bigworld.client_spaces)
-        self.assertNotIn('original_account_become_non_player',
-                         [item[0] for item in operations])
-        self.assertIn(('release_space', unrelated + 1), operations)
+        self.assertIs(state['repository'],
+                      runtime.account_module.g_accountRepository)
+        self.assertEqual([], closed)
+        self.assertEqual({}, runtime.bigworld.entities)
+
+    def test_failed_account_keeps_a_reused_pre_existing_repository(self):
+        def fail_promotion(stock_become_player, account):
+            stock_become_player(account)
+            raise RuntimeError('stock Account promotion failed')
+
+        compatibility, runtime, operations, unrelated, closed = \
+            self._account_transaction(fail_promotion)
+        module = runtime.account_module
+        shared = self._repository('PlayerAccount')
+        module.g_accountRepository = shared
+        with self.assertRaisesRegex(RuntimeError, 'did not promote'):
+            compatibility._create_account_player()
+        # The constructor reused the existing repository; it is not owned.
+        self.assertIs(shared, module.g_accountRepository)
+        self.assertEqual([], closed)
+        self.assertEqual({}, runtime.bigworld.entities)
+
+    def test_failed_account_cleanup_error_keeps_the_original_failure(self):
+        compatibility, runtime, operations, unrelated, closed = \
+            self._account_transaction()
+        module = runtime.account_module
+        published = []
+
+        def fail_delete():
+            published.append(self._repository('Other'))
+            module.g_accountRepository = published[0]
+            raise ValueError('cleanup failed')
+
+        def fail_player(*unused_args):
+            raise TypeError('original promotion error')
+
+        module._delAccountRepository = fail_delete
+        runtime.bigworld.player = fail_player
+        with self.assertRaisesRegex(TypeError, 'original promotion error'):
+            compatibility._create_account_player()
+        self.assertIs(published[0], module.g_accountRepository)
+        self.assertFalse(compatibility._connecting)
+        self.assertEqual({}, runtime.bigworld.entities)
 
     def test_failed_account_transaction_allows_a_later_retry(self):
         attempts = [0]
@@ -5500,16 +5676,25 @@ class OfflineCompatibilityTests(unittest.TestCase):
             if attempts[0] == 1:
                 raise RuntimeError('first promotion failed')
 
-        compatibility, runtime, operations, unrelated, deleted = \
+        compatibility, runtime, operations, unrelated, closed = \
             self._account_transaction(fail_first)
         with self.assertRaisesRegex(RuntimeError, 'did not promote'):
             compatibility._create_account_player()
         account = compatibility._create_account_player()
         bigworld = runtime.bigworld
+        repository = runtime.account_module.g_accountRepository
         self.assertIs(account, bigworld.player())
         self.assertEqual([account], list(bigworld.entities.values()))
         self.assertEqual({unrelated, unrelated + 2}, bigworld.client_spaces)
-        self.assertEqual([True], deleted)
+        self.assertEqual(1, len(closed))
+        # A stale cleanup of the first attempt touches nothing it no longer owns.
+        compatibility._discard_partial_account({
+            'space_id': unrelated + 1, 'account_id': 1,
+            'repository': closed[0]})
+        self.assertIs(account, bigworld.player())
+        self.assertIs(repository, runtime.account_module.g_accountRepository)
+        self.assertEqual({unrelated, unrelated + 2}, bigworld.client_spaces)
+        self.assertEqual(1, len(closed))
 
     def test_logged_on_listener_failure_rolls_back_entire_connection(self):
         compatibility_module = _load_port_source('compat')
@@ -5592,7 +5777,9 @@ class OfflineCompatibilityTests(unittest.TestCase):
         self.assertNotIn('show_gui', names)
         self.assertIsNone(runtime.bigworld.player())
         self.assertEqual({}, runtime.bigworld.entities)
-        self.assertEqual([True, True], deleted)
+        # The repository predates the attempt, so only the fake disconnect
+        # deletes it.
+        self.assertEqual([True], deleted)
         self.assertFalse(compatibility._fake_connected)
         compatibility.fini()
 

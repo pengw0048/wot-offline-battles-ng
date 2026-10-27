@@ -104,6 +104,7 @@ struct BWConnection
         if(!keepLocalEntities)destroyEntities();
     }
     void destroyEntities();
+    bool destroyLocalEntity(int entityID);
     struct Entity* createLocalEntity(int,SpaceID,int,const struct Position3D&,const struct Direction3D&,struct MemoryOStream&);
     void update(float){++updates;if(onUpdate)onUpdate();}
     void updateServer(){++sends;}
@@ -155,6 +156,7 @@ struct ConnectionControl
     SpaceID nextLocalSpaceID();SpaceID createLocalSpace();double gameTime()const;void fini();
     unsigned stockClientSpacesClosedAt_=~0u;
     BWConnection* pConnection()const{return pConnection_;}BWConnection* pSpaceConnection(SpaceID)const;
+    struct Entity* findEntity(int entityID)const;
     void legacyClearSpaces();void destroyMainConnection();
 };
 struct SpaceManager
@@ -294,12 +296,13 @@ struct Entity
     {
         void insert(Entity* entity);void erase(Entity* entity);
     };
-    EntityID id_;EntityType* type_;BWConnection* owner_;PyEntityPtr pPyEntity_;bool destroyed_=false;
+    EntityID id_;EntityType* type_;SpaceID spaceID_;PyEntityPtr pPyEntity_;bool destroyed_=false;
     static Census census_;
     const EntityType& type()const{return *type_;}
     PyEntityPtr pPyEntity()const{return pPyEntity_;}
     bool isDestroyed()const{return destroyed_;}
     EntityID entityID()const{return id_;}
+    SpaceID spaceID()const{return spaceID_;}
     EntitySpace* pSpace()const{return NULL;}
     void abortLoadingPrerequisites(){}
     void onDestroyed();
@@ -341,13 +344,13 @@ static PyObject* createPlayerEntity(const string&,const Position3D&,const Vector
 static void deallocEntity(PyObject* object)
 {delete static_cast<PyEntity*>(object)->pEntity_;Py_TYPE(object)->tp_free(object);}
 // Entity creation and destruction in a connection: fixture, not engine code.
-Entity* BWConnection::createLocalEntity(int typeIndex,SpaceID,int,const Position3D&,const Direction3D&,MemoryOStream&)
+Entity* BWConnection::createLocalEntity(int typeIndex,SpaceID spaceID,int,const Position3D&,const Direction3D&,MemoryOStream&)
 {
     static EntityID nextEntity=500;
     EntityType* type=EntityType::all()[typeIndex];
     PyObject* object=type->class_->tp_alloc(type->class_,0);
     if(!object)return NULL;
-    auto* entity=new Entity{nextEntity++,type,this,PyEntityPtr()};
+    auto* entity=new Entity{nextEntity++,type,spaceID,PyEntityPtr()};
     static_cast<PyEntity*>(object)->pEntity_=entity;
     entity->pPyEntity_=PyEntityPtr(static_cast<PyEntity*>(object));Py_DECREF(object);
     live.push_back(entity);Entity::census_.insert(entity);
@@ -355,20 +358,39 @@ Entity* BWConnection::createLocalEntity(int typeIndex,SpaceID,int,const Position
     Script::call(PyObject_GetAttrString(object,"__init__"),PyTuple_New(0),"Entity::__init__: ",false);
     return entity;
 }
+static void destroyLive(std::vector<Entity*>& live,Entity* entity)
+{
+    if(std::find(live.begin(),live.end(),entity)==live.end())return;
+    Script::call(PyObject_GetAttrString(entity->pPyEntity_.get(),"onLeaveWorld"),PyTuple_New(0),
+        "Entity::onLeaveWorld: ",true);
+    if(std::find(live.begin(),live.end(),entity)==live.end())return;
+    live.erase(std::find(live.begin(),live.end(),entity));
+    // BWEntity::destroy marks the entity destroyed before onDestroyed.
+    entity->destroyed_=true;entity->onDestroyed();
+}
 void BWConnection::destroyEntities()
 {
     const std::vector<Entity*> snapshot=live;
-    for(Entity* entity:snapshot)
-    {
-        if(std::find(live.begin(),live.end(),entity)==live.end())continue;
-        Script::call(PyObject_GetAttrString(entity->pPyEntity_.get(),"onLeaveWorld"),PyTuple_New(0),
-            "Entity::onLeaveWorld: ",true);
-        if(std::find(live.begin(),live.end(),entity)==live.end())continue;
-        live.erase(std::find(live.begin(),live.end(),entity));
-        // BWEntity::destroy marks the entity destroyed before onDestroyed.
-        entity->destroyed_=true;entity->onDestroyed();
-    }
+    for(Entity* entity:snapshot)destroyLive(live,entity);
 }
+bool BWConnection::destroyLocalEntity(int entityID)
+{
+    for(Entity* entity:live)if(entity->id_==entityID){destroyLive(live,entity);return true;}
+    return false;
+}
+Entity* ConnectionControl::findEntity(int entityID)const
+{
+    std::vector<BWConnection*> connections;if(pConnection_)connections.push_back(pConnection_);
+    for(const auto& entry:clientSpaceConnections_)connections.push_back(entry.second);
+    for(BWConnection* connection:connections)for(Entity* entity:connection->live)if(entity->id_==entityID)return entity;
+    return NULL;
+}
+struct BWEntities{static bool isLocalEntity(EntityID){return true;}};
+using BWEntityPtr=Entity*;
+@DESTROY_ENTITY@
+static PyObject* entitySpaceID(PyObject* object,void*)
+{return PyInt_FromLong(static_cast<PyEntity*>(object)->pEntity_->spaceID());}
+static PyGetSetDef entityAttributes[]={{const_cast<char*>("spaceID"),entitySpaceID,NULL,NULL,NULL},{NULL,NULL,NULL,NULL,NULL}};
 BWConnection::~BWConnection()
 {
     events.push_back("delete:"+std::to_string(id));if(onDelete)onDelete();
@@ -797,7 +819,7 @@ int main(int argc,char** argv)
         std::puts("Pristine original clearSpaces destroys a callback-created replacement: reproduced");return 0;
     }
     assert(argc==2);Py_NoSiteFlag=1;Py_Initialize();
-    BW::PyEntity::s_type_.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE;BW::PyEntity::s_type_.tp_new=PyType_GenericNew;BW::PyEntity::s_type_.tp_dealloc=BW::deallocEntity;
+    BW::PyEntity::s_type_.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE;BW::PyEntity::s_type_.tp_new=PyType_GenericNew;BW::PyEntity::s_type_.tp_dealloc=BW::deallocEntity;BW::PyEntity::s_type_.tp_getset=BW::entityAttributes;
     assert(PyType_Ready(&BW::PyEntity::s_type_)==0);
     ownerTests();clientSpaceTests();finiTests();
     std::vector<PyMethodDef> methods=BW::moduleMethods();
