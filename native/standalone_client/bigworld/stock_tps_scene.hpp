@@ -13,6 +13,9 @@ bool playStockTPSOneShot( const BW::string & resource, const Vector3 & position,
 bool initialiseStockTPSRuntime();
 void tickStockTPSRuntime( float elapsed );
 bool drawStockTPSRuntime();
+// BigWorld.SetDrawInflux (aeb660): False pauses Influx simulation and drawing; init is True.
+void setStockTPSDrawEnabled( bool enabled );
+bool stockTPSDrawEnabled();
 void finiStockTPSRuntime();
 bool isStockTPSParticleItem( Moo::DrawContext::UserDrawItem * item );
 void drawStockTPSParticleItem( Moo::DrawContext::UserDrawItem * item );

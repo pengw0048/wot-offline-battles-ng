@@ -344,6 +344,8 @@ struct Runtime
     void close();
 };
 std::shared_ptr<Runtime> runtime;
+// 01a1bfd0 with the manager's paused (+3d8) and global hidden (02143680) flags.
+std::atomic<bool> drawEnabled{true};
 std::shared_ptr<Runtime> currentRuntime()
 { return std::atomic_load_explicit(&runtime,std::memory_order_acquire); }
 float currentRuntimeTime()
@@ -972,6 +974,8 @@ void Runtime::tick( float elapsed )
     chunks.clear();visuals.clear();++generation;
     effects.insert(effects.end(),pendingEffects.begin(),pendingEffects.end());pendingEffects.clear();
     if (!std::isfinite( elapsed )) return;
+    // fa4034 takes the frozen update while paused; nothing is emitted or drawn.
+    if (!drawEnabled.load( std::memory_order_relaxed )) return;
     elapsed = std::max( 0.f, std::min( 1.f, elapsed ) );
     const ClientSpacePtr current = DeprecatedSpaceHelpers::cameraSpace();
     if (current && !current->cleared() && current->enviro().weather())
@@ -1275,7 +1279,8 @@ void tickStockTPSRuntime( float elapsed ) { if (const auto owner = currentRuntim
 bool drawStockTPSRuntime()
 {
     const auto owner = currentRuntime();
-    if (!owner || owner->closed || (owner->chunks.empty() && owner->visuals.empty()) ||
+    if (!owner || owner->closed || !drawEnabled.load( std::memory_order_relaxed ) ||
+        (owner->chunks.empty() && owner->visuals.empty()) ||
         owner->submitted == owner->generation) return true;
     App::instance().drawContext( App::COLOUR_DRAW_CONTEXT ).drawUserItem(
         new TPSDrawItem( owner ), Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );
@@ -1285,6 +1290,8 @@ bool drawStockTPSRuntime()
     owner->submitted = owner->generation;
     return true;
 }
+void setStockTPSDrawEnabled( bool enabled ) { drawEnabled.store( enabled, std::memory_order_relaxed ); }
+bool stockTPSDrawEnabled() { return drawEnabled.load( std::memory_order_relaxed ); }
 bool isStockTPSParticleItem( Moo::DrawContext::UserDrawItem * item ) { return dynamic_cast<TPSDrawItem *>( item ) != NULL; }
 void drawStockTPSParticleItem( Moo::DrawContext::UserDrawItem * item ) { static_cast<TPSDrawItem *>(item)->drawSplit(); }
 void finishStockTPSParticleItems()
