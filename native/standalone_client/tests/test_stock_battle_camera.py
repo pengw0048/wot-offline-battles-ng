@@ -308,3 +308,87 @@ class BattleCameraOracleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+SCRIPT_BODIES = ('bool & rBool,', 'float & rFloat,', 'double & rDouble,')
+
+
+def binding_source(sources):
+    import test_stock_math_oscillators as oscillators
+    script_cpp = sources['lib/pyscript/script.cpp']
+    bodies = ''.join(oscillators.between(script_cpp, 'int Script::setData( PyObject * pObject, ' + name,
+                                         '\n}\n') for name in SCRIPT_BODIES)
+    bodies += oscillators.between(script_cpp, 'PyObject * Script::argCountError(', '\n}\n')
+    collider = (ROOT / 'bigworld/stock_camera_collider.cpp').read_text()
+    converters = collider[collider.index('int setStockCameraDynamicColliders('):collider.rindex('BW_END_NAMESPACE')]
+    camera = (ROOT / 'bigworld/stock_battle_camera.cpp').read_text()
+    wrappers = camera[camera.index('namespace\n{'):camera.index('}\n\n\n/**') + 2]
+    text = (ROOT / 'tests/stock_battle_camera_binding_host.cpp').read_text()
+    for key, value in (('@SCRIPT_BODIES@', bodies), ('@CONVERTERS@', converters), ('@WRAPPERS@', wrappers)):
+        text = text.replace(key, value)
+    return text
+
+
+def volume_sections(client):
+    sys.path.insert(0, str(ROOT.parents[1] / 'tools'))
+    import packed_xml
+    import zipfile
+    root = packed_xml.read_packed_xml(zipfile.ZipFile(client / 'res/packages/gui.pkg').read(
+        'gui/avatar_input_handler.xml'))
+
+    def child(element, name):
+        for key, value in element.children:
+            if (key.decode() if isinstance(key, bytes) else key) == name:
+                return value.value if value.value_type == packed_xml.TYPE_ELEMENT else value
+        raise KeyError(name)
+    sections = {}
+    for mode in ('arcadeMode', 'postMortemMode'):
+        groups = child(child(child(child(root, mode), 'camera'), 'advancedCollider'), 'volumeGroups')
+        sections[mode] = {}
+        for name in ('tiny', 'small', 'medium', 'large'):
+            values = {}
+            for key, value in child(groups, name).children:
+                raw = value.value.value if value.value_type == packed_xml.TYPE_ELEMENT else value.value
+                # Packed booleans keep their XML text form for readBool.
+                values[key.decode()] = (('true' if raw else 'false') if isinstance(raw, bool)
+                                        else raw.decode('latin1').strip())
+            sections[mode][name] = values
+    return sections
+
+
+class BattleCameraBindingTests(unittest.TestCase):
+    def test_original_arcade_camera_producers_over_the_converters(self):
+        import json
+        import shlex
+        import test_stock_math_oscillators as oscillators
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original PYC producers')
+        python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
+        config = python.with_name('python2.7-config')
+        if not config.exists():
+            self.skipTest('Pinned CPython 2.7 development files unavailable')
+        sources = oscillators.engine_sources(self)
+        with tempfile.TemporaryDirectory(prefix='battle-camera-binding-') as folder:
+            directory = Path(folder)
+            for fake in ('cstdmf/bw_namespace.hpp', 'cstdmf/bw_vector.hpp', 'math/vector2.hpp',
+                         'math/vector3.hpp', 'pyscript/script_math.hpp'):
+                (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
+                (directory / 'include' / fake).write_text('#pragma once\n')
+            source = directory / 'host.cpp'
+            source.write_text(binding_source(sources))
+            flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
+                     if flag != '-DNDEBUG' and not flag.startswith('-O')]
+            libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
+            binary = directory / 'host'
+            subprocess.run(['c++', '-std=c++14', '-O0', '-UNDEBUG', *flags, '-Wall', '-Werror',
+                            '-Wno-deprecated-register', '-Wno-writable-strings', '-Wno-unused-function',
+                            '-I', str(directory / 'include'), '-I', str(ROOT / 'bigworld'), str(source),
+                            *libs, '-o', str(binary)], check=True)
+            sections = directory / 'sections.json'
+            sections.write_text(json.dumps(volume_sections(Path(client))))
+            result = subprocess.run([str(binary), str(ROOT / 'tests/stock_battle_camera_consumer.py'),
+                                     str(Path(client) / 'res/packages/scripts.pkg'), str(sections)],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout.strip())

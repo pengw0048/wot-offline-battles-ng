@@ -905,7 +905,6 @@ int setStockCameraDynamicColliders( PyObject * object,
             varName, "struct BW::CameraCollider::DynamicCollisionInfo" );
         return -1;
     }
-    const BW::string elementName = BW::string( varName ) + " element";
     const Py_ssize_t size = PySequence_Size( object );
     if (size < 0)
         return -1;
