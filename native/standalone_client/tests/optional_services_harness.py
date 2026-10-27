@@ -338,7 +338,7 @@ def case_preferences():
                 assert prefs['token2'] == ''
                 manager.clearPreferences()
                 assert dict(prefs) == {} and manager.getPreference('login') == ''
-                assert handlers(connection.onLoggedOn) == 1 and len(services._installed) == 5
+                assert handlers(connection.onLoggedOn) == 1 and len(services._installed) == 6
                 manager.fini()
                 assert handlers(connection.onLoggedOn) == 0 and manager.servers is None
                 assert len(Settings.g_instance.userPrefs.tree) == len(tree)
@@ -784,5 +784,174 @@ def case_voice():
     print('Exact #1513 VOIPChatController/VOIPManager: pinned payload never initialises voice PASS')
 
 
+def code_imports(code):
+    """(module, name) pairs of the IMPORT_NAME/IMPORT_FROM sequence in one code object."""
+    import dis
+    pairs, current, raw, index = [], None, code.co_code, 0
+    while index < len(raw):
+        op = ord(raw[index])
+        if op >= dis.HAVE_ARGUMENT:
+            arg = ord(raw[index + 1]) | ord(raw[index + 2]) << 8
+            if dis.opname[op] == 'IMPORT_NAME':
+                current = code.co_names[arg]
+            elif dis.opname[op] == 'IMPORT_FROM':
+                pairs.append((current, code.co_names[arg]))
+            index += 3
+        else:
+            index += 1
+    return pairs
+
+
+class Registry(object):
+    """helpers.dependency manager leaf: keeps instances and their finalizers."""
+
+    def __init__(self):
+        self.instances = []
+
+    def addInstance(self, interface, instance, finalizer=None):
+        self.instances.append((interface, instance, finalizer))
+
+    def get(self, interface):
+        return [i for k, i, unused in self.instances if k is interface][0]
+
+    def fini(self):
+        for unused, instance, finalizer in reversed(self.instances):
+            if finalizer:
+                getattr(instance, finalizer)()
+
+
+def lifecycle_recorder(controller, method):
+    return lambda self, *args: LOG.append((controller, method))
+
+
+def case_epic():
+    gui = gui_leaf()
+    messenger_leaf()
+    module('gui.login', getLoginManagerConfig=recorder('getLoginManagerConfig'))
+    listeners = {}
+    module('gui.shared', True, g_eventBus=Namespace(
+        addListener=lambda kind, fn, *a, **k: listeners.setdefault(kind, []).append(fn),
+        removeListener=lambda kind, fn, *a, **k: listeners[kind].remove(fn)),
+        events=Namespace(GUICommonEvent=Namespace(LOBBY_VIEW_LOADED='lobbyLoaded')))
+    module('shared_utils', forEach=lambda function, items: [function(item) for item in items])
+    sys.modules['constants'].IS_CHINA = False
+    module('account_helpers', True)
+    module('account_helpers.AccountSettings', GUI_START_BEHAVIOR='GUI_START_BEHAVIOR')
+    # Like the original package, the AccountSettings class shadows its module.
+    sys.modules['account_helpers'].AccountSettings = Namespace(
+        getFilterDefault=lambda key: {'isEpicRandomCheckboxClicked': False})
+    module('account_helpers.settings_core', True)
+    module('account_helpers.settings_core.settings_constants', GAME=Codes())
+    module('skeletons.account_helpers', True)
+    module('skeletons.account_helpers.settings_core', ISettingsCore=type(
+        'ISettingsCore', (object,), {}))
+    module('helpers.statistics', HARDWARE_SCORE_PARAMS=Codes())
+    module('new_year', getNewYearServiceConfig=recorder('getNewYearServiceConfig'))
+    import gui.game_control as game_control  # exact getGameControllersConfig
+    from skeletons.gui import game_control as interfaces  # exact
+    config = game_control.getGameControllersConfig
+    # Every other controller is a recording IGameController leaf.
+    for name, attr in code_imports(config.__code__):
+        if (name.startswith('gui.game_control.') and name not in (
+                'gui.game_control.epic_mode_controller', 'gui.game_control.state_tracker')):
+            leaf = sys.modules.get(name) or module(name)
+
+            setattr(leaf, attr, type(attr, (interfaces.IGameController,), dict(
+                (method, lifecycle_recorder(attr, method))
+                for method in ('onConnected', 'onDisconnected', 'onLobbyInited'))))
+    filters = {}
+    settings_core = Namespace(
+        onSettingsApplied=Event.Event(),
+        serverSettings=Namespace(
+            getSection=lambda key, defaults: (LOG.append(('getSection', key)) or
+                                              dict(defaults, **filters)),
+            setSectionSettings=gate('setSectionSettings')),
+        getSetting=gate('getSetting'), applySetting=gate('applySetting'))
+    injected['ISettingsCore'] = settings_core
+
+    def lifetime(rounds=2):
+        """One configured process: connect/lobby/disconnect rounds, then finalizers."""
+        registry = Registry()
+        game_control.getGameControllersConfig(registry)
+        tracker = registry.get(interfaces.IGameStateTracker)
+        epic = registry.get(interfaces.IEpicModeController)
+        for unused in range(rounds):
+            tracker.onConnected()
+            tracker.onAccountBecomePlayer()
+            for listener in list(listeners['lobbyLoaded']):
+                listener(Namespace())
+            tracker.onAvatarBecomePlayer()
+            tracker.onAccountBecomePlayer()
+            tracker.onDisconnected()
+        registry.fini()
+        assert not listeners['lobbyLoaded']
+        return epic
+
+    # Control: the stock owner probes the absent hardware detector on the
+    # ordinary lobby event and stops the controllers registered after it.
+    from gui.game_control import epic_mode_controller  # exact
+    original = epic_mode_controller.EpicModeController
+    registry = Registry()
+    game_control.getGameControllersConfig(registry)
+    tracker = registry.get(interfaces.IGameStateTracker)
+    tracker.onConnected()
+    assert handlers(settings_core.onSettingsApplied) == 1
+    del LOG[:]
+    try:
+        for listener in list(listeners['lobbyLoaded']):
+            listener(Namespace())
+    except AttributeError as error:
+        assert 'detectGraphicsPresetFromSystemSettings' in str(error), error
+    else:
+        raise AssertionError('the stock Epic owner needs the hardware detector')
+    assert ('CalendarController', 'onLobbyInited') not in LOG, LOG
+    tracker.onDisconnected()
+    registry.fini()
+
+    import OfflineOptionalServices as services
+    assert services.install() and services.install()
+    wrapper = game_control.getGameControllersConfig
+    assert wrapper is not config
+    for clicked in (False, True, None):
+        filters.clear()
+        if clicked is not None:
+            filters['isEpicRandomCheckboxClicked'] = clicked
+        for unused_launch in range(2):
+            del LOG[:]
+            epic = lifetime()
+            assert type(epic).__name__ == 'UnavailableEpicModeController'
+            assert isinstance(epic, interfaces.IEpicModeController)
+            assert epic_mode_controller.EpicModeController is type(epic)
+            # No probe, filter read/write or Epic settings subscription; every
+            # later controller still receives its lobby callback.
+            assert not logged('getSection', 'setSectionSettings', 'getSetting', 'applySetting')
+            assert handlers(settings_core.onSettingsApplied) == 0
+            assert logged('CalendarController').count(('CalendarController', 'onLobbyInited')) == 2
+            assert len(logged('ChinaController', 'NoChinaController')) == 6, LOG
+    assert game_control.getGameControllersConfig is wrapper
+
+    services.uninstall()
+    services.uninstall()
+    assert game_control.getGameControllersConfig is config
+    assert epic_mode_controller.EpicModeController is original
+    # Reinstall binds the same owner again; a refused install binds nothing.
+    assert services.install()
+    assert type(lifetime(1)).__name__ == 'UnavailableEpicModeController'
+    services.uninstall()
+    messenger = sys.modules['messenger.MessengerEntry'].g_instance
+    messenger.storage._StorageDecorator__storageCache = object()
+    try:
+        services.install()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('a changed optional seam must refuse the install')
+    assert game_control.getGameControllersConfig is config and services._installed is None
+    messenger.storage._StorageDecorator__storageCache = None
+    print('Exact #1513 game_control/GameStateTracker/EpicModeController: unavailable Epic '
+          'eligibility owner, later controllers intact PASS')
+
+
 {'preferences': case_preferences, 'messenger': case_messenger,
- 'vibration': case_vibration, 'xmpp': case_xmpp, 'voice': case_voice}[CASE]()
+ 'vibration': case_vibration, 'xmpp': case_xmpp, 'voice': case_voice,
+ 'epic': case_epic}[CASE]()

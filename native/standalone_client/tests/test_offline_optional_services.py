@@ -82,6 +82,9 @@ class OptionalServiceConsumerTests(unittest.TestCase):
     def test_messenger_keeps_battle_chat_without_lobby_chat_or_cache(self):
         self.harness('messenger')
 
+    def test_epic_eligibility_owner_is_unavailable_without_hardware_probe(self):
+        self.harness('epic')
+
     def test_vibration_owner_runs_the_stock_disconnected_lifecycle(self):
         data = vibration_settings(self.client)
         self.assertIn('move_low_veff', {effect['name'] for effect in data['effects']})
