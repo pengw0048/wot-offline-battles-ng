@@ -66,6 +66,10 @@ class StockEffectAdapter final : public ID3DXEffect {
 public:
   StockEffectAdapter(std::shared_ptr<StockDx9EffectRuntime> runtime,
                      std::shared_ptr<StockEffectSharedContext> context);
+  // A material Binding uses its Definition's handles, which Moo caches at load.
+  StockEffectAdapter(std::shared_ptr<StockDx9EffectRuntime> runtime,
+                     std::shared_ptr<StockEffectSharedContext> context,
+                     const StockEffectReflection &reflection);
   StockEffectAdapter(const StockEffectAdapter &source);
   // Internal producer writer: no GPU runtime and no successful Begin/Apply.
   StockEffectAdapter(std::shared_ptr<const StockEffectBinary> definition,
@@ -254,6 +258,17 @@ StockEffectAdapter::StockEffectAdapter(
     : definition_(runtime->definition()), runtime_(std::move(runtime)),
       context_owner_(std::move(context)), context_(*context_owner_),
       reflection_(definition_, automatic_semantics()),
+      material_(
+          new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)) {
+  initialise();
+}
+StockEffectAdapter::StockEffectAdapter(
+    std::shared_ptr<StockDx9EffectRuntime> runtime,
+    std::shared_ptr<StockEffectSharedContext> context,
+    const StockEffectReflection &reflection)
+    : definition_(runtime->definition()), runtime_(std::move(runtime)),
+      context_owner_(std::move(context)), context_(*context_owner_),
+      reflection_(reflection),
       material_(
           new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)) {
   initialise();
@@ -1186,7 +1201,8 @@ HRESULT create_stock_effect_material(ID3DXEffect *definition,
   HRESULT result = E_INVALIDARG;
   if (source->runtime_ && source->context_owner_) {
     std::lock_guard<std::recursive_mutex> lock(source->context_.impl_->mutex);
-    *output = new StockEffectAdapter(source->runtime_, source->context_owner_);
+    *output = new StockEffectAdapter(source->runtime_, source->context_owner_,
+                                     source->reflection_);
     result = S_OK;
   }
   source->Release();
