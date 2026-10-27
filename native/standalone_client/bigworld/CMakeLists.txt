@@ -107,6 +107,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_lobby_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_components.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_animators.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_vehicle_animation.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_battle_vehicle_animation_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_wheels.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_track_nodes.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_spline_tracks.cpp"

@@ -12,11 +12,6 @@ extern int StockBattleVehicleAnimation_token;
 const wot::StockAnimationMath & stockBattleAnimationMath();
 const wot::StockLeveredMath & stockBattleLeveredMath();
 
-// Current node-local transform without re-evaluating providers, as the
-// original Svarog managers read the compound node array. Defined by the
-// vehicle_appearance owner (private central patch).
-bool stockVehicleCompoundNodeLocal( PyObject * compound, const BW::string & name, Matrix & local );
-
 // SwingingAnimator is an auto-ticked MatrixProvider (ProviderStore). The
 // Svarog managers below run in the original static factory order:
 // phase 2 LeveredSuspension 014932bc then LinkedNodesPitchAnimator 014932dc;

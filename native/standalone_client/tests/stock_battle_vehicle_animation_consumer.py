@@ -422,10 +422,28 @@ def check_levered_suspension():
     Host.tickLevered(1 / 60.)
     assert compound.writes('Track_L0') == restored + 1
     lod.distance = 10.
-    # Without a camera space the collider is not prepared; misses keep the lever bounded.
-    Host.setGround(-1.2, False)
+    # First prove the retained provider can hit this ground, then remove its
+    # camera without destroying the previous space. No stale-space ray may run.
+    Host.setGround(0., True)
+    hit_count = Host.rayHits()
+    Host.tickLevered(1 / 60.)
+    assert Host.rayHits() > hit_count
+    query_count = Host.rayQueries()
+    prepare_count = Host.prepares()
+    Host.setGround(0., False)
     Host.tickLevered(1 / 60.)
     assert Host.errors() == ['LeveredSuspension cannot prepare its ground-query space\n']
+    assert Host.prepares() == prepare_count and Host.rayQueries() == query_count
+    # A camera with a failed prepare has the same no-query outcome.
+    Host.setGround(0., True, False)
+    Host.tickLevered(1 / 60.)
+    assert Host.errors() == ['LeveredSuspension cannot prepare its ground-query space\n']
+    assert Host.prepares() == prepare_count + 1 and Host.rayQueries() == query_count
+    # A later valid prepare resumes queries on the same component.
+    Host.setGround(0., True)
+    hit_count = Host.rayHits()
+    Host.tickLevered(1 / 60.)
+    assert Host.rayQueries() > query_count and Host.rayHits() > hit_count
     Host.setGround(-1.2, True)
     system.deactivate()
     written = compound.writes('Track_L0')

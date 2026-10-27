@@ -67,17 +67,22 @@ const wot::StockLeveredMath & stockBattleLeveredMath() { return referenceLevered
 bool hostCamera = true;
 float hostGround = 0.f;
 int hostPrepares = 0;
+int hostRayQueries = 0;
+int hostRayHits = 0;
+bool hostPrepareAllowed = true;
 ClientSpace hostSpace;
 ClientSpacePtr DeprecatedSpaceHelpers::cameraSpace() { return hostCamera ? ClientSpacePtr(&hostSpace) : ClientSpacePtr(); }
 class HostGround : public wot::VehicleCollisionProvider {
 public:
     bool prepare(const wot::VehicleCollisionBounds &, std::uint32_t space, std::uint32_t) override {
-        ++hostPrepares; prepared = space == hostSpace.id(); return prepared; }
+        ++hostPrepares; prepared = hostPrepareAllowed && space == hostSpace.id(); return prepared; }
     bool query_ray(const wot::VehicleCollisionRay & ray, wot::VehicleCollisionRayHit & hit) override {
+        ++hostRayQueries;
         if (!prepared || ray.direction.y >= 0.f) return false;
         const float distance = (ray.origin.y - hostGround) / -ray.direction.y;
         if (distance < 0.f || distance > ray.length) return false;
         hit.distance = distance; hit.normal = {0.f, 1.f, 0.f}; hit.is_terrain = true;
+        ++hostRayHits;
         return true;
     }
     bool prepared = false;
@@ -339,10 +344,14 @@ PyObject * tickLevered(PyObject *, PyObject * args) {
     tickStockLeveredSuspensions(dt); Py_RETURN_NONE;
 }
 PyObject * setGround(PyObject *, PyObject * args) {
-    PyObject * camera; if (!PyArg_ParseTuple(args, "fO", &hostGround, &camera)) return NULL;
-    hostCamera = PyObject_IsTrue(camera) == 1; Py_RETURN_NONE;
+    PyObject * camera; PyObject * prepare = Py_True;
+    if (!PyArg_ParseTuple(args, "fO|O", &hostGround, &camera, &prepare)) return NULL;
+    hostCamera = PyObject_IsTrue(camera) == 1;
+    hostPrepareAllowed = PyObject_IsTrue(prepare) == 1; Py_RETURN_NONE;
 }
 PyObject * prepares(PyObject *, PyObject *) { return PyInt_FromLong(hostPrepares); }
+PyObject * rayQueries(PyObject *, PyObject *) { return PyInt_FromLong(hostRayQueries); }
+PyObject * rayHits(PyObject *, PyObject *) { return PyInt_FromLong(hostRayHits); }
 PyObject * lodLink(PyObject *, PyObject * args) {
     PyObject * owner; if (!PyArg_ParseTuple(args, "O", &owner)) return NULL;
     return new HostLodLink(owner);
@@ -367,6 +376,8 @@ PyMethodDef hostMethods[] = {
     {"tickLevered", tickLevered, METH_VARARGS, NULL},
     {"setGround", setGround, METH_VARARGS, NULL},
     {"prepares", prepares, METH_NOARGS, NULL},
+    {"rayQueries", rayQueries, METH_NOARGS, NULL},
+    {"rayHits", rayHits, METH_NOARGS, NULL},
     {"lodLink", lodLink, METH_VARARGS, NULL},
     {"output", outputOf, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};

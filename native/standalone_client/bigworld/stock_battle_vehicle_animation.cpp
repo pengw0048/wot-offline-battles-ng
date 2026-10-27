@@ -1102,20 +1102,27 @@ void tickStockLeveredSuspensions( float frameTime )
         }
         const std::array<float, 6> box = {{ bounds.minBounds().x, bounds.minBounds().y, bounds.minBounds().z,
             bounds.maxBounds().x, bounds.maxBounds().y, bounds.maxBounds().z }};
+        // 00783cd4 clears the original collider before resolving this entry's
+        // camera space. A failed preparation must never reuse an older space.
+        bool groundPrepared = false;
         wot::groundStockLevered( state.kernel, state.worlds[1], box,
-            []( const std::array<float, 6> & value )
+            [&groundPrepared]( const std::array<float, 6> & value )
             {
                 // 00783a60 prepares the collider in the camera space only.
                 ClientSpacePtr camera = DeprecatedSpaceHelpers::cameraSpace();
                 wot::VehicleCollisionBounds queryBounds;
                 queryBounds.minimum = { value[0], value[1], value[2] };
                 queryBounds.maximum = { value[3], value[4], value[5] };
-                if (!camera || !leveredCollision->prepare( queryBounds, camera->id(), UINT32_MAX ))
+                groundPrepared = camera &&
+                    leveredCollision->prepare( queryBounds, camera->id(), UINT32_MAX );
+                if (!groundPrepared)
                     ERROR_MSG( "LeveredSuspension cannot prepare its ground-query space\n" );
             },
-            []( const wot::StockAnimationVector & origin, const wot::StockAnimationVector & direction,
+            [&groundPrepared]( const wot::StockAnimationVector & origin, const wot::StockAnimationVector & direction,
                 float length, float & distance, wot::StockAnimationVector & normal )
             {
+                if (!groundPrepared)
+                    return false;
                 wot::VehicleCollisionRay ray;
                 ray.origin = { origin[0], origin[1], origin[2] };
                 ray.direction = { direction[0], direction[1], direction[2] };

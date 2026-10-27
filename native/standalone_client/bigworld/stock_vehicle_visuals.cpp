@@ -3,6 +3,7 @@
 #include "stock_vehicle_filter.hpp"
 #include "stock_vehicle_components.hpp"
 #include "stock_vehicle_animators.hpp"
+#include "stock_battle_vehicle_animation.hpp"
 #include "stock_vehicle_wheels.hpp"
 #include "stock_vehicle_track_nodes.hpp"
 #include "stock_vehicle_audio.hpp"
@@ -1181,12 +1182,15 @@ void tickStockVehicleComponents( float frameTime )
     // Original static factory order: LOD 01493100, Recoil 01493104,
     // Suspension 0149328c, LeveredSuspension 014932bc, LinkedNodesPitch
     // 014932dc, Wheels 014932f4, TrackNodes 0149330c; all phase 2.
-    // TrackNodes reads the wheel poses. The battle-animation managers, when
-    // integrated, belong between updateSuspensions and the wheels.
+    // TrackNodes reads the wheel poses. SuspensionSound precedes
+    // VehicleAudition in phase 3 (014932c0, 01493424).
     tickStockVehicleRecoil( frameTime );
     updateSuspensions( frameTime );
+    tickStockLeveredSuspensions( frameTime );
+    tickStockLinkedNodesPitchAnimators();
     tickStockVehicleWheels( frameTime );
     tickStockVehicleTrackNodes( frameTime );
+    tickStockSuspensionSounds( frameTime );
     tickStockVehicleAuditions( frameTime );
 }
 
