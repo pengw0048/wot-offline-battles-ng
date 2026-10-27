@@ -388,11 +388,12 @@ class StockGUIPixelSnapTests(unittest.TestCase):
         archive = Path(os.environ.get(
             'WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         compiler = shutil.which('c++')
-        client = Path(os.environ.get('WOT_0922_CLIENT',
-            '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
-        package = client / 'res/packages/misc.pkg'
-        if not archive.is_file() or not compiler or not package.is_file():
-            self.skipTest('Public engine archive, C++ compiler and exact #1513 misc.pkg are required')
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not archive.is_file() or not compiler or not client:
+            self.skipTest('Set WOT_0922_CLIENT; the public engine archive and a C++ compiler are required')
+        package = Path(client) / 'res/packages/misc.pkg'
+        if not package.is_file():
+            self.skipTest('WOT_0922_CLIENT has no exact #1513 res/packages/misc.pkg')
         with tempfile.TemporaryDirectory(prefix='wot-gui-pixel-snap-') as directory:
             root = Path(directory)
             with tarfile.open(archive) as original:

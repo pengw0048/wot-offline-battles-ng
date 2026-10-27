@@ -70,6 +70,7 @@ METHODS
 HARNESS = r'''
 #include "stock_effect_adapter.hpp"
 #include "wot/stock_effect_reflection.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -77,30 +78,41 @@ HARNESS = r'''
 #include <stdexcept>
 #include <string>
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
-void exercise(const char* path) {
-    std::ifstream input(path, std::ios::binary);
-    std::vector<char> bytes((std::istreambuf_iterator<char>(input)), {});
-    auto decoded = std::make_shared<wot::StockEffectBinary>(); std::string error;
-    check(wot::decode_stock_dx9_effect(bytes.data(), bytes.size(), *decoded, error), error);
+template <class Map, class Key>
+const typename Map::mapped_type& at(const Map& values, Key key, const char* label) {
+    const auto found = values.find(key);
+    check(found != values.end(), std::string("not uploaded: ") + label);
+    return found->second;
+}
+struct Effect {
+    std::vector<char> bytes;
     std::vector<std::string> resources;
-    for (const auto& resource : decoded->resource_views)
-        if (resource.semantic_present) resources.push_back(resource.semantic);
-    // Precondition: registering resource producers changes the handle namespace.
-    check(wot::StockEffectReflection(decoded, {}).parameter_count() !=
-          wot::StockEffectReflection(decoded, resources).parameter_count(), "Original effect hides no resources");
-    bool registered = false;
+};
+// Opens one FX_SOLID pass on binding and returns what BeginPass uploaded.
+void draw(ID3DXEffect* binding, ID3DXEffectStateManager* states) {
+    states->vertexFloats.clear(); states->pixelFloats.clear(); states->textures.clear();
+    UINT passes = 0;
+    check(binding->SetTechnique(binding->GetTechniqueByName("FX_SOLID")) == S_OK &&
+          binding->Begin(&passes, D3DXFX_DONOTSAVESTATE) == S_OK && passes == 1 &&
+          binding->BeginPass(0) == S_OK, "FX_SOLID pass");
+    check(binding->EndPass() == S_OK && binding->End() == S_OK, "pass close");
+}
+// producersAtLoad: whether automatic resource producers exist when the
+// Definition loads; they are then removed or registered before the Bindings.
+void exercise(const Effect& effect, bool producersAtLoad) {
+    bool registered = producersAtLoad;
     auto context = std::make_shared<wot::StockEffectSharedContext>(
         [&](const std::string& semantic, ID3DXEffect*, D3DXHANDLE) {
-            return registered && std::find(resources.begin(), resources.end(), semantic) != resources.end();
+            return registered && std::find(effect.resources.begin(), effect.resources.end(), semantic) !=
+                effect.resources.end();
         });
     auto* device = new IDirect3DDevice9;
     auto* states = new ID3DXEffectStateManager;
-    // SimpleGUI::init loads ashes and FontManager loads font before the
-    // render pipeline registers its automatic resource producers.
     ID3DXEffect* definition = nullptr;
-    check(SUCCEEDED(wot::create_stock_effect(device, states, bytes.data(), bytes.size(), context,
-        &definition, error)), error);
-    // ManagedEffect::load caches each semantic parameter handle from the Definition.
+    std::string error;
+    check(SUCCEEDED(wot::create_stock_effect(device, states, effect.bytes.data(), effect.bytes.size(),
+        context, &definition, error)), error);
+    // ManagedEffect::load caches each parameter handle from the Definition.
     std::map<std::string, D3DXHANDLE> handles;
     D3DXEFFECT_DESC description;
     check(SUCCEEDED(definition->GetDesc(&description)), "GetDesc");
@@ -110,39 +122,81 @@ void exercise(const char* path) {
         check(SUCCEEDED(definition->GetParameterDesc(handle, &parameter)), "GetParameterDesc");
         handles[parameter.Name] = handle;
     }
-    registered = true;
+    registered = !producersAtLoad;
     ID3DXEffect* binding = nullptr;
-    check(SUCCEEDED(wot::create_stock_effect_material(definition, &binding)), "material binding");
+    ID3DXEffect* sibling = nullptr;
+    check(SUCCEEDED(wot::create_stock_effect_material(definition, &binding)) &&
+          SUCCEEDED(wot::create_stock_effect_material(definition, &sibling)), "material bindings");
     const bool font = handles.count("uvDivisor") != 0;
     D3DXMATRIX matrix;
     for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) matrix.m[r][c] = float(1 + 4*r + c);
     const D3DXVECTOR4 colour = {0.25f, 0.5f, 0.75f, 0.875f}, screen = {1024, 768, 1.f/1024, 1.f/768};
+    const D3DXVECTOR4 other = {0.125f, 0.25f, 0.375f, 0.5f};
+    auto* texture = new IDirect3DBaseTexture9;
     // AshesProjSetter, TFactorSetter/FontColourSetter, Screen, pixel-snap and UV-divisor producers.
-    check(binding->SetMatrix(handles.at("worldViewProj"), &matrix) == S_OK, "worldViewProj handle");
-    check(binding->SetVector(handles.at("factor"), &colour) == S_OK, "factor handle");
-    check(binding->SetVector(handles.at("resolution"), &screen) == S_OK, "resolution handle");
-    check(binding->SetBool(handles.at("pixelSnapEnabled"), TRUE) == S_OK, "pixelSnapEnabled handle");
-    if (font) check(binding->SetFloat(handles.at("uvDivisor"), 2.f) == S_OK, "uvDivisor handle");
-    UINT passes = 0;
-    check(binding->SetTechnique(binding->GetTechniqueByName("FX_SOLID")) == S_OK &&
-          binding->Begin(&passes, D3DXFX_DONOTSAVESTATE) == S_OK && passes == 1 &&
-          binding->BeginPass(0) == S_OK, "FX_SOLID pass");
+    check(binding->SetMatrix(at(handles, std::string("worldViewProj"), "worldViewProj"), &matrix) == S_OK, "worldViewProj handle");
+    check(binding->SetVector(at(handles, std::string("factor"), "factor"), &colour) == S_OK, "factor handle");
+    check(binding->SetVector(at(handles, std::string("resolution"), "resolution"), &screen) == S_OK, "resolution handle");
+    check(binding->SetBool(at(handles, std::string("pixelSnapEnabled"), "pixelSnapEnabled"), TRUE) == S_OK, "pixelSnapEnabled handle");
+    // Font diffuseMap is the automatic FontMap resource; it has a handle only
+    // when the Definition loaded before that producer existed.
+    const bool manualTexture = handles.count("diffuseMap") != 0;
+    if (manualTexture)
+        check(binding->SetTexture(handles.at("diffuseMap"), texture) == S_OK, "diffuseMap handle");
+    if (font) check(binding->SetFloat(at(handles, std::string("uvDivisor"), "uvDivisor"), 2.f) == S_OK, "uvDivisor handle");
+    // Mutating the Definition must not leak into either Binding.
+    check(definition->SetVector(at(handles, std::string("factor"), "factor"), &other) == S_OK, "Definition factor");
+    draw(binding, states);
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c)
-            check(states->vertexFloats.at(r)[c] == matrix.m[r][c], "VS c0-c3 must hold worldViewProj");
+            check(at(states->vertexFloats, r, "VS register")[c] == matrix.m[r][c], "VS c0-c3 must hold worldViewProj");
     // The pixel-snap VS (selected only by pixelSnapEnabled) reads resolution at c4.
     for (int c = 0; c < 4; ++c)
-        check(states->vertexFloats.at(4)[c] == (&screen.x)[c], "VS c4 must be the pixel-snap resolution");
-    if (font) check(states->vertexFloats.at(5)[0] == 2.f, "font VS c5.x must be uvDivisor");
+        check(at(states->vertexFloats, 4, "VS register")[c] == (&screen.x)[c], "VS c4 must be the pixel-snap resolution");
+    if (font) check(at(states->vertexFloats, 5, "VS register")[0] == 2.f, "font VS c5.x must be uvDivisor");
     for (int c = 0; c < 4; ++c)
-        check(states->pixelFloats.at(0)[c] == (&colour.x)[c], "PS c0 must hold factor");
-    check(binding->EndPass() == S_OK && binding->End() == S_OK, "pass close");
-    binding->Release(); definition->Release(); context->detach_providers();
+        check(at(states->pixelFloats, 0, "PS register")[c] == (&colour.x)[c], "PS c0 must hold factor");
+    if (manualTexture)
+        check(at(states->textures, DWORD(0), "PS texture slot") == texture, "PS s0 must hold the Binding's diffuseMap");
+    // A fresh sibling keeps the original defaults and no texture.
+    draw(sibling, states);
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+            check(at(states->vertexFloats, r, "VS register")[c] == 0.f, "sibling worldViewProj must keep its default");
+    for (int c = 0; c < 4; ++c)
+        check(at(states->pixelFloats, 0, "PS register")[c] == 0.f, "sibling factor must keep its default");
+    // Unsnapped VS: diffuseColour (default 1) is c4 in ashes and c5 in font.
+    check(at(states->vertexFloats, font ? 5 : 4, "VS register")[0] == 1.f, "sibling must keep the unsnapped VS");
+    if (manualTexture)
+        check(at(states->textures, DWORD(0), "PS texture slot") == nullptr,
+              "sibling must not inherit another Binding's texture");
+    // Sibling mutation must not reach the first Binding.
+    check(sibling->SetVector(at(handles, std::string("factor"), "factor"), &other) == S_OK, "sibling factor");
+    draw(binding, states);
+    for (int c = 0; c < 4; ++c)
+        check(at(states->pixelFloats, 0, "PS register")[c] == (&colour.x)[c], "Binding factor must survive sibling writes");
+    texture->Release();
+    sibling->Release(); binding->Release(); definition->Release(); context->detach_providers();
     states->Release(); device->Release();
 }
 int main(int argc, char** argv) {
     try {
-        for (int i = 1; i < argc; ++i) exercise(argv[i]);
+        for (int i = 1; i < argc; ++i) {
+            Effect effect;
+            std::ifstream input(argv[i], std::ios::binary);
+            effect.bytes.assign(std::istreambuf_iterator<char>(input), {});
+            wot::StockEffectBinary decoded; std::string error;
+            check(wot::decode_stock_dx9_effect(effect.bytes.data(), effect.bytes.size(), decoded, error), error);
+            auto shared = std::make_shared<wot::StockEffectBinary>(decoded);
+            for (const auto& resource : decoded.resource_views)
+                if (resource.semantic_present) effect.resources.push_back(resource.semantic);
+            // Precondition: producer registration changes the reflection namespace.
+            check(wot::StockEffectReflection(shared, {}).parameter_count() !=
+                  wot::StockEffectReflection(shared, effect.resources).parameter_count(),
+                  "Original effect hides no resources");
+            exercise(effect, false);  // late registration (FontManager/SimpleGUI init order)
+            exercise(effect, true);   // late removal
+        }
         std::cout << "Material bindings use the Definition handles of all original GUI effects\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
@@ -152,11 +206,12 @@ int main(int argc, char** argv) {
 class StockEffectMaterialHandleTests(unittest.TestCase):
     def test_original_gui_bindings_accept_definition_handles(self):
         compiler = shutil.which('c++')
-        client = Path(os.environ.get('WOT_0922_CLIENT',
-            '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
-        package = client / 'res/packages/misc.pkg'
-        if not compiler or not package.is_file():
-            self.skipTest('C++ compiler and exact #1513 misc.pkg are required')
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not compiler or not client:
+            self.skipTest('Set WOT_0922_CLIENT and provide a host C++ compiler')
+        package = Path(client) / 'res/packages/misc.pkg'
+        if not package.is_file():
+            self.skipTest('WOT_0922_CLIENT has no exact #1513 res/packages/misc.pkg')
         adapter = (ROOT / 'bigworld/stock_effect_adapter.cpp').read_text()
         body = adapter[adapter.index('class StockEffectAdapter final : public ID3DXEffect {'):]
         body = body[:body.index('private:')]
