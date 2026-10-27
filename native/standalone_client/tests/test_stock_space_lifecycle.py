@@ -331,6 +331,9 @@ class SpaceLifecycleTests(unittest.TestCase):
             (destination/'stock_space_sounds_data.hpp').write_bytes((ROOT/'bigworld/stock_space_sounds_data.hpp').read_bytes())
             (destination / 'stock_space_lifecycle.cpp').write_bytes((ROOT / 'bigworld/stock_space_lifecycle.cpp').read_bytes())
             (destination / 'case.py').write_text(BOUNDARY)
+            (destination / 'client.py').write_text(CLIENT_BOUNDARY)
+            (destination / 'pyc.py').write_text(PYC_SEQUENCES)
+            (destination / 'compat.py').write_bytes((ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py').read_bytes())
 
     @classmethod
     def populate(cls, directory):
