@@ -40,6 +40,7 @@
 #include "physics2/bsp.hpp"
 #include "physics2/collision_obstacle.hpp"
 #include "physics2/sweep_helpers.hpp"
+#include "pyscript/script.hpp"
 #include "pyscript/script_math.hpp"
 #include "space/deprecated_space_helpers.hpp"
 #include "space/client_space.hpp"
@@ -849,17 +850,19 @@ bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPas
     return result || owner.fail( "Cannot upload/draw original tree part constants and geometry" );
 }
 
-// #1513 SpeedTreeRenderer::s_pTarget 01d59f74 and its b035a0 snapshot.
-struct TreeCameraTarget
+// #1513 SpeedTreeRenderer statics: s_pTarget 01d59f74, its b035a0 snapshot
+// and the transparency state the BigWorld tree-hiding functions write.
+struct TreeHidingState
 {
     MatrixProviderPtr target;
     wot::StockTreeHidingFrame frame;
+    wot::StockTreeHidingSettings settings;
 };
 
-TreeCameraTarget & treeCameraTarget()
+TreeHidingState & treeHiding()
 {
     // Never destroyed: a static destructor must not release a Python provider.
-    static TreeCameraTarget * state = new TreeCameraTarget;
+    static TreeHidingState * state = new TreeHidingState;
     return *state;
 }
 
@@ -889,9 +892,9 @@ struct TreeHidingD3DX
 // semitransparent stage instead of the opaque batches (b05560).
 bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )
 {
-    const TreeCameraTarget & hiding = treeCameraTarget();
+    const TreeHidingState & hiding = treeHiding();
     const wot::StockTreeFade fade = wot::computeStockTreeFade<TreeHidingD3DX>(
-        wot::StockTreeHidingSettings(), hiding.target ? &hiding.frame : NULL, input );
+        hiding.settings, hiding.target ? &hiding.frame : NULL, input );
     instance.leavesAlpha = fade.leaves;
     instance.branchAlpha = fade.branches;
     return fade.faded();
@@ -1132,7 +1135,7 @@ void tickStockTreeSceneRendering( float dTime )
 {
     // b035a0 snapshots the target first. matrix() may run Python, so the
     // provider stays referenced even if the camera replaces it meanwhile.
-    TreeCameraTarget & hiding = treeCameraTarget();
+    TreeHidingState & hiding = treeHiding();
     if (MatrixProviderPtr target = hiding.target)
     {
         Matrix world;
@@ -1150,8 +1153,32 @@ void setStockTreeCameraTarget( MatrixProvider * target )
 {
     // b030b0 publishes the new target before the old one can be released.
     MatrixProviderPtr previous( target );
-    std::swap( treeCameraTarget().target, previous );
+    std::swap( treeHiding().target, previous );
 }
+
+// #1513 006b1800, 006b3d00 and 006b1880. Each also forwards to the SRT
+// SpeedTreeRender (00748190, 007481d0), which this client does not restore.
+void wg_enableTreeHiding( bool enable )
+{
+    treeHiding().settings.hideClosest = enable;
+}
+
+void wg_setTreeHidingRadius( float radius, float alphaRadius )
+{
+    auto & settings = treeHiding().settings;
+    settings.hideRadius = radius;
+    settings.hideRadiusAlpha = alphaRadius;
+    settings.squaredHideRadius = radius * radius;
+}
+
+void wg_enableTreeTransparency( bool enable )
+{
+    treeHiding().settings.transparency = enable;
+}
+
+PY_AUTO_MODULE_FUNCTION( RETVOID, wg_enableTreeHiding, ARG( bool, END ), BigWorld )
+PY_AUTO_MODULE_FUNCTION( RETVOID, wg_setTreeHidingRadius, ARG( float, ARG( float, END ) ), BigWorld )
+PY_AUTO_MODULE_FUNCTION( RETVOID, wg_enableTreeTransparency, ARG( bool, END ), BigWorld )
 
 void drawStockTreeSemitransparent( bool skipDrawing )
 {

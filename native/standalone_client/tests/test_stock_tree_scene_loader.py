@@ -19,12 +19,14 @@ ENGINE = r'''
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 #define BW_BEGIN_NAMESPACE namespace BW {
 #define BW_END_NAMESPACE }
 #define ERROR_MSG(...) std::fprintf(stderr,__VA_ARGS__)
 namespace BW {
 using uint32=std::uint32_t;
+using string=std::string;
 struct Matrix { float x=0; };
 struct BoundingBox { bool empty=true;float minimum=0,maximum=0; };
 struct DataSection {};
@@ -60,7 +62,35 @@ struct DynamicSceneProvider {
   found=nodes.find(handle.id);assert(found!=nodes.end());assert(liveObjects.count(found->second.object.id));nodes.erase(found);
  }
 };
-struct ClientSpace { virtual ~ClientSpace(){} };
+struct ClientSpace { bool clearedFlag=false;virtual ~ClientSpace(){}bool cleared()const{return clearedFlag;} };
+// stock_space_sounds: one owner per live space, lookup-only named sounds,
+// INVALID handles ignored by register/remove, every valid handle removed once.
+struct StockSpaceSoundOwner { ClientSpace* space;std::map<std::uint64_t,std::string> live;std::map<std::uint64_t,std::pair<const void*,uint32>> objects; };
+using StockSpaceSounds=std::shared_ptr<StockSpaceSoundOwner>;
+using StockSpaceSoundHandle=std::uint64_t;
+static const StockSpaceSoundHandle INVALID_STOCK_SPACE_SOUND=~StockSpaceSoundHandle(0);
+static std::map<ClientSpace*,std::weak_ptr<StockSpaceSoundOwner>> soundOwners;
+static std::set<StockSpaceSoundHandle> liveSounds;
+static StockSpaceSoundHandle nextSound=1;
+inline StockSpaceSounds acquireStockSpaceSounds(ClientSpace* space){
+ if(!space||space->cleared())return {};
+ auto owner=soundOwners[space].lock();
+ if(!owner){owner=std::make_shared<StockSpaceSoundOwner>();owner->space=space;soundOwners[space]=owner;}
+ return owner;
+}
+inline StockSpaceSoundHandle addStockSpaceNamedSound(const StockSpaceSounds& owner,const string& name,const Matrix& world){
+ assert(world.x>0);
+ if(!owner||name.compare(0,5,"sound")!=0)return INVALID_STOCK_SPACE_SOUND;
+ const auto handle=nextSound++;owner->live[handle]=name;liveSounds.insert(handle);return handle;
+}
+inline void removeStockSpaceSound(const StockSpaceSounds& owner,StockSpaceSoundHandle handle){
+ if(!owner||handle==INVALID_STOCK_SPACE_SOUND)return;
+ assert(owner->live.erase(handle)==1&&liveSounds.erase(handle)==1);owner->objects.erase(handle);
+}
+inline void registerStockSpaceObjectSound(const StockSpaceSounds& owner,const void* mapping,bool tree,uint32 index,StockSpaceSoundHandle handle){
+ if(!owner||handle==INVALID_STOCK_SPACE_SOUND)return;
+ assert(tree&&mapping&&owner->live.count(handle)&&!owner->objects.count(handle));owner->objects[handle]={mapping,index};
+}
 namespace CompiledSpace {
 struct BinaryFormat { bool valid=true;unsigned count=3; };
 struct StringTable {};
@@ -93,6 +123,8 @@ struct StockTreeSceneHandler {
  size_t objectCount()const{return values.size();}const SceneObject* objects()const{return values.data();}
  bool objectAvailable(size_t i)const{return available[i];}
  void worldCollisionBounds(size_t i,BoundingBox& bounds)const {assert(i<values.size());bounds=BoundingBox{};}
+ // Every third original tree resource has no sound definition.
+ string soundResource(size_t i)const {assert(i<values.size());return i%3==2?"silent":"sound"+std::to_string(i);}
  void unload(){for(auto object:values)assert(liveObjects.erase(object.id)==1);values.clear();available.clear();loaded=false;}
 };
 }
@@ -109,8 +141,12 @@ int main(){
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings));assert(loader.loadStatus()==1);
  assert(space.dynamic.nodes.empty());assert(loader.bind());assert(space.dynamic.nodes.size()==2);
  for(const auto& item:space.dynamic.nodes)assert(item.second.collision.empty);
+ // Mask 1 binds objects 0 and 2; object 2 has no sound definition.
+ {auto owner=soundOwners[&space].lock();assert(owner&&owner->live.size()==1&&owner->objects.size()==1);
+  assert(owner->objects.begin()->second.first==&file&&owner->objects.begin()->second.second==0);}
  assert(loader.bind()&&space.dynamic.nodes.size()==2);
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&loader.loadStatus()==0);
+ assert(liveSounds.empty()&&soundOwners[&space].expired());
  loader.unload();assert(space.dynamic.nodes.empty());
  StockTreeSceneLoader invisible(0);
  assert(invisible.loadFromSpace(&space,file,settings,mapping,strings)&&invisible.bind());
@@ -120,20 +156,26 @@ int main(){
  // A synchronous add notification can unload before add returns its handle.
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings));
  space.dynamic.onAdd=[&]{loader.unload();};
- assert(!loader.bind());assert(space.dynamic.nodes.empty()&&liveObjects.empty());
+ assert(!loader.bind());assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&liveSounds.empty());
  // Replacing the load during that notification must retain only the new
  // instances. The outer bind may remove only its own pending handle.
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings));
  space.dynamic.onAdd=[&]{loader.unload();assert(loader.loadFromSpace(&space,file,settings,mapping,strings));assert(loader.bind());};
  assert(!loader.bind());assert(space.dynamic.nodes.size()==2&&liveObjects.size()==3&&loader.loadStatus()==1);
+ assert(liveSounds.size()==1);
  space.dynamic.onRemove=[&]{loader.unload();};loader.unload();
- assert(space.dynamic.nodes.empty()&&liveObjects.empty());
+ assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&liveSounds.empty());
  // Native ILoader writes UNLOADED after doUnload returns. A nested fresh
  // load at this remove boundary must fail, never publish a lost owner.
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings)&&loader.bind());
  space.dynamic.onRemove=[&]{loader.unload();assert(!loader.loadFromSpace(&space,file,settings,mapping,strings));};
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&loader.loadStatus()==0);
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings)&&loader.bind());
+ loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&liveSounds.empty());
+ // A cleared space has no sound owner; trees still bind and retire.
+ space.clearedFlag=true;
+ assert(loader.loadFromSpace(&space,file,settings,mapping,strings)&&loader.bind());
+ assert(space.dynamic.nodes.size()==2&&liveSounds.empty()&&soundOwners[&space].expired());
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty());
  std::puts("Production tree-loader notification, mask, failure and teardown tests passed");
 }
@@ -144,7 +186,7 @@ class StockTreeSceneLoaderTests(unittest.TestCase):
     def test_actual_loader_with_guarded_engine_notification_order(self):
         with tempfile.TemporaryDirectory(prefix='stock-tree-loader-') as directory:
             directory = Path(directory)
-            for relative in ('pch.hpp', 'stock_tree_scene.hpp', 'compiled_space/loader.hpp',
+            for relative in ('pch.hpp', 'stock_tree_scene.hpp', 'stock_space_sounds.hpp', 'compiled_space/loader.hpp',
                              'compiled_space/compiled_space.hpp', 'scene/scene.hpp', 'scene/scene_object.hpp',
                              'scene/spatial_query_operation.hpp', 'space/dynamic_scene_provider.hpp'):
                 path = directory / relative

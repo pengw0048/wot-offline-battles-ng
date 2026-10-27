@@ -963,7 +963,7 @@ public:
 private:
 	MatrixProvider * p_;
 };
-namespace wot { struct StockTreeHidingFrame {}; }
+namespace wot { struct StockTreeHidingFrame {}; struct StockTreeHidingSettings {}; }
 @STATE@
 @PRODUCTION@
 int main()
@@ -977,7 +977,7 @@ int main()
 	{
 		if (target < 0) finiStockCursorCameraHiding();
 		else publishStockCursorCameraHiding( targets[target], enabled != 0 );
-		MatrixProvider * tree = treeCameraTarget().target.get();
+		MatrixProvider * tree = treeHiding().target.get();
 		std::printf("%d %d %d\n", tree ? tree->label : 0, first.references, second.references);
 	}
 	return 0;
@@ -1051,8 +1051,8 @@ print(json.dumps(out))
 
         # Production publishes exactly the 1d59f74 outcome to the old-ST4 owner.
         scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
-        state = scene[scene.index('struct TreeCameraTarget'):]
-        state = state[:state.index('\n}\n', state.index('TreeCameraTarget & treeCameraTarget()')) + 3]
+        state = scene[scene.index('struct TreeHidingState'):]
+        state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
         source = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
         production = function(scene, 'void setStockTreeCameraTarget( MatrixProvider * target )') + '\n' + \
             '\n'.join(function(source, signature) for signature in (

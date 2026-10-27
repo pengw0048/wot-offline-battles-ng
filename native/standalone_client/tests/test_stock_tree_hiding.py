@@ -464,7 +464,7 @@ static bool colourPass( TreeInstance & instance )
 
 static void dump( const char * step, const MatrixProvider & a, const MatrixProvider & b, const TreeInstance & tree )
 {
-    MatrixProvider * current = treeCameraTarget().target.get();
+    MatrixProvider * current = treeHiding().target.get();
     std::printf( "%s target=%d refs=%d,%d fade=%.6f,%.6f events=", step, current ? current->label : 0,
         a.references, b.references, tree.leavesAlpha, tree.branchAlpha );
     for (const auto & e : events) std::printf( "[%s]", e.c_str() );
@@ -596,8 +596,8 @@ int main()
 
 def lifecycle_source(engine_root):
     scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
-    state = scene[scene.index('struct TreeCameraTarget'):]
-    state = state[:state.index('\n}\n', state.index('TreeCameraTarget & treeCameraTarget()')) + 3]
+    state = scene[scene.index('struct TreeHidingState'):]
+    state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
     tree = '\n'.join(function(scene, signature) for signature in (
         'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )',
         'void tickStockTreeSceneRendering( float dTime )',
@@ -728,6 +728,275 @@ class SemitransparentEffectTests(unittest.TestCase):
             self.assertNotIn('g_albedoConversions', uniforms)
 
 
+API_HOST = r"""
+#include "stock_tree_hiding.hpp"
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
+#define BW_BEGIN_NAMESPACE
+#define BW_END_NAMESPACE
+#define BW_STATIC_ASSERT( condition, message ) static_assert( condition, #message )
+typedef long Py_ssize_t;
+
+// Python objects: tag 1 bool, 2 float, 3 other; raw is the bool or binary32.
+struct PyObject { unsigned tag, raw; long references; std::vector<PyObject *> items; };
+PyObject pyNone = { 0, 0, 1, {} };
+#define Py_RETURN_NONE return (++pyNone.references, &pyNone)
+Py_ssize_t PyTuple_Size( PyObject * tuple ) { return Py_ssize_t( tuple->items.size() ); }
+PyObject * PyTuple_GetItem( PyObject * tuple, Py_ssize_t index ) { return tuple->items[index]; }
+std::vector<std::string> events;
+namespace Script
+{
+int setData( PyObject * object, bool & value, const char * name )
+{
+    if (object->tag != 1) { events.push_back( std::string( "error|" ) + name ); return -1; }
+    value = (object->raw & 1) != 0;
+    return 0;
+}
+int setData( PyObject * object, float & value, const char * name )
+{
+    if (object->tag != 2) { events.push_back( std::string( "error|" ) + name ); return -1; }
+    std::memcpy( &value, &object->raw, 4 );
+    return 0;
+}
+PyObject * argCountError( const char * name, int low, int high, ... )
+{
+    std::string text = std::string( "count|" ) + name + "|" + std::to_string( low ) + "|" + std::to_string( high );
+    va_list types;
+    va_start( types, high );
+    for (int i = 0; i < high; ++i) text += std::string( "|" ) + va_arg( types, const char * );
+    va_end( types );
+    events.push_back( text );
+    return nullptr;
+}
+}
+std::vector<std::string> registered;
+struct PyModuleMethodLink
+{
+    PyModuleMethodLink( const char * module, const char * name, PyObject * (*)( PyObject *, PyObject * ), const char * )
+    { registered.push_back( std::string( module ) + "." + name ); }
+};
+@MACROS@
+
+struct MatrixProvider { int references = 1; };
+class MatrixProviderPtr
+{
+public:
+    MatrixProviderPtr( MatrixProvider * p = nullptr ) : p_( p ) {}
+    MatrixProvider * get() const { return p_; }
+    explicit operator bool() const { return p_ != nullptr; }
+private:
+    MatrixProvider * p_;
+};
+struct TreeInstance { float leavesAlpha = 1.f, branchAlpha = 1.f; };
+@D3DX@
+@STATE@
+@FUNCTIONS@
+@FADE@
+
+int main()
+{
+    for (const auto & name : registered) std::printf( "R %s\n", name.c_str() );
+    MatrixProvider provider;
+    char line[512];
+    while (std::fgets( line, sizeof( line ), stdin ))
+    {
+        char kind = line[0];
+        if (kind == 'C')
+        {
+            // C function count tag raw ...
+            int function, count, offset = 2, used = 0;
+            std::sscanf( line + offset, "%d %d%n", &function, &count, &used );
+            offset += used;
+            PyObject args = { 0, 0, 1, {} };
+            std::vector<PyObject> items( count );
+            for (int i = 0; i < count; ++i)
+            {
+                items[i].references = 1;
+                std::sscanf( line + offset, "%u %x%n", &items[i].tag, &items[i].raw, &used );
+                offset += used;
+                args.items.push_back( &items[i] );
+            }
+            PyObject * (*functions[])( PyObject *, PyObject * ) =
+                { _py_wg_enableTreeHiding, _py_wg_setTreeHidingRadius, _py_wg_enableTreeTransparency };
+            events.clear();
+            const long before = pyNone.references;
+            PyObject * result = functions[function]( nullptr, &args );
+            const auto & s = treeHiding().settings;
+            unsigned words[3];
+            std::memcpy( words, &s.squaredHideRadius, 4 );
+            std::memcpy( words + 1, &s.hideRadius, 4 );
+            std::memcpy( words + 2, &s.hideRadiusAlpha, 4 );
+            std::printf( "C %s %ld %d %08x %08x %08x %d", result == &pyNone ? "none" : "null",
+                pyNone.references - before, int( s.hideClosest ), words[0], words[1], words[2], int( s.transparency ) );
+            for (auto e : events)
+            {
+                for (auto & c : e) if (c == ' ') c = '_';
+                std::printf( " %s", e.c_str() );
+            }
+            std::printf( "\n" );
+        }
+        else
+        {
+            // F target? frame7 world16 min3 max3 eye3 lod flags (hex binary32)
+            unsigned u[34];
+            int offset = 2, used = 0;
+            for (int i = 0; i < 34; ++i) { std::sscanf( line + offset, "%x%n", &u[i], &used ); offset += used; }
+            auto f = []( unsigned w ) { float v; std::memcpy( &v, &w, 4 ); return v; };
+            TreeHidingState & state = treeHiding();
+            state.target = MatrixProviderPtr( u[0] ? &provider : nullptr );
+            for (int i = 0; i < 3; ++i) { state.frame.camera[i] = f( u[1 + i] ); state.frame.target[i] = f( u[4 + i] ); }
+            state.frame.distance = f( u[7] );
+            float world[16];
+            for (int i = 0; i < 16; ++i) world[i] = f( u[8 + i] );
+            wot::StockTreeFadeInput input = {};
+            input.world = world;
+            for (int i = 0; i < 3; ++i)
+            {
+                input.boundsMin[i] = f( u[24 + i] );
+                input.boundsMax[i] = f( u[27 + i] );
+                input.eye[i] = f( u[30 + i] );
+            }
+            input.lodDistance = f( u[33] );
+            input.model3d = true;
+            TreeInstance instance;
+            const bool faded = fadeTreeInstance( instance, input );
+            unsigned leaves, branches;
+            std::memcpy( &leaves, &instance.leavesAlpha, 4 );
+            std::memcpy( &branches, &instance.branchAlpha, 4 );
+            std::printf( "F %08x %08x %d\n", leaves, branches, int( faded ) );
+        }
+    }
+    return 0;
+}
+"""
+
+
+def script_macros():
+    import tarfile
+    from test_stock_cursor_camera import ARCHIVE
+    with tarfile.open(ARCHIVE) as archive:
+        name = next(n for n in archive.getnames() if n.endswith('/programming/bigworld/lib/pyscript/script.hpp'))
+        text = archive.extractfile(name).read().decode('utf-8', 'replace')
+    start = text.index('// Section: Macros: Recursion utilities')
+    end = text.index('// Section: PyModuleLink')
+    module = text[text.index('#define PY_AUTO_MODULE_FUNCTION( RET, FUNC_NAME, ARGS, MODULE_NAME )'):]
+    module = module[:module.index('/// This macro defines an alias')]
+    return text[start:end] + '\n' + module
+
+
+def api_host_source():
+    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+    state = scene[scene.index('struct TreeHidingState'):]
+    state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
+    functions = scene[scene.index('void wg_enableTreeHiding( bool enable )'):]
+    functions = functions[:functions.index('\n', functions.index('PY_AUTO_MODULE_FUNCTION( RETVOID, wg_enableTreeTransparency')) + 1]
+    fade = function(scene, 'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )')
+    d3dx = PROBE[PROBE.index('struct HostD3DX'):PROBE.index('int main()')].replace('struct HostD3DX', 'struct TreeHidingD3DX')
+    return (API_HOST.replace('#include "stock_tree_hiding.hpp"', (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text())
+            .replace('@MACROS@', script_macros()).replace('@D3DX@', d3dx).replace('@STATE@', state)
+            .replace('@FUNCTIONS@', functions).replace('@FADE@', fade))
+
+
+API_ORACLE = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import stock_tree_hiding_oracle as o
+oracle = o.TreeHidingOracle(sys.argv[2])
+plan = json.loads(sys.stdin.read())
+functions = (o.ENABLE_HIDING, o.SET_RADIUS, o.ENABLE_TRANSPARENCY)
+out = []
+for function, values, fades in plan:
+    step = oracle.call_script(functions[function], [tuple(v) for v in values])
+    step.append([oracle.compute_fade(dict(case, settings=None)) for case in fades])
+    out.append(step)
+print(json.dumps(out))
+"""
+
+
+def api_plan():
+    # The retail sequence: Avatar init, sniper enable, visibility toggles,
+    # sniper disable; then legal values and every invalid call shape.
+    between = dict(lod=15.0, min=[-3.0, 0.0, -3.0], max=[3.0, 12.0, 3.0], eye=[0.0, 2.0, 0.0],
+                   world=rotation_y(0.0, 1.0, (10.0, 0.0, 0.0)), bush=False, model3d=True,
+                   frame=dict(camera=[0.0, 2.0, 0.0], target=[20.0, 1.0, 0.0], distance=20.0))
+    near = dict(between, eye=[-3.0, 2.0, 0.0],
+                frame=dict(camera=[-3.0, 2.0, 0.0], target=[-20.0, 1.0, 0.0], distance=17.0))
+    lone = dict(near, frame=None)
+    fades = [between, near, lone]
+    true, false = ['bool', True], ['bool', False]
+    calls = [(0, [false]), (0, [true]), (1, [['float', 15.0], ['float', 10.0]]), (2, [false]), (2, [true]),
+             (0, [false]), (1, [['float', 7.5], ['float', 9.25]]), (0, [true]), (1, [['float', 0.0], ['float', 0.0]]),
+             (1, [['float', 15.0], ['float', 10.0]]), (0, []), (0, [true, true]), (1, [['float', 15.0]]),
+             (1, [['float', 15.0], ['float', 10.0], ['float', 1.0]]), (1, [['bad', 0], ['float', 3.0]]),
+             (1, [['float', 3.0], ['bad', 0]]), (2, []), (2, [['bad', 0]]), (0, [['float', 1.0]]), (2, [true])]
+    return [(function, values, fades) for function, values in calls]
+
+
+def api_host_input(plan):
+    rows = []
+    for function, values, fades in plan:
+        words = []
+        for kind, value in values:
+            tag = {'bool': 1, 'float': 2}.get(kind, 3)
+            words.append('%d %x' % (tag, bits(value) if kind == 'float' else int(bool(value))))
+        rows.append('C %d %d %s' % (function, len(values), ' '.join(words)))
+        for case in fades:
+            frame = case['frame'] or dict(camera=[0.0] * 3, target=[0.0] * 3, distance=0.0)
+            values32 = frame['camera'] + frame['target'] + [frame['distance']] + case['world'] + case['min'] + \
+                case['max'] + case['eye'] + [case['lod']]
+            rows.append('F %x %s' % (int(case['frame'] is not None), ' '.join('%x' % bits(v) for v in values32)))
+    return '\n'.join(rows) + '\n'
+
+
+class TreeHidingApiTests(unittest.TestCase):
+    def test_script_calls_reach_the_tree_consumer_like_the_original(self):
+        requirements(self)
+        plan = api_plan()
+        run = subprocess.run([str(ORACLE_PYTHON), '-c', API_ORACLE, str(TESTS), str(CLIENT / 'WorldOfTanks.exe')],
+                             input=json.dumps(plan), capture_output=True, text=True,
+                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        original = json.loads(run.stdout)
+        with tempfile.TemporaryDirectory() as folder:
+            binary = compile_host(Path(folder), api_host_source(), 'tree_hiding_api')
+            result = subprocess.run([str(binary)], input=api_host_input(plan), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual([line for line in lines if line.startswith('R ')],
+                         ['R BigWorld.wg_enableTreeHiding', 'R BigWorld.wg_setTreeHidingRadius',
+                          'R BigWorld.wg_enableTreeTransparency'])
+        calls = [line.split() for line in lines if line.startswith('C ')]
+        fades = [line.split()[1:3] for line in lines if line.startswith('F ')]
+        srt = []
+        for index, (step, call) in enumerate(zip(original, calls)):
+            returned, none, events, state, fade = step
+            events = [e for e in events if not e[0].startswith('srt_')]
+            srt.extend(e for e in step[2] if e[0].startswith('srt_'))
+            expected = ['C', 'none' if returned == 'none' else 'null', str(none), str(state[0]),
+                        '%08x' % bits(state[1]), '%08x' % bits(state[2]), '%08x' % bits(state[3]), str(state[4])]
+            expected += ['|'.join(str(v) for v in e).replace(' ', '_') for e in events]
+            self.assertEqual(call, expected, 'step %d %r' % (index, plan[index][:2]))
+            self.assertEqual(fades[3 * index:3 * index + 3], [['%08x' % bits(a), '%08x' % bits(b)] for a, b in fade],
+                             'fade after step %d' % index)
+        # The SRT SpeedTreeRender writes (00748190/007481d0) have no owner here.
+        self.assertEqual(srt, [['srt_hiding', 0], ['srt_hiding', 1], ['srt_radius', 15.0, 10.0], ['srt_hiding', 0],
+                               ['srt_radius', 7.5, 9.25], ['srt_hiding', 1], ['srt_radius', 0.0, 0.0],
+                               ['srt_radius', 15.0, 10.0]])
+        # Each retail state reaches the consumer: the target fade at init, the
+        # sniper near fade (15/10 m) with or without a target, none after disable.
+        flat = [[unbits(int(a, 16)), unbits(int(b, 16))] for a, b in fades]
+        hidden, opaque = [f32(0.4), f32(0.7)], [1.0, 1.0]
+        self.assertEqual(flat[0:3], [hidden, opaque, opaque])
+        for index in (7, 8, 11):
+            self.assertTrue(f32(0.4) < flat[index][0] < 1.0 and flat[index][1] == f32(0.7), index)
+        self.assertEqual(flat[15:18], [hidden, opaque, opaque])
+
+
 class HidingConsumerReachabilityTests(unittest.TestCase):
     def test_every_published_target_has_a_production_reader(self):
         """The base adapter stored targets that no production code read."""
@@ -740,8 +1009,11 @@ class HidingConsumerReachabilityTests(unittest.TestCase):
         readers = [signature for signature in (
             'void tickStockTreeSceneRendering( float dTime )',
             'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )')
-            if 'treeCameraTarget()' in function(scene, signature)]
+            if 'treeHiding()' in function(scene, signature)]
         self.assertEqual(len(readers), 2)
+        fade = function(scene, 'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )')
+        self.assertIn('hiding.settings, hiding.target ? &hiding.frame : NULL, input', fade)
+        self.assertNotIn('StockTreeHidingSettings()', scene)
         draw = function(scene, 'virtual void doDraw( const SceneDrawContext & context, const SceneObject * objects, size_t count )')
         self.assertIn('fadeTreeInstance( *instance, input )', draw)
         self.assertIn('owner->semitransparent.push_back( item )', draw)
