@@ -328,7 +328,7 @@ private:
 namespace Moo
 {
 enum { CONSTANTS_PER_VIEW = 4 };
-struct EffectVisualContext { void updateSharedConstants( int ) { event( "constants" ); } };
+struct EffectVisualContext { void updateSharedConstants( int kind ) { event( "constants " + std::to_string( kind ) ); } };
 struct RenderContext
 {
     Matrix view_ = Matrix::identity, projection_ = Matrix::identity, invView_ = Matrix::identity;
@@ -720,8 +720,9 @@ class ProductionHidingLifecycleTests(unittest.TestCase):
         self.assertEqual(rows['disabled'], 'target=0 refs=1,1 %s events=' % clear)
         self.assertEqual(rows['enabled'], 'target=1 refs=2,1 %s events=[matrix 1]' % hidden)
         # afef60: billboards from the live camera, then the colour-pass camera.
-        drawn = ('[billboards][view 9][projection 3][transforms][constants][stencil 32]'
-                 '[draw 7 0 1][draw 7 0 0][draw 7 0 3][draw 7 1 1][draw 7 1 0][draw 7 1 3][restore stencil]')
+        # afef60 sets no pipeline stencil; vslot 0x14(4) is the per-view constants.
+        drawn = ('[billboards][view 9][projection 3][transforms][constants 4]'
+                 '[draw 7 0 1][draw 7 0 0][draw 7 0 3][draw 7 1 1][draw 7 1 0][draw 7 1 3]')
         self.assertEqual(rows['drawn'], 'target=1 refs=2,1 %s events=%s' % (hidden, drawn))
         self.assertEqual(rows['drawn-leaves'], 'target=1 refs=2,1 %s events=%s' % (hidden, drawn.replace(
             '[draw 7 0 1]', '[draw 7 0 2][draw 7 0 1]').replace('[draw 7 1 1]', '[draw 7 1 2][draw 7 1 1]')))
@@ -1168,7 +1169,7 @@ struct RenderTarget
     DX::Texture * pTexture() { return &texture; }
 };
 typedef std::shared_ptr<RenderTarget> RenderTargetPtr;
-struct EffectVisualContext { void updateSharedConstants( int ) {} };
+struct EffectVisualContext { void updateSharedConstants( int kind ); };
 struct FullscreenQuad
 {
     bool drawChecked( EffectMaterial & material, uint w, uint h )
@@ -1195,6 +1196,11 @@ struct RenderContext
     FullscreenQuad & fsQuad() { return quad_; }
 };
 inline RenderContext & rc() { static RenderContext value; return value; }
+// Per-screen constants read the current screen size (EffectVisualContext).
+inline void EffectVisualContext::updateSharedConstants( int kind )
+{
+    event( "constants " + std::to_string( kind ) + " " + number( rc().screenWidth() ) + "x" + number( rc().screenHeight() ) );
+}
 }
 HRESULT setStockSceneViewport( DX::Viewport * v, bool scene )
 { event( "viewport " + std::to_string( v->Width ) + " " + std::to_string( v->Height ) + " " + std::to_string( int( scene ) ) ); return 0; }
@@ -1284,8 +1290,12 @@ def normalise_original(trace):
     out = []
     for item in trace:
         kind = item[0]
-        if kind in ('acquire', 'release', 'stencil', 'srt'):
-            continue  # pool lifetime, unmapped stencil mode 2, absent SRT owner
+        if kind in ('acquire', 'release', 'srt'):
+            continue  # pool lifetime and the SRT owner (separate tests)
+        if kind == 'stencil':
+            # ctx vslot 0x14 (94b5a0 -> 9b0e80) is updateSharedConstants(mask).
+            out.append('constants %d' % item[1])
+            continue
         if kind == 'scope':
             out.append('bind')
         elif kind == 'colour':
@@ -1308,11 +1318,21 @@ def normalise_original(trace):
 
 
 def normalise_production(row):
-    out, alpha, bound = [], None, False
+    out, alpha, bound, blurring = [], None, False, False
     for item in row.split('|')[1:]:
+        if blurring:
+            # The blur owner's own target binds and constants (9d62e0).
+            blurring = item != 'pop'
+            if item == 'technique blur HORIZONTAL_PASS':
+                out.append('blur')
+            continue
         if item == 'push' and not bound:
             out.append('bind')
             bound = True
+        elif item == 'push':
+            blurring = True
+        elif item.startswith('constants '):
+            out.append(' '.join(item.split()[:2]))
         elif item == 'pop' and 'end' not in out:
             out.append('end')
         elif item.startswith('clear '):
@@ -1367,6 +1387,10 @@ class OptimiserStageTests(unittest.TestCase):
             self.assertEqual(normalise_production(produced[index]), normalise_original(original[index]),
                              '%r\n%s' % (cases[index], produced[index]))
         quarter = produced[1].split('|')
+        # The two vslot 0x14(2) calls apply per-screen constants for the
+        # quarter target and then for the restored scene target.
+        self.assertEqual([e for e in quarter if e.startswith('constants 2')][0], 'constants 2 400x225')
+        self.assertEqual(quarter[quarter.index('technique upsample UPSAMPLE_RT') - 1], 'constants 2 1600x900')
         # The quarter pass binds the first target with its depth over the
         # scene-resolution viewport; the blur binds none and uses its DRR source.
         self.assertEqual(quarter[1:5], ['push', 'depth 30', 'target 0 20', 'viewport 400 225 1'])
@@ -1386,8 +1410,8 @@ class OptimiserStageTests(unittest.TestCase):
         self.assertEqual(normalise_production(produced[7]), ['trees 0'])
         self.assertEqual(normalise_production(produced[8]), ['fail', 'trees 1'])
         self.assertEqual(normalise_production(produced[9]),
-                         ['bind', 'clear colour 0', 'clear depth 1 0 3', 'fail', 'trees 1', 'end'])
-        self.assertEqual(normalise_production(produced[10]), normalise_original(original[1])[:8] + ['fail'])
+                         ['bind', 'constants 2', 'clear colour 0', 'clear depth 1 0 3', 'fail', 'trees 1', 'end'])
+        self.assertEqual(normalise_production(produced[10]), normalise_original(original[1])[:9] + ['fail'])
 
 
 QUARTER_HOST = r"""

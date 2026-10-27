@@ -1238,9 +1238,8 @@ public:
     HidingTargetScope() : saved_( Moo::rc().pushRenderTarget() ) {}
     ~HidingTargetScope()
     {
-        if (!saved_) return;
-        Moo::rc().popRenderTarget();
-        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
+        // RenderTargetStack::pop restores the targets, viewport and screen size.
+        if (saved_) Moo::rc().popRenderTarget();
     }
     bool bind( const Moo::RenderTargetPtr & target, bool depth )
     {
@@ -1256,7 +1255,6 @@ public:
         if (FAILED( setStockSceneViewport( &viewport, true ) )) return false;
         Moo::rc().screenWidth( target->width() );
         Moo::rc().screenHeight( target->height() );
-        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
         return true;
     }
 private:
@@ -1293,6 +1291,7 @@ bool blurHidingTarget( TreeRenderingOwner & owner )
         HidingTargetScope target;
         // a69bb7's blur binds no depth; this pass has no depth test either.
         if (!target.bind( outputs[pass], false ) || !material->hTechnique( techniques[pass] )) return false;
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
         ID3DXEffect * effect = material->pEffect()->pEffect();
         const Vector4 screen( float( width ), float( height ), 1.f / width, 1.f / height );
         const Vector4 projection = hidingTargetProjection( inputs[pass] );
@@ -1340,6 +1339,9 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
             drawStockTreeSemitransparent( true );
             return;
         }
+        // 9c4fa8: the draw context's vslot 0x14(2) applies the per-screen
+        // shared constants for the quarter target (2 = CONSTANTS_PER_SCREEN).
+        Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
         // 998ad0 clears the colour to 99daa0's packed zero; 998a20 clears the
         // depth target with flags 3 (depth and stencil) to 1 and 0.
         if (FAILED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
@@ -1358,8 +1360,10 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
         owner->fail( "Cannot blur the original tree-hiding target" );
         return;
     }
-    // 9c512b: UPSAMPLE_RT samples the quarter target (99b8e0 also binds its
-    // DRR parameters) over the scene target restored above.
+    // 9c511d: per-screen constants again for the restored scene target, then
+    // UPSAMPLE_RT samples the quarter target (99b8e0 also binds its DRR
+    // parameters).
+    Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_SCREEN );
     auto & material = owner->upsampleMaterial;
     ID3DXEffect * effect = material->pEffect()->pEffect();
     const Vector4 projection = hidingTargetProjection( targets[0] );
@@ -1407,15 +1411,15 @@ void drawStockTreeSemitransparent( bool skipDrawing )
     std::sort( trees.begin(), trees.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
         return a.instance->leavesAlpha > b.instance->leavesAlpha;
     } );
-    auto * pipeline = Renderer::instance().pipeline();
-    if (!pipeline) return;
     float billboardRotation[4];
     treeBillboardRotation( billboardRotation );
+    // afef60: 9635d0 updates the view transforms, then the draw context's
+    // vslot 0x14(4) (94b5a0 -> 9b0e80) applies the per-view shared constants.
+    // Unlike the public SDK it sets no pipeline stencil usage.
     Moo::rc().view( owner->alphaPassView );
     Moo::rc().projection( owner->alphaPassProjection );
     Moo::rc().updateViewTransforms();
     Moo::rc().effectVisualContext().updateSharedConstants( Moo::CONSTANTS_PER_VIEW );
-    pipeline->setupSystemStencil( IRendererPipeline::STENCIL_USAGE_SPEEDTREE );
     const bool leaves = owner->semitransparentLeaves && owner->semitransparentLeaves->activeOption() != 0;
     bool result = true;
     for (const auto & tree : trees)
@@ -1428,7 +1432,6 @@ void drawStockTreeSemitransparent( bool skipDrawing )
             for (unsigned part : parts)
                 result = result && drawSemitransparentPart( *owner, *materials[part], part, tree, billboardRotation );
         }
-    pipeline->restoreSystemStencil();
 }
 
 void finaliseStockTreeSceneRendering()
