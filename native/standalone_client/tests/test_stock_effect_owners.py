@@ -30,20 +30,21 @@ class StockEffectOwnerTests(unittest.TestCase):
                     path = root / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(original.extractfile(member).read())
-            patch.patch_context(root)
             path = root / 'lib/moo/effect_visual_context.cpp'
+            public = path.read_text()
+            patch.patch_context(root)
             generated = path.read_text()
             patch.patch_context(root)
             self.assertEqual(path.read_text(), generated)
-            # Upgrade an already patched engine, not just a fresh extraction.
-            begin = generated.index('            // #1513 Screen')
-            end = generated.index('            if (!mapping', begin)
-            path.write_text(generated[:begin] +
-                '            EffectConstantValuePtr* mapping = getMapping(BW::StringRef(semantic.data(), semantic.size()), false);\n' +
-                generated[end:])
+            # Upgrade a preparation that still has the retired shared-only remap.
+            cached = generated.replace(patch.STOCK_SCREEN_VALUE, patch.PUBLIC_SCREEN_VALUE).replace(
+                patch.SHARED_SCREEN_LOOKUP, patch.SHARED_SCREEN_REMAP)
+            self.assertNotEqual(cached, generated)
+            path.write_text(cached)
             patch.patch_context(root)
             self.assertEqual(path.read_text(), generated)
-            constants = generated[generated.index('class ScreenConstant'):generated.index('class WorldViewConstant')]
+            def constants(text):
+                return text[text.index('class ScreenConstant'):text.index('class WorldViewConstant')]
             begin = generated.index('[this](const std::string& semantic')
             end = generated.index('}, [](const std::string& error)', begin) + 1
             provider = generated[begin:end]
@@ -51,10 +52,15 @@ class StockEffectOwnerTests(unittest.TestCase):
 #include <cassert>
 #include <string>
 #define BW_GUARD
+#define SUCCEEDED(value) ((value) >= 0)
 namespace BW {using StringRef=std::string;}
 struct Vector4 {float x,y,z,w;Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}};
 using D3DXHANDLE=const char*;
-struct ID3DXEffect {Vector4 value{0,0,0,0};void SetVector(D3DXHANDLE,const Vector4* v){value=*v;}};
+struct ID3DXEffect {
+    bool stock;Vector4 value{0,0,0,0};
+    int SetVector(D3DXHANDLE,const Vector4* v){value=*v;return 0;}
+};
+namespace wot {bool is_stock_effect(ID3DXEffect* effect){return effect&&effect->stock;}}
 struct RenderContext {
     float width=0,height=0;
     float screenWidth(){return width;} float screenHeight(){return height;}
@@ -63,36 +69,50 @@ struct RenderContext {
 RenderContext context;
 RenderContext& rc(){return context;}
 struct EffectConstantValue {virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
-''' + constants + r'''
+namespace generated {
+GENERATED
+}
+namespace original {
+PUBLIC
+}
 struct EffectConstantValuePtr {
     EffectConstantValue* value;
     bool exists(){return value!=nullptr;}
     EffectConstantValue& operator*(){return *value;}
 };
 struct Context {
-    ScreenConstant screen;InvScreenConstant inverse;
-    EffectConstantValuePtr legacy{&screen},current{&inverse};
+    generated::ScreenConstant screen;
+    EffectConstantValuePtr mapping{&screen};
     EffectConstantValuePtr* getMapping(const BW::StringRef& name,bool create){
         assert(!create);
-        return name=="Screen"?&legacy:name=="InvScreen"?&current:nullptr;
+        return name=="Screen"?&mapping:nullptr;
     }
     void check(){
         auto provider=PROVIDER;
-        ID3DXEffect effect;
+        ID3DXEffect stock{true},legacy{false};
         assert(provider("Screen",nullptr,nullptr));
-        assert(!provider("Unavailable",nullptr,nullptr));
+        assert(!provider("InvScreen",nullptr,nullptr));
         for(auto size:{Vector4(1920,1080,0,0),Vector4(960,540,0,0),Vector4(1279,719,0,0)}){
             context.width=size.x;context.height=size.y;
-            assert(provider("Screen",&effect,"g_screen"));
-            assert(effect.value.x==size.x&&effect.value.y==size.y);
-            assert(effect.value.z==1.f/size.x&&effect.value.w==1.f/size.y);
-            assert((**getMapping("Screen",false))(&effect,"legacy_screen"));
-            assert(effect.value.z==size.x*.5f&&effect.value.w==size.y*.5f);
+            // Shared buffers and per-object constants read the same producer.
+            assert(provider("Screen",&stock,"g_screen"));
+            assert(stock.value.x==size.x&&stock.value.y==size.y);
+            assert(stock.value.z==1.f/size.x&&stock.value.w==1.f/size.y);
+            stock.value=Vector4(0,0,0,0);
+            assert((**getMapping("Screen",false))(&stock,"resolution"));
+            assert(stock.value.z==1.f/size.x&&stock.value.w==1.f/size.y);
+            assert((**getMapping("Screen",false))(&legacy,"legacy_screen"));
+            assert(legacy.value.z==size.x*.5f&&legacy.value.w==size.y*.5f);
+            // Failing control: the public producer gives an original effect half sizes.
+            original::ScreenConstant unpatched;
+            assert(unpatched(&stock,"resolution"));
+            assert(stock.value.z==size.x*.5f&&stock.value.w==size.y*.5f);
         }
     }
 };
 int main(){Context owner;owner.check();}
-'''.replace('PROVIDER', provider)
+'''.replace('PROVIDER', provider).replace('GENERATED', constants(generated)).replace(
+                'PUBLIC', constants(public))
             (root / 'probe.cpp').write_text(source)
             subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',
                             str(root / 'probe.cpp'), '-o', str(root / 'probe')], check=True)

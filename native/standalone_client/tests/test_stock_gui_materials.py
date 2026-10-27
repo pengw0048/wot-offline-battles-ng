@@ -222,5 +222,212 @@ int main(int argc,char**argv) {
         subprocess.run([str(binary)] + [str(path) for path in effects], check=True)
 
 
+
+PIXEL_SNAP_HARNESS = r"""
+#include "wot/stock_effect_binding.hpp"
+#include "wot/stock_effect_reflection.hpp"
+#include "wot/stock_shader_runtime.hpp"
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <stdexcept>
+#define BW_GUARD
+#define SUCCEEDED(value) ((value) >= 0)
+struct Vector4 {float x,y,z,w;Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}};
+using D3DXHANDLE=const char*;
+// ARIE SetVector resolves the named uniform and writes the material Binding.
+struct ID3DXEffect {
+    wot::StockEffectReflection* reflection;
+    wot::StockEffectBinding* binding;
+    int SetVector(D3DXHANDLE name,const Vector4* value) {
+        const auto* parameter=reflection->parameter_reference(reflection->parameter_by_name(name));
+        std::string error;
+        return parameter&&binding->set_uniform(parameter->owner,parameter->member,value,
+            sizeof(*value),3,error)?0:-1;
+    }
+};
+namespace wot {bool is_stock_effect(ID3DXEffect* effect){return effect!=nullptr;}}
+struct RenderContext {
+    float width=0,height=0;
+    float screenWidth(){return width;} float screenHeight(){return height;}
+    float halfScreenWidth(){return width*.5f;} float halfScreenHeight(){return height*.5f;}
+};
+RenderContext context;
+RenderContext& rc(){return context;}
+struct EffectConstantValue {virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
+namespace generated {
+GENERATED
+}
+namespace original {
+PUBLIC
+}
+using Register=std::array<float,4>;
+// Evaluates only the vs_3_0 instructions present in the original GUI shaders.
+Register run(const std::vector<std::uint32_t>& code,const std::vector<std::uint32_t>& floats,
+             const Register& position) {
+    Register r[32]={},c[256]={},o[12]={};
+    for(std::size_t i=0;i*4<floats.size()&&i<256;++i) std::memcpy(c[i].data(),&floats[i*4],16);
+    const Register v[3]={position,{1,1,1,1},{0,0,0,0}};
+    auto bank=[&](std::uint32_t token)->Register* {
+        const auto type=((token>>28)&7)|((token>>8)&0x18),index=token&0x7ff;
+        if(token&0x2000) throw std::runtime_error("relative addressing");
+        if(type==0) return &r[index]; if(type==1) return const_cast<Register*>(&v[index]);
+        if(type==2) return &c[index]; if(type==6) return &o[index];
+        throw std::runtime_error("register type");
+    };
+    auto source=[&](std::uint32_t token) {
+        const auto& value=*bank(token);Register out;
+        for(int k=0;k<4;++k) out[k]=value[(token>>(16+2*k))&3];
+        const auto modifier=(token>>24)&15;
+        if(modifier==1) for(auto& x:out) x=-x; else if(modifier) throw std::runtime_error("modifier");
+        return out;
+    };
+    assert(code.at(0)==0xfffe0300u);
+    for(std::size_t i=1;i<code.size();) {
+        const auto token=code[i],op=token&0xffff,length=(token>>24)&15;
+        if(op==0xfffe) {i+=1+((token>>16)&0x7fff);continue;}
+        if(op==0xffff) return o[0];
+        const auto* a=&code[i+1];
+        if(op==81) std::memcpy(c[a[0]&0x7ff].data(),a+1,16);
+        else if(op!=31) {
+            if((a[0]>>20)&15) throw std::runtime_error("result modifier");
+            Register s0=source(a[1]),s1=length>2?source(a[2]):Register{},s2=length>3?source(a[3]):Register{},out{};
+            for(int k=0;k<4;++k) switch(op) {
+                case 1: out[k]=s0[k];break;
+                case 2: out[k]=s0[k]+s1[k];break;
+                case 4: out[k]=s0[k]*s1[k]+s2[k];break;
+                case 5: out[k]=s0[k]*s1[k];break;
+                case 6: assert(s0[0]==s0[3]);out[k]=1.f/s0[0];break;
+                case 19: out[k]=s0[k]-std::floor(s0[k]);break;
+                default: throw std::runtime_error("opcode "+std::to_string(op));
+            }
+            auto& destination=*bank(a[0]);
+            for(int k=0;k<4;++k) if((a[0]>>(16+k))&1) destination[k]=out[k];
+        }
+        i+=1+length;
+    }
+    throw std::runtime_error("missing end");
+}
+template<class Producer>
+Register draw(const std::shared_ptr<wot::StockEffectBinary>& effect,bool snap,
+              Producer& producer,const Register& position) {
+    wot::StockEffectUniformPool pool;wot::StockEffectUniformContext shared(pool);
+    wot::StockEffectBinding binding(effect,shared);wot::StockEffectReflection reflection(effect,{});
+    ID3DXEffect handle{&reflection,&binding};
+    auto write=[&](const char* name,const void* data,std::size_t size,unsigned type) {
+        const auto* parameter=reflection.parameter_reference(reflection.parameter_by_name(name));
+        std::string error;
+        assert(parameter&&binding.set_uniform(parameter->owner,parameter->member,data,size,type,error));
+    };
+    const float identity[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1},divisor=1;
+    const int enabled=snap;
+    write("worldViewProj",identity,sizeof(identity),3);
+    write("pixelSnapEnabled",&enabled,sizeof(enabled),4);
+    if(reflection.parameter_by_name("uvDivisor")) write("uvDivisor",&divisor,sizeof(divisor),3);
+    assert(producer(&handle,"resolution"));
+    std::size_t solid=effect->techniques.size();
+    for(std::size_t i=0;i<effect->techniques.size();++i)
+        if(effect->techniques[i].name=="FX_SOLID") solid=i;
+    wot::StockDx9PassSelection pass;std::string error;
+    assert(binding.select_pass(solid,0,pass,error)&&pass.vertex_shader);
+    const auto& shader=effect->shaders[*pass.vertex_shader];
+    std::vector<wot::StockShaderUniformView> views;
+    std::vector<std::shared_ptr<wot::StockEffectUniformStorage>> owners;
+    for(const auto& resource:shader.resources) if(resource.kind==3) {
+        std::optional<std::uint32_t> buffer;
+        assert(wot::resolve_stock_effect_reference(*effect,binding.selection(),
+            wot::StockEffectResourceTable::uniform_buffer,resource.resource_index,buffer,error)&&buffer);
+        auto storage=binding.uniform_buffer(*buffer);
+        assert(storage);
+        if(resource.shader_slot>=views.size()) views.resize(resource.shader_slot+1);
+        views[resource.shader_slot]={storage->bytes().data(),storage->bytes().size()};
+        owners.push_back(storage);
+    }
+    wot::StockShaderRegisters registers;
+    assert(wot::stage_stock_shader_registers(shader,views,registers,error));
+    return run(shader.bytecode,registers[2].words,position);
+}
+int main(int argc,char**argv) {
+    // Room START button and pointer corners at their logged clip positions.
+    const Register corners[]={{-.25f,-.98f,.05f,1},{.25f,-.82f,.05f,1},{.0449f,.6875f,.03f,1},
+                              {.3203f,1.0026f,.03f,1},{-.34f,.505f,.1f,1}};
+    for(int n=1;n<argc;++n) {
+        std::ifstream input(argv[n],std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),{});
+        auto effect=std::make_shared<wot::StockEffectBinary>();std::string error;
+        assert(wot::decode_stock_dx9_effect(bytes.data(),bytes.size(),*effect,error));
+        for(const auto size:{std::array<float,2>{1024,768},std::array<float,2>{1920,1080},
+                             std::array<float,2>{1279,719}}) {
+            context.width=size[0];context.height=size[1];
+            generated::ScreenConstant current;original::ScreenConstant unpatched;
+            for(const auto& corner:corners) {
+                const auto snapped=draw(effect,true,current,corner);
+                assert(std::fabs(snapped[0]-corner[0])<=2.f/size[0]+1e-5f);
+                assert(std::fabs(snapped[1]-corner[1])<=2.f/size[1]+1e-5f);
+                assert(snapped[2]==corner[2]&&snapped[3]==1);
+                // Failing control: public half sizes move every snapped vertex off screen.
+                const auto broken=draw(effect,true,unpatched,corner);
+                assert(std::fabs(broken[0])>8||std::fabs(broken[1])>8);
+                // The unsnapped shader does not read the screen constant.
+                const auto plain=draw(effect,false,unpatched,corner);
+                assert(plain==corner);
+            }
+        }
+    }
+    std::cout<<"Original GUI pixel-snap shaders keep every corner within one pixel.\n";
+}
+"""
+
+
+class StockGUIPixelSnapTests(unittest.TestCase):
+    def test_original_pixel_snap_shaders_read_generated_screen_producer(self):
+        archive = Path(os.environ.get(
+            'WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        compiler = shutil.which('c++')
+        client = Path(os.environ.get('WOT_0922_CLIENT',
+            '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
+        package = client / 'res/packages/misc.pkg'
+        if not archive.is_file() or not compiler or not package.is_file():
+            self.skipTest('Public engine archive, C++ compiler and exact #1513 misc.pkg are required')
+        with tempfile.TemporaryDirectory(prefix='wot-gui-pixel-snap-') as directory:
+            root = Path(directory)
+            with tarfile.open(archive) as original:
+                for relative in ('lib/moo/effect_visual_context.hpp', 'lib/moo/effect_visual_context.cpp'):
+                    member = next(name for name in original.getnames()
+                                  if name.endswith('/programming/bigworld/' + relative))
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(original.extractfile(member).read())
+            public = (root / 'lib/moo/effect_visual_context.cpp').read_text()
+            PATCH.patch_context(root)
+            generated = (root / 'lib/moo/effect_visual_context.cpp').read_text()
+            def constants(text):
+                return text[text.index('class ScreenConstant'):text.index('class InvScreenConstant')]
+            effects = []
+            with zipfile.ZipFile(package) as original:
+                for material in ('ashes', 'font'):
+                    for variant in ('10', '11'):
+                        name = 'system/materials/%s.%s.dx9.fxo' % (material, variant)
+                        with zipfile.ZipFile(io.BytesIO(original.read(name))) as nested:
+                            path = root / ('%s-%s.effect' % (material, variant))
+                            path.write_bytes(nested.read('effect'))
+                            effects.append(path)
+            source = root / 'probe.cpp'
+            source.write_text(PIXEL_SNAP_HARNESS.replace('GENERATED', constants(generated)).replace(
+                'PUBLIC', constants(public)))
+            binary = root / 'probe'
+            subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                            '-I', str(ROOT / 'include'), str(source),
+                            str(ROOT / 'src/stock_shader_binary.cpp'),
+                            str(ROOT / 'src/stock_shader_runtime.cpp'),
+                            str(ROOT / 'src/stock_effect_binding.cpp'),
+                            str(ROOT / 'src/stock_effect_reflection.cpp'),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary)] + [str(path) for path in effects], check=True)
+
 if __name__ == '__main__':
     unittest.main()

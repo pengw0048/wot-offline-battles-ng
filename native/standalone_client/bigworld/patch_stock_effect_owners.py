@@ -360,6 +360,27 @@ def patch(root):
     patch_resource_names(root)
 
 
+SHARED_SCREEN_LOOKUP = (
+    "            EffectConstantValuePtr* mapping = getMapping(BW::StringRef(semantic.data(), semantic.size()), false);")
+SHARED_SCREEN_REMAP = """            // #1513 Screen (0x9b03e0) is width, height and their reciprocals.
+            // Legacy public effects retain their own half-screen Screen producer.
+            const BW::StringRef producer = semantic == "Screen" ? BW::StringRef("InvScreen") :
+                BW::StringRef(semantic.data(), semantic.size());
+            EffectConstantValuePtr* mapping = getMapping(producer, false);"""
+PUBLIC_SCREEN_VALUE = """\t\tVector4 v( rc().screenWidth(),
+\t\t\trc().screenHeight(),
+\t\t\trc().halfScreenWidth(),
+\t\t\trc().halfScreenHeight() );"""
+STOCK_SCREEN_VALUE = """\t\tif (wot::is_stock_effect(pEffect))
+\t\t{
+\t\t\t// #1513 0x009b03e0: width, height and their reciprocals.
+\t\t\tconst Vector4 screen( rc().screenWidth(), rc().screenHeight(),
+\t\t\t\t1.0f / rc().screenWidth(), 1.0f / rc().screenHeight() );
+\t\t\treturn SUCCEEDED(pEffect->SetVector( constantHandle, &screen ));
+\t\t}
+""" + PUBLIC_SCREEN_VALUE
+
+
 def patch_context(root):
     moo = Path("lib/moo")
     apply_file(root, moo / "effect_visual_context.hpp", [
@@ -402,14 +423,10 @@ def patch_context(root):
         text = text.replace("\tEffectManager& em = EffectManager::instance();\n", "", 1)
     text = replace_once(text, "EffectVisualContext::~EffectVisualContext()\n{\n\tinitConstants();",
         "EffectVisualContext::~EffectVisualContext()\n{\n\tif (stockEffectContext_) stockEffectContext_->detach_providers();\n\tinitConstants();", "shared provider teardown")
-    text = replace_once(text,
-        "            EffectConstantValuePtr* mapping = getMapping(BW::StringRef(semantic.data(), semantic.size()), false);",
-        """            // #1513 Screen (0x9b03e0) is width, height and their reciprocals.
-            // Legacy public effects retain their own half-screen Screen producer.
-            const BW::StringRef producer = semantic == "Screen" ? BW::StringRef("InvScreen") :
-                BW::StringRef(semantic.data(), semantic.size());
-            EffectConstantValuePtr* mapping = getMapping(producer, false);""",
-        "original screen dimensions")
+    # The Screen producer serves shared buffers and per-object GUI constants;
+    # retire the earlier shared-only remap from cached preparations.
+    text = replace_once(text, SHARED_SCREEN_REMAP, SHARED_SCREEN_LOOKUP, "single Screen producer")
+    text = replace_once(text, PUBLIC_SCREEN_VALUE, STOCK_SCREEN_VALUE, "original screen dimensions")
     path.write_text(text)
 
 
