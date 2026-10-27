@@ -15,6 +15,7 @@ from stock_cursor_camera_oracle import OriginalCursorCamera, f32
 
 WATER_DISTANCE = 0xa302e0      # Water::a302e0(start, end, edgeAlpha)
 HIT_RECORD = 0xf63970          # hit record update(base, obstacle, triangle, dist)
+GUN_MARKER_CALLBACK = 0xf5c1d0  # Ccb_ (vtable 0174c304) operator
 TRIANGLE_INTERSECTS = 0x1172190  # WorldTriangle::intersects(start, dir, length)
 SEGMENT_CALLBACK = 0xf61a90    # wg_collideSegment callback constructor
 SPACE_MANAGER = 0xac3460
@@ -167,6 +168,22 @@ class OriginalSceneQueries(OriginalCursorCamera):
         self.call(HIT_RECORD, (base, obstacle, triangle, 0x3f800000), ecx=record)
         return self.word(record + 0x18) | (self.word(record + 0x1c) << 32)
 
+    def gun_marker(self, skip, required, surfaces):
+        """(verdicts, distance) from the original Ccb_ over one surface sequence."""
+        callback = self.alloc(0x10)
+        self.put_word(callback, 0x174c304)
+        self.put_floats(callback + 4, [-1.])
+        self.uc.mem_write(callback + 8, struct.pack('<HH', skip, required))
+        obstacle = self.alloc(0x20)
+        self.put_word(obstacle + 0xc, 0xffffffff)   # f64630 accepts a handle of -1
+        triangle = self.alloc(0x28)
+        verdicts = []
+        for flags, distance in surfaces:
+            self.uc.mem_write(triangle + 0x24, struct.pack('<H', flags))
+            bits = struct.unpack('<I', struct.pack('<f', distance))[0]
+            verdicts.append(self.call(GUN_MARKER_CALLBACK, (obstacle, triangle, bits), ecx=callback))
+        return verdicts, self.floats(callback + 4, 1)[0]
+
     def py_object(self, flags, value=0, callable_=False):
         kind = self.alloc(0x60)
         self.put_word(kind + 0x54, flags)
@@ -252,6 +269,20 @@ def zero_direction_cases(seed=0x0172, count=500):
         point = [f32(vertices[0][k] + a * (vertices[1][k] - vertices[0][k]) +
                      b * (vertices[2][k] - vertices[0][k])) for k in range(3)]
         cases.append((vertices, point))
+    return cases
+
+
+def gun_marker_cases(seed=0x5d1c, count=300):
+    generator = random.Random(seed)
+    flags = [0, 0x08, 0x10, 0x40, 0x80, 0x88, 0xc8, 0x0300, 0x8080, 0xffff]
+    cases = []
+    for index in range(count):
+        skip = 0x80 if index % 3 else generator.choice(flags)
+        required = 0 if index % 4 else generator.choice(flags)
+        surfaces = [(generator.choice(flags) | (generator.randint(0, 255) << 8 if index % 2 else 0),
+                     f32(generator.choice([0., 1., 2.5, 2.5, 7., -0.5, generator.uniform(0, 50)])))
+                    for unused in range(generator.randint(0, 6))]
+        cases.append({'skip': skip, 'required': required, 'surfaces': surfaces})
     return cases
 
 

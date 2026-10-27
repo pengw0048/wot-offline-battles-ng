@@ -245,6 +245,37 @@ private:
     bool failed_;
 };
 
+// Ccb_ (vtable 0174c304, operator f5c1d0) for the SPG gun marker: a skip and
+// a required collision-flag word over all 16 bits, then the nearest distance.
+class GunMarkerQuery : public CollisionCallback
+{
+public:
+    GunMarkerQuery( WorldTriangle::Flags skip, WorldTriangle::Flags required ) :
+        skip_( skip ), required_( required ), distance_( -1.f ) {}
+
+    // Slot 1 (00bce4c0): terrain answers at its highest LOD.
+    bool useHighestAvailableLod() override { return true; }
+
+    int operator()( const CollisionObstacle &, const WorldTriangle & triangle,
+        float distance ) override
+    {
+        const WorldTriangle::Flags flags = triangle.flags();
+        if ((skip_ & flags) != 0 || (required_ & flags) != required_)
+            return COLLIDE_ALL;
+        // f64630's WGMaterialDisabler branch cannot occur before that real type exists.
+        if (0.f > distance_ || distance_ > distance)
+            distance_ = distance;
+        return COLLIDE_BEFORE;
+    }
+
+    float distance() const { return distance_; }
+
+private:
+    WorldTriangle::Flags skip_;
+    WorldTriangle::Flags required_;
+    float distance_;
+};
+
 template <class Filter>
 StockSegmentResult collideSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, const Filter & filter,
@@ -299,6 +330,18 @@ bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
     hit.origin = found.translation;
     hit.identity = found.itemID;
     return true;
+}
+
+float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end )
+{
+    // f5d160 queries the camera space; f5d1c0 builds Ccb_(0x80, 0), whose
+    // distance stays -1 without an accepted surface.
+    ClientSpacePtr space = DeprecatedSpaceHelpers::cameraSpace();
+    if (!space || start == end)
+        return -1.f;
+    GunMarkerQuery query( 0x80, 0 );
+    space->collide( start, end, query );
+    return query.distance();
 }
 
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha )

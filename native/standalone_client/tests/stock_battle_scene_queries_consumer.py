@@ -457,6 +457,27 @@ surface(10, 0, 1.0, item='raise')
 result, text = stderr(lambda: native(10, UP, DOWN, 0, None))
 assert result is None and 'host identity owner failed' in text and sys.exc_info()[0] is None
 
+# SPG gun marker (f5d160/f5d1c0, Ccb_ 0174c304): the camera space, skip 0x80,
+# required 0, nearest accepted distance, highest terrain LOD.
+marker = Host.gunMarker
+Host.setCamera(None)
+assert marker(UP, DOWN) == -1.0
+space(11)
+Host.setPrune(11, False)
+surface(11, material(9, PROJECTILENOCOLLIDE), 1.0)
+surface(11, material(4, 0), 6.0, item=(3, 3))
+surface(11, material(5, TERRAIN | WATER), 4.0)
+Host.setCamera(11)
+Host.highestLod()
+assert marker(UP, DOWN) == 4.0 and Host.highestLod() == [True]
+assert marker((0, 9, 0), (0, 9, 0)) == -1.0
+Host.clearSpace(11)                       # clear() also drops the camera space
+assert marker(UP, DOWN) == -1.0
+assert Host.gunMarkerCallback(0x80, 0, [(0x80, 1.0), (0x8000, 3.0), (8, 2.0), (0, 5.0)]) == \
+    ([3, 1, 1, 1], 2.0)
+assert Host.gunMarkerCallback(0x80, 0x48, [(0x08, 1.0), (0x48, 3.0), (0xc8, 0.5)]) == ([3, 1, 3], 3.0)
+assert Host.gunMarkerCallback(0x80, 0, []) == ([], -1.0)
+
 # Water: first positive distance wins; default third argument is True.
 water = BigWorld.wg_collideWater
 Host.clearWaters()

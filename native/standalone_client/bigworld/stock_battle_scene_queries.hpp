@@ -63,6 +63,11 @@ bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags,
     const StockNativeSegmentFilter & filter, StockNativeSegmentHit & hit );
 
+// #1513 f5d160/f5d1c0 for WGSPGGunMarkerDataProvider: the nearest camera-space
+// surface distance along start->end that has no 0x80 (PROJECTILENOCOLLIDE)
+// flag, or a negative value. The hit point is start + normalise(end-start) * d.
+float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end );
+
 // The native owner behind BigWorld.wg_collideWater: segment distance or -1.
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha );
 

@@ -17,6 +17,12 @@ Math = types.ModuleType('Math')
 Math.Vector3 = Vector3
 sys.modules['Math'] = Math
 
+if os.environ.get('SCENE_QUERY_GUN_MARKER'):
+    results = [Host.gunMarkerCallback(case['skip'], case['required'], [tuple(s) for s in case['surfaces']])
+               for case in json.load(open(os.environ['SCENE_QUERY_GUN_MARKER']))]
+    json.dump(results, open(os.environ['SCENE_QUERY_TRACES'], 'w'))
+    sys.exit(0)
+
 if os.environ.get('SCENE_QUERY_WATERS'):
     distances = []
     for case in json.load(open(os.environ['SCENE_QUERY_WATERS'])):

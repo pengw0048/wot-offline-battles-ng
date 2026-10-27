@@ -354,6 +354,34 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
             self.assertIn('heap-use-after-free', run.stderr)
             self.assertIn('BSPNode::intersectsThisNode', run.stderr)
 
+    def test_original_x86_gun_marker_callback_matches_production(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original instruction oracle')
+        try:
+            import stock_battle_scene_queries_oracle as oracle
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for the original instruction oracle')
+        emulator = oracle.OriginalSceneQueries(Path(client) / 'WorldOfTanks.exe')
+        cases = oracle.gun_marker_cases()
+        with tempfile.TemporaryDirectory(prefix='scene-query-gun-marker-') as directory:
+            path = Path(directory)
+            binary = build_host(self, path)
+            (path / 'cases.json').write_text(json.dumps(cases))
+            environment = dict(os.environ, SCENE_QUERY_GUN_MARKER=str(path / 'cases.json'),
+                               SCENE_QUERY_TRACES=str(path / 'traces.json'))
+            subprocess.run([str(binary), str(ROOT / 'tests/stock_battle_scene_queries_trace.py')],
+                           env=environment, check=True, capture_output=True)
+            production = json.loads((path / 'traces.json').read_text())
+        accepted = 0
+        for case, ours in zip(cases, production):
+            verdicts, distance = emulator.gun_marker(case['skip'], case['required'], case['surfaces'])
+            self.assertEqual([verdicts, distance], ours, case)
+            accepted += verdicts.count(1)
+        self.assertEqual(len(production), len(cases))
+        self.assertGreater(accepted, 200)
+        print('Original f5c1d0 Ccb_: %d sequences, %d accepted surfaces PASS' % (len(cases), accepted))
+
     def test_original_x86_zero_direction_and_identity_word(self):
         client = os.environ.get('WOT_0922_CLIENT')
         if not client:

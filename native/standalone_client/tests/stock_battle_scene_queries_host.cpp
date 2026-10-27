@@ -279,6 +279,33 @@ PyObject * retirements(PyObject *, PyObject *) {
 }
 PyObject * queryActive(PyObject *, PyObject *) { return PyBool_FromLong(ClientSpace::geometryQueryActive()); }
 
+PyObject * gunMarker(PyObject *, PyObject * args) {
+    PyObject * a, * b; if (!PyArg_ParseTuple(args, "OO", &a, &b)) return NULL;
+    Vector3 start, end;
+    if (!vector3(a, start, 1) || !vector3(b, end, 2)) return NULL;
+    return PyFloat_FromDouble(stockGunMarkerSegmentCollision(start, end));
+}
+// gunMarkerCallback(skip, required, [(flags, distance)]) -> ([verdicts], distance)
+PyObject * gunMarkerCallback(PyObject *, PyObject * args) {
+    int skip, required; PyObject * surfaces;
+    if (!PyArg_ParseTuple(args, "iiO", &skip, &required, &surfaces)) return NULL;
+    GunMarkerQuery query{uint16(skip), uint16(required)};
+    CollisionObstacle obstacle;
+    PyObject * verdicts = PyList_New(0);
+    for (Py_ssize_t i = 0; i < PySequence_Size(surfaces); ++i) {
+        PyObject * item = PySequence_GetItem(surfaces, i);
+        int flags; float distance;
+        const bool ok = item && PyArg_ParseTuple(item, "if", &flags, &distance);
+        Py_XDECREF(item);
+        if (!ok) { Py_DECREF(verdicts); return NULL; }
+        WorldTriangle triangle;
+        triangle.flags_ = uint16(flags);
+        PyObject * verdict = PyInt_FromLong(query(obstacle, triangle, distance));
+        PyList_Append(verdicts, verdict); Py_DECREF(verdict);
+    }
+    return Py_BuildValue("(Nf)", verdicts, query.distance());
+}
+
 // nativeCollide(space, start, end, skip, filter): filter None (empty), a
 // Python callable (matKind, collFlags, identity) -> bool, or ('clear', id).
 PyObject * nativeCollide(PyObject *, PyObject * args) {
@@ -385,7 +412,8 @@ PyMethodDef hostMethods[] = {
     {"clearSpace", clearSpace, METH_VARARGS, NULL}, {"setPrune", setPrune, METH_VARARGS, NULL},
     {"clearAllSpaces", clearAllSpaces, METH_NOARGS, NULL}, {"delMapping", delMapping, METH_VARARGS, NULL},
     {"retirements", retirements, METH_NOARGS, NULL}, {"queryActive", queryActive, METH_NOARGS, NULL},
-    {"nativeCollide", nativeCollide, METH_VARARGS, NULL},
+    {"nativeCollide", nativeCollide, METH_VARARGS, NULL}, {"gunMarker", gunMarker, METH_VARARGS, NULL},
+    {"gunMarkerCallback", gunMarkerCallback, METH_VARARGS, NULL},
     {"setBounds", setBounds, METH_VARARGS, NULL}, {"setCamera", setCamera, METH_VARARGS, NULL},
     {"addSurface", addSurface, METH_VARARGS, NULL}, {"visits", visits, METH_NOARGS, NULL},
     {"liveSpaces", liveSpaces, METH_NOARGS, NULL}, {"highestLod", highestLod, METH_NOARGS, NULL}, {"addWater", addWater, METH_VARARGS, NULL},
