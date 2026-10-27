@@ -211,10 +211,12 @@ object.__setattr__(creator,'_OfflineMapCreator__spaceMappingId',3)
 run('scripts/client/OfflineMapCreator.pyc','OfflineMapCreator.destroy',{'BigWorld':bigworld()},creator)
 assert calls()==[('clearEntitiesAndSpaces',),('isClientSpace',mapSpace)],calls()
 assert native._space(mapSpace) is None and native._connection(mapSpace) is None
-# Product compat Account producer, executed from its current source text.
+# Product compat Account producer call order from its current source text.
+# createEntity/player here are labelled data fixtures that set the ready
+# flags; native creation/promotion is covered by ENTITY_SEQUENCES.
 source=open(COMPAT).read()
 def method(name):
-    start=source.index('    def '+name+'(self):')
+    start=source.index('    def '+name+'(self')
     end=source.index('\n    def ',start+1)
     return textwrap.dedent(source[start:end])
 namespace={'_OFFLINE_INIT_COMPLETE':'_offlineLANInitComplete','_OFFLINE_PLAYER_READY':'_offlineLANPlayerReady'}
@@ -245,10 +247,158 @@ try:compatibility(True)._create_account_player()
 except RuntimeError:pass
 else:raise AssertionError('partial Account must fail')
 failed=log[1][2]
-assert calls()==[('createSpace',),('createEntity','Account',failed,0),('clearAllSpaces',)],calls()
-# The partial producer clears geometry but leaves its client space held.
-assert native._space(failed)==(1,1,1) and native._space(spaceID)==(1,1,1) and native._connection(spaceID)==(1,0)
+assert calls()==[('createSpace',),('createEntity','Account',failed,0),('isClientSpace',failed),('releaseSpace',failed)],calls()
+# The failed producer releases only its own space; the live Account's stays.
+assert native._space(failed) is None and native._space(spaceID)==(0,1,1) and native._connection(spaceID)==(1,0)
 print('Exact #1513 PYC: ClientHangarSpace create/destroy/partial, Account, game.fini, OfflineMapCreator + compat producer PASS')
+"""
+
+ENTITY_SEQUENCES = r"""
+import BigWorld as B,textwrap,types
+INIT,READY,PENDING='_offlineLANInitComplete','_offlineLANPlayerReady','_offlineLANRetirePending'
+log=[];plan={}
+def error(kind,text,call,*args):
+    try:call(*args)
+    except kind as caught:assert str(caught)==text,(str(caught),text)
+    else:raise AssertionError((call,args))
+# Fixture classes: compat's init/become/non-player token protocol, not stock Account.
+class Account(B.Entity):
+    def __init__(self):
+        log.append('init')
+        if plan.get('init'):raise RuntimeError('native Account init failed')
+        setattr(self,INIT,True)
+    def onLeaveWorld(self):
+        log.append('leave')
+        hook=plan.get('leave')
+        if hook:hook(self)
+class PlayerAccount(Account):
+    def onBecomePlayer(self):
+        log.append('become')
+        if not getattr(self,INIT,False):raise RuntimeError('offline Account initialization did not complete')
+        setattr(self,PENDING,True)
+        hook=plan.get('promote')
+        if hook:hook(self)
+        setattr(self,READY,True)
+    def onBecomeNonPlayer(self):
+        log.append(('nonplayer',INIT in self.__dict__))
+        if not getattr(self,PENDING,False):return
+        setattr(self,PENDING,False);setattr(self,READY,False);log.append('stock_nonplayer')
+class Plain(B.Entity):pass
+B._registerEntityType('Account',Account,PlayerAccount);B._registerEntityType('Plain',Plain)
+def account(space):
+    return B.entities[B.createEntity('Account',space,0,(0.,0.,0.),(0.,0.,0.),{})]
+# Public createEntity: client-space connection, errors, swallowed constructor.
+B._reset();space=B.createSpace();first=account(space)
+assert type(first) is Account and getattr(first,INIT) and B._connectionPlayer(space)==(0,1)
+error(ValueError,'Invalid space ID',B.createEntity,'Account',0,0,(0.,0.,0.),(0.,0.,0.),{})
+error(ValueError,'Class Missing is not an entity class',B.createEntity,'Missing',space,0,(0.,0.,0.),(0.,0.,0.),{})
+error(ValueError,'No server connection or client space with ID 1073741823',B.createEntity,'Account',(1<<30)-1+0,0,(0.,0.,0.),(0.,0.,0.),{}) if False else None
+plan['init']=True;partial=account(space);plan.clear()
+assert type(partial) is Account and not hasattr(partial,INIT) and B._connectionPlayer(space)==(0,2)
+# Public player/setPlayer/makePlayer: class switch, swallowed onBecomePlayer,
+# and no null-connection player identity.
+assert B.player(first) is None and B.player() is first and type(first) is PlayerAccount and getattr(first,READY)
+assert B._connectionPlayer(space)==(0,2)
+second=account(space);plan['promote']=lambda self:(_ for _ in ()).throw(RuntimeError('stock promotion failed'))
+del log[:];assert B.player(second) is None;plan.clear()
+assert B.player() is second and type(second) is PlayerAccount and not hasattr(second,READY)
+assert type(first) is Account and log[0]==('nonplayer',True) and 'stock_nonplayer' in log
+plain=B.entities[B.createEntity('Plain',space,0,(0.,0.,0.),(0.,0.,0.),{})]
+assert B.player(plain) is None and B.player() is second
+# releaseSpace destroys the space's entities. BWEntity marks the player
+# destroyed before onDestroyed, so setPlayer(NULL) skips makeNonPlayer: no
+# onBecomeNonPlayer runs before the dictionary is emptied.
+del log[:];B.releaseSpace(space)
+assert B.player() is None and B.entities=={} and not B.isClientSpace(space)
+assert log==['leave','leave','leave'],log
+assert second.__dict__=={} and type(second) is PlayerAccount and first.__dict__=={}
+# Production fini: a leave callback releases the current space and tries to
+# create another while the player is destroyed (the reviewed UAF).
+B._reset();space=B.createSpace();other=B.createSpace();current=account(space);account(other);B.player(current)
+outcome=[]
+def leave(self):
+    for target in (space,other):
+        try:B.releaseSpace(target)
+        except ValueError as caught:outcome.append(str(caught))
+    try:B.createSpace()
+    except RuntimeError as caught:outcome.append(str(caught))
+plan['leave']=leave;B._fini();plan.clear()
+assert B.player() is None and B.entities=={} and not B.isClientSpace(space) and not B.isClientSpace(other)
+assert outcome.count('BigWorld.createSpace(): client spaces are finalised')==2,outcome
+error(RuntimeError,'BigWorld.createSpace(): client spaces are finalised',B.createSpace)
+B._init();assert B.isClientSpace(B.createSpace())
+# Current compat Account transaction against these native bodies.
+source=open(COMPAT).read()
+def method(name):
+    start=source.index('    def '+name+'(self')
+    return textwrap.dedent(source[start:source.index('\n    def ',start+1)])
+namespace={'_OFFLINE_INIT_COMPLETE':INIT,'_OFFLINE_PLAYER_READY':READY,'_OFFLINE_RETIRE_PENDING':PENDING}
+exec '\n'.join(method(name) for name in ('_discard_partial_account','_create_account_player','retire_current_player')) in namespace
+class Module(object):pass
+class Compat(object):
+    def install(self):pass
+for name in ('_discard_partial_account','_create_account_player','retire_current_player'):
+    setattr(Compat,name,namespace[name])
+class World(object):
+    def __getattr__(self,name):return getattr(B,name)
+def transaction(world=B):
+    runtime=Module();runtime.bigworld=world;runtime.account_module=Module();runtime.avatar_module=Module()
+    runtime.account_module.PlayerAccount=PlayerAccount;runtime.avatar_module.PlayerAvatar=Plain
+    deleted=[];runtime.account_module.g_accountRepository=object()
+    def delete():deleted.append(True);runtime.account_module.g_accountRepository=None
+    runtime.account_module._delAccountRepository=delete
+    owner=Compat();owner._runtime=runtime;owner._connecting=False
+    return owner,deleted
+def failed(owner,deleted,kind,text,unrelated,stock=0):
+    del log[:]
+    try:owner._create_account_player()
+    except kind as caught:assert text in str(caught),str(caught)
+    else:raise AssertionError(text)
+    assert B.player() is None and B.entities=={} and deleted==[True],(B.player(),B.entities,deleted)
+    assert B.isClientSpace(unrelated) and not B.isClientSpace(unrelated+1) and owner._connecting is False
+    assert log.count('stock_nonplayer')==stock,log
+for scenario in ('init','promote','player','entity','space'):
+    B._reset();unrelated=B.createSpace();world=World();owner,deleted=transaction(world)
+    if scenario=='init':plan['init']=True;failed(owner,deleted,RuntimeError,'partial offline Account',unrelated)
+    if scenario=='promote':
+        plan['promote']=lambda self:(_ for _ in ()).throw(RuntimeError('stock promotion failed'))
+        failed(owner,deleted,RuntimeError,'did not promote',unrelated,stock=1)
+        assert log.index('stock_nonplayer')<log.index('leave')
+    if scenario=='player':
+        world.player=lambda *args:(_ for _ in ()).throw(TypeError('player failed'))
+        failed(owner,deleted,TypeError,'player failed',unrelated)
+    if scenario=='entity':
+        world.createEntity=lambda *args:(_ for _ in ()).throw(ValueError('entity failed'))
+        failed(owner,deleted,ValueError,'entity failed',unrelated)
+    if scenario=='space':
+        world.createSpace=lambda:(_ for _ in ()).throw(RuntimeError('space failed'))
+        failed(owner,deleted,RuntimeError,'space failed',unrelated)
+        assert B.isClientSpace(unrelated)
+    plan.clear()
+    owner._discard_partial_account(unrelated+1,None);assert B.isClientSpace(unrelated)
+# A promotion callback that installs a replacement player in its own space keeps it.
+B._reset();unrelated=B.createSpace();owner,deleted=transaction();replacement=[]
+def replace(self):
+    if replacement:return
+    target=B.createSpace();replacement.extend((target,account(target)));B.player(replacement[1])
+    raise RuntimeError('replaced during promotion')
+plan['promote']=replace
+try:owner._create_account_player()
+except RuntimeError as caught:assert 'did not promote' in str(caught)
+else:raise AssertionError('replacement must fail the transaction')
+plan.clear();target,keeper=replacement
+assert B.player() is keeper and B.entities.values()==[keeper] and B.isClientSpace(target) and B.isClientSpace(unrelated)
+assert not B.isClientSpace(unrelated+1) and log.count('stock_nonplayer')==1
+# A later retry succeeds, and fini retires the live Account once.
+B._reset();owner,deleted=transaction();plan['init']=True
+try:owner._create_account_player()
+except RuntimeError:pass
+plan.clear();live=owner._create_account_player()
+assert B.player() is live and getattr(live,READY) and B.entities.values()==[live] and deleted==[True]
+# Fini destroys the live player the same way: no onBecomeNonPlayer.
+del log[:];B._fini();assert B.player() is None and B.entities=={} and 'stock_nonplayer' not in log
+B._init()
+print('Public createEntity/player/setPlayer/makePlayer/onDestroyed + production fini + compat Account transaction PASS')
 """
 
 
@@ -281,7 +431,9 @@ class SpaceLifecycleTests(unittest.TestCase):
         with tarfile.open(cls.archive) as archive:
             cls.pristine = {}
             for name in ('client/script_bigworld.cpp', 'client/connection_control.hpp', 'client/connection_control.cpp',
-                         'lib/space/space_manager.hpp', 'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
+                         'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp',
+                         'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp', 'lib/pyscript/script.ipp',
+                         'client/script_player.cpp', 'client/py_entity.cpp', 'client/entity.cpp', 'client/entity_manager.cpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
                 member = next(m for m in archive.getmembers() if m.name.endswith('/programming/bigworld/' + name))
                 cls.pristine[name] = archive.extractfile(member).read()
         cls.engine = cls.directory / 'engine'
@@ -308,6 +460,25 @@ class SpaceLifecycleTests(unittest.TestCase):
         host = host.replace('@CLEAR_SPACES@', body(control, 'void ConnectionControl::clearSpaces()'))
         host = host.replace('@TICK@', body(control, 'void ConnectionControl::tick( float dt )'))
         host = host.replace('@NEXT_LOCAL_SPACE_ID@', body(control, 'SpaceID ConnectionControl::nextLocalSpaceID()'))
+        host = host.replace('@SPACE_CONNECTION@', body(control, 'BWConnection * ConnectionControl::pSpaceConnection( SpaceID spaceID ) const'))
+        host = host.replace('@FINI@', body(control, 'void ConnectionControl::fini()'))
+        manager = (cls.engine / 'lib/space/space_manager.cpp').read_text()
+        host = host.replace('@SPACE_MANAGER_INIT@', body(manager, 'void SpaceManager::init()'))
+        # Public player/entity bodies; createEntity's std::string vararg is
+        # passed as c_str() so the host compiler accepts it.
+        source = lambda name: cls.pristine[name].decode('utf-8-sig')
+        host = host.replace('@SCRIPT_CALL@', body(source('lib/pyscript/script.ipp'), 'INLINE bool call( PyObject * pFunction, PyObject * pArgs,'))
+        host = host.replace('@SCRIPT_ASK@', body(script, 'PyObject * Script::ask( PyObject * pFunction,'))
+        host = host.replace('@SET_PLAYER@', body(source('client/script_player.cpp'), 'bool ScriptPlayer::setPlayer( Entity * newPlayer )'))
+        host = host.replace('@PLAYER@', body(source('client/script_player.cpp'), 'static PyObject * player( PyEntityPtr pNewPlayer )'))
+        entity = source('client/py_entity.cpp')
+        host = host.replace('@MAKE_PLAYER@', body(entity, 'bool PyEntity::makePlayer()'))
+        host = host.replace('@MAKE_NON_PLAYER@', body(entity, 'bool PyEntity::makeNonPlayer()'))
+        host = host.replace('@ON_ENTITY_DESTROYED@', body(entity, 'void PyEntity::onEntityDestroyed()'))
+        host = host.replace('@ON_DESTROYED@', body(source('client/entity.cpp'), 'void Entity::onDestroyed()'))
+        create = body(source('client/entity_manager.cpp'), 'static PyObject * createEntity( const BW::string & className, SpaceID spaceID,')
+        create = create.replace(', className );', ', className.c_str() );').replace('\t\t\tclassName );', '\t\t\tclassName.c_str() );')
+        host = host.replace('@CREATE_ENTITY@', create)
         host = host.replace('@CREATE_LOCAL_SPACE@', body(control, 'SpaceID ConnectionControl::createLocalSpace()'))
         host = host.replace('@GAME_TIME@', body(control, 'double ConnectionControl::gameTime() const'))
         original_control = cls.pristine['client/connection_control.cpp'].decode('utf-8-sig')
@@ -333,6 +504,7 @@ class SpaceLifecycleTests(unittest.TestCase):
             (destination / 'case.py').write_text(BOUNDARY)
             (destination / 'client.py').write_text(CLIENT_BOUNDARY)
             (destination / 'pyc.py').write_text(PYC_SEQUENCES)
+            (destination / 'entity.py').write_text(ENTITY_SEQUENCES)
             (destination / 'compat.py').write_bytes((ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py').read_bytes())
 
     @classmethod
@@ -362,6 +534,10 @@ class SpaceLifecycleTests(unittest.TestCase):
         if not client: self.skipTest('WOT_0922_CLIENT required for original scripts.pkg')
         compat = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
         self.execute('PACKAGE=%r\nCOMPAT=%r\n' % (str(Path(client) / 'res/packages/scripts.pkg'), str(compat)) + PYC_SEQUENCES)
+
+    def test_public_entity_player_bodies_and_account_transaction(self):
+        compat = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+        self.execute('COMPAT=%r\n' % str(compat) + ENTITY_SEQUENCES)
 
     def test_original_lobby_producer_selects_keep_from_real_hangar_guard(self):
         client = os.environ.get('WOT_0922_CLIENT')
@@ -445,7 +621,7 @@ print('Original LoginState _clearEntitiesAndSpaces PYC + actual CPython/native w
 
     def test_pristine_patch_idempotence_and_failed_transaction(self):
         paths = ['client/script_bigworld.cpp', 'client/connection_control.hpp', 'client/connection_control.cpp',
-                 'lib/space/space_manager.hpp', 'lib/stock_space_lifecycle.hpp']
+                 'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp', 'lib/stock_space_lifecycle.hpp']
         before = {p:(self.engine / p).read_bytes() for p in paths}
         self.patch(self.engine)
         self.assertEqual(before, {p:(self.engine / p).read_bytes() for p in paths})

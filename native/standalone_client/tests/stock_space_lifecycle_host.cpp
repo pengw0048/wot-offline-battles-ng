@@ -29,6 +29,12 @@
 #define MF_ASSERT assert
 #define ERROR_MSG(...) BW::testError(__VA_ARGS__)
 #define BW_STATIC_ASSERT(EXPR,MESSAGE) static_assert(EXPR,#MESSAGE)
+#define WARNING_MSG(...) BW::testError(__VA_ARGS__)
+#define MF_ASSERT_DEV(EXPR) do{if(!(EXPR))BW::testError("MF_ASSERT_DEV");}while(0)
+#define IF_NOT_MF_ASSERT_DEV(EXPR) if(!(EXPR)&&(BW::testError("IF_NOT_MF_ASSERT_DEV"),true))
+#define MF_VERIFY(EXPR) do{if(!(EXPR))BW::testError("MF_VERIFY");}while(0)
+#define MEMTRACKER_SCOPED(NAME)
+#define INLINE inline
 
 namespace BW
 {
@@ -84,14 +90,20 @@ struct BWConnection
         else ::operator delete(memory);
     }
     int id;unsigned clears=0,updates=0,sends=0,entities=0;bool lastKeep=false;std::function<void()> onClear,onUpdate,onDelete;
+    // Script entities created through the public createEntity body.
+    std::vector<struct Entity*> live;
     explicit BWConnection(int value):id(value){}
-    virtual ~BWConnection(){events.push_back("delete:"+std::to_string(id));if(onDelete)onDelete();}
+    virtual ~BWConnection();
     double clientTime()const{return 123.;}
+    virtual SpaceID spaceID()const{return NULL_SPACE_ID;}
     virtual void clearAllEntities(bool keepLocalEntities=false)
     {
         ++clears;lastKeep=keepLocalEntities;if(!keepLocalEntities)entities=0;
         events.push_back("entities:"+std::to_string(id));if(onClear)onClear();
+        if(!keepLocalEntities)destroyEntities();
     }
+    void destroyEntities();
+    struct Entity* createLocalEntity(int,SpaceID,int,const struct Position3D&,const struct Direction3D&,struct MemoryOStream&);
     void update(float){++updates;if(onUpdate)onUpdate();}
     void updateServer(){++sends;}
 };
@@ -99,7 +111,8 @@ struct BWNullConnection:BWConnection
 {
     SpaceID space=NULL_SPACE_ID;int playerID=0;
     explicit BWNullConnection(int id,SpaceID spaceID=NULL_SPACE_ID):BWConnection(id),space(spaceID){}
-    SpaceID spaceID()const{return space;}
+    SpaceID spaceID()const override{return space;}
+    struct Entity* pPlayer()const{return NULL;}
     // Public 14.4.1 and #1513 7d7a80 keep a player-owning null connection intact.
     void clearAllEntities(bool keepLocalEntities=false) override
     {if(!playerID)BWConnection::clearAllEntities(keepLocalEntities);}
@@ -138,7 +151,9 @@ struct ConnectionControl
     BWServerConnection* pServerConnection(){return mode_==ONLINE?static_cast<BWServerConnection*>(pConnection_):NULL;}
     BWReplayConnection* pReplayConnection(){return mode_==REPLAY?static_cast<BWReplayConnection*>(pConnection_):NULL;}
     void clearStockMainSpace(bool keepLocalEntities=false);void clearSpaces();void tick(float);
-    SpaceID nextLocalSpaceID();SpaceID createLocalSpace();double gameTime()const;
+    SpaceID nextLocalSpaceID();SpaceID createLocalSpace();double gameTime()const;void fini();
+    unsigned stockClientSpacesClosedAt_=~0u;
+    BWConnection* pConnection()const{return pConnection_;}BWConnection* pSpaceConnection(SpaceID)const;
     void legacyClearSpaces();void destroyMainConnection();
 };
 struct SpaceManager
@@ -148,6 +163,7 @@ struct SpaceManager
     SpaceMap spaces_,localSpaces_;
     static SpaceManager& instance(){static SpaceManager owner;return owner;}
     std::function<void(ClientSpace*)> onCreate;
+    unsigned stockInitGeneration_=0;void init();
     ClientSpace* space(int id){const auto& map=id>=LOCAL_SPACE_START?localSpaces_:spaces_;auto p=map.find(id);return p==map.end()?NULL:p->second;}
     bool isLocalSpace(SpaceID id)const{return id>=LOCAL_SPACE_START;}
     // Public SpaceManager::createSpace publishes a raw pointer, then notifies.
@@ -189,6 +205,14 @@ PyObject* argCountError(const char*,int,int,...);
 @GETDATA_INT@
 @ARGCOUNT@
 @PYAUTO@
+namespace Script
+{
+bool isFinalised(){return false;}
+inline void resolvePythonModuleAndFunctionNames(PyObject*,char*,size_t){}
+PyObject* ask(PyObject*,PyObject*,const char*,bool,bool);
+@SCRIPT_CALL@
+}
+@SCRIPT_ASK@
 }
 @SOUND_TEST_SUPPORT@
 #include "@PRODUCTION_FILE@"
@@ -197,6 +221,158 @@ namespace BW
 @CLEAR_SPACES@
 @TICK@
 @NEXT_LOCAL_SPACE_ID@
+@SPACE_CONNECTION@
+@SPACE_MANAGER_INIT@
+@FINI@
+// Entity layer: fakes around the extracted public player/entity bodies.
+using EntityID=int;
+const EntityID NULL_ENTITY_ID=0;
+struct Position3D{float x=0,y=0,z=0;};
+struct Direction3D{explicit Direction3D(const Vector3&){}};
+struct MemoryOStream{explicit MemoryOStream(int){}};
+struct ScriptDict{PyObject* object=NULL;};
+struct ScriptObject
+{
+    PyObject* value;
+    static ScriptObject createFrom(EntityID id){return {PyInt_FromLong(id)};}
+    PyObject* newRef(){return value;}
+};
+struct Entity;
+struct PyEntity;
+struct EntityType
+{
+    std::string name_;PyTypeObject* class_=NULL;PyTypeObject* playerClass_=NULL;int index_=0;
+    static std::vector<EntityType*>& all(){static std::vector<EntityType*> types;return types;}
+    static EntityType* find(const string& name){for(auto* type:all())if(type->name_==name)return type;return NULL;}
+    PyTypeObject* pClass()const{return class_;}PyTypeObject* pPlayerClass()const{return playerClass_;}
+    int index()const{return index_;}const std::string& name()const{return name_;}
+    void prepareCreationStream(MemoryOStream&,const ScriptDict&){}
+};
+struct EntityPtr
+{
+    Entity* value;Entity* get()const{return value;}Entity* operator->()const{return value;}
+    explicit operator bool()const{return value!=NULL;}
+};
+struct PyEntityPtr
+{
+    PyEntity* value=NULL;
+    PyEntityPtr(){}
+    explicit PyEntityPtr(PyEntity* entity);
+    PyEntityPtr(const PyEntityPtr& other):PyEntityPtr(other.value){}
+    PyEntityPtr& operator=(const PyEntityPtr& other){PyEntityPtr pin(other);std::swap(value,pin.value);return *this;}
+    ~PyEntityPtr();
+    PyEntity* get()const{return value;}PyEntity* operator->()const{return value;}
+    explicit operator bool()const{return value!=NULL;}
+    bool operator==(const PyEntity* other)const{return value==other;}
+    PyObject* newRef()const;
+};
+struct PyEntity:PyObject
+{
+    Entity* pEntity_;PyObject* cell_;PyObject* base_;
+    static PyTypeObject s_type_;
+    EntityPtr pEntity()const{return {pEntity_};}
+    const char* typeName()const{return ob_type->tp_name;}
+    bool isDestroyed()const;
+    // Public setClass assigns __class__ through pySetAttribute.
+    void setClass(PyTypeObject* pClass)
+    {
+        MF_ASSERT_DEV(PyObject_IsSubclass((PyObject*)pClass,(PyObject*)&s_type_));
+        MF_VERIFY(PyObject_SetAttrString(this,"__class__",(PyObject*)pClass)==0);
+    }
+    bool makePlayer();bool makeNonPlayer();void onEntityDestroyed();
+};
+PyTypeObject PyEntity::s_type_={PyVarObject_HEAD_INIT(NULL,0)"BigWorld.Entity",sizeof(PyEntity)};
+PyEntityPtr::PyEntityPtr(PyEntity* entity):value(entity){Py_XINCREF(value);}
+PyEntityPtr::~PyEntityPtr(){Py_XDECREF(value);}
+PyObject* PyEntityPtr::newRef()const{Py_XINCREF(value);return value;}
+static PyObject* entityDictionary=NULL;
+struct EntitySpace{struct Enviro{int playerAttachments(){return 0;}};Enviro enviro(){return {};}};
+struct Entity
+{
+    struct Census
+    {
+        void insert(Entity* entity);void erase(Entity* entity);
+    };
+    EntityID id_;EntityType* type_;BWConnection* owner_;PyEntityPtr pPyEntity_;bool destroyed_=false;
+    static Census census_;
+    const EntityType& type()const{return *type_;}
+    PyEntityPtr pPyEntity()const{return pPyEntity_;}
+    bool isDestroyed()const{return destroyed_;}
+    EntityID entityID()const{return id_;}
+    EntitySpace* pSpace()const{return NULL;}
+    void abortLoadingPrerequisites(){}
+    void onDestroyed();
+};
+using BWEntity=Entity;
+Entity::Census Entity::census_;
+void Entity::Census::insert(Entity* entity)
+{PyObject* key=PyInt_FromLong(entity->id_);PyDict_SetItem(entityDictionary,key,entity->pPyEntity_.get());Py_DECREF(key);}
+void Entity::Census::erase(Entity* entity)
+{PyObject* key=PyInt_FromLong(entity->id_);if(PyDict_DelItem(entityDictionary,key))PyErr_Clear();Py_DECREF(key);}
+bool PyEntity::isDestroyed()const{return pEntity_->isDestroyed();}
+struct PyAttachmentPtr{explicit PyAttachmentPtr(int){}};
+struct AttachedPS{struct Node{void detach(PyAttachmentPtr){}}*pNode_;int pAttachment_;};
+struct EntityPhotonOccluder{explicit EntityPhotonOccluder(Entity&){}};
+struct LensEffectManager
+{
+    static LensEffectManager& instance(){static LensEffectManager owner;return owner;}
+    void delPhotonOccluder(EntityPhotonOccluder*){}void addPhotonOccluder(EntityPhotonOccluder*){}
+};
+struct ZBufferOccluder{static bool isAvailable(){return true;}};
+struct ScriptPlayer
+{
+    Entity* pEntity_=NULL;std::vector<AttachedPS> attachedPSs_;EntityPhotonOccluder* playerFlareCollider_=NULL;
+    static ScriptPlayer& instance(){static ScriptPlayer owner;return owner;}
+    static Entity* entity(){return instance().pEntity_;}
+    bool setPlayer(Entity* newPlayer);
+    void updateWeatherParticleSystems(int){}
+};
+@SET_PLAYER@
+@MAKE_PLAYER@
+@MAKE_NON_PLAYER@
+@ON_ENTITY_DESTROYED@
+@ON_DESTROYED@
+static PyObject* createPlayerEntity(const string&,const Position3D&,const Vector3&,const ScriptDict&)
+{PyErr_SetString(PyExc_AssertionError,"main offline createPlayerEntity is outside this fixture");return NULL;}
+@CREATE_ENTITY@
+@PLAYER@
+// PyEntity keeps its Entity alive (EntityPtr), as in the engine.
+static void deallocEntity(PyObject* object)
+{delete static_cast<PyEntity*>(object)->pEntity_;Py_TYPE(object)->tp_free(object);}
+// Entity creation and destruction in a connection: fixture, not engine code.
+Entity* BWConnection::createLocalEntity(int typeIndex,SpaceID,int,const Position3D&,const Direction3D&,MemoryOStream&)
+{
+    static EntityID nextEntity=500;
+    EntityType* type=EntityType::all()[typeIndex];
+    PyObject* object=type->class_->tp_alloc(type->class_,0);
+    if(!object)return NULL;
+    auto* entity=new Entity{nextEntity++,type,this,PyEntityPtr()};
+    static_cast<PyEntity*>(object)->pEntity_=entity;
+    entity->pPyEntity_=PyEntityPtr(static_cast<PyEntity*>(object));Py_DECREF(object);
+    live.push_back(entity);Entity::census_.insert(entity);
+    // The native factory prints script constructor errors and keeps the entity.
+    Script::call(PyObject_GetAttrString(object,"__init__"),PyTuple_New(0),"Entity::__init__: ",false);
+    return entity;
+}
+void BWConnection::destroyEntities()
+{
+    const std::vector<Entity*> snapshot=live;
+    for(Entity* entity:snapshot)
+    {
+        if(std::find(live.begin(),live.end(),entity)==live.end())continue;
+        Script::call(PyObject_GetAttrString(entity->pPyEntity_.get(),"onLeaveWorld"),PyTuple_New(0),
+            "Entity::onLeaveWorld: ",true);
+        if(std::find(live.begin(),live.end(),entity)==live.end())continue;
+        live.erase(std::find(live.begin(),live.end(),entity));
+        // BWEntity::destroy marks the entity destroyed before onDestroyed.
+        entity->destroyed_=true;entity->onDestroyed();
+    }
+}
+BWConnection::~BWConnection()
+{
+    events.push_back("delete:"+std::to_string(id));if(onDelete)onDelete();
+    destroyEntities();
+}
 @CREATE_LOCAL_SPACE@
 @GAME_TIME@
 @LEGACY_CLEAR@
@@ -224,6 +400,8 @@ static void reset()
     owner.condemnedConnections_.clear();
     pins.clear();auto& manager=BW::SpaceManager::instance();manager.spaces_.clear();manager.localSpaces_.clear();
     BW::events.clear();BW::errors=0;
+    // A later initialisation phase reopens creation after a fini test.
+    if(!BW::stockClientSpacesOpen())BW::SpaceManager::instance().init();
 }
 static void ownerTests()
 {
@@ -351,12 +529,17 @@ static bool takeError(PyObject* type,const char* text)
     Py_XDECREF(kind);Py_XDECREF(value);Py_XDECREF(trace);return matched;
 }
 static std::string id(BW::SpaceID value){return std::to_string(value);}
+static BW::SpaceID create()
+{
+    PyObject* result=BW::createSpace();assert(result&&PyInt_Check(result));
+    const BW::SpaceID value=BW::SpaceID(PyInt_AsLong(result));Py_DECREF(result);return value;
+}
 static void clientSpaceTests()
 {
     using namespace BW;
     auto& owner=ConnectionControl::instance();auto& manager=SpaceManager::instance();
     // Multiple simultaneous spaces: distinct IDs, held spaces and connections.
-    const SpaceID a=createSpace(),b=createSpace(),c=createSpace();
+    const SpaceID a=create(),b=create(),c=create();
     assert(a>=SpaceManager::LOCAL_SPACE_START&&a<b&&b<c);
     for(SpaceID space:{a,b,c})assert(isClientSpace(space)&&held(space)&&held(space)->spaceID()==space&&
         owner.clientSpaces_.at(space).get()==manager.space(space)&&manager.space(space)->references==1);
@@ -380,7 +563,7 @@ static void clientSpaceTests()
     assert(!clearSpace(c)&&takeError(PyExc_ValueError,("BigWorld.clearSpace(): Space ID "+id(c)+notHeld).c_str()));
     pinned=ClientSpacePtr();assert(!manager.space(c));
     // Server spaces and the main offline space are never client spaces.
-    const SpaceID probe=createSpace();assert(releaseSpace(probe));
+    const SpaceID probe=create();assert(releaseSpace(probe));
     auto server=addSpace(5);auto mainSpace=addSpace(probe+1);
     owner.pConnection_=new BWNullConnection(50,mainSpace->id());owner.mode_=ConnectionControl::OFFLINE;
     for(SpaceID space:{server->id(),mainSpace->id()})
@@ -391,7 +574,7 @@ static void clientSpaceTests()
     }
     assert(!isClientSpace(424242)&&!PyErr_Occurred());
     // nextLocalSpaceID skips the main offline space and held IDs.
-    const SpaceID next=createSpace();assert(next==probe+2&&isClientSpace(next));
+    const SpaceID next=create();assert(next==probe+2&&isClientSpace(next));
     // clearAllSpaces keep=true clears only non-client spaces; no connection work.
     held(next)->entities=4;
     clearAllSpaces(true);
@@ -417,34 +600,34 @@ static void clientSpaceTests()
     // outer space is held; both end up held under distinct IDs.
     SpaceID nested=NULL_SPACE_ID;
     manager.onCreate=[&](ClientSpace* created){manager.onCreate={};
-        assert(!isClientSpace(created->id()));nested=createSpace();};
-    const SpaceID outer=createSpace();
+        assert(!isClientSpace(created->id()));nested=create();};
+    const SpaceID outer=create();
     assert(nested==outer+1&&isClientSpace(outer)&&isClientSpace(nested));
     reset();
     // Leave callbacks during release see a retired identity and may create,
     // clear, release or reset; the replacement is preserved.
-    const SpaceID first=createSpace(),second=createSpace();held(first)->entities=1;
+    const SpaceID first=create(),second=create();held(first)->entities=1;
     SpaceID replacement=NULL_SPACE_ID;bool nestedRelease=true;
     held(first)->onClear=[&](){
         assert(!isClientSpace(first)&&!held(first)&&manager.space(first));
         nestedRelease=releaseSpace(first);PyErr_Clear();
-        replacement=createSpace();assert(releaseSpace(second));
+        replacement=create();assert(releaseSpace(second));
         clearAllSpaces(false);clearStockEntitiesAndSpaces(true);};
     events.clear();assert(releaseSpace(first));
     assert(!nestedRelease&&!manager.space(first)&&!manager.space(second)&&!held(replacement)&&!PyErr_Occurred());
     assert(std::count(events.begin(),events.end(),"destroy:"+id(first))==1);
     reset();
-    const SpaceID survivor=createSpace(),leaving=createSpace();SpaceID created=NULL_SPACE_ID;
-    held(leaving)->onClear=[&](){created=createSpace();held(created)->entities=9;};
+    const SpaceID survivor=create(),leaving=create();SpaceID created=NULL_SPACE_ID;
+    held(leaving)->onClear=[&](){created=create();held(created)->entities=9;};
     assert(releaseSpace(leaving)&&isClientSpace(created)&&held(created)->entities==9&&isClientSpace(survivor));
     reset();
     // Release inside the original tick body defers deletion and never ticks
     // a retired or newborn connection in the old snapshot.
-    const SpaceID ticking=createSpace(),other=createSpace();
+    const SpaceID ticking=create(),other=create();
     BWNullConnection* tickingConnection=held(ticking);BWNullConnection* otherConnection=held(other);
     SpaceID born=NULL_SPACE_ID;bool returned=false;
     tickingConnection->onUpdate=[&](){assert(releaseSpace(other)&&releaseSpace(ticking));
-        born=createSpace();assert(owner.condemnedConnections_.size()==2);returned=true;};
+        born=create();assert(owner.condemnedConnections_.size()==2);returned=true;};
     tickingConnection->onDelete=[&](){assert(returned&&tickingConnection->sends==0);};
     otherConnection->onDelete=[&](){assert(otherConnection->updates==0&&otherConnection->sends==0);};
     owner.tick(.1f);
@@ -454,18 +637,68 @@ static void clientSpaceTests()
     reset();
     // A held map entry missing its ClientSpace is the 63ff90 MF_ASSERT_DEV
     // branch: the connection is still retired exactly once.
-    const SpaceID partial=createSpace();ClientSpacePtr kept=owner.clientSpaces_.at(partial);
+    const SpaceID partial=create();ClientSpacePtr kept=owner.clientSpaces_.at(partial);
     owner.clientSpaces_.erase(partial);errors=0;events.clear();
     assert(releaseSpace(partial)&&errors==1&&!held(partial)&&kept->clears==0);
     kept=ClientSpacePtr();reset();
     // A player-owning local null connection keeps its entities, as both the
     // public and #1513 BWNullConnection::clearAllEntities do.
-    const SpaceID battle=createSpace();held(battle)->playerID=7;held(battle)->entities=2;
+    const SpaceID battle=create();held(battle)->playerID=7;held(battle)->entities=2;
     BWNullConnection* battleConnection=held(battle);unsigned battleEntities=0;
     battleConnection->onDelete=[&](){battleEntities=battleConnection->entities;};
     assert(releaseSpace(battle)&&battleEntities==2);
     reset();
     std::puts("Client-space create/clear/release/isClientSpace/clearAllSpaces/resetEntityManager owner paths PASS");
+}
+
+// The production ConnectionControl::fini body and its terminal fence.
+static void finiTests()
+{
+    using namespace BW;
+    auto& owner=ConnectionControl::instance();auto& manager=SpaceManager::instance();
+    // A leave callback releases the current and another space, clears every
+    // space and the entities/spaces, and tries to create one: each detached
+    // connection is retired exactly once and nothing new is admitted.
+    const SpaceID a=create(),b=create(),c=create();
+    owner.pConnection_=new BWNullConnection(90,NULL_SPACE_ID);owner.mode_=ConnectionControl::OFFLINE;
+    BWNullConnection *first=held(a),*second=held(b);
+    std::vector<int> deleted;for(SpaceID space:{a,b,c}){BWNullConnection* connection=held(space);
+        connection->onDelete=[&deleted,connection](){deleted.push_back(connection->id);};}
+    bool created=true,releasedCurrent=true,releasedOther=true;
+    owner.pConnection_->onClear=[&](){PyObject* refused=createSpace();created=refused!=NULL;Py_XDECREF(refused);
+        assert(takeError(PyExc_RuntimeError,"BigWorld.createSpace(): client spaces are finalised"));};
+    first->onClear=[&](){
+        releasedCurrent=releaseSpace(a);PyErr_Clear();releasedOther=releaseSpace(b);PyErr_Clear();
+        PyObject* refused=createSpace();created=created||refused!=NULL;Py_XDECREF(refused);PyErr_Clear();
+        manager.space(a)->repeatable=true;clearAllSpaces(false);clearStockEntitiesAndSpaces(false);owner.fini();};
+    events.clear();owner.fini();
+    assert(!created&&!releasedCurrent&&!releasedOther&&!PyErr_Occurred());
+    assert(owner.clientSpaceConnections_.empty()&&owner.clientSpaces_.empty()&&!owner.pConnection_);
+    std::sort(deleted.begin(),deleted.end());
+    assert(deleted.size()==3&&std::adjacent_find(deleted.begin(),deleted.end())==deleted.end());
+    for(SpaceID space:{a,b,c})assert(!manager.space(space)&&std::count(events.begin(),events.end(),"destroy:"+id(space))==1);
+    (void)second;
+    // Terminal: repeated fini is harmless and creation stays closed until the
+    // next SpaceManager::init, which reopens it.
+    owner.fini();
+    PyObject* refused=createSpace();assert(!refused&&takeError(PyExc_RuntimeError,"BigWorld.createSpace(): client spaces are finalised"));
+    errors=0;assert(owner.createLocalSpace()==NULL_SPACE_ID&&errors==1&&owner.clientSpaces_.empty());
+    manager.init();const SpaceID reopened=create();assert(isClientSpace(reopened));
+    // Fini geometry: 63fe70 clears each held space; an external pin survives
+    // with its geometry cleared and is no longer held.
+    ClientSpacePtr pinned(manager.space(reopened));owner.fini();
+    assert(pinned->clears==1&&manager.space(reopened)==pinned.get()&&!isClientSpace(reopened));
+    pinned=ClientSpacePtr();assert(!manager.space(reopened));
+    // Partial startup: fini before any space or before any init.
+    reset();owner.fini();assert(owner.clientSpaceConnections_.empty());reset();
+    // Fini inside tick defers deletion to the end of that tick.
+    const SpaceID ticking=create(),other=create();BWNullConnection* tickConnection=held(ticking);
+    bool returned=false;
+    tickConnection->onUpdate=[&](){owner.fini();assert(owner.condemnedConnections_.size()==2);returned=true;};
+    tickConnection->onDelete=[&](){assert(returned);};
+    owner.tick(.1f);assert(returned&&owner.condemnedConnections_.empty()&&!manager.space(ticking)&&!manager.space(other));
+    reset();
+    std::puts("Production ConnectionControl::fini: retire-first, once-only, terminal fence and init reopen PASS");
 }
 static PyObject* clear(PyObject*,PyObject* args){return BW::py_clearEntitiesAndSpaces(args);}
 static PyObject* prepare(PyObject*,PyObject*){reset();addSpace(1);addSpace((1<<30)+1);Py_RETURN_NONE;}
@@ -511,6 +744,38 @@ static PyObject* mainConnection(PyObject*,PyObject*)
     auto& owner=BW::ConnectionControl::instance();if(!owner.pConnection_)Py_RETURN_NONE;
     return Py_BuildValue("(ii)",int(owner.pConnection_->entities),int(owner.pConnection_->clears));
 }
+// Hand-written argument parsing around the extracted createEntity/player
+// bodies; their PY_AUTO converters are outside this family.
+static PyObject* createEntityBinding(PyObject*,PyObject* args)
+{
+    const char* name=NULL;int space=0,vehicle=0;PyObject *position=NULL,*direction=NULL,*properties=NULL;
+    if(!PyArg_ParseTuple(args,"siiOOO!",&name,&space,&vehicle,&position,&direction,&PyDict_Type,&properties))return NULL;
+    BW::Position3D at;BW::Vector3 facing;BW::ScriptDict dictionary{properties};
+    return BW::createEntity(name,space,vehicle,at,facing,dictionary);
+}
+static PyObject* playerBinding(PyObject*,PyObject* args)
+{
+    PyObject* value=NULL;if(!PyArg_ParseTuple(args,"|O:player",&value))return NULL;
+    if(value&&value!=Py_None&&!PyObject_TypeCheck(value,&BW::PyEntity::s_type_))
+    {PyErr_SetString(PyExc_TypeError,"() argument 1 optionally must be set to a PyEntity or None");return NULL;}
+    return BW::player(BW::PyEntityPtr(value&&value!=Py_None?static_cast<BW::PyEntity*>(value):NULL));
+}
+static PyObject* registerEntityType(PyObject*,PyObject* args)
+{
+    const char* name=NULL;PyObject *script=NULL,*player=Py_None;
+    if(!PyArg_ParseTuple(args,"sO!|O",&name,&PyType_Type,&script,&player))return NULL;
+    auto* type=new BW::EntityType;type->name_=name;type->class_=(PyTypeObject*)script;Py_INCREF(script);
+    if(player!=Py_None){type->playerClass_=(PyTypeObject*)player;Py_INCREF(player);}
+    type->index_=int(BW::EntityType::all().size());BW::EntityType::all().push_back(type);Py_RETURN_NONE;
+}
+static PyObject* finiOwners(PyObject*,PyObject*){BW::ConnectionControl::instance().fini();Py_RETURN_NONE;}
+static PyObject* initSpaces(PyObject*,PyObject*){BW::SpaceManager::instance().init();Py_RETURN_NONE;}
+static PyObject* connectionPlayer(PyObject*,PyObject* args)
+{
+    int value=0;if(!PyArg_ParseTuple(args,"i",&value))return NULL;
+    BW::BWNullConnection* found=held(value);if(!found)Py_RETURN_NONE;
+    return Py_BuildValue("(ii)",found->playerID,int(found->live.size()));
+}
 static PyObject* quiting(PyObject*,PyObject* args)
 {int value=0;if(!PyArg_ParseTuple(args,"i",&value))return NULL;BW::App::instance().quiting=value!=0;Py_RETURN_NONE;}
 int main(int argc,char** argv)
@@ -530,7 +795,10 @@ int main(int argc,char** argv)
         assert(replacementDeleted&&!owner.pConnection_);old->onClear={};delete old;reset();
         std::puts("Pristine original clearSpaces destroys a callback-created replacement: reproduced");return 0;
     }
-    assert(argc==2);Py_NoSiteFlag=1;Py_Initialize();ownerTests();clientSpaceTests();
+    assert(argc==2);Py_NoSiteFlag=1;Py_Initialize();
+    BW::PyEntity::s_type_.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE;BW::PyEntity::s_type_.tp_new=PyType_GenericNew;BW::PyEntity::s_type_.tp_dealloc=BW::deallocEntity;
+    assert(PyType_Ready(&BW::PyEntity::s_type_)==0);
+    ownerTests();clientSpaceTests();finiTests();
     std::vector<PyMethodDef> methods=BW::moduleMethods();
     methods.insert(methods.end(),{
         {"clearEntitiesAndSpaces",clear,METH_VARARGS,NULL},{"_prepare",prepare,METH_NOARGS,NULL},
@@ -538,8 +806,13 @@ int main(int argc,char** argv)
         {"_server",server,METH_VARARGS,NULL},{"_offline",offline,METH_VARARGS,NULL},
         {"_space",space,METH_VARARGS,NULL},{"_connection",connection,METH_VARARGS,NULL},
         {"_entity",entity,METH_VARARGS,NULL},{"_main",mainConnection,METH_NOARGS,NULL},
-        {"_quiting",quiting,METH_VARARGS,NULL},{NULL,NULL,0,NULL}});
-    assert(Py_InitModule("BigWorld",methods.data()));
+        {"_quiting",quiting,METH_VARARGS,NULL},{"createEntity",createEntityBinding,METH_VARARGS,NULL},
+        {"player",playerBinding,METH_VARARGS,NULL},{"_registerEntityType",registerEntityType,METH_VARARGS,NULL},
+        {"_fini",finiOwners,METH_NOARGS,NULL},{"_init",initSpaces,METH_NOARGS,NULL},
+        {"_connectionPlayer",connectionPlayer,METH_VARARGS,NULL},{NULL,NULL,0,NULL}});
+    PyObject* module=Py_InitModule("BigWorld",methods.data());assert(module);
+    BW::entityDictionary=PyDict_New();PyModule_AddObject(module,"entities",BW::entityDictionary);Py_INCREF(BW::entityDictionary);
+    PyModule_AddObject(module,"Entity",(PyObject*)&BW::PyEntity::s_type_);Py_INCREF(&BW::PyEntity::s_type_);
     FILE* script=fopen(argv[1],"rb");assert(script);const int result=PyRun_SimpleFile(script,argv[1]);fclose(script);
     if(result){PyErr_Print();reset();Py_Finalize();return 1;}reset();Py_Finalize();
     std::puts("Production space lifecycle/tick owner fixture and real CPython boundary PASS");return 0;

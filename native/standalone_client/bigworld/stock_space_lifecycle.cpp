@@ -87,7 +87,67 @@ public:
     {
         ConnectionControl::instance().clearStockMainSpace(keepLocalEntities);
     }
+
+    // Entry-time client-space owners, detached before any script callback.
+    struct Detached
+    {
+        ConnectionControl::ClientSpaceConnections connections;
+        ConnectionControl::ClientSpaces spaces;
+        bool deferDeletion = false;
+    };
+
+    static Detached detachClientSpaces()
+    {
+        ConnectionControl& control = ConnectionControl::instance();
+        Detached detached;
+        detached.connections.swap(control.clientSpaceConnections_);
+        detached.spaces.swap(control.clientSpaces_);
+        detached.deferDeletion = control.isInTick_;
+        if (detached.deferDeletion)
+            for (const auto& entry : detached.connections) control.condemnedConnections_.push_back(entry.second);
+        return detached;
+    }
+
+    // 63fe70: each detached connection's entities, its geometry, then the
+    // connection itself, exactly once even if callbacks re-enter.
+    static void retireClientSpaces(const Detached& detached)
+    {
+        for (const auto& entry : detached.connections)
+        {
+            entry.second->clearAllEntities();
+            const auto space = detached.spaces.find(entry.first);
+            if (space != detached.spaces.end() && !space->second->cleared()) space->second->clear();
+            if (!detached.deferDeletion) delete entry.second;
+        }
+    }
+
+    // Terminal fini closes creation until the next SpaceManager::init.
+    static bool clientSpacesOpen()
+    {
+        return ConnectionControl::instance().stockClientSpacesClosedAt_ !=
+            SpaceManager::instance().stockInitGeneration_;
+    }
+
+    // #1513 fini 673610: 63f610 then 63fe70, with identities retired first.
+    static void fini()
+    {
+        ConnectionControl& control = ConnectionControl::instance();
+        control.stockClientSpacesClosedAt_ = SpaceManager::instance().stockInitGeneration_;
+        const Detached detached = detachClientSpaces();
+        control.clearSpaces();
+        retireClientSpaces(detached);
+    }
 };
+
+bool stockClientSpacesOpen()
+{
+    return StockSpaceLifecycle::clientSpacesOpen();
+}
+
+void finiStockClientSpaces()
+{
+    StockSpaceLifecycle::fini();
+}
 
 void ConnectionControl::clearStockMainSpace(bool keepLocalEntities)
 {
@@ -135,13 +195,7 @@ void clearStockEntitiesAndSpaces(bool keepClientOnlySpaces)
     ConnectionControl& control = ConnectionControl::instance();
     BWConnection* const mainConnection = control.pConnection_;
     const uint64 mainRevision = control.stockMainSpaceRevision_;
-    ConnectionControl::ClientSpaceConnections connections;
-    ConnectionControl::ClientSpaces clientSpaces;
-    connections.swap(control.clientSpaceConnections_);
-    clientSpaces.swap(control.clientSpaces_);
-    const bool deferDeletion = control.isInTick_;
-    if (deferDeletion)
-        for (const auto& entry : connections) control.condemnedConnections_.push_back(entry.second);
+    const StockSpaceLifecycle::Detached detached = StockSpaceLifecycle::detachClientSpaces();
     // 64f200 first flushes the captured current-space static sound feature.
     // Both local maps and selected geometry identities were captured before
     // this backend boundary. Other spaces retain their own live sound groups.
@@ -151,13 +205,7 @@ void clearStockEntitiesAndSpaces(bool keepClientOnlySpaces)
         control.clearSpaces();
     // 63fe70 clears the entry-time local connections even for keep=true.
     // Both maps were detached before the main connection's script callbacks.
-    for (const auto& entry : connections)
-    {
-        entry.second->clearAllEntities();
-        const auto space = clientSpaces.find(entry.first);
-        if (space != clientSpaces.end() && !space->second->cleared()) space->second->clear();
-        if (!deferDeletion) delete entry.second;
-    }
+    StockSpaceLifecycle::retireClientSpaces(detached);
     for (const auto& retired : spaces)
         if (manager.space(retired->id()) == retired.get() && !retired->cleared()) retired->clear();
 }
@@ -175,11 +223,17 @@ PY_MODULE_FUNCTION(clearEntitiesAndSpaces, BigWorld)
 
 // 63fc50 is the public createLocalSpace sequence: next local ID, SpaceManager
 // space, held ClientSpacePtr, then a BWNullConnection at gameTime().
-static SpaceID createSpace()
+static PyObject* createSpace()
 {
-    return ConnectionControl::instance().createLocalSpace();
+    const SpaceID spaceID = ConnectionControl::instance().createLocalSpace();
+    if (spaceID == NULL_SPACE_ID)
+    {
+        PyErr_SetString(PyExc_RuntimeError, "BigWorld.createSpace(): client spaces are finalised");
+        return NULL;
+    }
+    return Script::getData(spaceID);
 }
-PY_AUTO_MODULE_FUNCTION(RETDATA, createSpace, END, BigWorld)
+PY_AUTO_MODULE_FUNCTION(RETOWN, createSpace, END, BigWorld)
 
 // ac2bb0 is ClientSpace::clear only; entities and the connection stay held.
 static bool clearSpace(SpaceID spaceID)

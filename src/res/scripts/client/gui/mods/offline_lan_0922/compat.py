@@ -3019,12 +3019,29 @@ class OfflineCompatibility(object):
         except Exception:
             return False
 
-    def _discard_partial_account(self):
+    def _discard_partial_account(self, space_id=None, account=None):
+        """Release only what a failed Account construction still owns."""
         runtime = self._runtime
-        clear_all_spaces = getattr(runtime.bigworld, 'clearAllSpaces', None)
-        if callable(clear_all_spaces):
+        bigworld = runtime.bigworld
+        try:
+            player = bigworld.player()
+        except Exception:
+            player = None
+        if account is not None and player is account:
+            # Detach stock owners before the native clear empties the dict.
             try:
-                clear_all_spaces()
+                self.retire_current_player()
+            except Exception:
+                pass
+        # #1513 clearAllSpaces only clears geometry; releasing the owned
+        # client space destroys its entities and clears the player natively.
+        is_client_space = getattr(bigworld, 'isClientSpace', None)
+        release_space = getattr(bigworld, 'releaseSpace', None)
+        if (space_id is not None and callable(is_client_space) and
+                callable(release_space)):
+            try:
+                if is_client_space(space_id):
+                    release_space(space_id)
             except Exception:
                 pass
         delete_repository = getattr(
@@ -3046,6 +3063,8 @@ class OfflineCompatibility(object):
         # construction inside the same property-injection scope, rather than
         # relying on connect() having been entered through our public helper.
         self._connecting = True
+        space_id = None
+        account = None
         try:
             try:
                 space_id = runtime.bigworld.createSpace()
@@ -3062,7 +3081,7 @@ class OfflineCompatibility(object):
                         'BigWorld did not promote the offline Account')
                 return account
             except Exception:
-                self._discard_partial_account()
+                self._discard_partial_account(space_id, account)
                 raise
         finally:
             self._connecting = was_connecting

@@ -51,6 +51,27 @@ ORIGINAL_CLEAR_SPACES = r'''void ConnectionControl::clearSpaces()
 }'''
 
 
+ORIGINAL_FINI = r'''void ConnectionControl::fini()
+{
+    // Clear entities in online, offline, replay spaces
+    this->clearSpaces();
+
+    // Clear entites in local spaces 
+    ClientSpaceConnections::iterator iter = clientSpaceConnections_.begin();
+    while (iter != clientSpaceConnections_.end())
+    {
+        iter->second->clearAllEntities();
+
+        delete iter->second;
+        ++iter;
+    }
+    clientSpaceConnections_.clear();
+
+    // SpaceManager owns the elements
+    clientSpaces_.clear();
+}'''
+
+
 def patch(root):
     root = Path(root)
     files = {}
@@ -65,14 +86,27 @@ def patch(root):
     source = replace(source, 'private:\n', 'private:\n\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );\n', '\tfriend void clearStockEntitiesAndSpaces( bool keepClientOnlySpaces );')
     source = replace(source, 'private:\n', 'private:\n\tfriend class StockSpaceLifecycle;\n', '\tfriend class StockSpaceLifecycle;')
     source = replace(source, '\tvoid destroyMainConnection();', '\tuint64 stockMainSpaceRevision_ = 0;\n\tvoid destroyMainConnection();', '\tuint64 stockMainSpaceRevision_ = 0;')
+    source = replace(source, '\tvoid destroyMainConnection();', '\tunsigned stockClientSpacesClosedAt_ = ~0u;\n\tvoid destroyMainConnection();', '\tunsigned stockClientSpacesClosedAt_ = ~0u;')
     files[path] = source
     path = root / 'lib/space/space_manager.hpp'
     source = path.read_text(encoding='utf-8-sig')
     source = replace(source, 'private:\n', 'private:\n\tfriend class StockSpaceLifecycle;\n', '\tfriend class StockSpaceLifecycle;')
+    source = replace(source, '\tSpaceMap localSpaces_;\n', '\tSpaceMap localSpaces_;\n\tunsigned stockInitGeneration_ = 0;\n', '\tunsigned stockInitGeneration_ = 0;')
+    files[path] = source
+    path = root / 'lib/space/space_manager.cpp'
+    source = path.read_text(encoding='utf-8-sig')
+    # A new initialisation phase reopens client-space creation after fini.
+    source = replace(source, 'void SpaceManager::init()\n{\n\n}', 'void SpaceManager::init()\n{\n\t++stockInitGeneration_;\n}')
     files[path] = source
     path = root / 'client/connection_control.cpp'
     source = path.read_text(encoding='utf-8-sig')
+    source = replace(source, '#include "connection_control.hpp"\n', '#include "connection_control.hpp"\n#include "stock_space_lifecycle.hpp"\n', '#include "stock_space_lifecycle.hpp"')
     source = replace(source, ORIGINAL_CLEAR_SPACES, "void ConnectionControl::clearSpaces()\n{\n    this->clearStockMainSpace();\n}")
+    source = replace(source, ORIGINAL_FINI, "void ConnectionControl::fini()\n{\n    finiStockClientSpaces();\n}")
+    source = replace(source, 'SpaceID ConnectionControl::createLocalSpace()\n{\n    BW_GUARD;\n\n',
+        'SpaceID ConnectionControl::createLocalSpace()\n{\n    BW_GUARD;\n\n    if (!stockClientSpacesOpen())\n    {\n'
+        '        ERROR_MSG( "ConnectionControl::createLocalSpace: client spaces are finalised\\n" );\n'
+        '        return NULL_SPACE_ID;\n    }\n\n', '    if (!stockClientSpacesOpen())')
     source = replace(source, '    BWConnection * pConnection = pConnection_;\n    pConnection_ = NULL;',
         '    BWConnection * pConnection = pConnection_;\n    ++stockMainSpaceRevision_;\n    pConnection_ = NULL;')
     before = '''        ClientSpaceConnections::iterator iter = clientSpaceConnections_.begin();
