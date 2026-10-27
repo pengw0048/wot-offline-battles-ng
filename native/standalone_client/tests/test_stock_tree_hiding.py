@@ -1401,6 +1401,18 @@ class OptimiserStageTests(unittest.TestCase):
                          'vector g_blurScreen 400 225 0.0025 0.00444444', 'texture g_srcMap 40', 'texture g_srcMap 41',
                          'technique blur VERTICAL_PASS', 'texture g_srcMap 40', 'quad upsample 1600 900'):
             self.assertIn(expected, blur)
+        # What normalise_original drops: pool slots 3/4 are acquired before and
+        # released in reverse after the quarter pass, and the SRT stage (753d80,
+        # no .srt instances) follows the trees with the path flag.
+        for index, case in enumerate(cases):
+            quarter_path = case['hide'] and case.get('optimiser', True)
+            trees = [['trees', int(not case.get('draw', True))], ['srt', int(quarter_path)]]
+            if not case.get('bound', True):
+                trees = []
+            expected = ([['acquire', 3], ['acquire', 4]] + trees + [['release', 0x704], ['release', 0x703]]
+                        if quarter_path else trees)
+            self.assertEqual([e[:2] for e in original[index] if e[0] in ('acquire', 'release', 'srt', 'trees')],
+                             expected, case)
         # The original blur struct is local lighting's (a69bb7) plus +0x28 DRR.
         self.assertEqual(original[1][11][:9], ['blur', 0x703, 0x704, 0, 0.5, 1.0, 2, 9, 0])
         # Deliberate containment: the original still blurs and composites stale
@@ -1430,6 +1442,7 @@ struct RenderContext
     Size size; PresentParameters present;
     const Size & backBufferDesc() const { return size; }
     const PresentParameters & presentParameters() const { return present; }
+    bool usingD3DDeviceEx() const { return false; }
 } context;
 RenderContext & rc() { return context; }
 // lib/moo/render_target.cpp: create() only records; allocate() creates a
@@ -1455,6 +1468,7 @@ struct Owner
 {
     std::array<Moo::RenderTargetPtr, 2> hidingTargets;
     void fail( const char * message ) { std::printf( "fail %s\n", message ); }
+@MEMBERS@
 @BODY@
 };
 int main()
@@ -1464,7 +1478,7 @@ int main()
     {
         Moo::context.size = { width, height };
         Moo::context.present.AutoDepthStencilFormat = D3DFORMAT( depth );
-        Owner().createHidingTargets();
+@MAIN@
     }
 }
 """
@@ -1507,7 +1521,8 @@ class HidingTargetPoolTests(unittest.TestCase):
         scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
         body = function(scene, 'void createHidingTargets()')
         with tempfile.TemporaryDirectory() as folder:
-            binary = compile_host(Path(folder), POOL_HOST.replace('@BODY@', body), 'pool_targets')
+            binary = compile_host(Path(folder), POOL_HOST.replace('@MEMBERS@', '').replace('@BODY@', body).replace(
+                '@MAIN@', '        Owner().createHidingTargets();'), 'pool_targets')
             result = subprocess.run([str(binary)], input=''.join(
                 '%d %d %d\n' % (w, h, D3D_FORMATS[d]) for w, h, d in cases), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1520,6 +1535,46 @@ class HidingTargetPoolTests(unittest.TestCase):
         self.assertEqual(expected[2 * tiny:2 * tiny + 2], [[3, 1, 113, 75, 0, 1]] * 2)
         expected[2 * tiny:2 * tiny + 2] = ['fail'] * 2
         self.assertEqual(produced, expected)
+
+
+RESET_MEMBERS = """
+    bool active = true, gpuReady = true;
+    void deleteGpuObjects() { std::printf( "delete gpu\\n" ); }
+    void createGpuObjects() { std::printf( "create gpu\\n" ); }
+"""
+RESET_MAIN = """
+        static Owner owner;
+        owner.active = width != 7;
+        owner.deleteUnmanagedObjects();
+        std::printf( "deleted %d %d\\n", int( owner.hidingTargets[0] != NULL ), int( owner.hidingTargets[1] != NULL ) );
+        owner.createUnmanagedObjects();
+        std::printf( "created %d %d\\n", int( owner.hidingTargets[0] != NULL ), int( owner.hidingTargets[1] != NULL ) );
+"""
+
+
+class HidingTargetResetTests(unittest.TestCase):
+    def test_device_reset_recreates_and_failed_init_clears_the_targets(self):
+        requirements(self, oracle=False)
+        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        body = '\n'.join(function(scene, signature) for signature in (
+            'virtual void deleteUnmanagedObjects()', 'virtual void createUnmanagedObjects()',
+            'void createHidingTargets()'))
+        with tempfile.TemporaryDirectory() as folder:
+            binary = compile_host(Path(folder), POOL_HOST.replace('@MEMBERS@', RESET_MEMBERS).replace('@BODY@', body).replace(
+                '@MAIN@', RESET_MAIN), 'hiding_reset')
+            result = subprocess.run([str(binary)], input='1600 900 75\n1920 1080 77\n3 900 75\n7 900 75\n1600 900 75\n',
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lost, made = 'deleted 0 0', 'created 1 1'
+        self.assertEqual(result.stdout.splitlines(), [
+            lost, '400 225 113 75 0 1 0 0', '400 225 113 75 0 1 0 0', made,
+            # A reset at another size or depth format recreates both targets.
+            lost, '480 270 113 77 0 1 0 0', '480 270 113 77 0 1 0 0', made,
+            # A zero quarter dimension fails and leaves no stale target.
+            lost, 'fail Cannot create the original tree-hiding target',
+            'fail Cannot create the original tree-hiding target', 'created 0 0',
+            # An inactive owner (no space) creates none; reactivation does.
+            lost, 'created 0 0', lost, '400 225 113 75 0 1 0 0', '400 225 113 75 0 1 0 0', made])
 
 
 def run_oracle_script(script):
@@ -1577,6 +1632,12 @@ class UnrestoredFocusConsumerGraphTests(unittest.TestCase):
         # 74f150: only StaticTreeFeature's draw, for an instance whose +8 SRT
         # model is set (748260 '.srt'); +4 old-ST4 instances go to afed60.
         self.assertEqual((callers[0x74f150], callers[0x753330], callers[0x747180]), ([0x7533c8], [0x7471ad], [0x6c58ff]))
+        # Forward slot 9c69c0: afef30( ctx, 0 ) draws the faded old-ST4 trees, then
+        # the SRT stage 753d80( ctx, 0 ); the deferred 9c4fff/9c512b pair the same way.
+        self.assertEqual(code[0x9c69c0], bytes.fromhex(
+            '558bec568b7508576a00568bf9e85e8513008b4f3083c4086a0056e8a0d3d8ff'))
+        self.assertEqual(callers[0xafef30], [0x9c5025, 0x9c5191, 0x9c69cd])
+        self.assertEqual(callers[0x753d80], [0x9c5041, 0x9c51ad, 0x9c69db])
         self.assertEqual(code[0x6c58ef], bytes.fromhex(
             '8b460885c074108b0db411d2016a0150e87c180800eb118b4e0485c9740aff36ff759ce849944300'))
 

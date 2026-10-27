@@ -417,7 +417,7 @@ def focus_consumer_graph(executable):
             text = (address, size)
     low, size = text
     targets = (0x748150, 0x748190, 0x7481d0, 0x748370, 0x755670, 0x74e510, 0x747180, 0x753330, 0x74f150,
-               0x96ea70, 0x9cd1d0, 0x98c3e0, 0x9cb010, 0x986220)
+               0x96ea70, 0x9cd1d0, 0x98c3e0, 0x9cb010, 0x986220, 0xafef30, 0x753d80)
     callers = {target: [] for target in targets}
     for match in re.finditer(rb'[\xe8\xe9]', image[low:low + size]):
         at = low + match.start()
@@ -448,4 +448,4 @@ def focus_consumer_graph(executable):
                 references={'0x%x' % k: v for k, v in references.items()}, fields=fields,
                 bytes={'0x%x' % a: bytes(image[a - base:a - base + n]).hex() for a, n in (
                     (0x9c5dd0, 0x37), (0x9c6a40, 0x2a), (0x96ea70, 0x14), (0x9cd1d0, 0xd), (0x98c3e0, 0xd),
-                    (0x6c58ef, 0x28), (0x755670, 0xe))})
+                    (0x6c58ef, 0x28), (0x755670, 0xe), (0x9c69c0, 0x20))})
