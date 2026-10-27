@@ -1433,6 +1433,9 @@ POOL_HOST = r"""
 typedef unsigned uint;
 enum D3DFORMAT { D3DFMT_UNKNOWN = 0, D3DFMT_D24S8 = 75, D3DFMT_D24X8 = 77, D3DFMT_A16B16G16R16F = 113 };
 float mulTreeScalar( float a, float b ) { volatile float result = a * b; return result; }
+namespace DX { struct Surface {}; }
+template <class T> struct ComObjectWrap { T * p = nullptr; };
+#define FAILED( hr ) ((hr) < 0)
 namespace Moo
 {
 struct Size { uint Width, Height; };
@@ -1445,21 +1448,28 @@ struct RenderContext
     bool usingD3DDeviceEx() const { return false; }
 } context;
 RenderContext & rc() { return context; }
-// lib/moo/render_target.cpp: create() only records; allocate() creates a
-// non-multisampled depth in AutoDepthStencilFormat unless overridden, or
-// reuses the main one, and clears the colour when clearOnRecreate is set.
+// lib/moo/render_target.cpp: create() only records; pSurface() allocates
+// (ensureAllocated): a non-multisampled depth in AutoDepthStencilFormat unless
+// overridden, or the main one, and a colour clear when clearOnRecreate is set.
 struct RenderTarget
 {
-    std::string name; bool autoClear = false;
+    std::string name; bool autoClear = false, reuse = false, discard = false;
+    int width = 0, height = 0; D3DFORMAT pixel = D3DFMT_UNKNOWN, depth = D3DFMT_UNKNOWN;
     explicit RenderTarget( const char * label ) : name( label ) {}
     void clearOnRecreate( bool enable ) { autoClear = enable; }
-    bool create( int width, int height, bool reuseZ, D3DFORMAT pixel, RenderTarget * parent, D3DFORMAT depth,
-        bool discard )
+    bool create( int w, int h, bool reuseZ, D3DFORMAT format, RenderTarget * parent, D3DFORMAT depthFormat,
+        bool discardDepth )
+    {
+        width = w; height = h; reuse = reuseZ || parent; pixel = format; depth = depthFormat; discard = discardDepth;
+        return true;
+    }
+    long pSurface( ComObjectWrap<DX::Surface> & )
     {
         const D3DFORMAT used = depth != D3DFMT_UNKNOWN ? depth : rc().presentParameters().AutoDepthStencilFormat;
-        std::printf( "%d %d %d %d %d %d %d %d\n", width, height, pixel, reuseZ || parent ? -1 : used, 0,
-            int( autoClear ), int( discard ), 0 );
-        return true;
+        if (!reuse && used == D3DFMT_UNKNOWN) return -1;  // CreateDepthStencilSurface fails
+        std::printf( "%d %d %d %d %d %d %d %d\n", width, height, pixel, reuse ? -1 : used, 0, int( autoClear ),
+            int( discard ), 0 );
+        return 0;
     }
 };
 typedef RenderTarget * RenderTargetPtr;
@@ -1562,8 +1572,8 @@ class HidingTargetResetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             binary = compile_host(Path(folder), POOL_HOST.replace('@MEMBERS@', RESET_MEMBERS).replace('@BODY@', body).replace(
                 '@MAIN@', RESET_MAIN), 'hiding_reset')
-            result = subprocess.run([str(binary)], input='1600 900 75\n1920 1080 77\n3 900 75\n7 900 75\n1600 900 75\n',
-                                    capture_output=True, text=True)
+            result = subprocess.run([str(binary)], input='1600 900 75\n1920 1080 77\n3 900 75\n1600 900 0\n7 900 75\n'
+                                    '1600 900 75\n', capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         lost, made = 'deleted 0 0', 'created 1 1'
         self.assertEqual(result.stdout.splitlines(), [
@@ -1571,6 +1581,9 @@ class HidingTargetResetTests(unittest.TestCase):
             # A reset at another size or depth format recreates both targets.
             lost, '480 270 113 77 0 1 0 0', '480 270 113 77 0 1 0 0', made,
             # A zero quarter dimension fails and leaves no stale target.
+            lost, 'fail Cannot create the original tree-hiding target',
+            'fail Cannot create the original tree-hiding target', 'created 0 0',
+            # Allocation happens at creation (998170), so its failure does too.
             lost, 'fail Cannot create the original tree-hiding target',
             'fail Cannot create the original tree-hiding target', 'created 0 0',
             # An inactive owner (no space) creates none; reactivation does.

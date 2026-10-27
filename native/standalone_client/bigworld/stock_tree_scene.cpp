@@ -548,8 +548,8 @@ public:
 
     // 9c4c20 registers two A16B16G16R16F targets of size -2 (998990: the back
     // buffer halved twice, truncated) with depth mode 3: each owns a
-    // non-multisampled depth in the device depth format, and 99c1d0 clears the
-    // colour to zero on creation.
+    // non-multisampled depth in the device depth format. 998170 allocates
+    // and clears the colour to zero at creation and reset, so pSurface does.
     void createHidingTargets()
     {
         const auto & size = Moo::rc().backBufferDesc();
@@ -560,8 +560,9 @@ public:
         {
             hidingTargets[i] = new Moo::RenderTarget( names[i] );
             hidingTargets[i]->clearOnRecreate( true );
+            ComObjectWrap<DX::Surface> surface;
             if (!width || !height || !hidingTargets[i]->create( width, height, false, D3DFMT_A16B16G16R16F, NULL,
-                D3DFMT_UNKNOWN, false ))
+                D3DFMT_UNKNOWN, false ) || FAILED( hidingTargets[i]->pSurface( surface ) ))
             {
                 hidingTargets[i] = NULL;
                 fail( "Cannot create the original tree-hiding target" );
