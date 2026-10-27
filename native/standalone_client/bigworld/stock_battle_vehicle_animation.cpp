@@ -7,6 +7,7 @@
 
 #include "pyscript/script_math.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -390,21 +391,36 @@ void LinkedNodesState::update()
     }
 }
 
-bool parseLinkedRow( PyObject * row, BW::string & name, std::vector<float> & values )
+// 0076d0c0 DrivingNodes converter: at most 5 groups and 10 rows per group,
+// rows capped at 21 items; an empty row ends its group, and every row reads
+// (shortest row so far - 1) angles. A non-list group is skipped.
+bool parseLinkedGroup( PyObject * rows, std::vector<BW::string> & names,
+    std::vector<std::vector<float> > & values )
 {
-    if (!PySequence_Check( row ) || PyString_Check( row ) || PySequence_Size( row ) < 1)
-        return false;
-    const Py_ssize_t size = PySequence_Size( row );
-    PyObjectPtr first( PySequence_GetItem( row, 0 ), PyObjectPtr::STEAL_REFERENCE );
-    if (!first || Script::setData( first.get(), name, "drivenJoints node" ) != 0)
-        return false;
-    for (Py_ssize_t index = 1; index < size; ++index)
+    const Py_ssize_t count = std::min<Py_ssize_t>( PyList_GET_SIZE( rows ), 10 );
+    Py_ssize_t shortest = -1;
+    for (Py_ssize_t index = 0; index < count; ++index)
     {
-        PyObjectPtr item( PySequence_GetItem( row, index ), PyObjectPtr::STEAL_REFERENCE );
-        float value;
-        if (!item || Script::setData( item.get(), value, "drivenJoints angle" ) != 0)
+        PyObject * row = PyList_GET_ITEM( rows, index );
+        if (!PyList_Check( row ))
+        {
+            PyErr_SetString( PyExc_TypeError, "LinkedNodesPitchAnimator row must be a list" );
             return false;
-        values.push_back( value );
+        }
+        const Py_ssize_t size = std::min<Py_ssize_t>( PyList_GET_SIZE( row ), 21 );
+        if (size == 0)
+            break;
+        if (shortest == -1 || size < shortest)
+            shortest = size;
+        BW::string name;
+        if (Script::setData( PyList_GET_ITEM( row, 0 ), name, "drivenJoints node" ) != 0)
+            return false;
+        std::vector<float> angles( static_cast<size_t>( shortest - 1 ), 0.f );
+        for (Py_ssize_t item = 1; item < shortest; ++item)
+            if (Script::setData( PyList_GET_ITEM( row, item ), angles[item - 1], "drivenJoints angle" ) != 0)
+                return false;
+        names.push_back( name );
+        values.push_back( angles );
     }
     return true;
 }
@@ -436,40 +452,24 @@ PyObject * LinkedNodesPitchAnimator::pyNew( PyObject * args )
         PyErr_SetString( PyExc_TypeError, "LinkedNodesPitchAnimator requires an active PyCompoundModel" );
         return NULL;
     }
-    if (!PySequence_Check( joints ) || PyString_Check( joints ))
+    if (!PyList_Check( joints ))
     {
-        PyErr_SetString( PyExc_TypeError, "LinkedNodesPitchAnimator requires a list of driven joint groups" );
+        PyErr_SetString( PyExc_TypeError,
+            "LinkedNodesPitchAnimator() argument 2 Argument parsing error: Expected driven nodes desc" );
         return NULL;
     }
     std::shared_ptr<LinkedNodesState> state = std::make_shared<LinkedNodesState>();
     state->compound = WeakPyPtr<PyObjectPlus>( static_cast<PyObjectPlus *>( model ) );
-    const Py_ssize_t count = PySequence_Size( joints );
+    const Py_ssize_t count = std::min<Py_ssize_t>( PyList_GET_SIZE( joints ), 5 );
     for (Py_ssize_t index = 0; index < count; ++index)
     {
-        PyObjectPtr rows( PySequence_GetItem( joints, index ), PyObjectPtr::STEAL_REFERENCE );
-        if (!rows || !PySequence_Check( rows.get() ) || PyString_Check( rows.get() ))
-        {
-            PyErr_SetString( PyExc_TypeError, "LinkedNodesPitchAnimator group must be a list of rows" );
-            return NULL;
-        }
+        PyObject * rows = PyList_GET_ITEM( joints, index );
+        if (!PyList_Check( rows ))
+            continue;
         std::vector<BW::string> names;
         std::vector<std::vector<float> > values;
-        const Py_ssize_t size = PySequence_Size( rows.get() );
-        for (Py_ssize_t row = 0; row < size; ++row)
-        {
-            PyObjectPtr item( PySequence_GetItem( rows.get(), row ), PyObjectPtr::STEAL_REFERENCE );
-            BW::string name;
-            std::vector<float> angles;
-            if (!item || !parseLinkedRow( item.get(), name, angles ))
-            {
-                if (!PyErr_Occurred())
-                    PyErr_SetString( PyExc_TypeError,
-                        "LinkedNodesPitchAnimator row must be [node, angle, ...]" );
-                return NULL;
-            }
-            names.push_back( name );
-            values.push_back( angles );
-        }
+        if (!parseLinkedGroup( rows, names, values ))
+            return NULL;
         // 0078ba80 skips an empty group but keeps every authored slave row.
         if (names.empty())
             continue;

@@ -75,7 +75,8 @@ class MathUtils(object):
 
 LOD = Lod()
 NODES = [('', translated(0, 0, 0)), ('hull', translated(0, .8, .1)), ('Gun', translated(0, 0, 2)),
-         ('static_joint', translated(0, .3, 1)), ('slave_a', translated(.5, 0, 0)), ('slave_b', translated(-.5, 0, 0))]
+         ('static_joint', translated(0, .3, 1)), ('slave_a', translated(.5, 0, 0)), ('slave_b', translated(-.5, 0, 0)),
+         ('slave_c', translated(0, .5, 0))]
 
 
 def swinging_descriptor(pitch=(0.26, 36.0, 0.42, 1.0, 0.05, 0.32), roll=(1.0, 0.26, 36.0, 0.42, 1.0, 0.05, 0.32)):
@@ -228,13 +229,25 @@ def check_linked_nodes():
     Host.tickLinked()
     assert compound.writes('static_joint') == 2
     expect(TypeError, Vehicular.LinkedNodesPitchAnimator, compound, [[['Gun', 'x']]])
+    expect(TypeError, Vehicular.LinkedNodesPitchAnimator, compound, (('Gun', 0., 1.),))
+    # 0076d0c0 keeps at most five list groups and skips non-list groups.
+    capped = [[['Gun', 0., 1.], ['slave_c', 0., 1.]] if index == 5 else
+              ((('Gun', 0., 1.), ('slave_c', 0., 1.)) if index == 0 else [['Gun', 0., 1.]]) for index in range(6)]
+    extra = Vehicular.LinkedNodesPitchAnimator(compound, capped)
+    extra_system = Svarog.ComponentSystem()
+    extra_system.addComponent(extra, 'extra')
+    extra_system.activate()
+    Host.tickLinked()
+    assert compound.writes('slave_c') == 0
+    extra_system.destroy()
     expect(TypeError, Vehicular.LinkedNodesPitchAnimator, 'compound', joints)
     missing = Vehicular.LinkedNodesPitchAnimator(compound, [[['missing', 0., 1.], ['slave_a', 0., 1.]]])
     assert Host.errors() == ['LinkedNodesPitchAnimator::linkNodes Cannot find node: missing in compound: HostCompound\n']
     del missing
     system.deactivate()
+    written = compound.writes('static_joint')
     Host.tickLinked()
-    assert compound.writes('static_joint') == 2
+    assert compound.writes('static_joint') == written
     system.activate()
     compound.reset()
     Host.tickLinked()
