@@ -324,10 +324,23 @@
             ByteArray& b = static_cast<ByteArray&>(o);
             if (AMF3WriteObjectRef(scope, 0x0c, o))
                 return !vm.IsException();
-            AMF3WriteU29((b.Length << 1) | 1);
-            if (!vm.IsException())
-                Write(b.Data.GetDataPtr(), b.Length);
-            return !vm.IsException();
+            // e73fb7 takes the length once, after the marker; e73fd8 copies that
+            // many bytes of the buffer as the header left it.
+            const UInt32 length = b.Length;
+            AMF3WriteU29((length << 1) | 1);
+            if (vm.IsException() || length == 0)
+                return !vm.IsException();
+            if (&b != this)
+            {
+                Write(b.Data.GetDataPtr(), length);
+                return true;
+            }
+            // Write may grow (reallocate) or overlap the buffer it copies from.
+            ArrayLH_POD<UInt8> bytes;
+            bytes.Resize(length);
+            memcpy(bytes.GetDataPtr(), Data.GetDataPtr(), length);
+            Write(bytes.GetDataPtr(), length);
+            return true;
         }
         if (&tr == &vm.GetITraitsVectorSInt() || &tr == &vm.GetITraitsVectorUInt())
         {
