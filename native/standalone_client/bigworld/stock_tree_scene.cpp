@@ -104,6 +104,45 @@ struct TreeInstanceConstants
 };
 static_assert( sizeof( TreeInstanceConstants ) == 64, "Original tree instance constants must remain 64 bytes" );
 
+struct PackedTreeInstance
+{
+    float rotation[4];
+    float position[3];
+    std::int16_t scale[3];
+    std::int16_t material;
+    std::uint8_t windOffset, blend, alpha, windMultiplier;
+};
+static_assert( sizeof( PackedTreeInstance ) == 40, "Original stream 9 tree instances must remain 40 bytes" );
+
+std::int32_t truncateTreeInstanceValue( float value )
+{
+    // CVTTSS2SI in afd8d0 also defines the out-of-range/NaN result.
+    return !std::isfinite( value ) || value < -2147483648.f || value >= 2147483648.f ?
+        std::numeric_limits<std::int32_t>::min() : static_cast<std::int32_t>( value );
+}
+
+PackedTreeInstance packTreeInstance( const TreeInstanceConstants & source )
+{
+    // #1513 afd8d0 consumes 64-byte CPU records and writes the actual
+    // speedtree_instancing declaration: FLOAT4, FLOAT3, SHORT4, UBYTE4.
+    PackedTreeInstance result;
+    std::memcpy( result.rotation, source.rotation, sizeof( result.rotation ) );
+    std::memcpy( result.position, source.position, sizeof( result.position ) );
+    for (unsigned axis = 0; axis < 3; ++axis)
+        result.scale[axis] = static_cast<std::int16_t>( truncateTreeInstanceValue(
+            addTreeScalar( mulTreeScalar( source.scale[axis], 511.f ), .5f ) ) );
+    result.material = std::max<std::int16_t>( 0,
+        static_cast<std::int16_t>( truncateTreeInstanceValue( source.material ) ) );
+    result.windOffset = static_cast<std::uint8_t>( truncateTreeInstanceValue( source.windOffset ) );
+    result.blend = static_cast<std::uint8_t>( truncateTreeInstanceValue(
+        addTreeScalar( mulTreeScalar( source.blend, 255.f ), .5f ) ) );
+    result.alpha = static_cast<std::uint8_t>( truncateTreeInstanceValue(
+        addTreeScalar( mulTreeScalar( source.alpha, 255.f ), .5f ) ) );
+    result.windMultiplier = static_cast<std::uint8_t>( truncateTreeInstanceValue(
+        addTreeScalar( mulTreeScalar( source.windMultiplier, 255.f ), .5f ) ) );
+    return result;
+}
+
 struct TreeWindOwner : wot::StockTreeWindHistory
 {
     wot::StockTreeWind value;
@@ -514,6 +553,8 @@ public:
     virtual void deleteManagedObjects()
     {
         deleteGpuObjects();
+        vertexDeclarations.fill( NULL );
+        instancedVertexDeclarations.fill( NULL );
         for (auto & material : materials) material = NULL;
         for (auto & state : semitransparentMaterials)
             for (auto & material : state) material = NULL;
@@ -524,6 +565,8 @@ public:
     void deleteGpuObjects()
     {
         gpuReady = false;
+        instanceBuffer.release();
+        instanceCapacity = 0;
         atlas = NULL;
         std::vector<std::shared_ptr<TreeType>> snapshot;
         {
@@ -535,6 +578,8 @@ public:
 
     virtual void deleteUnmanagedObjects()
     {
+        instanceBuffer.release();
+        instanceCapacity = 0;
         // D3D9Ex patches MANAGED buffers/textures to DEFAULT. They must be
         // released before ResetEx, while the logical type IDs remain owned.
         if (Moo::rc().usingD3DDeviceEx()) deleteGpuObjects();
@@ -577,6 +622,9 @@ public:
         const char * effects[] = { "shaders/speedtree/branches.fx", "shaders/speedtree/branches.fx",
             "shaders/speedtree/leaves.fx", "shaders/speedtree/billboards.fx" };
         const char * declarations[] = { "speedtree_branch", "speedtree_branch", "speedtree_leaf", "speedtree_billboard" };
+        // b09906/b09939 combine the authored stream 9 with every tree part.
+        Moo::VertexDeclaration * instances = Moo::VertexDeclaration::get( "speedtree_instancing" );
+        if (!instances) { fail( "Cannot load original tree instance declaration" ); deleteManagedObjects(); return; }
         for (unsigned part = 0; part < 4; ++part)
         {
             materials[part] = new Moo::ComplexEffectMaterial;
@@ -584,6 +632,13 @@ public:
             if (!materials[part]->initFromEffect( effects[part] ) || !vertexDeclarations[part])
             {
                 fail( "Cannot load original tree effect/declaration" );
+                deleteManagedObjects();
+                return;
+            }
+            instancedVertexDeclarations[part] = Moo::VertexDeclaration::combine( vertexDeclarations[part], instances );
+            if (!instancedVertexDeclarations[part])
+            {
+                fail( "Cannot combine original tree instance declaration" );
                 deleteManagedObjects();
                 return;
             }
@@ -667,6 +722,9 @@ public:
     Matrix alphaPassView = Matrix::identity, alphaPassProjection = Matrix::identity;
     std::vector<TreeDrawItem> semitransparent;
     std::array<Moo::VertexDeclaration *, 4> vertexDeclarations = {};
+    std::array<Moo::VertexDeclaration *, 4> instancedVertexDeclarations = {};
+    Moo::VertexBuffer instanceBuffer;
+    uint32 instanceCapacity = 0;
     ComObjectWrap<DX::Texture> atlas;
     std::atomic<bool> active{ true };
     float time = 0.f;
@@ -879,57 +937,185 @@ bool selectPartLods( unsigned part, const wot::StockTreeLodValues & lod, std::in
     return lods[0] >= 0 || lods[1] >= 0;
 }
 
+struct TreePartInstance
+{
+    TreeType * type;
+    unsigned lod;
+    TreeInstanceConstants constants;
+};
+
+bool collectTreePartInstances( unsigned part, const std::vector<TreeDrawItem> & items,
+    std::vector<TreePartInstance> & records )
+{
+    // b05560/b05b00 collect each active part/LOD before drawing. The caller
+    // already supplies the native filename/seed order; preserve it here.
+    records.clear();
+    for (std::size_t first = 0; first < items.size(); )
+    {
+        TreeType * type = items[first].instance->type.get();
+        const std::size_t typeBegin = records.size();
+        std::size_t end = first;
+        while (end < items.size() && items[end].instance->type.get() == type) ++end;
+        const auto & source = type->geometry.parts[part];
+        if (source.vertexCount)
+            for (std::size_t index = first; index < end; ++index)
+            {
+                std::int32_t lods[2];
+                float alphas[2];
+                if (!selectPartLods( part, items[index].lod, lods, alphas )) continue;
+                for (unsigned i = 0; i < 2; ++i)
+                {
+                    // The exact producer has six 3D LOD buckets. Both active
+                    // leaf LODs retain their own alpha reference and record.
+                    if (lods[i] < 0 || lods[i] >= 6) continue;
+                    const unsigned lod = static_cast<unsigned>( lods[i] );
+                    if (lod >= source.lodIndices.size() || lod >= type->gpu[part].lods.size()) return false;
+                    if (source.lodIndices[lod].empty()) continue;
+                    TreePartInstance record = { type, lod, items[index].instance->constants };
+                    record.constants.material = static_cast<float>( type->materialHandle * 4 + part );
+                    record.constants.alpha = alphas[i];
+                    records.push_back( record );
+                }
+            }
+        std::stable_sort( records.begin() + typeBegin, records.end(),
+            []( const TreePartInstance & a, const TreePartInstance & b ) { return a.lod < b.lod; } );
+        first = end;
+    }
+    return true;
+}
+
+bool uploadTreeInstances( TreeRenderingOwner & owner, const std::vector<TreePartInstance> & records )
+{
+    if (records.empty() || records.size() > UINT_MAX / sizeof( PackedTreeInstance )) return false;
+    const uint32 count = static_cast<uint32>( records.size() );
+    const uint32 bytes = count * sizeof( PackedTreeInstance );
+    if (owner.instanceCapacity < count)
+    {
+        owner.instanceCapacity = 0;
+        if (FAILED( owner.instanceBuffer.create( bytes, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
+            D3DPOOL_DEFAULT, "vertex buffer/original tree instances" ) )) return false;
+        owner.instanceCapacity = count;
+    }
+    void * destination = NULL;
+    // One upload serves every type/LOD of this part. DISCARD lets the driver
+    // retain earlier passes while this dynamic owner is reused.
+    if (FAILED( owner.instanceBuffer.lock( 0, bytes, &destination, D3DLOCK_DISCARD ) ) || !destination) return false;
+    auto * packed = static_cast<PackedTreeInstance *>( destination );
+    for (std::size_t i = 0; i < records.size(); ++i) packed[i] = packTreeInstance( records[i].constants );
+    return SUCCEEDED( owner.instanceBuffer.unlock() );
+}
+
+class TreeInstanceStreams
+{
+public:
+    TreeInstanceStreams() : device_( Moo::rc().device() )
+    {
+        valid_ = device_ && SUCCEEDED( device_->GetStreamSourceFreq( 0, &frequency0_ ) ) &&
+            SUCCEEDED( device_->GetStreamSourceFreq( 9, &frequency9_ ) ) &&
+            SUCCEEDED( device_->GetStreamSource( 9, &buffer_, &offset_, &stride_ ) ) &&
+            SUCCEEDED( device_->GetVertexDeclaration( &declaration_ ) ) &&
+            SUCCEEDED( device_->GetFVF( &fvf_ ) );
+    }
+    ~TreeInstanceStreams()
+    {
+        if (!valid_) return;
+        device_->SetStreamSourceFreq( 0, frequency0_ );
+        device_->SetStreamSourceFreq( 9, frequency9_ );
+        device_->SetStreamSource( 9, buffer_.pComObject(), offset_, stride_ );
+        // SetFVF(0) is a no-op; an originally empty declaration must be
+        // explicitly restored instead of leaving the tree declaration active.
+        if (declaration_ || !fvf_) Moo::rc().setVertexDeclaration( declaration_.pComObject() );
+        else Moo::rc().setFVF( fvf_ );
+    }
+    bool valid() const { return valid_; }
+private:
+    DX::Device * device_;
+    UINT frequency0_ = 1, frequency9_ = 1, offset_ = 0, stride_ = 0;
+    DWORD fvf_ = 0;
+    ComObjectWrap<DX::VertexBuffer> buffer_;
+    ComObjectWrap<DX::VertexDeclaration> declaration_;
+    bool valid_ = false;
+};
+
 bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPassType pass,
     const std::vector<TreeDrawItem> & items, const float (&billboardRotation)[4], float reflectionCorrection )
 {
-    Moo::EffectMaterialPtr material = owner.materials[part]->pass( pass, false );
+    std::vector<TreePartInstance> records;
+    records.reserve( items.size() );
+    if (!collectTreePartInstances( part, items, records )) return owner.fail( "Original tree LOD has no geometry" );
+    if (records.empty()) return true;
+    // #1513 b09bd0 preserves instancing for forward rendering too. Select the
+    // actual annotated technique, rather than the public SDK's pipeline veto.
+    bool instanced = owner.materials[part]->instanced();
+    Moo::EffectMaterialPtr material = owner.materials[part]->pass( pass, instanced );
+    if (instanced && (!material || !material->hTechnique()))
+    {
+        instanced = false;
+        material = owner.materials[part]->pass( pass, false );
+    }
+    if (instanced && !uploadTreeInstances( owner, records )) return owner.fail( "Cannot upload original tree instances" );
+    TreeInstanceStreams streams;
+    if (!streams.valid()) return owner.fail( "Cannot retain the caller's tree instance streams" );
+    auto * device = Moo::rc().device();
+    Moo::VertexDeclaration * declaration = instanced ? owner.instancedVertexDeclarations[part] : owner.vertexDeclarations[part];
+    if (!declaration || FAILED( device->SetStreamSourceFreq( 0, 1 ) ) ||
+        FAILED( device->SetStreamSourceFreq( 9, instanced ? (D3DSTREAMSOURCE_INSTANCEDATA | 1) : 1 ) ) ||
+        FAILED( Moo::rc().setVertexDeclaration( declaration->declaration() ) ))
+        return owner.fail( "Cannot bind original tree instance streams" );
     if (!material || !material->hTechnique() || !material->begin())
         return owner.fail( "Original tree effect has no usable real rendering-pass technique" );
     ID3DXEffect * effect = material->pEffect()->pEffect();
-    D3DXHANDLE instanceHandle = effect->GetParameterByName( NULL, "g_instance" );
-    bool result = instanceHandle != NULL;
+    D3DXHANDLE instanceHandle = instanced ? NULL : effect->GetParameterByName( NULL, "g_instance" );
+    bool result = instanced || instanceHandle != NULL;
     for (uint32 effectPass = 0; result && effectPass < material->numPasses(); ++effectPass)
     {
         if (!material->beginPass( effectPass )) { result = false; break; }
-        for (const auto & item : items)
+        TreeType * previousType = NULL;
+        for (std::size_t first = 0; result && first < records.size(); )
         {
-            auto & instance = *item.instance;
-            auto & type = *instance.type;
+            auto & type = *records[first].type;
             const auto & source = type.geometry.parts[part];
             auto & gpu = type.gpu[part];
-            if (!source.vertexCount) continue;
-            std::int32_t lods[2];
-            float alphas[2];
-            if (!selectPartLods( part, item.lod, lods, alphas )) continue;
-            result = setTreeTypeConstants( owner, type, part, effect, billboardRotation );
-            if (pass == Moo::RENDERING_PASS_REFLECTION)
-                result = result && setTreeValue( effect, "g_reflCorrection", &reflectionCorrection, sizeof( reflectionCorrection ) );
-            result = result && SUCCEEDED( gpu.vertices.set( 0, 0, source.vertexStride ) );
-            Moo::rc().setVertexDeclaration( owner.vertexDeclarations[part]->declaration() );
-            for (unsigned i = 0; result && i < 2; ++i)
+            const unsigned lod = records[first].lod;
+            std::size_t end = first + 1;
+            while (end < records.size() && records[end].type == &type && records[end].lod == lod) ++end;
+            if (previousType != &type)
             {
-                const std::int32_t lod = lods[i];
-                if (lod < 0) continue;
-                if (static_cast<std::size_t>( lod ) >= gpu.lods.size()) { result = false; break; }
-                const auto & indices = source.lodIndices[lod];
-                if (indices.empty()) continue;
-                instance.constants.material = static_cast<float>( type.materialHandle * 4 + part );
-                instance.constants.alpha = alphas[i];
-                result = SUCCEEDED( effect->SetValue( instanceHandle, &instance.constants, sizeof( instance.constants ) ) ) &&
-                    SUCCEEDED( gpu.lods[lod].set() ) && material->commitChanges();
-                if (!result) break;
-                const bool strip = part == wot::treeBranch || part == wot::treeFrond;
-                const uint32 primitives = static_cast<uint32>( strip ? indices.size() - 2 : indices.size() / 3 );
-                Moo::rc().drawIndexedPrimitive( strip ? D3DPT_TRIANGLESTRIP : D3DPT_TRIANGLELIST,
-                    0, 0, source.vertexCount, 0, primitives );
+                result = setTreeTypeConstants( owner, type, part, effect, billboardRotation );
+                if (pass == Moo::RENDERING_PASS_REFLECTION)
+                    result = result && setTreeValue( effect, "g_reflCorrection", &reflectionCorrection, sizeof( reflectionCorrection ) );
+                result = result && SUCCEEDED( gpu.vertices.set( 0, 0, source.vertexStride ) );
+                if (instanced) result = result && material->commitChanges();
+                previousType = &type;
             }
-            if (!result) break;
+            const auto & indices = source.lodIndices[lod];
+            const bool strip = part == wot::treeBranch || part == wot::treeFrond;
+            const uint32 primitives = static_cast<uint32>( strip ? indices.size() - 2 : indices.size() / 3 );
+            result = result && SUCCEEDED( gpu.lods[lod].set() );
+            if (instanced)
+            {
+                const uint32 count = static_cast<uint32>( end - first );
+                result = result && SUCCEEDED( owner.instanceBuffer.set( 9,
+                    static_cast<UINT>( first * sizeof( PackedTreeInstance ) ), sizeof( PackedTreeInstance ) ) ) &&
+                    SUCCEEDED( device->SetStreamSourceFreq( 0, D3DSTREAMSOURCE_INDEXEDDATA | count ) );
+                if (result) result = SUCCEEDED( Moo::rc().drawIndexedInstancedPrimitive(
+                    strip ? D3DPT_TRIANGLESTRIP : D3DPT_TRIANGLELIST, 0, 0, source.vertexCount, 0, primitives, count ) );
+            }
+            else
+                for (std::size_t i = first; result && i < end; ++i)
+                {
+                    result = SUCCEEDED( effect->SetValue( instanceHandle, &records[i].constants,
+                        sizeof( TreeInstanceConstants ) ) ) && material->commitChanges();
+                    if (result) result = SUCCEEDED( Moo::rc().drawIndexedPrimitive(
+                        strip ? D3DPT_TRIANGLESTRIP : D3DPT_TRIANGLELIST, 0, 0, source.vertexCount, 0, primitives ) );
+                }
+            first = end;
         }
         setTreeTexture( effect, "g_diffuseMap", NULL );
         setTreeTexture( effect, "g_normalMap", NULL );
-        material->endPass();
+        result = material->endPass() && result;
     }
-    material->end();
+    result = material->end() && result;
     return result || owner.fail( "Cannot upload/draw original tree part constants and geometry" );
 }
 

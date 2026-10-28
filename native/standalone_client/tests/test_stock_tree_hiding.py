@@ -1597,6 +1597,8 @@ class HidingTargetPoolTests(unittest.TestCase):
 
 RESET_MEMBERS = """
     bool active = true, gpuReady = true;
+    struct Buffer { void release() {} } instanceBuffer;
+    unsigned instanceCapacity = 0;
     void deleteGpuObjects() { std::printf( "delete gpu\\n" ); }
     void createGpuObjects() { std::printf( "create gpu\\n" ); }
 """
