@@ -3358,6 +3358,51 @@ bytecode exercises its construction and retirement. The pinned offline mod
 still owns the copied turret arc and presentation matrix; this restoration
 does not introduce a second presentation writer.
 
+Compiled destructible identities resolve to the live model and tree owners.
+Destruction and restoration update rendered models and collision membership;
+falling trees publish their new transform, spatial bounds and wind multiplier
+to the actual instance stream. Fall-angle constraints use the original probe
+sequence and filtered native collision callback, and the spring solver retains
+the original binary32 iteration and termination rules. WTCP control points own
+their flag models, material fashions, sounds and terrain-projected rings. Ring
+bounds are prepared before visibility selection and retried independently of
+visibility when terrain is not ready. Space retirement revokes these owners
+before releasing their scene membership.
+
+Authored sound-zone UDOs register the native camera-driven zone owner. Its
+original first-match and enter/exit order feeds live Wwise events and auxiliary
+sends; mapping completion supplies the map's default reverb, and native space
+destruction clears the registry. Battle FPS sampling uses the actual frame
+statistics task. Monitor changes notify the original settings callback, and
+the hardware profile queries retain the original cached-score classification
+and int64 preference fields. Startup and button detection have a separate
+producer using actual CPU sampling and GPU draws/timestamp queries. Startup
+registers pipeline options before device creation, measures before the first
+global device-resource callbacks, then atomically publishes both WG and BW
+shader macros with the selected pipeline cache suffix before construction.
+Checked benchmark draws reject failed uploads,
+stream binding and empty submissions. Query and resource failures retain the
+original detector failure scores; a returned failure score is not evidence
+that the GPU workload completed successfully. Monitor-matched DXGI memory
+queries retain successful zero values; only a failed query uses the original
+WMI AdapterRAM fallback. Each benchmark target has a distinct texture-registry
+identity through creation and destruction.
+
+The pinned public billboard shaders use the shared world-position/depth fog
+owner in both retained legacy call sites. Full D3DX9 effect compilation covers
+both billboard effects under matching deferred and forward macros; it does
+not establish in-map vegetation rendering.
+
+Normal-map flock filters retain their authored turn rates and avoidance zone
+through cache, attachment and state copying. Their native output initializes
+from the actual model transforms and advances admitted intervals through the
+original substeps before updating the same embodiments. Vehicle appearance
+activation can rebind the existing LOD position producer; the manager samples
+the current source and rejects a result if its callback retires or replaces
+the owner. Suspension ground-node queries read the actual node collection.
+Original map and appearance bytecode exercises these interfaces, including
+retirement and subsequent owner creation.
+
 Exact executable oracles and original Python consumers distinguish retained
 state from rendered behavior. The compiled-space light tick samples `bounds`
 and `shader`; `colorAnimator` and `multiplierAnimator` are retained properties

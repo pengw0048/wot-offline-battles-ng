@@ -8,6 +8,8 @@
 #include "moo/fullscreen_quad.hpp"
 #include "moo/init.hpp"
 #include <dxgi.h>
+#include <wbemidl.h>
+#include <oleauto.h>
 #include "moo/moo_utilities.hpp"
 #include "moo/render_context.hpp"
 #include "moo/render_target.hpp"
@@ -100,6 +102,59 @@ bool videoMemory(HMONITOR monitor, SIZE_T & video, SIZE_T & system)
     return found;
 }
 
+bool videoMemoryWmi(SIZE_T & video)
+{
+    // b297e4 falls back only when the monitor-based DXGI query fails.
+    // b2a590 retains the last successfully read AdapterRAM low 32 bits.
+    const HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+    IWbemLocator * locator = NULL;
+    IWbemServices * services = NULL;
+    IEnumWbemClassObject * enumerator = NULL;
+    bool success = false;
+    HRESULT hr = CoCreateInstance(CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
+        IID_IWbemLocator, reinterpret_cast<void **>(&locator));
+    BSTR nameSpace = SysAllocString(L"ROOT\\CIMV2");
+    BSTR language = SysAllocString(L"WQL");
+    BSTR query = SysAllocString(L"SELECT * FROM Win32_VideoController");
+    if (SUCCEEDED(hr) && locator && nameSpace && language && query)
+        hr = locator->ConnectServer(nameSpace, NULL, NULL, NULL, 0, NULL, NULL, &services);
+    else hr = E_FAIL;
+    if (SUCCEEDED(hr) && services)
+        hr = CoSetProxyBlanket(services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+            RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE);
+    if (SUCCEEDED(hr) && services)
+        hr = services->ExecQuery(language, query, WBEM_FLAG_FORWARD_ONLY |
+            WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &enumerator);
+    if (SUCCEEDED(hr) && enumerator)
+    {
+        video = 0;
+        success = true;
+        for (;;)
+        {
+            IWbemClassObject * object = NULL;
+            ULONG count = 0;
+            enumerator->Next(WBEM_INFINITE, 1, &object, &count);
+            if (!count || !object) break;
+            VARIANT value;
+            VariantInit(&value);
+            if (SUCCEEDED(object->Get(L"AdapterRAM", 0, &value, NULL, NULL)))
+                video = static_cast<SIZE_T>(value.intVal);
+            VariantClear(&value);
+            object->Release();
+        }
+    }
+    if (enumerator) enumerator->Release();
+    if (services) services->Release();
+    if (locator) locator->Release();
+    SysFreeString(query);
+    SysFreeString(language);
+    SysFreeString(nameSpace);
+    if (SUCCEEDED(initialized)) CoUninitialize();
+    return success;
+}
+
 bool queryResult(IDirect3DQuery9 * query, UINT64 & result)
 {
     const DWORD start = GetTickCount();
@@ -159,11 +214,15 @@ int stockMeasureGpuPerformance()
     Moo::EffectMaterialPtr material;
     if (!Moo::createEffect(material, "shaders/std_effects/wg_gpu_performancer.fx")) return 1;
     Moo::RenderTargetPtr targets[6];
+    const char * names[] = {
+        "GPU Tester Main RT", "GPU Tester Random RT1", "GPU Tester Random RT2",
+        "GPU Tester Main RT (Light)", "GPU Tester Random RT1 (Light)", "GPU Tester Random RT2 (Light)"
+    };
     for (unsigned i = 0; i < 6; ++i)
     {
         const unsigned size = i < 3 ? 2048 : 128;
         if (!Moo::createRenderTarget(targets[i], size, size, D3DFMT_A16B16G16R16F,
-            "GPU performance test", false, true)) return 1;
+            names[i], false, true)) return 1;
     }
     Moo::FullscreenQuad quad;
     if (!quad.initialiseStockDrawGeometry()) return 1;
@@ -219,19 +278,22 @@ bool stockMeasureGraphicsHardware(int64 (&scores)[5])
     for (unsigned i = 0; i < 5; ++i) scores[i] = 0;
     if (!Moo::isInitialised() || !Moo::rc().device()) return false;
     const Moo::DeviceInfo & info = Moo::rc().deviceInfo(Moo::rc().deviceIndex());
+    SIZE_T video = 0, system = 0;
+    bool measured = false;
     IDirect3D9 * d3d = Direct3DCreate9(D3D_SDK_VERSION);
     if (d3d)
     {
-        SIZE_T video = 0, system = 0;
         HMONITOR monitor = d3d->GetAdapterMonitor(info.adapterID_);
-        if (videoMemory(monitor, video, system))
-        {
-            // 116ee00 maps these three vendor IDs to the shared-memory class.
-            const unsigned vendor = info.identifier_.VendorId;
-            if (vendor == 0x163c || vendor == 0x8086 || vendor == 0x8087) video += system;
-            scores[0] = video >> 20;
-        }
+        measured = videoMemory(monitor, video, system);
         d3d->Release();
+    }
+    if (!measured) measured = videoMemoryWmi(video);
+    if (measured)
+    {
+        // 116ee00 maps these three vendor IDs to the shared-memory class.
+        const unsigned vendor = info.identifier_.VendorId;
+        if (vendor == 0x163c || vendor == 0x8086 || vendor == 0x8087) video += system;
+        scores[0] = video >> 20;
     }
     scores[1] = stockMeasureGpuPerformance();
     MEMORYSTATUSEX memory = {};

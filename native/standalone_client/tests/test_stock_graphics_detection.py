@@ -244,6 +244,8 @@ assert(detector.presetId("MAX")==0&&detector.presetId("hIgH")==1&&detector.prese
 #include <memory>
 #include <vector>
 #include <string>
+#include <sstream>
+namespace BW {using stringstream=std::stringstream;}
 #define BW_GUARD
 #define MF_ASSERT(x) assert(x)
 using uint=unsigned;
@@ -253,7 +255,9 @@ void addOption(const char*,const char*,bool,const char*){values.push_back(0);}
 int activeOption(){return option;}void stockForceActiveOption(int v){option=v;} };
 static std::shared_ptr<Setting> g_pipelineMacroSetting=std::make_shared<Setting>();
 namespace Moo {struct GraphicsSetting{static void add(std::shared_ptr<Setting>){events.push_back(1);}};
-struct EffectMacroSetting{static void updateManagerInfix(){events.push_back(3);}};}
+struct EffectMacroSetting{using MacroSettingVector=std::vector<std::shared_ptr<Setting>>;
+static void getMacroSettings(MacroSettingVector& out){auto debug=std::make_shared<Setting>();debug->option=1;out={debug,g_pipelineMacroSetting};}};
+struct EffectCompiler {static void stockCommitStartupPipeline(const std::string& infix,bool deferred){assert(infix==(deferred?"10":"11"));events.push_back(3);}};}
 struct IRendererPipeline {enum EType{TYPE_DEFERRED_SHADING,TYPE_FORWARD_SHADING};enum EGraphicsSetting{SETTING,GRAPHICS_SETTING_COUNT};
 virtual ~IRendererPipeline(){} virtual bool init(){events.push_back(4);return !fail;}void onGraphicsOptionSelected(EGraphicsSetting,int){} };
 struct DeferredPipeline:IRendererPipeline{};struct ForwardPipeline:IRendererPipeline{};
@@ -277,6 +281,57 @@ assert(unsupported.m_type==IRendererPipeline::TYPE_FORWARD_SHADING);
 events.clear();g_pipelineMacroSetting=std::make_shared<Setting>();detected=-1;fail=true;Renderer broken;
 broken.prepareStockGraphicsStartup(true);assert(!broken.finishStockGraphicsStartup());assert(!broken.m_inited);
 }
+'''.replace('@METHODS@', methods)
+            (root / 'host.cpp').write_text(host)
+            result = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',
+                                     str(root / 'host.cpp'), '-o', str(root / 'host')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(root / 'host')], check=True)
+
+    def test_actual_compiler_atomically_commits_startup_pipeline(self):
+        from test_stock_deferred_startup_lifecycle import ARCHIVE, startup_engine, method
+        if not ARCHIVE.is_file():
+            self.skipTest('Pinned public SDK archive required')
+        compiler = shutil.which(os.environ.get('CXX', 'c++'))
+        if not compiler:
+            self.skipTest('C++ compiler required')
+        with tempfile.TemporaryDirectory(prefix='graphics-startup-macro-') as folder:
+            root = Path(folder)
+            moo = startup_engine(root) / 'moo'
+            source = (moo / 'effect_compiler.cpp').read_text()
+            methods = '\n'.join(method(source, signature) for signature in (
+                'void EffectCompiler::setMacroDefinition(',
+                'void EffectCompiler::stockCommitStartupPipeline(',
+                'const BW::string& EffectCompiler::fxoInfix()',
+                'void EffectCompiler::fxoInfix( const BW::string & infix )'))
+            host = r'''
+#include <cassert>
+#include <map>
+#include <string>
+namespace BW {using string=std::string;}
+struct SimpleMutex{};struct SimpleMutexHolder{explicit SimpleMutexHolder(SimpleMutex&) {}};
+struct EffectCompiler {using Map=std::map<BW::string,BW::string>;static Map s_macros_;
+static BW::string s_fxoInfix_;static SimpleMutex s_runtimeCompileMutex_;
+static void setMacroDefinition(const BW::string&,const BW::string&);
+static void stockCommitStartupPipeline(const BW::string&,bool);
+static const BW::string& fxoInfix();static void fxoInfix(const BW::string&);};
+EffectCompiler::Map EffectCompiler::s_macros_;BW::string EffectCompiler::s_fxoInfix_;
+SimpleMutex EffectCompiler::s_runtimeCompileMutex_;
+@METHODS@
+int main(){
+EffectCompiler::setMacroDefinition("WG_DEFERRED_SHADING","1");
+EffectCompiler::setMacroDefinition("BW_DEFERRED_SHADING","1");
+EffectCompiler::setMacroDefinition("SHADER_DEBUG","0");EffectCompiler::fxoInfix("10");
+EffectCompiler::setMacroDefinition("WG_DEFERRED_SHADING","0");
+assert(EffectCompiler::s_macros_["WG_DEFERRED_SHADING"]=="1");
+EffectCompiler::stockCommitStartupPipeline("11",false);
+assert(EffectCompiler::fxoInfix()=="11" && EffectCompiler::s_macros_["WG_DEFERRED_SHADING"]=="0" &&
+EffectCompiler::s_macros_["BW_DEFERRED_SHADING"]=="0" && EffectCompiler::s_macros_["SHADER_DEBUG"]=="0");
+EffectCompiler::setMacroDefinition("BW_DEFERRED_SHADING","1");
+assert(EffectCompiler::s_macros_["BW_DEFERRED_SHADING"]=="0");
+EffectCompiler::stockCommitStartupPipeline("10",true);
+assert(EffectCompiler::fxoInfix()=="10" && EffectCompiler::s_macros_["WG_DEFERRED_SHADING"]=="1" &&
+EffectCompiler::s_macros_["BW_DEFERRED_SHADING"]=="1");}
 '''.replace('@METHODS@', methods)
             (root / 'host.cpp').write_text(host)
             result = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',

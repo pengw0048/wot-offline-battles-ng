@@ -118,6 +118,8 @@ def main():
     fetch_resources(output)
     from patch_stock_deferred_buffers import patch_resources
     patch_resources(output)
+    from patch_stock_tree_fog_resources import patch_resources as patch_tree_fog_resources
+    patch_tree_fog_resources(output)
     if args.overlay_resources is not None:
         write_overlay_resources(output / "resources.xml",
                                 args.overlay_resources.resolve())

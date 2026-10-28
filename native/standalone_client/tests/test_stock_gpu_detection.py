@@ -103,3 +103,55 @@ bool fog=false;for(const auto& b:e.uniform_buffers)for(const auto& u:b.uniforms)
         for vendor, expected in cases.items():
             pe.u.mem_write(base.STATS + 0x18, struct.pack('<I', vendor))
             self.assertEqual(pe.call(0x116ee00, base.STATS, []), expected)
+
+    def test_actual_texture_registry_keeps_all_six_targets(self):
+        import re
+        sdk = Path('/tmp/wot-bigworld-engine-14.4.1/programming/bigworld/lib/moo/texture_manager.cpp')
+        compiler = shutil.which('c++')
+        if not sdk.is_file() or not compiler:
+            self.skipTest('Pinned public SDK and C++ compiler required')
+        from test_stock_graphics_settings import load_patch
+        extract = load_patch('patch_stock_graphics_settings').function
+        text = sdk.read_text()
+        methods = '\n'.join(extract(text, name) for name in (
+            'void TextureManager::addInternal(', 'void TextureManager::delInternal('))
+        production = (ROOT / 'bigworld/stock_gpu_detection.cpp').read_text()
+        start = production.index('    const char * names[] = {')
+        stop = production.index('    for (unsigned i = 0; i < 6;', start)
+        names = re.findall(r'"([^"]+)"', production[start:stop])
+        self.assertEqual(len(names), 6)
+        host = r'''
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <cstring>
+#include <map>
+#include <string>
+#define BW_GUARD
+#define MF_ASSERT(x) assert(x)
+#define BW_MAX_PATH 512
+#define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
+static int replacements=0, missing=0;
+#define WARNING_MSG(...) (++replacements)
+#define INFO_MSG(...) (++missing)
+namespace BW {using StringRef=std::string;}
+struct RecursiveMutex {int lockCount(){return 1;}};
+struct RecursiveMutexHolder {explicit RecursiveMutexHolder(RecursiveMutex&) {}};
+struct BaseTexture {std::string id;explicit BaseTexture(const char* name):id(name){} const std::string& resourceID() const{return id;}};
+namespace TextureHelpers {BW::StringRef copyNormalisedTextureName(const BW::StringRef& value,char* dst,std::size_t count){assert(value.size()<count);std::memcpy(dst,value.c_str(),value.size()+1);std::transform(dst,dst+value.size(),dst,tolower);return dst;}}
+struct TextureManager {using TextureMap=std::map<std::string,BaseTexture*>;TextureMap textures_;RecursiveMutex texturesLock_;
+void addInternal(BaseTexture*,const BW::StringRef&);void delInternal(const BaseTexture*);};
+@METHODS@
+int main(){TextureManager manager; BaseTexture objects[]={@NAMES@};
+for(auto& p:objects)manager.addInternal(&p,"");assert(manager.textures_.size()==6 && replacements==0);
+for(auto& p:objects)manager.delInternal(&p);assert(manager.textures_.empty() && missing==0);
+BaseTexture a("collision"),b("COLLISION");manager.addInternal(&a,"");manager.addInternal(&b,"");
+assert(replacements==1 && manager.textures_.size()==1);manager.delInternal(&a);manager.delInternal(&b);assert(missing==1);}
+'''.replace('@METHODS@', methods).replace('@NAMES@', ','.join('BaseTexture("%s")' % name for name in names))
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'host.cpp').write_text(host)
+            result = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',
+                                     str(root / 'host.cpp'), '-o', str(root / 'host')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(root / 'host')], check=True)

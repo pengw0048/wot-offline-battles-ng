@@ -82,7 +82,12 @@ bool Renderer::finishStockGraphicsStartup()
     finishStockGraphicsDetectionStartup();
     if (!m_stockSupportDS && g_pipelineMacroSetting->activeOption() == 0)
         g_pipelineMacroSetting->stockForceActiveOption(1);
-    Moo::EffectMacroSetting::updateManagerInfix();
+    Moo::EffectMacroSetting::MacroSettingVector macros;
+    Moo::EffectMacroSetting::getMacroSettings(macros);
+    BW::stringstream infix;
+    for (const auto & macro : macros) infix << macro->activeOption();
+    Moo::EffectCompiler::stockCommitStartupPipeline(infix.str(),
+        g_pipelineMacroSetting->activeOption() == 0);
     const bool result = this->init(false, m_stockSupportDS);
     m_stockGraphicsStartupPending = false;
     return result;

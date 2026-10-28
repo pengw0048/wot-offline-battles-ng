@@ -16,7 +16,8 @@ def patch_engine(engine):
     header = (moo / "effect_compiler.hpp").read_text()
     header = replace_once(header,
         "\tstatic void setMacroDefinition(",
-        "\tstatic BinaryPtr loadOrCompile( const BW::string& resourceID );\n\n"
+        "\tstatic BinaryPtr loadOrCompile( const BW::string& resourceID );\n"
+        "\tstatic void stockCommitStartupPipeline( const BW::string& infix, bool deferred );\n\n"
         "\tstatic void setMacroDefinition(", "runtime entry point")
     header = replace_once(header,
         "\tstatic SimpleMutex s_hashCacheMutex_;",
@@ -94,6 +95,17 @@ BinaryPtr EffectCompiler::loadOrCompile( const BW::string& resourceID )
     compiler = replace_once(compiler, "\ts_fxoInfix_ = infix;",
         "\tSimpleMutexHolder guard( s_runtimeCompileMutex_ );\n"
         "\ts_fxoInfix_ = infix;", "cache infix synchronization")
+
+    compiler = replace_once(compiler,
+        "const BW::string& EffectCompiler::fxoInfix()",
+        "void EffectCompiler::stockCommitStartupPipeline( const BW::string& infix, bool deferred )\n"
+        "{\n"
+        "\tSimpleMutexHolder guard( s_runtimeCompileMutex_ );\n"
+        "\ts_macros_[\"WG_DEFERRED_SHADING\"] = deferred ? \"1\" : \"0\";\n"
+        "\ts_macros_[\"BW_DEFERRED_SHADING\"] = deferred ? \"1\" : \"0\";\n"
+        "\ts_fxoInfix_ = infix;\n"
+        "}\n\n"
+        "const BW::string& EffectCompiler::fxoInfix()", "startup pipeline publication")
 
     manager = (moo / "effect_manager.cpp").read_text()
     manager = replace_once(manager, '''#if ENABLE_ASSET_PIPE
