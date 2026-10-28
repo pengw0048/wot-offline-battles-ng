@@ -2,6 +2,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -17,7 +18,10 @@ def load_patch():
 
 
 def fresh(root):
-    with tarfile.open(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz')) as archive:
+    archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        raise unittest.SkipTest('Pinned public BigWorld SDK archive unavailable: ' + str(archive))
+    with tarfile.open(archive) as archive:
         prefix=archive.getmembers()[0].name.split('/')[0]+'/programming/bigworld/'
         path=root/'client/device_app.cpp';path.parent.mkdir(parents=True)
         path.write_bytes(archive.extractfile(prefix+'client/device_app.cpp').read())
@@ -51,6 +55,8 @@ class PreferencesCallbacksTests(unittest.TestCase):
             self.assertEqual(before,{p.relative_to(root):p.read_bytes()for p in root.rglob('*')if p.is_file()})
 
     def test_actual_owner_save_producer_and_original_python2_consumers(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         python=Path(os.environ.get('WOT_PY27',str(Path.home()/'.pyenv/versions/2.7.18/bin/python2.7')))
         if sys.platform!='darwin' or not python.exists():self.skipTest('Pinned Python 2.7 extension linker unavailable')
         with tempfile.TemporaryDirectory(prefix='preferences-callbacks-') as folder:

@@ -5,6 +5,7 @@ ownership, ordering and transaction behavior, not Win32 last-bit results.
 """
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -481,6 +482,8 @@ int main() {
 
 class VehiclePhysicsTankTests(unittest.TestCase):
     def test_owner_graph_reconfigure_failure_and_publication(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='vehicle-tank-graph-') as temporary:
             root = Path(temporary)
             (root / 'probe.cpp').write_text(SOURCE)

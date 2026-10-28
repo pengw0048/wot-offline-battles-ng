@@ -37,6 +37,8 @@ def function(source, marker):
 
 def fresh_engine(root):
     archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        raise unittest.SkipTest('Pinned public BigWorld SDK archive unavailable: ' + str(archive))
     with tarfile.open(archive) as original:
         prefix = original.getmembers()[0].name.split('/')[0] + '/programming/bigworld/'
         for name in ('lib/moo/graphics_settings.hpp', 'lib/moo/graphics_settings.cpp', 'client/bw_winmain.cpp'):
@@ -73,6 +75,8 @@ class GraphicsPresetsTests(unittest.TestCase):
             self.assertEqual(before,{p.relative_to(root):p.read_bytes() for p in root.rglob('*') if p.is_file()})
 
     def test_actual_python2_owner_with_original_catalogue_and_registry_callbacks(self):
+        if not shutil.which(os.environ.get('CXX', 'clang++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'clang++'))
         python = os.environ.get('WOT_PY27') or str(Path.home()/'.pyenv/versions/2.7.18/bin/python2.7')
         client = os.environ.get('WOT_0922_CLIENT')
         if sys.platform != 'darwin' or not Path(python).is_file() or not client:

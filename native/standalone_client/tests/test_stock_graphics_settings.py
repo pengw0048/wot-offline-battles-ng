@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -26,6 +27,8 @@ def load_patch(name):
 
 def fresh_engine(root):
     archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        raise unittest.SkipTest('Pinned public BigWorld SDK archive unavailable: ' + str(archive))
     names = ('lib/moo/graphics_settings.cpp', 'lib/moo/graphics_settings.hpp',
              'lib/moo/graphics_settings_picker.hpp', 'lib/romp/py_graphics_setting.cpp',
              'client/bw_winmain.cpp')
@@ -106,6 +109,8 @@ class GraphicsSettingsTests(unittest.TestCase):
                 self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()})
 
     def test_preference_policy_and_unsigned_shadow_conversion(self):
+        if not shutil.which(os.environ.get('CXX', 'c++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'c++'))
         source = r'''
 #include "wot/stock_graphics_settings.hpp"
 #include <cassert>
@@ -137,6 +142,8 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_actual_production_registry_and_original_python2_consumers(self):
+        if not shutil.which(os.environ.get('CXX', 'clang++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'clang++'))
         python = os.environ.get('WOT_PY27', str(Path.home() / '.pyenv/versions/2.7.18/bin/python2.7'))
         client = Path(os.environ.get('WOT_0922_CLIENT', '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
         if sys.platform != 'darwin' or not Path(python).is_file() or not (client / 'WorldOfTanks.exe').is_file():
@@ -181,6 +188,8 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_original_x86_version_status_oracle(self):
+        if not shutil.which(os.environ.get('CXX', 'c++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'c++'))
         python = Path(os.environ.get('WOT_ORACLE_PYTHON', '/tmp/wot-native-boundaries-venv/bin/python'))
         client = Path(os.environ.get('WOT_0922_CLIENT', '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
         if not python.is_file() or not (client / 'WorldOfTanks.exe').is_file():

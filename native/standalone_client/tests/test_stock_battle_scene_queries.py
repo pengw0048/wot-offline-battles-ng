@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,8 @@ int main(int argc, char** argv) {
 
 
 def compile_kernel(path):
+    if not shutil.which(CXX):
+        raise unittest.SkipTest('C++ compiler unavailable: ' + CXX)
     (path / 'kernel.cpp').write_text(KERNEL)
     subprocess.run([CXX, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-UNDEBUG', '-ffp-contract=off',
                     '-I', str(ROOT / 'bigworld'), str(path / 'kernel.cpp'), '-o', str(path / 'kernel')],
@@ -159,6 +162,8 @@ def engine_includes(test, path, retirement=True):
 
 
 def build_host(test, path, retirement=True):
+    if not shutil.which('c++'):
+        raise unittest.SkipTest('C++ compiler unavailable: c++')
     python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
     config = python.with_name('python2.7-config')
     if not config.exists():
@@ -420,6 +425,8 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
         self.assertNotIn('readStockObstacleIdentity(', query)
 
     def test_original_x86_compiled_instance_identities_on_every_space(self):
+        if not shutil.which(CXX):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + CXX)
         client = os.environ.get('WOT_0922_CLIENT')
         if not client:
             self.skipTest('WOT_0922_CLIENT is required for the original space data')

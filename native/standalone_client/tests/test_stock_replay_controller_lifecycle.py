@@ -3,6 +3,7 @@ import importlib.util
 import itertools
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -20,6 +21,8 @@ def load(name):
 
 class ReplayControllerLifecycle(unittest.TestCase):
     def test_replacing_callback_publishes_before_destructor_reentry(self):
+        if not shutil.which(os.environ.get('CXX', 'clang++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'clang++'))
         source = (ROOT / 'bigworld/stock_replay_controller.cpp').read_text()
         body = source[source.index('int setCallback('):source.index('PyObject* getFlag(')]
         probe = r'''

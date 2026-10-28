@@ -1,6 +1,7 @@
 """Exercise production Math provider methods and their original x86 fixtures."""
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,10 +116,12 @@ void fixtures(){
    WGBoundMatrixProvider provider;matrixWords(a->value,words,0);
    provider.minBound(Vector3(floating(words[16]),floating(words[17]),floating(words[18])));
    provider.maxBound(Vector3(floating(words[19]),floating(words[20]),floating(words[21])));
-   if(flags&1)provider.source(a);samples.clear();provider.matrix(result);
+   if(flags&1){provider.source(a);}
+   samples.clear();provider.matrix(result);
   }else if(kind==1){
    WGCombinedMP provider;matrixWords(a->value,words,0);matrixWords(b->value,words,16);
-   if(flags&1)provider.rotationSrc(a);if(flags&2)provider.translationSrc(b);
+   if(flags&1){provider.rotationSrc(a);}
+   if(flags&2){provider.translationSrc(b);}
    samples.clear();provider.matrix(result);
   }else if(kind<4){
    std::unique_ptr<WGSmoothTranslationOnlyMP> provider(kind==2?
@@ -142,7 +145,8 @@ void fixtures(){
     if(kind==5){for(float value:a->value.values)std::cout<<word(value)<<' ';
      std::cout<<inverseAlias<<' '<<inverseNull<<' ';}
     if(kind==6){for(float value:multiplyLeft.values)std::cout<<word(value)<<' ';
-     for(float value:multiplyRight.values)std::cout<<word(value)<<' ';std::cout<<multiplyAlias<<' ';}
+     for(float value:multiplyRight.values){std::cout<<word(value)<<' ';}
+     std::cout<<multiplyAlias<<' ';}
     if(kind==7)std::cout<<word(normaliseInput.x)<<' '<<word(normaliseInput.y)<<' '<<word(normaliseInput.z)<<' '<<normaliseAlias<<' ';
    }else for(float value:result.values)std::cout<<word(value)<<' ';
    std::cout<<samples.size();for(unsigned value:samples)std::cout<<' '<<value;std::cout<<'\n';continue;
@@ -223,6 +227,8 @@ int main(int argc,char**){if(argc>1)fixtures();else contracts();}
 
 
 def compile_probe(directory, sanitise=True):
+    if not shutil.which('c++'):
+        raise unittest.SkipTest('C++ compiler unavailable: c++')
     source = directory / 'probe.cpp'
     source.write_text(production_probe())
     command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',

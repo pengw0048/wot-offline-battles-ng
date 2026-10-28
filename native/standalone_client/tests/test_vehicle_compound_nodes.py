@@ -454,6 +454,8 @@ def production_resource_harness():
 
 class CompoundNodeTests(unittest.TestCase):
     def test_production_stipple_resource_init_failure_and_teardown(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         host = production_resource_harness()
         with tempfile.TemporaryDirectory(prefix='compound-stipple-resource-') as temporary:
             root = Path(temporary)
@@ -466,7 +468,7 @@ class CompoundNodeTests(unittest.TestCase):
 
     def test_public_override_patch_is_atomic_and_idempotent(self):
         archive = os.environ.get('WOT_BIGWORLD_SOURCE_ARCHIVE')
-        if not archive:
+        if not archive or not Path(archive).is_file():
             self.skipTest('Set WOT_BIGWORLD_SOURCE_ARCHIVE to the pristine pinned public source archive')
         spec = importlib.util.spec_from_file_location('compound_render_patch', ROOT / 'bigworld/patch_vehicle_compound_rendering.py')
         patch = importlib.util.module_from_spec(spec)
@@ -537,6 +539,8 @@ class CompoundNodeTests(unittest.TestCase):
                         self.assertIn(b'StippleMap', effect.read('effect'))
 
     def test_production_attachment_pose_lifecycle_and_reentry(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='compound-node-owner-') as temporary:
             directory = Path(temporary)
             (directory / 'probe.cpp').write_text(production_harness())

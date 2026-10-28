@@ -13,6 +13,7 @@ import os
 import random
 import shlex
 import struct
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -34,6 +35,8 @@ def floats(n, values=None):
 
 
 def build_core(directory):
+    if not shutil.which('c++'):
+        raise unittest.SkipTest('C++ compiler unavailable: c++')
     library = Path(directory) / 'libstock_battle_gui.so'
     subprocess.run(['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic',
                     '-ffp-contract=off', '-fno-fast-math', '-shared', '-fPIC',
@@ -123,6 +126,8 @@ def fixture_source(sources):
 
 
 def build_host(test, directory):
+    if not shutil.which('c++'):
+        raise unittest.SkipTest('C++ compiler unavailable: c++')
     python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
     config = python.with_name('python2.7-config')
     if not config.exists():

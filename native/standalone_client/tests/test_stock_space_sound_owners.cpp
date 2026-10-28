@@ -17,7 +17,17 @@ using ClientSpacePtr=std::shared_ptr<ClientSpace>;
 #ifndef WOT_SOUND_PRODUCTION_FILE
 #define WOT_SOUND_PRODUCTION_FILE "../bigworld/stock_space_sounds.cpp"
 #endif
+// The production owner is consumed within this translation unit. GCC alone
+// warns about its private anonymous-namespace implementation types. Suppress only
+// that fixture include diagnostic; all other warnings remain errors.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsubobject-linkage"
+#endif
 #include "stock_space_sounds_host.hpp"
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 int main()
 {

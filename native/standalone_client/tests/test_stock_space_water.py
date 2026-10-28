@@ -3,6 +3,7 @@ import math
 import os
 from pathlib import Path
 import struct
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -104,6 +105,8 @@ def expected(data, table):
 class StockSpaceWaterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         cls.temporary = tempfile.TemporaryDirectory(prefix='wot-space-water-')
         cls.work = Path(cls.temporary.name)
         (cls.work / 'probe.cpp').write_text(DRIVER)

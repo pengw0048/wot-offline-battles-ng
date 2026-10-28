@@ -6,6 +6,7 @@ separate Win32 DLL probe, rather than this portable service.
 """
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -90,6 +91,8 @@ int main(){
 
 class VehiclePhysicsConvexTests(unittest.TestCase):
     def test_actual_core_topology_ownership_and_degenerate_faces(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='vehicle-convex-contract-') as temporary:
             root = Path(temporary)
             (root / 'probe.cpp').write_text(SOURCE)

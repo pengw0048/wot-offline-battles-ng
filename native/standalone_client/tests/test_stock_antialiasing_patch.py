@@ -4,6 +4,7 @@ import itertools
 import os
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -21,6 +22,8 @@ def load_patch():
 
 def fresh_engine(root):
     archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        raise unittest.SkipTest('Pinned public BigWorld SDK archive unavailable: ' + str(archive))
     with tarfile.open(archive) as original:
         prefix = original.getmembers()[0].name.split('/')[0] + '/programming/bigworld/'
         for name in ('lib/moo/render_context.hpp', 'lib/moo/render_context.cpp', 'client/device_app.cpp',
@@ -42,6 +45,8 @@ def function(source, signature):
 
 class AntialiasingPatchTests(unittest.TestCase):
     def test_public_header_dependency_without_adapter_include_paths(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fresh_engine(root)
@@ -64,6 +69,8 @@ class AntialiasingPatchTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_actual_device_preference_read_write_and_initial_queue(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory()as folder:
             root=Path(folder);fresh_engine(root);load_patch().patch(root)
             source=(root/'client/device_app.cpp').read_text()
@@ -126,7 +133,10 @@ int main(){Data graphics,device;read(&graphics,&device);
             spec=importlib.util.spec_from_file_location('aa_order_'+name,path)
             module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);modules[name]=module
             files.update(re.findall(r"['\"]((?:lib|client)/[^'\"]+\.(?:cpp|hpp|ipp))['\"]",path.read_text()))
-        with tarfile.open(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))as source:
+        archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.is_file():
+            self.skipTest('Pinned public BigWorld SDK archive unavailable: ' + str(archive))
+        with tarfile.open(archive) as source:
             members={m.name:m for m in source.getmembers()};prefix=next(iter(members)).split('/')[0]+'/programming/bigworld/'
             contents={name:source.extractfile(members[prefix+name]).read()for name in files if prefix+name in members}
         for order in itertools.permutations(names):
@@ -146,6 +156,8 @@ int main(){Data graphics,device;read(&graphics,&device);
                 self.assertEqual(before,{p.relative_to(root):p.read_bytes()for p in root.rglob('*')if p.is_file()})
 
     def test_actual_render_context_reset_failure_and_reentry(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         patch = load_patch()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -171,7 +183,9 @@ class RenderContext{public:
  struct{unsigned MultiSampleType=0;}presentParameters_;
  std::function<void()> callback;
  bool resetDevice(){++resets;const auto desired=stockMultisampling_.type;
-  if(callback)callback();if(succeeds)presentParameters_.MultiSampleType=desired;return succeeds;}
+  if(callback){callback();}
+  if(succeeds){presentParameters_.MultiSampleType=desired;}
+  return succeeds;}
  bool applyStockMultisampling();bool isMultisamplingEnabled()const;
 };
 struct ResetBoundary{ResetDevice device;ResetDevice*deviceEx_=&device;int presentParameters_=0;int errors=0;

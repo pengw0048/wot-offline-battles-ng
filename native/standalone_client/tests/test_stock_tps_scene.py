@@ -1,5 +1,6 @@
 """Check the production tPS draw-queue ownership across flush and teardown."""
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -95,6 +96,8 @@ int main() {
 
 class StockTPSSceneTests(unittest.TestCase):
     def test_production_draw_ownership(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='wot-tps-scene-') as directory:
             work = Path(directory)
             (work / 'probe.cpp').write_text(make_probe())

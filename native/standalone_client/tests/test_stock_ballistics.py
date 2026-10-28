@@ -8,6 +8,7 @@ the original ProjectileMover.pyc over the production binding.
 from pathlib import Path
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -84,6 +85,8 @@ def client(test):
 
 class StockBallisticsTest(unittest.TestCase):
     def test_core_lifecycle(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='ballistics-core-') as directory:
             binary = Path(directory) / 'core'
             subprocess.run(['c++', *STRICT, '-g', '-fsanitize=address,undefined', *CORE,
@@ -93,6 +96,8 @@ class StockBallisticsTest(unittest.TestCase):
             self.assertIn('stock ballistics core passed', result.stdout)
 
     def test_original_x86_instructions_match_the_core(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         executable = client(self) / 'WorldOfTanks.exe'
         try:
             import stock_ballistics_oracle as oracle
@@ -110,6 +115,8 @@ class StockBallisticsTest(unittest.TestCase):
         print('Original ballistics instructions matched: %r' % counts)
 
     def test_original_projectile_mover_over_the_binding(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         package = client(self) / 'res/packages/scripts.pkg'
         sources = engine_sources(self)
         python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
@@ -156,6 +163,8 @@ class StockBallisticsTest(unittest.TestCase):
         print(result.stdout.strip())
 
     def test_real_scene_owner_with_the_core(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         owner = scene_owner(self)
         flags, libs = python27_flags(self)
         effects = (ROOT / 'bigworld/stock_ground_effects.cpp').read_text()

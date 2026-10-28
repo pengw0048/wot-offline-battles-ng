@@ -4,6 +4,7 @@ The narrow engine shim reproduces ILoader's status guards and DynamicScene's
 notification ordering. It proves loader ownership, not D3D rendering/BSP data.
 """
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -184,6 +185,8 @@ int main(){
 
 class StockTreeSceneLoaderTests(unittest.TestCase):
     def test_actual_loader_with_guarded_engine_notification_order(self):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='stock-tree-loader-') as directory:
             directory = Path(directory)
             for relative in ('pch.hpp', 'stock_tree_scene.hpp', 'stock_space_sounds.hpp', 'compiled_space/loader.hpp',

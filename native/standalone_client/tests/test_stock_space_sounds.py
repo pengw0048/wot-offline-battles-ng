@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import struct
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class SpaceSoundTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         cls.temporary = tempfile.TemporaryDirectory(prefix='stock-space-sounds-')
         cls.directory = Path(cls.temporary.name)
         cls.probe = cls.directory/'reader'

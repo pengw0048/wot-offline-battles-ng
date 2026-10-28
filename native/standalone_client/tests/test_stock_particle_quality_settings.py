@@ -1,6 +1,7 @@
 """Execute the production quality callbacks against the native registry contract."""
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ParticleQualitySettingsTest(unittest.TestCase):
     def test_original_option_profiles_and_hdr_ownership(self):
+        if not shutil.which(os.environ.get('CXX', 'clang++')):
+            raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'clang++'))
         source = (ROOT / 'bigworld/stock_particle_quality.cpp').read_text()
         callbacks = source[source.index('class ParticleQualitySetting'):
                            source.index('wot::StockParticleQualityProfile readProfile')]
