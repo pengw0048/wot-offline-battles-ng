@@ -3341,6 +3341,15 @@ before releasing the provider. `resetKeys` clears the native camera controls.
 These calls are required by the ordinary control-mode create/disable sequence,
 even when the player never selects the video camera.
 
+`GUI.Flash` inherits `drawWithRestrictedViewPort` from the native GUI component.
+It defaults to true; the stock battle markers constructor sets it to false.
+Flash and text drawing consume the flag when applying the original optional
+NVIDIA Mosaic centre-display viewport, followed by the existing GUI clip region.
+The viewport owner refreshes after device resets and releases its NVAPI lease
+before device-callback teardown. Exact-client constructor bytecode and viewport
+instructions are covered by focused tests; multi-display rendering still needs
+acceptance on the corresponding hardware.
+
 Ground impacts submit their original eight-argument `wg_addDecal` operation
 through the native texture registry and dynamic-decal renderer. Aggregate
 projection uses collision-purpose static candidates, BSP triangles and actual

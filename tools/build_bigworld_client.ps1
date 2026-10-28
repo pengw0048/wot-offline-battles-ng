@@ -381,6 +381,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-preferences-callbacks-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_resolution.py"),
         $EngineRoot) "stock-dynamic-resolution-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_restricted_viewport.py"),
+        $EngineRoot) "stock-flash-restricted-viewport-patch.log"
     # MouseCursor.inFocus and GUIApp's background/edge presentation owners.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_hangar_presentation.py"),
         $EngineRoot) "stock-hangar-presentation-patch.log"
