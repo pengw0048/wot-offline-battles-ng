@@ -3360,6 +3360,17 @@ identity; detach, world exit and device resets retire stale submissions. Bounds
 and LOD gates follow the exact executable, while visible shadow output still
 requires Windows rendering acceptance.
 
+Texture streaming admits only formats supported by the active device. Other
+DDS formats use the existing managed/D3DX loader, which can convert them. The
+original forward-shadow RGB24 resource reproduced an unsupported-format failure
+on Windows; D3DX loaded all eight mip levels and preserved every base-level RGB
+component in the 128-square image. Failed stream registration releases its
+handle once, and destruction checks that handle before unregistering again.
+The ordinary successful destruction path retains its ownership assertions.
+Extracted SDK functions cover supported and unsupported formats, failed loads,
+slot reuse and repeated normal creation/destruction, including failing original
+code controls. Actual battle rendering remains a separate acceptance boundary.
+
 `FreeCamera` shares the original `SpeedTreeTargetedCamera` base with
 `HomingCamera`. Updates publish the retained tree target before either the
 fixed-view or matrix-provider branch, and destruction clears that target
