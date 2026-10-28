@@ -162,6 +162,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/offline_fork.cmake")
 target_include_directories(bwclient PRIVATE "${BW_SOURCE_DIR}/client"
     "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")
+target_include_directories(compiled_space PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 target_include_directories(moo PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")
 target_include_directories(romp PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
