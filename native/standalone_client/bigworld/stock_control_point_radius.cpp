@@ -38,12 +38,14 @@ struct StockControlPointRadius : Moo::DeviceCallback
     Moo::IndexBuffer indexBuffer;
     std::vector<unsigned char> source;
     std::vector<uint32> indices;
+    std::vector<unsigned char> projectedSource;
+    std::vector<uint32> projectedIndices;
     Matrix world, inverse;
     BoundingBox bounds;
     Vector4 colour;
     uint32 stride = 0, vertexCount = 0, indexCount = 0;
     float height = 0.f;
-    bool active = true, projected = false, invertible = false;
+    bool active = true, prepared = false, projected = false, invertible = false;
 
     virtual bool recreateForD3DExDevice() const { return true; }
     virtual void deleteManagedObjects() { releaseBuffers(); }
@@ -105,9 +107,10 @@ struct StockControlPointRadius : Moo::DeviceCallback
         return !indices.empty() && indices.size() % 3 == 0;
     }
 
-    bool project()
+    bool prepare()
     {
         if (!active || !space || space->cleared() || !invertible || !Moo::rc().device()) return false;
+        if (prepared) return true;
         if (source.empty())
         {
             // Keep the exact complete source stream: UV/normal/other channels
@@ -161,31 +164,40 @@ struct StockControlPointRadius : Moo::DeviceCallback
                 filtered.insert(filtered.end(), indices.begin() + i, indices.begin() + i + 3);
         }
         if (!active || space->cleared()) return false;
+        auto low = bounds.minBounds(), high = bounds.maxBounds();
+        low.y = (std::min)(low.y, minimum); high.y = (std::max)(high.y, maximum);
+        bounds.setBounds(low, high);
+        projectedSource.swap(output); projectedIndices.swap(filtered);
+        prepared = true;
+        return true;
+    }
+
+    bool project()
+    {
+        if (!prepare()) return false;
         releaseBuffers();
-        if (FAILED(vertexBuffer.create(uint32(output.size()), D3DUSAGE_WRITEONLY, 0,
+        if (FAILED(vertexBuffer.create(uint32(projectedSource.size()), D3DUSAGE_WRITEONLY, 0,
                 D3DPOOL_MANAGED, "Other Buffers/Vertex Buffer/ControlPointRadius"))) return false;
         void* destination = NULL;
-        if (FAILED(vertexBuffer.lock(0, uint32(output.size()), &destination, 0))) return false;
-        std::memcpy(destination, output.data(), output.size()); vertexBuffer.unlock();
-        indexCount = uint32(filtered.size());
+        if (FAILED(vertexBuffer.lock(0, uint32(projectedSource.size()), &destination, 0))) return false;
+        std::memcpy(destination, projectedSource.data(), projectedSource.size()); vertexBuffer.unlock();
+        indexCount = uint32(projectedIndices.size());
         if (indexCount)
         {
             if (FAILED(indexBuffer.create(indexCount, primitive->indicesFormat(), D3DUSAGE_WRITEONLY,
                     D3DPOOL_MANAGED, "index buffer/unknown"))) return false;
             auto destinationIndices = indexBuffer.lock();
             if (!destinationIndices.valid()) return false;
-            for (uint32 i = 0; i != indexCount; ++i) destinationIndices[i] = filtered[i];
+            for (uint32 i = 0; i != indexCount; ++i) destinationIndices[i] = projectedIndices[i];
             indexBuffer.unlock();
         }
-        auto low = bounds.minBounds(), high = bounds.maxBounds();
-        low.y = minimum; high.y = maximum;
-        bounds.setBounds(low, high);
         projected = true; return true;
     }
 
     void draw()
     {
-        if (!active || !space || space->cleared() || (!projected && !project()) || !indexCount) return;
+        if (!active || !prepared || !space || space->cleared() ||
+            (!projected && !project()) || !indexCount) return;
         auto effect = material->pass(Moo::RENDERING_PASS_COLOR);
         Moo::rc().push(); Moo::rc().world(world);
         Moo::rc().effectVisualContext().worldMatrix(&world);
@@ -228,11 +240,15 @@ std::shared_ptr<StockControlPointRadius> loadStockControlPointRadius(const char*
 void drawStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>& owner,
     const SceneDrawContext& context)
 {
-    if (owner && owner->active && context.drawContext().renderingPassType() == Moo::RENDERING_PASS_COLOR)
+    if (owner && owner->active && owner->prepared &&
+        context.drawContext().renderingPassType() == Moo::RENDERING_PASS_COLOR)
         context.drawContext().drawUserItem(new RadiusDraw(owner), Moo::DrawContext::TRANSPARENT_CHANNEL_MASK);
 }
 void retireStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>& owner)
 { if (owner) owner->active = false; }
 bool stockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>& owner, BoundingBox& bounds)
 { if (!owner) return false; bounds = owner->bounds; return true; }
+bool prepareStockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>& owner,
+    BoundingBox& bounds)
+{ if (!owner || !owner->prepare()) return false; bounds = owner->bounds; return true; }
 BW_END_NAMESPACE

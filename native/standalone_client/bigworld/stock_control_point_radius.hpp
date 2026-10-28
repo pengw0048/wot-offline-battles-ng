@@ -15,4 +15,8 @@ void drawStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>&
 void retireStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>& owner);
 bool stockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>& owner,
     BoundingBox& bounds);
+// Prepare actual terrain bounds before visibility selection; GPU upload stays
+// in the draw phase. A temporarily unavailable surface can be retried by tick.
+bool prepareStockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>& owner,
+    BoundingBox& bounds);
 BW_END_NAMESPACE

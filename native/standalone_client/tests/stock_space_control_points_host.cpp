@@ -68,7 +68,7 @@ class SceneDrawContext{public:Moo::DrawContext context;Moo::DrawContext& drawCon
 struct IDrawOperationTypeHandler{virtual~IDrawOperationTypeHandler()=default;virtual void doDraw(const SceneDrawContext&,const SceneObject*,size_t)=0;};struct ISpatialQueryOperationTypeHandler{virtual~ISpatialQueryOperationTypeHandler()=default;virtual void getWorldTransform(const SceneObject&,Matrix*)=0;virtual void getWorldVisibilityBoundingBox(const SceneObject&,AABB*)=0;};struct ITickOperationTypeHandler{virtual~ITickOperationTypeHandler()=default;virtual void doTick(SceneObject*,size_t,float)=0;virtual void doUpdateAnimations(SceneObject*,size_t,float)=0;};
 template<class H>struct Operation{std::unique_ptr<H> handler;template<class T,class V>void addHandler(){handler.reset(new V);}};using DrawOperation=Operation<IDrawOperationTypeHandler>;using SpatialQueryOperation=Operation<ISpatialQueryOperationTypeHandler>;using TickOperation=Operation<ITickOperationTypeHandler>;
 class Scene{public:DrawOperation draw;SpatialQueryOperation spatial;TickOperation tick;template<class T>T* getObjectOperation();};template<>DrawOperation* Scene::getObjectOperation(){return &draw;}template<>SpatialQueryOperation* Scene::getObjectOperation(){return &spatial;}template<>TickOperation* Scene::getObjectOperation(){return &tick;}
-struct DynamicObjectHandle{unsigned id;};struct DynamicSceneProvider{unsigned next=1;std::map<unsigned,SceneObject> objects;std::function<void()> onAdd,onRemove;DynamicObjectHandle addObject(SceneObject o,const Matrix&,const BoundingBox& collision,const BoundingBox& visibility){assert(collision.empty&&!visibility.empty&&!o.bits.dynamic&&o.bits.reflection&&o.bits.staticShadow&&o.bits.dynamicShadow);auto id=next++;objects[id]=o;if(onAdd)onAdd();return {id};}void removeObject(DynamicObjectHandle h){assert(objects.erase(h.id)==1);if(onRemove)onRemove();}};
+struct DynamicObjectHandle{unsigned id;};struct DynamicSceneProvider{unsigned next=1;std::map<unsigned,SceneObject> objects;std::map<unsigned,BoundingBox> boxes;unsigned updates=0;std::function<void()> onAdd,onRemove;DynamicObjectHandle addObject(SceneObject o,const Matrix&,const BoundingBox& collision,const BoundingBox& visibility){assert(collision.empty&&!visibility.empty&&!o.bits.dynamic&&o.bits.reflection&&o.bits.staticShadow&&o.bits.dynamicShadow);auto id=next++;objects[id]=o;boxes[id]=visibility;if(onAdd)onAdd();return {id};}void updateObject(DynamicObjectHandle h,const Matrix&,const BoundingBox& collision,const BoundingBox& visibility){assert(objects.count(h.id)&&collision.empty&&!visibility.empty);boxes[h.id]=visibility;++updates;}void removeObject(DynamicObjectHandle h){assert(objects.erase(h.id)==1);boxes.erase(h.id);if(onRemove)onRemove();}};
 class ClientSpace{public:virtual~ClientSpace()=default;};using ClientSpacePtr=std::shared_ptr<ClientSpace>;
 namespace CompiledSpace{
 struct FourCC{std::string value;FourCC(const char* p):value(p){}};struct BinaryFormat{static constexpr size_t NOT_FOUND=size_t(-1);struct Stream{std::vector<char> bytes;size_t size(){return bytes.size();}const void* readRaw(size_t n){assert(n==bytes.size());return bytes.data();}}stream;unsigned version=2,opens=0,closes=0;bool missing=false;size_t findSection(FourCC v){assert(v.value=="WTCP");return missing?size_t(NOT_FOUND):0;}unsigned sectionVersion(size_t){return version;}Stream* openSection(size_t,bool){++opens;return &stream;}void closeSection(Stream*){++closes;std::fill(stream.bytes.begin(),stream.bytes.end(),'x');}};
@@ -85,11 +85,12 @@ template<class T>struct PyVector{static bool Check(PyObject*){return false;}T ge
 }
 #include "stock_space_control_points.cpp"
 namespace BW {
-struct StockControlPointRadius {bool active=true;};
+bool radiusAvailable=true;struct StockControlPointRadius {bool active=true,ready=false;};
 std::shared_ptr<StockControlPointRadius> loadStockControlPointRadius(const char* resource,ClientSpace*,const Vector3&,float,float,const Vector4&){assert(std::string(resource)=="radius");return std::make_shared<StockControlPointRadius>();}
 void drawStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>& owner,const SceneDrawContext&){assert(owner&&owner->active);}
 void retireStockControlPointRadius(const std::shared_ptr<StockControlPointRadius>& owner){if(owner)owner->active=false;}
 bool stockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>&,BoundingBox& b){b.empty=false;b.low={0,0,0};b.high={1,1,1};return true;}
+bool prepareStockControlPointRadiusBounds(const std::shared_ptr<StockControlPointRadius>& owner,BoundingBox& b){if(!radiusAvailable)return false;owner->ready=true;b.empty=false;b.low={0,-80,0};b.high={1,90,1};return true;}
 struct StockSpaceSoundOwner {unsigned next=0;std::set<unsigned> live;};
 StockSpaceSounds acquireStockSpaceSounds(ClientSpace*){return std::make_shared<StockSpaceSoundOwner>();}
 StockSpaceSoundHandle addStockSpaceControlPointSound(const StockSpaceSounds& o,const BW::string& e,const Vector3& p){assert(e=="sound");assert(p.x==101||p.x==201);assert(p.y==37);auto id=o->next++;o->live.insert(id);return id;}
@@ -102,6 +103,7 @@ void populate(BinaryFormat& file){std::vector<wot::StockControlPointData::Defini
 PyObject* checkOwner(PyObject*,PyObject*){
     BW::CompiledSpace::CompiledSpace space;BinaryFormat file;StringTable strings;Matrix mapping;mapping.translation({9000,9000,9000});StockControlPointSceneLoader loader(1);StockControlPointSceneLoader::registerHandlers(space.scene());populate(file);
     assert(loader.loadFromSpace(&space,file,{},mapping,strings)&&file.opens==file.closes&&loader.bind()&&loader.bind()&&space.provider.objects.size()==2);
+    for(const auto& v:space.provider.boxes)assert(v.second.low.y<=-80&&v.second.high.y>=90);
     std::vector<SceneObject> objects;for(auto& v:space.provider.objects)objects.push_back(v.second);
     auto originalFlag=SuperModel::shared["flag"]->group.material_;auto originalStaff=SuperModel::shared["staff"]->group.material_;
     SceneDrawContext draw;space.scene().tick.handler->doTick(objects.data(),objects.size(),.25f);space.scene().tick.handler->doUpdateAnimations(objects.data(),objects.size(),.25f);
@@ -113,6 +115,19 @@ PyObject* checkOwner(PyObject*,PyObject*){
     FlagFashion retained;FlagSettings first;first.emblem="valid";retained.apply(first);auto oldTexture=retained.emblem;FlagSettings cleared;retained.apply(cleared);assert(retained.emblem==oldTexture);FlagFashion newborn;newborn.apply(cleared);assert(!newborn.emblem);
     space.provider.onRemove=[&]{loader.unload();space.scene().draw.handler->doDraw(draw,objects.data(),objects.size());};loader.unload();loader.unload();assert(space.provider.objects.empty()&&samples.size()==16);space.provider.onRemove={};
     populate(file);assert(loader.loadFromSpace(&space,file,{},mapping,strings)&&loader.bind());objects.clear();for(auto& v:space.provider.objects)objects.push_back(v.second);space.scene().tick.handler->doUpdateAnimations(objects.data(),objects.size(),0);samples.clear();space.scene().draw.handler->doDraw(draw,objects.data(),objects.size());assert(samples[0].emblem=="system/maps/wg_emblem.dds"&&samples[2].colour.y==1.f);loader.unload();
+    radiusAvailable=false;populate(file);assert(loader.loadFromSpace(&space,file,{},mapping,strings)&&loader.bind());
+    objects.clear();for(auto& v:space.provider.objects)objects.push_back(v.second);
+    for(const auto& v:space.provider.boxes)assert(v.second.low.y>-80);
+    const unsigned updatesBefore=space.provider.updates;
+    space.scene().tick.handler->doTick(objects.data(),objects.size(),.1f);assert(space.provider.updates==updatesBefore);
+    radiusAvailable=true;
+    // Tick runs independently of visibility: a pending ring publishes its real
+    // ground extent before the scene selects it for the first draw.
+    space.scene().tick.handler->doTick(objects.data(),objects.size(),.1f);
+    assert(space.provider.updates==updatesBefore+2);
+    for(const auto& v:space.provider.boxes)assert(v.second.low.y<=-80&&v.second.high.y>=90);
+    space.scene().tick.handler->doTick(objects.data(),objects.size(),.1f);assert(space.provider.updates==updatesBefore+2);
+    loader.unload();
     populate(file);space.provider.onAdd=[&]{loader.unload();};assert(loader.loadFromSpace(&space,file,{},mapping,strings)&&!loader.bind()&&space.provider.objects.empty());space.provider.onAdd={};
     file.version=1;populate(file);assert(!loader.loadFromSpace(&space,file,{},mapping,strings));file.version=2;populate(file);Moo::ComplexEffectMaterial::fail=true;assert(loader.loadFromSpace(&space,file,{},mapping,strings)&&loader.bind()&&space.provider.objects.empty());loader.unload();Moo::ComplexEffectMaterial::fail=false;
     Py_RETURN_NONE;

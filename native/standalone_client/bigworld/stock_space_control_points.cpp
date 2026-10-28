@@ -213,7 +213,8 @@ struct StockControlPointSceneLoader::State
         BW::string sound;
         Vector3 soundPosition;
         float dTime = 0.f, flagScale = 1.f;
-        bool active = false;
+        DynamicObjectHandle membership;
+        bool active = false, published = false, radiusReady = false;
 
         bool load(const wot::StockControlPointData::Definition& source,
             const char* flagResource, const char* staffResource, const char* radiusResource,
@@ -271,8 +272,21 @@ struct StockControlPointSceneLoader::State
             BoundingBox flagBounds;
             flag->localVisibilityBox(flagBounds); flagBounds.transformBy(flagWorld);
             bounds.addBounds(flagBounds);
+            prepareRadius();
+        }
+        void prepareRadius()
+        {
+            if (radiusReady || !active || !owner->bound) return;
             BoundingBox radiusBounds;
-            if (stockControlPointRadiusBounds(radius, radiusBounds)) bounds.addBounds(radiusBounds);
+            if (!prepareStockControlPointRadiusBounds(radius, radiusBounds)) return;
+            bounds.addBounds(radiusBounds);
+            radiusReady = true;
+            // 73b520 prepares the projected height range before submitting the
+            // area for visibility selection. Retry from tick, not draw, when
+            // terrain was unavailable at bind so the initial box cannot hide it.
+            if (published)
+                owner->space->dynamicScene().updateObject(membership, staffWorld,
+                    BoundingBox::s_insideOut_, bounds);
         }
         void updateAnimations()
         {
@@ -320,7 +334,14 @@ struct StockControlPointSceneLoader::State
     struct TickHandler : ITickOperationTypeHandler
     {
         virtual void doTick(SceneObject* objects, size_t count, float dTime)
-        { for (size_t i = 0; i != count; ++i) objects[i].getAs<Instance>()->dTime = dTime; }
+        {
+            for (size_t i = 0; i != count; ++i)
+            {
+                auto* instance = objects[i].getAs<Instance>();
+                instance->dTime = dTime;
+                instance->prepareRadius();
+            }
+        }
         virtual void doUpdateAnimations(SceneObject* objects, size_t count, float)
         { for (size_t i = 0; i != count; ++i) objects[i].getAs<Instance>()->updateAnimations(); }
     };
@@ -396,6 +417,7 @@ bool StockControlPointSceneLoader::doBind()
         const auto handle = live->space->dynamicScene().addObject(value.object, value.staffWorld,
             BoundingBox::s_insideOut_, value.bounds);
         if (state_ != live) { live->space->dynamicScene().removeObject(handle); return false; }
+        value.membership = handle; value.published = true;
         live->memberships.push_back(handle);
         const auto sound = addStockSpaceControlPointSound(live->sounds, value.sound, value.soundPosition);
         if (state_ != live) { removeStockSpaceSound(live->sounds, sound); return false; }
