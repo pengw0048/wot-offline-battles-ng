@@ -240,6 +240,93 @@ print('Exact initial music/ambient producer and Avatar/arena guards PASS')
                 self.assertIn(event_id, events(archive.read(names[bank])))
                 self.assertNotIn(event_id, login_events)
 
+    def test_exact_default_voice_owner_and_python_language_boundary(self):
+        path = client(self)
+        sys.path.insert(0, str(ROOT.parents[1] / 'tools'))
+        from packed_xml import read_packed_xml
+        root = read_packed_xml((path / 'res/engine_config.xml').read_bytes())
+        sound = dict(root.children)[b'soundMgr'].value
+        active = dict(sound.children)[b'WWISE_active_profile'].value
+        profile = dict(sound.children)[active].value
+        voice = dict(profile.children)[b'voice_soundbanks'].value
+        banks = [dict(project.value.children)[b'name'].value.decode()
+                 for name, project in voice.children if name == b'project']
+        self.assertEqual(banks, ['voiceover.bnk'])
+        voice_events = events((path / 'res/audioww' / banks[0]).read_bytes())
+        with zipfile.ZipFile(path / 'res/packages/gui.pkg') as archive:
+            notifications = read_packed_xml(archive.read('gui/sound_notifications.xml'))
+        for name in (b'start_battle', b'enemy_killed_by_player',
+                     b'enemy_hp_damaged_by_projectile_and_chassis_damaged_by_player'):
+            voice = dict(dict(notifications.children)[name].value.children)[b'voice'].value
+            event = dict(voice.children)[b'wwsound'].value.decode()
+            self.assertIn(sound_id(event), voice_events, event)
+        interpreter = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
+        if not interpreter.is_file():
+            self.skipTest('Pinned CPython 2.7 interpreter required')
+        script = r'''import marshal,sys,types,zipfile
+z=zipfile.ZipFile(sys.argv[1])
+module=marshal.loads(z.read('scripts/client/SoundGroups.pyc')[8:])
+owner=next(c for c in module.co_consts if isinstance(c,types.CodeType) and c.co_name=='SoundModes')
+codes={c.co_name:c for c in owner.co_consts if isinstance(c,types.CodeType)}
+class Object(object):pass
+calls=[]
+wwise=Object();wwise.setLanguage=lambda language:calls.append(language) or True
+default=Object();default.name='default';default.voiceLanguage=''
+german=Object();german.name='DE';german.voiceLanguage='germany'
+folder=Object();folder.values=lambda:[]
+resources=Object();resources.openSection=lambda name:folder
+def unexpected(*args):raise AssertionError(args)
+scope={'__builtins__':__builtins__,'WWISE':wwise,'ResMgr':resources,'LOG_CURRENT_EXCEPTION':unexpected,
+       'LOG_ERROR':unexpected,'LOG_WARNING':unexpected,'LOG_DEBUG':lambda *args:None}
+class Modes(object):
+ DEFAULT_MODE_NAME='default';MEDIA_PATH='audioww'
+ _SoundModes__MODES_FOLDER='gui/soundModes/'
+ _SoundModes__MODES_FILENAME='main_sound_modes.xml'
+ # Resource descriptors are the boundary; original initialization and mode
+ # transition bytecode, including its default-language early return, run intact.
+ def _SoundModes__readSoundModesConfig(self,*args):return [default,german],[]
+for name in ('__init__','setMode','__setMode'):
+ setattr(Modes,'_SoundModes'+name if name=='__setMode' else name,types.FunctionType(codes[name],scope))
+scope['SoundModes']=Modes
+mode=Modes('default')
+assert mode._SoundModes__currentMode=='default' and calls==[]
+assert mode.setMode('DE') is True and calls==['germany']
+assert mode.setMode('DE') is True and calls==['germany']
+assert mode.setMode('default') is True and calls==['germany','']
+print('Exact SoundModes default startup and explicit language transitions PASS')
+'''
+        subprocess.run([str(interpreter), '-c', script, str(path / 'res/packages/scripts.pkg')], check=True)
+
+    def test_exact_native_startup_loads_voice_after_loadonce(self):
+        path = client(self)
+        from stock_battle_gui_support import Executable
+        executable = Executable(path / 'WorldOfTanks.exe')
+        self.assertEqual(executable.cstr(executable.word(0x12562d4)), 'voice_soundbanks')
+        self.assertEqual(executable.code(0x12562e0, 6).hex(), '8d8768010000')
+        self.assertEqual(executable.cstr(executable.word(0x12561cc)), 'SFX_soundbanks_loadonce')
+        self.assertEqual(executable.code(0x12561b1, 6).hex(), '8db738010000')
+        for dependency in ('pefile', 'unicorn'):
+            if importlib.util.find_spec(dependency) is None:
+                self.skipTest('Optional x86 oracle dependency unavailable: ' + dependency)
+        import unicorn
+        from unicorn.x86_const import UC_X86_REG_ECX
+        from stock_flash_input_mode_oracle import OriginalFlashInputMode, MARKS
+        oracle = OriginalFlashInputMode(path / 'WorldOfTanks.exe')
+        calls = []
+        owner = MARKS + 0x3000
+        def load(address):
+            self.assertEqual(oracle.u.reg_read(UC_X86_REG_ECX), owner)
+            calls.append((address, oracle._arg(1)-owner, oracle._arg(2)))
+            oracle._return(0, 8)
+        for address in (0x1254e10, 0x1255480):
+            oracle.hooks[address] = lambda address=address: load(address)
+            oracle.u.hook_add(unicorn.UC_HOOK_CODE, oracle._hook, begin=address, end=address)
+        # 01247668 calls this application startup owner. 012562d3 maps
+        # voice_soundbanks to +0x168; 012561cb maps loadonce to +0x138.
+        oracle._call(0x12559c0, owner)
+        self.assertEqual(calls, [(0x1254e10, 0x138, 1), (0x1255480, 0x168, 1),
+                                (0x1255480, 0x80, 1), (0x1254e10, 0x118, 1)])
+
     def test_exact_native_arena_resource_formatter(self):
         path = client(self)
         for dependency in ('pefile', 'unicorn'):

@@ -389,6 +389,10 @@ bool initialiseStockAudio(DataSectionPtr root, void* window) {
     {
         std::vector<BW::string> names;
         if (!bankNames("SFX_soundbanks_loadonce", names)) goto failed;
+        // #1513 0x012559c0 loads the application voice group immediately after
+        // load-once SFX. SoundModes(default) does not call setLanguage, so the
+        // default crew voice must already exist before Python starts.
+        if (!bankNames("voice_soundbanks", names)) goto failed;
         for (const auto& name : names) {
             if (!loadBank(name)) goto failed;
             state.permanent.insert(name);

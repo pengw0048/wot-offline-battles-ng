@@ -25,6 +25,14 @@ void phase(const char* name,bool accepted)
     eventReceipt(name,"gun_rld_20_45mm",accepted);
     eventReceipt(name,"eng_gaz_aa_pc",accepted);
 }
+void voicePhase(const char* name)
+{
+    // Exact sound_notifications.xml events that failed in the visible client.
+    // Their bank is application-owned and must not require setLanguage().
+    eventReceipt(name,"vo_start_battle",true);
+    eventReceipt(name,"vo_enemy_hp_damaged_by_projectile_and_chassis_damaged_by_player",true);
+    eventReceipt(name,"vo_enemy_killed_by_player",true);
+}
 }
 
 int main(int argc,char**argv)
@@ -48,6 +56,9 @@ int main(int argc,char**argv)
         const auto config=BW::BWResource::openSection("engine_config.xml");
         require(config&&BW::initialiseStockAudio(config,window)&&BW::stockAudioReady(),
             "Actual SDK initialization failed");
+        require(BW::StockAudioDetail::manager().language.empty(),
+            "Default voice probe must not select a language");
+        voicePhase("default-startup");
         require(BW::selectStockAudioBankSet("SFX_soundbanks_login"),"Login banks failed");
         phase("login-before",false);
         // Exercise the real geometry -> arena_defs producer. Complete native
@@ -70,13 +81,22 @@ int main(int argc,char**argv)
             // The authored initial producer runs after scene-bank publication.
             // Acceptance is a real PostEvent receipt, not speaker/listening proof.
             eventReceipt(name,music.c_str(),true);
+            const BW::string victory=definition->readString("wwmusicSetup/wwmusicResultWin");
+            require(!victory.empty(),"Actual battle victory event is missing");
+            eventReceipt(name,victory.c_str(),true);
+            voicePhase(name);
             phase(name,true);
             BW::setStockAudioSpaceBankSet("spaces/hangar_v2");
+            eventReceipt("victory-after-hangar",victory.c_str(),true);
+            voicePhase("hangar-after");
             phase("hangar-after",false);
         }
         require(BW::selectStockAudioBankSet("SFX_soundbanks_login"),"Return to login banks failed");
         phase("login-after",false);
-        std::cout<<"Actual SDK real arena_defs producer / initial music / unload / same-and-other-arena PASS"<<std::endl;
+        voicePhase("login-after");
+        require(BW::StockAudioDetail::reinitialise(),"Actual SDK recreation failed");
+        voicePhase("device-recreated");
+        std::cout<<"Actual SDK default crew voice / real arena_defs / initial and victory music / scene unload / device recreation PASS"<<std::endl;
         result=0;
     }
     catch(const std::exception& error){std::cerr<<error.what()<<std::endl;}
