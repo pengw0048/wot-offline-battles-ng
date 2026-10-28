@@ -12,9 +12,12 @@
 #define BW_GUARD
 #define MF_ASSERT assert
 using uint = unsigned int;
+namespace BW { template<class T> using vector = std::vector<T>; }
+static unsigned invoked = 0;
 namespace GFx {
 struct Value {
     enum Kind { Undefined, Null, Boolean, Number, String, Array, Object };
+    enum ValueType { VT_Object, VT_Closure };
     Kind kind = Undefined;
     double number = 0;
     std::string text;
@@ -30,7 +33,15 @@ struct Value {
         if (elements->size() <= i) elements->resize(i + 1);
         (*elements)[i] = v;
     }
-    void SetMember(const char * key, const Value & v) { (*members)[key] = v; }
+    bool SetMember(const char * key, const Value & v) {
+        if (!key) return false;
+        (*members)[key] = v;
+        return true;
+    }
+    ValueType GetType() const { return VT_Object; }
+    bool Invoke(const char *, Value * result, const Value *, uint) {
+        ++invoked; result->SetNull(); return true;
+    }
 };
 struct Movie {
     void CreateArray(Value * value) {
@@ -41,6 +52,9 @@ struct Movie {
         value->kind = Value::Object;
         value->members.reset(new std::map<std::string, Value>());
     }
+    bool Invoke(const char *, Value * result, const Value *, uint) {
+        ++invoked; result->SetNull(); return true;
+    }
 };
 }
 struct PyMovieView {
@@ -50,10 +64,19 @@ struct PyMovieView {
 struct PyGFxValue {
     static PyTypeObject s_type_;
     GFx::Value gfxValue_;
+    PyMovieView * pyMovieView_ = nullptr;
+    std::shared_ptr<PyGFxValue> parent_;
+    std::string name_ = "as_setSettings";
+    using Children_t = std::map<std::string, std::shared_ptr<PyGFxValue>>;
+    Children_t children_;
+    bool needResyncSelf_ = false;
     static GFx::Value convertValueToGFx(PyObject *, PyMovieView *);
+    static PyObject * convertValueToPython(GFx::Value &, PyMovieView *) { Py_RETURN_NONE; }
+    PyObject * pyCall(PyObject *);
 };
 PyTypeObject PyGFxValue::s_type_ = { PyObject_HEAD_INIT(NULL) 0 };
 @CONVERTER@
+@PYCALL@
 
 static PyObject * receipt(const GFx::Value & value) {
     if (value.kind == GFx::Value::Undefined) return Py_BuildValue("(s)", "undefined");
@@ -84,8 +107,18 @@ static PyObject * convert(PyObject *, PyObject * object) {
     if (PyErr_Occurred()) return NULL;
     return receipt(value);
 }
+static PyObject * invoke(PyObject *, PyObject * args) {
+    PyMovieView movie;
+    PyGFxValue value;
+    value.pyMovieView_ = &movie;
+    value.parent_.reset(new PyGFxValue);
+    return value.pyCall(args);
+}
+static PyObject * invokeCount(PyObject *, PyObject *) { return PyInt_FromLong(invoked); }
 static PyMethodDef methods[] = {
     { "convert", convert, METH_O, "Execute the SDK conversion body." },
+    { "invoke", invoke, METH_VARARGS, "Execute the SDK ActionScript call owner." },
+    { "invokeCount", invokeCount, METH_NOARGS, "Read the ActionScript invocation receipt." },
     { NULL, NULL, 0, NULL }
 };
 int main(int argc, char ** argv) {

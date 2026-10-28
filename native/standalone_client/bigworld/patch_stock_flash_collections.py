@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore #1513 Python set conversion at the existing GFx value owner."""
+"""Restore #1513 Python collection and dictionary-key conversion at the GFx owner."""
 import argparse
 from pathlib import Path
 
@@ -23,9 +23,44 @@ SET_BRANCH = '''\telse if (PySet_Check(pyValue))
 \t\t}
 \t}
 '''
+DICT_BEFORE = '''\t\t\tconst char *objKey = PyString_AsString(pyKVKey);
+\t\t\tGFx::Value objVal = convertValueToGFx(pyKVValue, pyMovieView);
+
+\t\t\tgfxValue.SetMember(objKey, objVal);'''
+DICT_AFTER = '''\t\t\tGFx::Value objVal = convertValueToGFx(pyKVValue, pyMovieView);
+\t\t\tif (PyErr_Occurred()) break;
+
+\t\t\t// #1513 AB1AD6..AB1B28: exact strings are borrowed; other keys
+\t\t\t// use their Python string representation and release that new reference.
+\t\t\tconst bool borrowedKey = PyString_CheckExact(pyKVKey);
+\t\t\tPyObject *stringKey = borrowedKey ? pyKVKey : PyObject_Str(pyKVKey);
+\t\t\tif (stringKey == NULL) break;
+\t\t\tconst char *objKey = PyString_AsString(stringKey);
+\t\t\tif (objKey != NULL) gfxValue.SetMember(objKey, objVal);
+\t\t\tif (!borrowedKey) Py_DECREF(stringKey);
+\t\t\tif (PyErr_Occurred()) break;'''
+CALL_BEFORE = '''\t\tfor (uint i = 0; i < numArgs; ++i)
+\t\t\tgfxArgs[i] = convertValueToGFx(PyTuple_GetItem(args, i), pyMovieView_);'''
+CALL_AFTER = '''\t\tfor (uint i = 0; i < numArgs; ++i)
+\t\t{
+\t\t\tgfxArgs[i] = convertValueToGFx(PyTuple_GetItem(args, i), pyMovieView_);
+\t\t\t// A failed key conversion must fail this call before invoking AS;
+\t\t\t// a successful return would leak its exception into a later event.
+\t\t\tif (PyErr_Occurred()) return NULL;
+\t\t}'''
 
 
 def patch_source(source):
+    result = source
+    for before, after in ((DICT_BEFORE, DICT_AFTER), (CALL_BEFORE, CALL_AFTER)):
+        if after in result:
+            if result.count(after) != 1:
+                raise ValueError('GFx dictionary conversion owner is duplicated')
+        elif result.count(before) == 1:
+            result = result.replace(before, after, 1)
+        else:
+            raise ValueError('Pinned GFx dictionary conversion owner anchor changed')
+    source = result
     if SET_BRANCH + ANCHOR in source:
         if source.count(SET_BRANCH) != 1 or source.count(ANCHOR) != 1:
             raise ValueError('GFx set conversion owner is duplicated')

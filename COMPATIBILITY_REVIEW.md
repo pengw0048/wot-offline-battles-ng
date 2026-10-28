@@ -3326,6 +3326,16 @@ of 1.06 MiB when the Scaleform string table allocation returned null. Packaging
 rejects a binary without this flag; resource lifetime still requires repeated
 Windows battle-cycle acceptance.
 
+The Flash value bridge restores Python set conversion and the original generic
+mapping-key rule: exact byte strings are borrowed; other keys use Python string
+conversion with balanced temporary references. A failed argument conversion
+returns before ActionScript invocation, preventing a pending exception from
+surfacing later in an unrelated event subscription. Display-object descriptors
+retain precedence over dynamic members. The AVM2 call-frame guard uses the
+original 1024-frame limit; the authored lobby scheduler can exceed the older
+SDK's 128 frames while draining a finite queue. Original PYC/ABC consumers and
+x86 branch checks cover these contracts; live timing remains runtime evidence.
+
 The battle-entry adapters expose the existing native `Math.Vector4Basic`,
 retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
 rendering, trajectory drawing, the tree collision-body provider, water ripples,
