@@ -3435,6 +3435,13 @@ Original shooting resources use the shimmer effect to write an alpha mask; the
 ordinary sprite effect writes colour instead. Original setter instructions, SDK
 serialization and clone paths, and both pipeline shader assets exercise this
 contract. Complete refraction output still requires Windows visual acceptance.
+The shared `ParticlesParams` shader constant retains the original distance fade,
+sniper field-of-view adjustment and quality fields. Without this binding, the
+original shooting shaders receive zero parameters and suppress particle alpha.
+Tests compare the arithmetic with the exact executable and execute the original
+forward/deferred shader instructions for authored shot emitters. Registration
+and retirement follow the native particle owner; final fire appearance remains
+a Windows visual check.
 Background particle loads retain weak callbacks, continue loading when the
 callback is absent or retired, and deliver `None` to a live callback on a
 resource failure. Ordinary hit flash effects retain native vector providers in
@@ -3455,6 +3462,16 @@ requires Windows rendering acceptance.
 
 Texture streaming admits only formats supported by the active device. Other
 DDS formats use the existing managed/D3DX loader, which can convert them. The
+texture-quality owner retains the original four option indices and couples
+HIGH/MEDIUM/LOW to their authored mip, compression and filtering rules. Managed
+and streamed loads account for the authored split HD slot; reload tasks retain
+that resource policy without querying the detail cache from background threads.
+Independent SDK compression/filter controls are excluded from the original
+settings view because this client owns both through texture quality. MAX remains
+unsupported until HD top-mip assembly is implemented, including forced saved or
+preset selection. Tests execute the SDK load/reload and registration paths and
+compare mip arithmetic against the exact executable. These checks establish
+quality selection and loader inputs, not GPU output or player frame rate. The
 original forward-shadow RGB24 resource reproduced an unsupported-format failure
 on Windows; D3DX loaded all eight mip levels and preserved every base-level RGB
 component in the 128-square image. Failed stream registration releases its
@@ -3569,6 +3586,14 @@ their flag models, material fashions, sounds and terrain-projected rings. Ring
 bounds are prepared before visibility selection and retried independently of
 visibility when terrain is not ready. Space retirement revokes these owners
 before releasing their scene membership.
+Opaque tree draws batch the original 40-byte instance records by tree type,
+part and LOD on stream 9. The original instanced techniques retain per-type
+constants and restore vertex declarations, streams and frequencies afterwards,
+including failed uploads. Faded and falling-tree passes resolve their effect
+only after material begin has selected its actual binding. The earlier effect
+pointer left the active fade material's instance parameters unset. Focused
+tests cover original record packing, repeated material switches, all tree parts,
+dual leaf LODs and partial failures; they do not establish frame-rate gains.
 
 Authored sound-zone UDOs register the native camera-driven zone owner. Its
 original first-match and enter/exit order feeds live Wwise events and auxiliary
@@ -3583,6 +3608,11 @@ Wwise SDK and original resources reproduces the missing weapon, reload and
 engine events with only login banks, accepts them in the arena, unloads them
 in the hangar and accepts them again in the second arena. Its emitters are
 muted; this proves event admission and bank lifetime, not audible gameplay.
+Audio startup also loads the authored default voice banks independently of
+language changes. The original default sound mode does not call `setLanguage`,
+so waiting for that callback omitted crew voices. The Windows SDK probe accepts
+the original start, hit and victory voice events across startup, space changes
+and reinitialization; audible playback still requires a listening check.
 Battle FPS sampling uses the actual frame
 statistics task. Monitor changes notify the original settings callback, and
 the hardware profile queries retain the original cached-score classification
@@ -3598,6 +3628,12 @@ that the GPU workload completed successfully. Monitor-matched DXGI memory
 queries retain successful zero values; only a failed query uses the original
 WMI AdapterRAM fallback. Each benchmark target has a distinct texture-registry
 identity through creation and destruction.
+Graphics preset containers keep the original non-control classification. The
+unchanged Python settings producer therefore excludes them from the quality
+control list; treating a whole preset as a single control caused the captured
+Scaleform type-conversion error. Original Python consumers exercise the fixed
+classification. Opening and closing the complete settings window remains a
+separate Windows interaction check.
 
 The pinned public billboard shaders use the shared world-position/depth fog
 owner in both retained legacy call sites. Full D3DX9 effect compilation covers
