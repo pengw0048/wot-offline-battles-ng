@@ -308,16 +308,43 @@ int main(){Primitive primitive;Packet rigid;rigid.stockPreviousWorld_=true;
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             input_file = root / 'models.bin'
-            input_file.write_bytes(b''.join(struct.pack('<I', len(data)) + data
-                                           for data in map(b''.join, (i, o, a))))
+            datasets=[(i,o,a)]
+            # Real wire fixtures for fragile hide, authored replacement and merged modules.
+            no_links=array(12,struct.pack('<6I',*([0xffffffff]*6)))
+            fragile=list(o);fragile[4]=array(8,struct.pack('<2I',2,0))
+            fragile[15]=array(36,struct.pack('<9I',0,0,0,0,0,struct.unpack('<I',struct.pack('<f',1.25))[0],0xffffffff,0xffffffff,0))
+            plain=list(i);plain[7]=no_links
+            datasets.append((plain,fragile,a))
+            replacement=list(fragile)
+            replacement[0]=array(8,struct.pack('<4I',0,0,1,1))
+            replacement[1]=array(36,bounds+struct.pack('<3I',3,0,0)+bounds+struct.pack('<3I',3,1,1))
+            replacement[2]=array(8,struct.pack('<4I',1,0x4a00,1,0x100))
+            replacement[3]=array(24,bounds+bounds);replacement[4]=array(8,struct.pack('<4I',2,0,0,0))
+            replacement[5]=array(4,struct.pack('<2I',0xffffffff,0xffffffff))
+            replacement[6]=array(4,struct.pack('<2f',3.4028234663852886e38,3.4028234663852886e38))
+            replacement[7]=array(8,struct.pack('<4I',0,2,0,2))
+            replacement[15]=array(36,struct.pack('<9I',0,0,0,0,0,struct.unpack('<I',struct.pack('<f',1.25))[0],0xffffffff,1,0))
+            datasets.append((plain,replacement,a))
+            merged=[array(64,struct.pack('<48f',*(matrix*3))),array(8,struct.pack('<6I',35,1,35,0,35,0)),
+                array(4,struct.pack('<3I',2,2,2)),array(4,bytes(12)),array(4,struct.pack('<3i',-1,-1,-1)),array(16),array(4),
+                array(12,struct.pack('<9I',1,2,0xffffffff,0xffffffff,0xffffffff,0,0xffffffff,0xffffffff,0)),array(4),
+                array(20,struct.pack('<15f',*([-1.]*15)))]
+            datasets.append((merged,replacement,a))
+            debris=list(plain);debris[7]=array(12,struct.pack('<6I',0,0,0xffffffff,0xffffffff,0xffffffff,0xffffffff))
+            debris[8]=array(4,struct.pack('<I',1))
+            datasets.append((debris,fragile,a))
+            input_file.write_bytes(b''.join(struct.pack('<I',len(data))+data
+                for dataset in datasets for data in map(b''.join,dataset)))
             engine = (ROOT / 'tests/stock_static_model_scene_test_engine.hpp').read_text()
             header = (ROOT / 'bigworld/stock_static_model_scene.hpp').read_text()
+            destructibles = (ROOT / 'bigworld/stock_destructibles.hpp').read_text()
             source = (ROOT / 'bigworld/stock_static_model_scene.cpp').read_text()
             without_includes = lambda value: '\n'.join(line for line in value.splitlines()
                 if not line.startswith(('#include', '#pragma once')))
             driver = root / 'scene.cpp'
             driver.write_text(engine + '\n#include "wot/stock_static_model_binary.hpp"\n'
-                '#include "stock_scene_identity_data.hpp"\n' +
+                '#include "stock_scene_identity_data.hpp"\n#include "stock_destructibles_data.hpp"\n' +
+                without_includes(destructibles) + '\n' + (ROOT / 'tests/stock_destructibles_registration_host.hpp').read_text() + '\n' +
                 without_includes(header) + '\n' + without_includes(source) + '\n' +
                 (ROOT / 'tests/stock_static_model_scene_probe.cpp').read_text())
             binary = root / 'scene'

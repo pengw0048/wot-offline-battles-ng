@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_tree_scene.hpp"
+#include "stock_destructibles.hpp"
 #include "stock_scene_settings.hpp"
 #include "stock_deferred_buffers.hpp"
 #include "stock_dynamic_resolution.hpp"
@@ -707,6 +708,7 @@ public:
 struct TreeInstance
 {
     TreeDefinition definition;
+    BW::string filename;
     Matrix inverse;
     std::shared_ptr<TreeType> type;
     TreeInstanceConstants constants = {};
@@ -1632,6 +1634,8 @@ bool StockTreeSceneHandler::loadInstances( BinaryFormat & file, const StringTabl
         instance.definition.seed = source.seed;
         instance.definition.flags = source.flags;
         instance.definition.visibility = source.visibility;
+        const char * resource = strings.entry( source.resource );
+        if (resource) instance.filename = resource;
         SceneObject object;
         object.type<TreeInstance>();
         object.handle( &instance );
@@ -1643,7 +1647,6 @@ bool StockTreeSceneHandler::loadInstances( BinaryFormat & file, const StringTabl
         implementation_->objects[i] = object;
         if (externalObjects) objects[i] = object;
         if (!(source.visibility & implementation_->mask)) continue;
-        const char * resource = strings.entry( source.resource );
         if (!resource || !*resource)
         {
             owner->fail( "Original tree resource FNV key is absent from the string table" );
@@ -1744,6 +1747,29 @@ BW::string StockTreeSceneHandler::soundResource( size_t index ) const
     // resource name plus the unmodified instance world transform.
     if (!objectAvailable( index )) return BW::string();
     return engineString( implementation_->instances[index].type->resource );
+}
+
+bool StockTreeSceneHandler::destructibleSnapshot( size_t index, StockDestructibleSnapshot & output ) const
+{
+    if (!implementation_->loaded || index >= implementation_->instances.size()) return false;
+    const auto & instance = implementation_->instances[index];
+    StockDestructibleSnapshot result;
+    result.world = instance.definition.world;
+    // 6b44e5 passes true to slot+0x40, but 6c5ae0 still returns identity.
+    result.hardpointWorld = Matrix::identity;
+    result.filename = instance.filename;
+    result.category = 0; // Original compiled-tree model-operation slot +0x30.
+    result.fallingParameters = Matrix::identity; // 6c5aa0 returns the identity matrix.
+    if (instance.type)
+    {
+        const auto & geometry = instance.type->geometry;
+        if (geometry.minimumBounds[0] <= geometry.maximumBounds[0] &&
+            geometry.minimumBounds[1] <= geometry.maximumBounds[1] &&
+            geometry.minimumBounds[2] <= geometry.maximumBounds[2])
+            result.height = geometry.maximumBounds[1] - geometry.minimumBounds[1];
+    }
+    output = result;
+    return true;
 }
 
 void StockTreeSceneHandler::worldCollisionBounds( size_t index, BoundingBox & bounds ) const

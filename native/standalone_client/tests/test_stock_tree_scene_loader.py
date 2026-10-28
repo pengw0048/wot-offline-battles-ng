@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENGINE = r'''
 #pragma once
 #include <cassert>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -29,7 +30,8 @@ ENGINE = r'''
 namespace BW {
 using uint32=std::uint32_t;
 using string=std::string;
-struct Matrix { float x=0; };
+struct StockDestructibleSnapshot;
+struct Matrix { float x=0;void setZero(){x=0;} };
 struct BoundingBox { bool empty=true;float minimum=0,maximum=0; };
 struct DataSection {};
 using DataSectionPtr=std::shared_ptr<DataSection>;
@@ -64,7 +66,7 @@ struct DynamicSceneProvider {
   found=nodes.find(handle.id);assert(found!=nodes.end());assert(liveObjects.count(found->second.object.id));nodes.erase(found);
  }
 };
-struct ClientSpace { bool clearedFlag=false;virtual ~ClientSpace(){}bool cleared()const{return clearedFlag;} };
+class ClientSpace { public:bool clearedFlag=false;virtual ~ClientSpace(){}bool cleared()const{return clearedFlag;} };
 // stock_space_sounds: one owner per live space, lookup-only named sounds,
 // INVALID handles ignored by register/remove, every valid handle removed once.
 struct StockSpaceSoundOwner { ClientSpace* space;std::map<std::uint64_t,std::string> live;std::map<std::uint64_t,std::pair<const void*,uint32>> objects; };
@@ -124,6 +126,7 @@ struct StockTreeSceneHandler {
  bool bind(){return loaded;}float loadPercent()const{return loaded?1.f:0.f;}
  size_t objectCount()const{return values.size();}const SceneObject* objects()const{return values.data();}
  bool objectAvailable(size_t i)const{return available[i];}
+ bool destructibleSnapshot(size_t i,StockDestructibleSnapshot&)const;
  void worldCollisionBounds(size_t i,BoundingBox& bounds)const {assert(i<values.size());bounds=BoundingBox{};}
  // Every third original tree resource has no sound definition.
  string soundResource(size_t i)const {assert(i<values.size());return i%3==2?"silent":"sound"+std::to_string(i);}
@@ -146,8 +149,12 @@ int main(){
  // Mask 1 binds objects 0 and 2; object 2 has no sound definition.
  {auto owner=soundOwners[&space].lock();assert(owner&&owner->live.size()==1&&owner->objects.size()==1);
   assert(owner->objects.begin()->second.first==&file&&owner->objects.begin()->second.second==0);}
+ {auto endpoint=registeredDestructibles.lock();StockDestructibleSnapshot snapshot;
+  // Masked slots retain WGDE indices even though they have no scene membership.
+  assert(endpoint&&endpoint->snapshot(1,snapshot)&&snapshot.filename=="tree1");}
  assert(loader.bind()&&space.dynamic.nodes.size()==2);
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&loader.loadStatus()==0);
+ assert(registeredDestructibles.expired());
  assert(liveSounds.empty()&&soundOwners[&space].expired());
  loader.unload();assert(space.dynamic.nodes.empty());
  StockTreeSceneLoader invisible(0);
@@ -199,6 +206,17 @@ class StockTreeSceneLoaderTests(unittest.TestCase):
             for name in ('stock_tree_scene_loader.cpp', 'stock_tree_scene_loader.hpp'):
                 (directory / name).write_bytes((ROOT / 'bigworld' / name).read_bytes())
             (directory / 'engine.hpp').write_text(ENGINE)
+            destructibles=(ROOT/'bigworld/stock_destructibles.hpp').read_text()
+            destructibles='\n'.join(line for line in destructibles.splitlines()if not line.startswith('#include')and line!='#pragma once')
+            registry=(ROOT/'tests/stock_destructibles_registration_host.hpp').read_text().replace('assert(!tree);','assert(tree);')
+            snapshots='''
+namespace BW {namespace CompiledSpace {
+bool StockTreeSceneHandler::destructibleSnapshot(size_t index,StockDestructibleSnapshot& output)const {
+ if(!loaded||index>=values.size())return false;output.filename="tree"+std::to_string(index);return true;
+}
+}}
+'''
+            (directory/'stock_destructibles.hpp').write_text('#pragma once\n#include "engine.hpp"\n'+destructibles+registry+snapshots)
             (directory / 'test.cpp').write_text(TEST)
             binary = directory / 'probe'
             subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror',

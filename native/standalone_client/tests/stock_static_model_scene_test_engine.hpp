@@ -29,7 +29,7 @@ public:using std::shared_ptr<T>::shared_ptr;SmartPointer(){}SmartPointer(T* p):s
 class Vector3 {public:float x=0,y=0,z=0;Vector3(){}Vector3(float a,float b,float c):x(a),y(b),z(c){}};
 struct Vector4 {float x,y,z,w;float operator[](size_t n)const{return (&x)[n];}Vector4()=default;Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}};
 struct Matrix {
- float v[4][4]{};Matrix(){for(unsigned i=0;i<4;++i)v[i][i]=1;}
+ float v[4][4]{};Matrix(){for(unsigned i=0;i<4;++i)v[i][i]=1;}void setZero(){std::memset(v,0,sizeof(v));}
  void row(int r,const Vector4& value){std::memcpy(v[r],&value,16);}
  const Vector4& row(int r)const{return *reinterpret_cast<const Vector4*>(v[r]);}
  float* operator[](size_t r){return v[r];}const float* operator[](size_t r)const{return v[r];}
@@ -145,7 +145,7 @@ struct DynamicSceneProvider {
  DynamicObjectHandle addObject(const SceneObject& o,const Matrix&,const BoundingBox&,const BoundingBox&){DynamicObjectHandle h{next++};nodes.emplace(h.index,o);auto f=std::move(onAdd);onAdd=nullptr;if(f)f();return h;}
  void removeObject(const DynamicObjectHandle& h){assert(nodes.count(h.index));auto f=std::move(onRemove);onRemove=nullptr;if(f)f();assert(nodes.count(h.index));nodes.erase(h.index);}
 };
-struct ClientSpace{virtual ~ClientSpace(){}};
+class ClientSpace{public:virtual ~ClientSpace(){}};
 // This rendering fixture has no active native audio owner. Any attempted
 // publication beyond acquire's unavailable result is an invalid boundary use.
 struct StockSpaceSoundOwner{};

@@ -8,6 +8,7 @@
 BW_BEGIN_NAMESPACE
 class MatrixProvider;
 class Scene;
+struct StockDestructibleSnapshot;
 
 // The compiled-space owner replaces the disabled SDK handler. It consumes the
 // original SpTr3 definitions and the independently decoded SPT/ctree resources.
@@ -45,6 +46,7 @@ public:
     size_t objectCount() const;
     bool objectAvailable( size_t index ) const;
     BW::string soundResource( size_t index ) const;
+    bool destructibleSnapshot( size_t index, StockDestructibleSnapshot & output ) const;
     void worldCollisionBounds( size_t index, BoundingBox & bounds ) const;
     virtual SceneTypeSystem::RuntimeTypeID typeID() const;
     virtual SceneTypeSystem::RuntimeTypeID runtimeTypeID() const;

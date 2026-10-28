@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "stock_static_model_scene.hpp"
+#include "stock_destructibles.hpp"
+#include "stock_destructibles_data.hpp"
 #include "stock_space_sounds.hpp"
 #include "stock_space_sounds_data.hpp"
 #include "stock_scene_identity_data.hpp"
@@ -30,13 +32,15 @@
 #include "physics2/collision_interface.hpp"
 #include "physics2/sweep_helpers.hpp"
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <cstring>
 #include <vector>
 
 BW_BEGIN_NAMESPACE
 namespace CompiledSpace
 {
-struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
+struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>, StockDestructibleObjects
 {
     using Binary = wot::StockStaticModelBinary;
     struct Render
@@ -77,7 +81,16 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
     std::vector<float> lodThresholds;
     std::vector<std::shared_ptr<BSPTree>> colliders;
     std::vector<Instance> instances;
-    std::vector<DynamicObjectHandle> membership;
+    std::map<size_t,DynamicObjectHandle> membership;
+    StockDestructibles destructibleOwner;
+    const StringTable* strings=NULL;
+    uint32 mappingMask=0;
+    std::vector<uint32> initialModels,initialActivity;
+    bool snapshot(uint32 index,StockDestructibleSnapshot& output)const override;
+    bool transform(uint32 index,const Matrix& world,float wind,std::string& error)override;
+    bool destroy(uint32 index,bool animate,bool shot,bool havok,std::string& error)override;
+    bool restore(std::string& error)override;
+    bool refresh(const std::vector<uint32>& changed,std::string& error);
     const void* soundMapping = NULL;
     StockSpaceSounds soundOwner;
     std::vector<StockSpaceSoundHandle> soundHandles;
@@ -122,6 +135,141 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>
         return instance.active && (!decor || static_cast<int>( decor ) <= stockDecorLevel());
     }
 };
+
+bool StockStaticModelSceneLoader::State::snapshot(uint32 index,StockDestructibleSnapshot& output)const
+{
+    if(!bound||index>=instances.size()||!strings)return false;
+    const auto model=binary.instances.models[index];
+    if(model>=binary.models.info.size()||model>=binary.models.colliders.size())return false;
+    const auto& info=binary.models.info[model];
+    if((info.type==1&&info.index>=binary.models.falling.size())||
+       (info.type==2&&info.index>=binary.models.fragile.size()))return false;
+    StockDestructibleSnapshot result;result.world=instances[index].world;result.hardpointWorld=result.world;
+    result.category=wot::stockCompiledDestructibleCategory(binary,index);
+    result.effectScale=wot::stockCompiledDestructibleEffectScale(binary,index);
+    const auto& bounds=binary.models.colliders[model].bounds;
+    if(bounds.minimum[0]<=bounds.maximum[0]&&bounds.minimum[1]<=bounds.maximum[1]&&bounds.minimum[2]<=bounds.maximum[2])
+        result.height=bounds.maximum[1]-bounds.minimum[1];
+    if(info.type==1)
+    {
+        Binary::Matrix physics={};std::memcpy(physics.data(),binary.models.falling[info.index].words+4,7*sizeof(float));
+        result.fallingParameters=matrix(physics);
+    }
+    if(info.type==2)
+    {
+        const auto hardpoint=binary.models.fragile[info.index].words[6];
+        if(hardpoint!=0xffffffffu)
+        {
+            if(hardpoint>=binary.models.hardpoints.size())return false;
+            Matrix local=matrix(binary.models.hardpoints[hardpoint]);
+            D3DXMatrixMultiply(&result.hardpointWorld,&local,&result.world);
+        }
+    }
+    static const char* names[]={"lifetimeEffect","fractureEffect","touchdownEffect","decayEffect","effect","hitEffect"};
+    for(unsigned slot=0;slot<6;++slot)
+    {
+        const uint32 key=wot::stockCompiledDestructibleEffectKey(binary,index,names[slot]);
+        if(!key)continue;
+        const char* name=strings->entry(key);
+        if(!name){ERROR_MSG("StockDestructibles: authored effect key is absent from BWST\n");return false;}
+        result.effects[slot]=name;
+    }
+    // Original compiled-model filename/fashion slots deliberately return empty/NULL.
+    output=result;return true;
+}
+
+bool StockStaticModelSceneLoader::State::refresh(const std::vector<uint32>& changed,std::string& error)
+{
+    if(!bound){error="The compiled destructible mapping retired";return false;}
+    std::vector<uint32> unique;
+    for(const auto index:changed)if(std::find(unique.begin(),unique.end(),index)==unique.end())unique.push_back(index);
+    // Publish every callback-visible transform/bound before the first scene notification.
+    for(const auto index:unique)
+    {
+        if(index>=instances.size()){error="The compiled destructible update is outside BSMI";return false;}
+        auto& instance=instances[index];const auto model=binary.instances.models[index];
+        if(model>=colliders.size()||model>=binary.models.bounds.size())
+        {error="The compiled replacement model is outside BSMO";return false;}
+        instance.active=binary.active(index,mappingMask);
+        instance.world=matrix(binary.instances.transforms[index]);instance.inverse.invert(instance.world);
+        instance.visibility=bounds(binary.models.bounds[model]);instance.visibility.transformBy(instance.world);
+        instance.collision=BoundingBox::s_insideOut_;
+        if(colliders[model]){instance.collision=colliders[model]->boundingBox();instance.collision.transformBy(instance.world);}
+    }
+    updateAnimations(0.f);
+    for(const auto index:unique)
+    {
+        auto found=membership.find(index);
+        if(found!=membership.end())
+        {
+            const auto handle=found->second;membership.erase(found);
+            space->dynamicScene().removeObject(handle);
+            if(!bound){error="The compiled mapping retired during removal";return false;}
+        }
+        auto& instance=instances[index];
+        if(!instance.active||instance.visibility.insideOut())continue;
+        // Public updateObject defers collision-tree writes until postTick.
+        // Real remove/add commits the changed collider immediately for same-tick queries.
+        const auto handle=space->dynamicScene().addObject(instance.object,instance.world,instance.collision,instance.visibility);
+        if(!bound){space->dynamicScene().removeObject(handle);error="The compiled mapping retired during publication";return false;}
+        membership[index]=handle;
+    }
+    error.clear();return true;
+}
+
+bool StockStaticModelSceneLoader::State::transform(uint32 index,const Matrix& world,float,std::string& error)
+{
+    if(!bound||index>=instances.size()){error="The compiled transform instance is unavailable";return false;}
+    const auto values=State::values(world);
+    for(float value:values)if(!std::isfinite(value)){error="The compiled transform is nonfinite";return false;}
+    Matrix inverse;if(!inverse.invert(world)){error="The compiled transform is singular";return false;}
+    binary.instances.transforms[index]=values;
+    return refresh({index},error);
+}
+
+bool StockStaticModelSceneLoader::State::destroy(uint32 index,bool animate,bool shot,bool havok,std::string& error)
+{
+    if(!bound){error="The compiled destructible mapping retired";return false;}
+    wot::StockDestructibleGeometryChanges changes;
+    bool publishedUpdates=false;
+    auto beforeFalling=[&](uint32 child)
+    {
+        // Original replacement bounds notify before the child-animation call;
+        // additions/removals notify afterwards. Keep child collision available
+        // while stock Python samples the fall's initial pose and environment.
+        if(!publishedUpdates)
+        {
+            if(!refresh(changes.updated,error))return false;
+            publishedUpdates=true;
+        }
+        for(const auto* values:{&changes.added,&changes.removed,&changes.fallingCandidates})for(const auto index:*values)
+            instances[index].active=binary.active(index,mappingMask);
+        instances[child].active=binary.active(child,mappingMask);
+        playStockModuleDestructionAnimation(destructibleOwner,soundMapping,child,shot,havok);
+        return bound;
+    };
+    if(!wot::destroyStockCompiledDestructible(binary,index,animate,changes,error,beforeFalling))return false;
+    std::vector<uint32> changed=changes.added;
+    changed.insert(changed.end(),changes.removed.begin(),changes.removed.end());
+    changed.insert(changed.end(),changes.fallingCandidates.begin(),changes.fallingCandidates.end());
+    if(!publishedUpdates)changed.insert(changed.end(),changes.updated.begin(),changes.updated.end());
+    if(!refresh(changed,error))return false;
+    return true;
+}
+
+bool StockStaticModelSceneLoader::State::restore(std::string& error)
+{
+    if(!bound){error="The compiled destructible mapping retired";return false;}
+    std::vector<uint32> changed;
+    for(uint32 index=0;index<instances.size();++index)
+        if(binary.instances.models[index]!=initialModels[index]||binary.instances.flags[index].activity!=initialActivity[index])
+        {
+            binary.instances.models[index]=initialModels[index];binary.instances.flags[index].activity=initialActivity[index];changed.push_back(index);
+        }
+    // Stock replay restores its captured live matrices separately. Keep those
+    // caller-owned poses; this operation restores destruction geometry only.
+    return refresh(changed,error);
+}
 
 bool StockStaticModelSceneLoader::State::loadMaterials( const StringTable & strings )
 {
@@ -393,7 +541,9 @@ bool StockStaticModelSceneLoader::State::load( BinaryFormat & file,
         object.flags().isCastingStaticShadow( (flags & 1) && !(flags & 0x40) );
         object.flags().isCastingDynamicShadow( (flags & 1) != 0 );
     }
-    membership.reserve( instances.size() );
+    this->strings=&strings;this->mappingMask=mappingMask;
+    initialModels=binary.instances.models;initialActivity.clear();
+    for(const auto& flags:binary.instances.flags)initialActivity.push_back(flags.activity);
     return loadItemIdentities( file );
 }
 
@@ -708,20 +858,23 @@ bool StockStaticModelSceneLoader::doBind()
             state->space->dynamicScene().removeObject( handle );
             return false;
         }
-        state->membership.push_back( handle );
+        state->membership[instance.index]=handle;
     }
+    state->destructibleOwner=acquireStockDestructibles(state->space);
+    registerStockDestructibleObjects(state->destructibleOwner,state->soundMapping,false,state);
     return true;
 }
 
 void StockStaticModelSceneLoader::removeMembership( const std::shared_ptr<State> & state )
 {
     state->bound = false;
+    unregisterStockDestructibleObjects(state->destructibleOwner,state->soundMapping,false);state->destructibleOwner.reset();
     std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
     for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );
     state->soundOwner.reset();
-    std::vector<DynamicObjectHandle> retired;
+    std::map<size_t,DynamicObjectHandle> retired;
     retired.swap( state->membership );
-    for (const auto & handle : retired) state->space->dynamicScene().removeObject( handle );
+    for (const auto & item : retired) state->space->dynamicScene().removeObject( item.second );
 }
 
 void StockStaticModelSceneLoader::doUnload()

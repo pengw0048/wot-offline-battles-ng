@@ -132,4 +132,52 @@ int main(int argc,char** argv)
     hit={};assert(collision->doCollide(objects[0],Vector3(),Vector3(),SweepParams(),hit));assert(hit.triangles==1);
     noEffect.unload();assert(space.dynamic.nodes.empty()&&Moo::liveCaches.empty());
 
+    // Full production endpoints mutate the real renderer/collider membership.
+    std::string error;
+    auto readFixture=[&]{BinaryFormat next;for(unsigned n=0;n<3;++n){uint32 size;input.read(reinterpret_cast<char*>(&size),4);next.sections.emplace_back(size);input.read(reinterpret_cast<char*>(next.sections.back().data()),size);}assert(input);return next;};
+    for(unsigned scenario=0;scenario<3;++scenario)
+    {
+        BinaryFormat source=readFixture();StockStaticModelSceneLoader owner(2);
+        assert(owner.loadFromSpace(&space,source,{},Matrix(),strings));assert(owner.bind());
+        auto endpoint=registeredDestructibles.lock();assert(endpoint);
+        StockDestructibleSnapshot value;const unsigned item=scenario==2?1:0;
+        assert(endpoint->snapshot(item,value)&&value.category==2&&value.effectScale==1.25f&&value.filename.empty());
+        assert(value.world[3][0]==10&&value.hardpointWorld[3][0]==10&&value.height==2);
+        assert(space.dynamic.nodes.size()==(scenario==2?1u:2u));
+        assert(endpoint->destroy(item,false,true,false,error));
+        assert(space.dynamic.nodes.size()==(scenario==0?1u:2u));
+        objects.clear();for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
+        draw.clear();drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==3*space.dynamic.nodes.size());draw.clear();
+        bool ordinaryReplacement=false;
+        for(const auto& object:objects){hit={};assert(collision->doCollide(object,Vector3(),Vector3(),SweepParams(),hit));ordinaryReplacement|=hit.flags==0x100;}
+        assert(ordinaryReplacement==(scenario!=0));
+        assert(endpoint->restore(error));assert(space.dynamic.nodes.size()==(scenario==2?1u:2u));
+        Matrix moved;moved[3][0]=33;assert(endpoint->transform(item,moved,.2f,error));
+        assert(endpoint->snapshot(item,value)&&value.world[3][0]==33);
+        // Retirement is observable before synchronous removal callbacks run.
+        bool retiringObserved=false;space.dynamic.onRemove=[&]{assert(!endpoint->snapshot(item,value));retiringObserved=true;};
+        owner.unload();assert(retiringObserved&&space.dynamic.nodes.empty()&&registeredDestructibles.expired());
+        assert(!endpoint->snapshot(item,value));endpoint.reset();assert(Moo::liveCaches.empty());
+    }
+
+    // The original child-animation callback occurs before static child removal.
+    BinaryFormat debris=readFixture();StockStaticModelSceneLoader debrisOwner(2);
+    assert(debrisOwner.loadFromSpace(&space,debris,{},Matrix(),strings)&&debrisOwner.bind());
+    auto endpoint=registeredDestructibles.lock();assert(endpoint&&space.dynamic.nodes.size()==2);
+    bool childNotified=false;
+    onDestruction=[&](uint32 child){
+        assert(child==1&&space.dynamic.nodes.size()==2);StockDestructibleSnapshot snapshot;
+        assert(endpoint->snapshot(child,snapshot));
+        unsigned physical=0;for(const auto& node:space.dynamic.nodes){CollisionState childHit;
+            if(collision->doCollide(node.second,Vector3(),Vector3(),SweepParams(),childHit))++physical;}
+        assert(physical==1); // Parent hidden; child still participates in native queries.
+        Matrix pose;pose[3][0]=44;assert(endpoint->transform(child,pose,0,error));childNotified=true;
+    };
+    assert(endpoint->destroy(0,true,false,true,error)&&childNotified&&space.dynamic.nodes.empty());
+    assert(endpoint->restore(error)&&space.dynamic.nodes.size()==2);
+    StockDestructibleSnapshot retained;assert(endpoint->snapshot(1,retained)&&retained.world[3][0]==44);
+    onDestruction=[&](uint32 child){assert(child==1);debrisOwner.unload();};
+    assert(!endpoint->destroy(0,true,false,true,error));assert(space.dynamic.nodes.empty()&&registeredDestructibles.expired());
+    endpoint.reset();assert(Moo::liveCaches.empty());
+
 }

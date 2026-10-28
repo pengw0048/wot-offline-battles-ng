@@ -32,6 +32,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_lifecycle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_sounds.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_static_model_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_destructibles.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_lights.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_flares.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_water.cpp"

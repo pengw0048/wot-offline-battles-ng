@@ -2,6 +2,7 @@
 #include "stock_compiled_space_mapping.hpp"
 #include "wot/offline_mapping_policy.hpp"
 #include "stock_static_model_scene.hpp"
+#include "stock_destructibles.hpp"
 #include "stock_space_lights.hpp"
 #include "stock_space_flares.hpp"
 #include "stock_space_water_scene.hpp"
@@ -40,6 +41,7 @@ public:
         addLoader( &water_ );
         addLoader( &flares_ );
         addLoader( &decals_ );
+        addLoader( &destructibles_ );
         // Original WTau binds after the model, tree, particle and WGDE owners.
         addLoader( &sounds_ );
     }
@@ -50,6 +52,7 @@ public:
         // every concrete loader still exists. The base destructor is idempotent.
         unloadSync();
         removeLoader( &sounds_ );
+        removeLoader( &destructibles_ );
         removeLoader( &decals_ );
         removeLoader( &flares_ );
         removeLoader( &water_ );
@@ -69,6 +72,7 @@ private:
     ParticleSystemLoader particles_;
     StockLightSceneLoader lights_;
     StockWaterSceneLoader water_;
+    StockDestructiblesSceneLoader destructibles_;
     StockSpaceSoundLoader sounds_;
 };
 }

@@ -2,6 +2,7 @@
 #include "stock_tree_scene_loader.hpp"
 #include "stock_tree_scene.hpp"
 #include "stock_space_sounds.hpp"
+#include "stock_destructibles.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "scene/scene.hpp"
 #include "scene/scene_object.hpp"
@@ -12,15 +13,23 @@
 BW_BEGIN_NAMESPACE
 namespace CompiledSpace
 {
-struct StockTreeSceneLoader::State
+struct StockTreeSceneLoader::State : StockDestructibleObjects
 {
     StockTreeSceneHandler handler;
     CompiledSpace * space = NULL;
     std::vector<DynamicObjectHandle> membership;
     const void* soundMapping = NULL;
     StockSpaceSounds soundOwner;
+    StockDestructibles destructibleOwner;
     std::vector<StockSpaceSoundHandle> soundHandles;
     bool bound = false;
+    bool snapshot(uint32 index,StockDestructibleSnapshot& output)const override
+    {return bound && handler.destructibleSnapshot(index,output);}
+    bool transform(uint32,const Matrix&,float,std::string& error)override
+    {error="The compiled-tree falling transform owner is unavailable";return false;}
+    // The original compiled-tree destroy/restore type-handler slots are empty.
+    bool destroy(uint32,bool,bool,bool,std::string&)override{return bound;}
+    bool restore(std::string&)override{return bound;}
 };
 
 StockTreeSceneLoader::StockTreeSceneLoader( uint32 mask ) : mask_( mask ) {}
@@ -103,12 +112,16 @@ bool StockTreeSceneLoader::doBind()
         }
         state->membership.push_back( handle );
     }
+    state->destructibleOwner = acquireStockDestructibles(state->space);
+    registerStockDestructibleObjects(state->destructibleOwner,state->soundMapping,true,state);
     return true;
 }
 
 void StockTreeSceneLoader::removeMembership( const std::shared_ptr<State> & state )
 {
     state->bound = false;
+    unregisterStockDestructibleObjects(state->destructibleOwner,state->soundMapping,true);
+    state->destructibleOwner.reset();
     std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
     for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );
     state->soundOwner.reset();
