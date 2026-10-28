@@ -83,12 +83,34 @@ EXPECTED_CONSUMER = {
     'vehicle-left': "['near', 'ring']", 'other-vehicle': "['near', 'ring', 'after-leave']",
     'stopped-handlers': '(0, 0)', 'stopped-list': '[]', 'callback-kept': 'True', 'stopped-sweeps': '0',
     'reenter-stop': "['first']", 'reenter-stop-sweeps-after': '0',
+    'leave-in-callback': "['d1']",
     'space-same-sweeps': '1', 'space-replaced-sweeps': '0', 'space-replaced': '[]',
     'space-reassigned-sweeps': '1', 'space-next': "['b1']",
     'space-reused-sweeps': '0', 'space-reused': "['b1']",
     'space-callback': "['c1']", 'space-callback-sweeps-after': '0',
     'empty-sweeps': '(1, 1)',
 }
+
+# Provider samples and triggers per scenario from the production binding.
+EXPECTED_BINDING = {
+    'keep': 'a=1 b=1 c=0 triggered=1,2',
+    'leave-before': 'a=1 b=0 c=0 triggered=1',
+    'leave-during': 'a=1 b=0 c=0 triggered=1',
+    'reenter-during': 'a=1 b=0 c=0 triggered=1',
+    'reenter-next': 'a=2 b=1 c=0 triggered=1,2',
+    'duplicate-keep': 'a=1 b=2 c=0 triggered=1,2',
+    'duplicate-leave-during': 'a=1 b=1 c=0 triggered=1,2',
+    'leave-self': 'a=1 b=1 c=0 triggered=1,2',
+    'enter-during': 'a=1 b=0 c=0 triggered=1',
+    'enter-next': 'a=2 b=0 c=1 triggered=1,3',
+    'stop-during': 'a=1 b=0 c=0 triggered=1',
+    'stop-next': 'a=1 b=0 c=0 triggered=1',
+    'space-during': 'a=1 b=0 c=0 triggered=1',
+}
+BINDING_INCLUDES = ('pch.hpp', 'app.hpp', 'camera_app.hpp', 'client_camera.hpp', 'camera/base_camera.hpp',
+                    'moo/render_context.hpp', 'pyscript/pyobject_plus.hpp', 'pyscript/script.hpp',
+                    'pyscript/script_math.hpp', 'space/client_space.hpp', 'space/deprecated_space_helpers.hpp',
+                    'cstdmf/bw_namespace.hpp')
 
 SEAM_HOST = r'''
 #include "deprecated_space_helpers.hpp"
@@ -318,6 +340,15 @@ class StockFlockPatchTest(unittest.TestCase):
 class StockFlockBindingTest(unittest.TestCase):
     def setUp(self):
         self.source = (ROOT / 'bigworld/stock_flock_manager.cpp').read_text()
+
+    def test_production_binding_samples_only_registered_providers(self):
+        # The fakes in the host supply every engine include of the binding.
+        with tempfile.TemporaryDirectory() as directory:
+            for name in BINDING_INCLUDES:
+                (Path(directory) / name).parent.mkdir(parents=True, exist_ok=True)
+                (Path(directory) / name).write_text('#pragma once\n')
+            reports = run_host(self, TESTS / 'stock_flock_binding_host.cpp', '-I', directory)
+        self.assertEqual(reports, EXPECTED_BINDING)
 
     def test_method_and_attribute_tables_follow_1513(self):
         methods = self.source[self.source.index('PY_BEGIN_METHODS'):self.source.index('PY_END_METHODS')]

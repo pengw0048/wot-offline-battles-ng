@@ -22,6 +22,45 @@ struct StockFlockRecord
     bool inside;
 };
 
+// Vehicle sources by registration. 008a32a0 samples each source from the live
+// list; a sweep holds entries and samples one only while it is still registered.
+template <class Provider>
+class StockFlockProviders
+{
+public:
+    struct Entry { Provider provider; uint32_t serial; };
+
+    const std::vector<Entry> & entries() const { return entries_; }
+
+    void enter(const Provider & provider) { entries_.push_back(Entry{ provider, ++serial_ }); }
+
+    // 008a29a0 erases the first entry with the same identity.
+    bool leave(const Provider & provider, Provider * erased = nullptr)
+    {
+        for (typename std::vector<Entry>::iterator it = entries_.begin(); it != entries_.end(); ++it)
+        {
+            if (!(it->provider == provider)) continue;
+            if (erased) *erased = it->provider;
+            entries_.erase(it);
+            return true;
+        }
+        return false;
+    }
+
+    bool registered(uint32_t serial) const
+    {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (entries_[i].serial == serial) return true;
+        return false;
+    }
+
+    void clear() { entries_.clear(); }
+
+private:
+    std::vector<Entry> entries_;
+    uint32_t serial_ = 0;
+};
+
 class StockFlockField
 {
 public:

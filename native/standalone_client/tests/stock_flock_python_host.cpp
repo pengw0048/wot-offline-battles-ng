@@ -14,7 +14,7 @@ struct Manager
 {
     PyObject_HEAD
     wot::StockFlockField * field;
-    std::vector<PyObject *> * providers;
+    wot::StockFlockProviders<PyObject *> * providers;
     PyObject * callback;
 };
 
@@ -58,7 +58,8 @@ void forget(Manager * manager)
 void stopManager(Manager * self)
 {
     self->field->stop();
-    for (size_t i = 0; i < self->providers->size(); ++i) Py_XDECREF((*self->providers)[i]);
+    for (size_t i = 0; i < self->providers->entries().size(); ++i)
+        Py_XDECREF(self->providers->entries()[i].provider);
     self->providers->clear();
     forget(self);
 }
@@ -77,7 +78,7 @@ PyObject * vehicleEnter(Manager * self, PyObject * args)
     PyObject * provider = PyTuple_GET_ITEM(args, 0);
     provider = provider == Py_None ? NULL : provider;
     Py_XINCREF(provider);
-    self->providers->push_back(provider);
+    self->providers->enter(provider);
     Py_RETURN_NONE;
 }
 
@@ -87,13 +88,8 @@ PyObject * vehicleLeave(Manager * self, PyObject * args)
     fence(self);
     PyObject * provider = PyTuple_GET_ITEM(args, 0);
     provider = provider == Py_None ? NULL : provider;
-    std::vector<PyObject *>::iterator it =
-        std::find(self->providers->begin(), self->providers->end(), provider);
-    if (it != self->providers->end())
-    {
-        Py_XDECREF(*it);
-        self->providers->erase(it);
-    }
+    PyObject * erased = NULL;
+    if (self->providers->leave(provider, &erased)) Py_XDECREF(erased);
     Py_RETURN_NONE;
 }
 
@@ -185,19 +181,20 @@ void sweep(Manager * self, float cameraX, float cameraZ)
     const unsigned generation = self->field->generation();
     const wot::StockFlockField::Window window = self->field->window({ cameraX, cameraZ });
     Trigger trigger = { self };
-    std::vector<PyObject *> providers = *self->providers;
-    for (size_t i = 0; i < providers.size(); ++i) Py_XINCREF(providers[i]);
+    typedef wot::StockFlockProviders<PyObject *>::Entry Entry;
+    std::vector<Entry> providers = self->providers->entries();
+    for (size_t i = 0; i < providers.size(); ++i) Py_XINCREF(providers[i].provider);
     bool alive = true;
     for (size_t i = 0; alive && i < providers.size(); ++i)
     {
-        if (!providers[i]) continue;
-        PyObject * t = PyObject_GetAttrString(providers[i], "translation");
+        if (!self->providers->registered(providers[i].serial) || !providers[i].provider) continue;
+        PyObject * t = PyObject_GetAttrString(providers[i].provider, "translation");
         double x = 0.0, y = 0.0, z = 0.0;
         if (!t || !PyArg_ParseTuple(t, "ddd", &x, &y, &z)) { PyErr_Print(); Py_XDECREF(t); continue; }
         Py_DECREF(t);
         alive = self->field->test({ float(x), float(z) }, false, window, generation, trigger);
     }
-    for (size_t i = 0; i < providers.size(); ++i) Py_XDECREF(providers[i]);
+    for (size_t i = 0; i < providers.size(); ++i) Py_XDECREF(providers[i].provider);
     if (!alive) return;
     const std::vector<wot::StockFlockPoint> points = self->field->takeActivationPoints();
     for (size_t i = 0; i < points.size(); ++i)
@@ -237,7 +234,7 @@ PyObject * create(PyTypeObject *, PyObject *, PyObject *)
     // #1513 008a2440 ignores its arguments.
     Manager * self = PyObject_New(Manager, &managerType);
     self->field = new wot::StockFlockField();
-    self->providers = new std::vector<PyObject *>();
+    self->providers = new wot::StockFlockProviders<PyObject *>();
     self->callback = NULL;
     return (PyObject *)self;
 }

@@ -36,7 +36,7 @@ public:
     void vehicleEnter( MatrixProviderPtr provider )
     {
         fence();
-        providers_.push_back( provider );
+        providers_.enter( provider );
     }
     PY_AUTO_METHOD_DECLARE( RETVOID, vehicleEnter, ARG( MatrixProviderPtr, END ) )
     void vehicleLeave( MatrixProviderPtr provider );
@@ -70,7 +70,7 @@ private:
     void sweep();
 
     wot::StockFlockField field_;
-    BW::vector< MatrixProviderPtr > providers_;
+    wot::StockFlockProviders< MatrixProviderPtr > providers_;
     PyObjectPtr onTriggerCallback_;
     SpaceID startedSpace_ = NULL_SPACE_ID;
 };
@@ -116,10 +116,7 @@ PyObject * WGFlockManager::pyNew( PyObject * )
 void WGFlockManager::vehicleLeave( MatrixProviderPtr provider )
 {
     fence();
-    // 008a29a0 erases the first provider with the same identity.
-    BW::vector< MatrixProviderPtr >::iterator it =
-        std::find( providers_.begin(), providers_.end(), provider );
-    if (it != providers_.end()) providers_.erase( it );
+    providers_.leave( provider );
 }
 
 
@@ -198,15 +195,17 @@ void WGFlockManager::sweep()
             owner.fence();
         }
     } trigger = { *this };
-    // Hold the providers; a callback may leave, enter or stop.
-    const BW::vector< MatrixProviderPtr > providers = providers_;
+    // Hold the entries; a callback may leave, enter or stop. A left entry is
+    // not sampled and an entered one waits for the next sweep.
+    typedef wot::StockFlockProviders< MatrixProviderPtr >::Entry Entry;
+    const std::vector< Entry > providers = providers_.entries();
     for (size_t i = 0; i < providers.size(); ++i)
     {
         // 008a32a0 reads each provider's current matrix; a None entry has none.
-        if (!providers[i]) continue;
+        if (!providers_.registered( providers[i].serial ) || !providers[i].provider) continue;
         Matrix matrix;
         memset( &matrix, 0, sizeof( matrix ) );
-        providers[i]->matrix( matrix );
+        providers[i].provider->matrix( matrix );
         const Vector3 position = matrix.applyToOrigin();
         if (!field_.test( wot::StockFlockPoint{ position.x, position.z }, false,
                 window, generation, trigger ))

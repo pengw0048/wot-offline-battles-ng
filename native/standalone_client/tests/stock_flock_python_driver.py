@@ -203,6 +203,22 @@ tick((50.0, 50.0))
 report('reenter-stop', list(Flock.triggers))
 report('reenter-stop-sweeps-after', tick((50.0, 50.0)))
 
+# A trigger callback that removes a later vehicle revokes its registration.
+del Flock.triggers[:]
+manager.start(player)
+d1 = Flock('d1', 50.0, 50.0, 20.0, (8.0, 35.0), 1.0)
+d2 = Flock('d2', 150.0, 50.0, 20.0, (8.0, 35.0), 1.0)
+first_tank, second_tank = Vehicle(50.0, 50.0), Vehicle(150.0, 50.0)
+d1.reenter = lambda: player.onVehicleLeaveWorld(second_tank)
+for flock in (d1, d2):
+    enter_world(flock, {})
+manager.onSpaceLoaded()
+player.onVehicleEnterWorld(first_tank)
+player.onVehicleEnterWorld(second_tank)
+tick((50.0, 50.0))
+report('leave-in-callback', list(Flock.triggers))
+manager.stop(player)
+
 # A run belongs to the camera space assignment it started under.
 del Flock.triggers[:]
 manager.start(player)
