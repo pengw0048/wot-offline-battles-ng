@@ -3335,6 +3335,13 @@ component owner with strict zero-argument calls. The original base and vehicle
 factories create an empty component collection; activation does not gate garage
 materials or invent track components. The ordinary appearance activation,
 damaged-model replacement and subsequent battle consumers exercise this path.
+Compound bounds preserve the SDK's empty sentinel: disabled or unpopulated
+particle attachments contribute no geometry until their bounds become valid.
+Aggregation skips empty parts and attachments before transforming them, and
+rechecks attachment ownership after callbacks. A Windows battle dump captured
+the previous transform assertion with an actual PyMetaParticleSystem and
+FLT_MAX/-FLT_MAX bounds. Focused tests execute the SDK bounds and particle
+consumers, including empty-to-populated transitions and normal affine bounds.
 The Hybrid build's profiler checks optional callback metadata before string
 conversion and retains dynamic metadata until it has copied the profiling name.
 Native bound methods legitimately expose `__module__ = None`; profiling must

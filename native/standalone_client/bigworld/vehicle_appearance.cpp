@@ -569,7 +569,7 @@ public:
             BoundingBox bounds;
             model->localBoundingBox( bounds );
             if (!state_->active || part_ >= state_->parts.size() ||
-                state_->parts[part_].model.get() != model.get())
+                state_->parts[part_].model.get() != model.get() || bounds.insideOut())
             {
                 result = last_;
                 return;
@@ -752,15 +752,20 @@ public:
             BoundingBox local;
             part.model->localBoundingBox( local, skinny );
             if (!state_->active) return;
+            if (local.insideOut()) continue;
             Matrix relative;
             relative.multiply( state_->nodes[part.mount].world, inverse );
             local.transformBy( relative );
             bounds.addBounds( local );
         }
-        visitCompoundAttachments( state_, [&bounds, &inverse, skinny]( CompoundAttachment & item )
+        const CompoundStatePtr state = state_;
+        visitCompoundAttachments( state, [&bounds, &inverse, skinny, state]( CompoundAttachment & item )
             {
                 BoundingBox local;
                 item.object->localBoundingBox( local, skinny );
+                // Disabled/empty particles and retired attachments may contribute
+                // no bounds. The SDK's inside-out sentinel cannot be transformed.
+                if (!state->active || !item.active || !item.ownsObject() || local.insideOut()) return;
                 Matrix relative;
                 relative.multiply( item.world, inverse );
                 local.transformBy( relative );
