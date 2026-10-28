@@ -374,6 +374,7 @@ class DynamicResolutionTest(unittest.TestCase):
                                              'lib/wot/stock_dynamic_resolution.hpp'})
             module.patch(root)
             source = (root / 'lib/moo/fullscreen_quad.cpp').read_text()
+            custom_source = (root / 'lib/moo/custom_mesh.ipp').read_text()
             # Cached clients from the previous patch must gain the overload
             # without changing the already restored material-pass lifecycle.
             self.assertEqual(source.count('bool scaleHalfTexel)'), 1)
@@ -398,18 +399,22 @@ class DynamicResolutionTest(unittest.TestCase):
             module.patch(root)
             self.assertEqual(source, (root/'lib/moo/fullscreen_quad.cpp').read_text())
 
-        def function(marker):
-            start = source.index(marker)
-            end = source.index('{', start)
+        def function(marker, text=source):
+            start = text.index(marker)
+            end = text.index('{', start)
             depth = 1
             while depth:
                 end += 1
-                depth += (source[end] == '{') - (source[end] == '}')
-            return source[start:end + 1]
+                depth += (text[end] == '{') - (text[end] == '}')
+            return text[start:end + 1]
 
         mesh = function('template <typename MeshType>')
         draw = function('bool FullscreenQuad::drawChecked') + '\n' + function(
             'bool FullscreenQuad::drawChecked(const EffectMaterial& material, uint width, uint height, bool scaleHalfTexel)')
+        custom = 'template<class T>\n' + function('HRESULT CustomMesh<T>::drawEffect(', custom_source)
+        custom += '\ntemplate<class T>\n' + function('HRESULT CustomMesh<T>::drawEffectChecked(', custom_source)
+        primitives = 'namespace Moo { namespace Detail {\n' + function('inline uint32 nPrimitives(', custom_source) + '\n}}\n'
+        geometry = function('bool FullscreenQuad::initialiseStockDrawGeometry()')
         host = r'''
 #include "wot/stock_dynamic_resolution.hpp"
 #include <cassert>
@@ -420,7 +425,11 @@ class DynamicResolutionTest(unittest.TestCase):
 #define SUCCEEDED(value) ((value)>=0)
 #define FAILED(value) ((value)<0)
 using uint=unsigned;using uint32=unsigned;using HRESULT=int;
-enum { D3DPT_TRIANGLESTRIP=1 };
+const HRESULT S_OK=0,E_FAIL=-1;
+using D3DPRIMITIVETYPE=int;
+enum { D3DPT_POINTLIST,D3DPT_LINELIST,D3DPT_LINESTRIP,D3DPT_TRIANGLESTRIP,
+       D3DPT_TRIANGLELIST,D3DPT_TRIANGLEFAN,D3DPT_FORCE_DWORD };
+#define MF_ASSERT(value) assert(value)
 struct Vector3 {
     float x,y,z;Vector3(float a=0,float b=0,float c=0):x(a),y(b),z(c) {}
     void set(float a,float b,float c) { x=a;y=b;z=c; }
@@ -444,18 +453,45 @@ StockDynamicResolutionSupport resolution;
 bool hasOwner=true;
 StockDynamicResolutionSupport* stockDynamicResolution() { return hasOwner?&resolution:nullptr; }
 namespace Moo {
-struct RenderContext { bool stockSceneResolution() const { return applies; } };
+struct RenderContext {
+    bool stockSceneResolution() const { return applies; }
+    HRESULT setVertexDeclaration(int) {return failure==9?-9:S_OK;}
+    HRESULT setFVF(int) {return failure==11?-11:S_OK;}
+    HRESULT drawPrimitive(int,uint32 offset,uint32 count) {
+        assert(offset==3 && count==2);trace.push_back('D');++draws;
+        return failure==4?-4:S_OK;
+    }
+};
 RenderContext& rc() { static RenderContext context;return context; }
-struct VertexDeclaration {};
-struct VertexXYZUV { Vector3 pos_;Vector2 uv_; };
+struct VertexDeclaration {
+    int declaration() const { return 1; }
+    static VertexDeclaration* get(const char* name) {
+        assert(std::string(name)=="xyzuv");static VertexDeclaration value;
+        return failure==12?nullptr:&value;
+    }
+};
+struct VertexXYZUV { Vector3 pos_;Vector2 uv_;static int fvf() { return 1; } };
 std::vector<VertexXYZUV> vertices;
+namespace Detail {uint32 nPrimitives(int,uint32);}
+struct DynamicVertexBufferBase2 {
+    static DynamicVertexBufferBase2& instance(int size) {
+        assert(size==sizeof(VertexXYZUV));static DynamicVertexBufferBase2 value;return value;
+    }
+    bool lockAndLoad(const void* data,uint32 count,uint32& offset) {
+        if(failure==7)return false;
+        const auto* input=static_cast<const VertexXYZUV*>(data);
+        vertices.assign(input,input+count);offset=3;return true;
+    }
+    HRESULT set(uint32) {return failure==8?-8:S_OK;}
+    HRESULT unset(uint32) {return failure==10?-10:S_OK;}
+};
 template<class T> class CustomMesh : public std::vector<T> {
 public:
-    CustomMesh(int) {}
-    HRESULT drawEffect(VertexDeclaration*) {
-        vertices.assign(this->begin(),this->end());trace.push_back('D');++draws;
-        return failure==4?-1:0;
-    }
+    using std::vector<T>::front;
+    explicit CustomMesh(int type):primitiveType_(type) {}
+    HRESULT drawEffect(VertexDeclaration* = nullptr);
+    HRESULT drawEffectChecked(VertexDeclaration* = nullptr);
+    int primitiveType_;
 };
 class ManagedEffect { public:ID3DXEffect effect;ID3DXEffect* pEffect() { return &effect; } };
 class EffectMaterial {
@@ -473,6 +509,7 @@ public:
     VertexDeclaration declaration;VertexDeclaration* m_vecDclr=&declaration;
     bool drawChecked(const EffectMaterial&,uint,uint);
     bool drawChecked(const EffectMaterial&,uint,uint,bool);
+    bool initialiseStockDrawGeometry();
 };
 }
 using namespace Moo;
@@ -501,21 +538,40 @@ int main() {
     assert(std::fabs(adjustment[0]-.5f/101)<.000001f);
     hasOwner=false;assert(quad.drawChecked(material,101,55,true));
     assert(std::fabs(adjustment[0]-.5f/101)<.000001f);hasOwner=true;
-    for(failure=1;failure<=6;++failure) {
+    for(failure=1;failure<=10;++failure) {
         trace.clear();const int before=draws;
         assert(!quad.drawChecked(material,101,55));
-        if(failure<=3)assert(draws==before);
+        if(failure<=3 || (failure>=7 && failure<=9))assert(draws==before);
         if(failure==1)assert(trace==std::vector<char>({'B'}));
         else assert(trace.back()=='E');
     }
     failure=0;passes=0;assert(!quad.drawChecked(material,101,55));
     passes=1;quad.m_vecDclr=nullptr;trace.clear();
     assert(!quad.drawChecked(material,101,55) && trace.empty());
+    // The checked geometry path has no effect/material initialization.
+    failure=12;assert(!quad.initialiseStockDrawGeometry() && trace.empty());
+    failure=0;assert(quad.initialiseStockDrawGeometry() && trace.empty());
+    CustomMesh<VertexXYZUV> empty(D3DPT_TRIANGLESTRIP);
+    CustomMesh<VertexXYZUV> legacyEmpty(D3DPT_TRIANGLELIST);
+    const int before=draws;
+    assert(legacyEmpty.drawEffect()==S_OK && FAILED(empty.drawEffectChecked()));
+    assert(draws==before);
+    for(unsigned count: {1u,2u}) {
+        empty.resize(count);assert(FAILED(empty.drawEffectChecked()) && draws==before);
+    }
+    empty.resize(4);
+    for(int mode: {7,8}) {
+        failure=mode;
+        assert(empty.drawEffect()==S_OK); // Actual SDK legacy failure sentinel.
+        assert(FAILED(empty.drawEffectChecked()) && draws==before);
+    }
+    failure=11;assert(empty.drawEffectChecked()==-11 && draws==before);
+    failure=0;assert(empty.drawEffectChecked()==S_OK && draws==before+1);
 }
 '''
         with tempfile.TemporaryDirectory(prefix='stock-drr-quad-') as directory:
             root = Path(directory)
-            (root / 'probe.cpp').write_text(host + mesh + '\n' + draw + cases)
+            (root / 'probe.cpp').write_text(host + primitives + custom + '\n' + mesh + '\n' + draw + '\n' + geometry + cases)
             subprocess.run([os.environ.get('CXX', 'clang++'), '-std=c++14', '-Wall',
                 '-Wextra', '-Werror', '-I', str(ROOT/'include'),
                 str(root / 'probe.cpp'), '-o', str(root / 'probe')], check=True)

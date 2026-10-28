@@ -119,8 +119,7 @@ void finishStockGraphicsDetectionStartup()
     if (owner.init() && owner.getSettings(settings, selected))
     {
         publishStockGraphicsPreferences(settings);
-        Moo::GraphicsSetting::commitSettings(settings);
-        Moo::GraphicsSetting::commitPending();
+        Moo::GraphicsSetting::applyStockPreset(settings);
     }
 }
 

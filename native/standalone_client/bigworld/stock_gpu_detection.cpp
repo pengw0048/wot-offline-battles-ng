@@ -166,7 +166,7 @@ int stockMeasureGpuPerformance()
             "GPU performance test", false, true)) return 1;
     }
     Moo::FullscreenQuad quad;
-    quad.createManagedObjects();
+    if (!quad.initialiseStockDrawGeometry()) return 1;
     if (!draw(targets[1], material, quad, "GenRandTex", 2048) ||
         !draw(targets[2], material, quad, "GenRandTex", 2048) ||
         !draw(targets[4], material, quad, "GenRandTex", 128) ||
@@ -226,8 +226,9 @@ bool stockMeasureGraphicsHardware(int64 (&scores)[5])
         HMONITOR monitor = d3d->GetAdapterMonitor(info.adapterID_);
         if (videoMemory(monitor, video, system))
         {
-            // The retail x86 detector adds dedicated system memory for Intel.
-            if (info.identifier_.VendorId == 0x8086) video += system;
+            // 116ee00 maps these three vendor IDs to the shared-memory class.
+            const unsigned vendor = info.identifier_.VendorId;
+            if (vendor == 0x163c || vendor == 0x8086 || vendor == 0x8087) video += system;
             scores[0] = video >> 20;
         }
         d3d->Release();

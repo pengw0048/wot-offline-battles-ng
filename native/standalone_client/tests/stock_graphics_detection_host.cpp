@@ -45,7 +45,9 @@ void configureStockGraphicsDetection(DataSectionPtr,DataSectionPtr);
 namespace Moo {
 struct GraphicsSetting {
     using SettingsVector = std::vector<std::pair<std::string,int>>;
-    static void commitSettings(SettingsVector&) {++commitCalls;} static void commitPending() {}
+    static void applyStockPreset(const SettingsVector&) {++commitCalls;}
+private:
+    static void commitSettings(SettingsVector&);
 };
 struct GraphicsSettingsAutoDetector {bool init(){++initCalls;configureStockGraphicsDetection(presetResource,boundsResource);return resourceAvailable;}
     bool getSettings(GraphicsSetting::SettingsVector&, int selected){appliedGroup=selected;return true;}};

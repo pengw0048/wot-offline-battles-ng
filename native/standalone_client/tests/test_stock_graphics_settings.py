@@ -160,7 +160,7 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
                 'bool GraphicsSetting::selectOption(', 'bool GraphicsSetting::selectOptionPriv(',
                 'void GraphicsSetting::add(', 'GraphicsSetting::SettingsVector GraphicsSetting::stockCurrentSettings()',
                 'void GraphicsSetting::captureStockPresetBaseline()', 'void GraphicsSetting::applyStockPreset(',
-                'bool GraphicsSetting::needsRestart()', 'void GraphicsSetting::commitSettings('))
+                'bool GraphicsSetting::needsRestart()'))
             production = '\n'.join(line for name in ('stock_graphics_presets.cpp', 'stock_graphics_settings.cpp')
                                    for line in (ROOT / 'bigworld' / name).read_text().splitlines() if not line.startswith('#include'))
             interface = '\n'.join(line for name in ('stock_graphics_presets.hpp', 'stock_graphics_settings.hpp', 'stock_graphics_detection.hpp')
@@ -329,6 +329,9 @@ p._seed([('LATE_GPU_OPTION',1)])
 p._deferred('LATE_GPU_OPTION',4)
 p._register('LATE_GPU_OPTION',0,0)
 assert p.getGraphicsSetting('LATE_GPU_OPTION')==4
+p._register('LIVE_GPU_OPTION',0,0)
+p._deferred('LIVE_GPU_OPTION',3)
+assert p.getGraphicsSetting('LIVE_GPU_OPTION')==3
 p._prepare(None,2,[]);assert p.graphicsSettingsStatus()==3 and p._metadata()['distributionLevel']==2
 p._detector(0)
 try:p._prepare(None,2,[])

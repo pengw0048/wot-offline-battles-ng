@@ -24,7 +24,7 @@ int createFactory(REFIID,void** p){*p=new IDXGIFactory;return 0;}
 HMODULE LoadLibraryW(const wchar_t*){return (void*)1;}
 void* GetProcAddress(HMODULE,const char*){return (void*)&createFactory;} void FreeLibrary(HMODULE){}
 int drawCount=0, pushes=0,pops=0,scene=0,stateRestore=0,invalidated=0,liveQueries=0,liveTargets=0;
-int failQuery=0, failDraw=0, failTarget=0, failScene=0, failGet=0, slowTimes=0, failPush=0; bool available=true;
+int failQuery=0, failDraw=0, failTarget=0, failScene=0, failGet=0, slowTimes=0, failPush=0, failGeometry=0; bool available=true;
 std::vector<std::string> techniques; std::vector<unsigned> dimensions;
 struct IDirect3DQuery9 { int type,index; explicit IDirect3DQuery9(int t,int n):type(t),index(n){++liveQueries;} void Release(){--liveQueries;delete this;} int Issue(int){return 0;} int GetData(void* p,unsigned,int){if(failGet)return -1;*(UINT64*)p=type==3?1000:(index%3==1?0:(slowTimes?900:1));return 0;} };
 struct IDirect3DStateBlock9 { int Capture(){return 0;} int Apply(){++stateRestore;return 0;} void Release(){delete this;} };
@@ -48,7 +48,7 @@ struct EffectMaterial { bool setTechnique(const char* t){techniques.push_back(t)
 using EffectMaterialPtr=std::shared_ptr<EffectMaterial>;
 bool createEffect(EffectMaterialPtr& p,const char*){p=std::make_shared<EffectMaterial>();return true;}
 bool createRenderTarget(RenderTargetPtr& p,unsigned w,unsigned,int,const char*,bool,bool){if(failTarget)return false;p=std::make_shared<RenderTarget>(w);return true;}
-struct FullscreenQuad { void createManagedObjects(){} bool drawChecked(EffectMaterial&,unsigned w,unsigned){++drawCount;dimensions.push_back(w);return !failDraw;} };
+struct FullscreenQuad { bool initialiseStockDrawGeometry(){return !failGeometry;} bool drawChecked(EffectMaterial&,unsigned w,unsigned){++drawCount;dimensions.push_back(w);return !failDraw;} };
 }
 int64 stockMeasureCpuFrequency(){return 12345;}
 #include "stock_gpu_detection.cpp"
@@ -58,9 +58,15 @@ int main(){
  assert(scores[0]==640 && scores[1]==100 && scores[2]==8192 && scores[3]==2048 && scores[4]==12345);
  assert(drawCount==184 && techniques.size()==184 && dimensions[0]==2048 && dimensions[2]==128);
  assert(stateRestore==1 && invalidated==1);
+ for(unsigned vendor:{0x163cu,0x8087u,0x8085u,0x8088u,0x10deu}) {
+  Moo::rc().info.identifier_.VendorId=vendor; assert(stockMeasureGraphicsHardware(scores)); clean();
+  assert(scores[0]==(vendor==0x163c || vendor==0x8087 ? 640 : 512));
+ }
+ Moo::rc().info.identifier_.VendorId=0x8086;
  available=false; assert(!stockMeasureGraphicsHardware(scores)); for(int i=0;i<5;++i)assert(scores[i]==0); clean();available=true;
  failQuery=1; assert(stockMeasureGpuPerformance()==1); clean();failQuery=0;
  failTarget=1; assert(stockMeasureGpuPerformance()==1); clean();failTarget=0;
+ failGeometry=1; assert(stockMeasureGpuPerformance()==1); clean();failGeometry=0;
  failDraw=1; assert(stockMeasureGpuPerformance()==1); clean();failDraw=0;
  failScene=1; assert(stockMeasureGpuPerformance()==1); clean();failScene=0;
  failPush=1; assert(stockMeasureGpuPerformance()==1); clean();failPush=0;

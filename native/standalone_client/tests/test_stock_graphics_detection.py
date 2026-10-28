@@ -110,12 +110,18 @@ class GraphicsDetectionTests(unittest.TestCase):
             picker = source.extractfile(member).read()
             device_member = next(item for item in source if item.name.endswith('/programming/bigworld/client/device_app.cpp'))
             device = source.extractfile(device_member).read()
+            startup = {}
+            for name in ('renderer.cpp', 'renderer.hpp', 'render_context.cpp'):
+                item = next(entry for entry in source if entry.name.endswith('/programming/bigworld/lib/moo/' + name))
+                startup[name] = source.extractfile(item).read()
         for order in ((detector.patch, graphics.patch), (graphics.patch, detector.patch)):
             with self.subTest(order=[patch.__module__ for patch in order]), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 fresh_engine(root)
                 (root / 'client').mkdir(exist_ok=True)
                 (root / 'client/device_app.cpp').write_bytes(device)
+                for name, data in startup.items():
+                    (root / 'lib/moo' / name).write_bytes(data)
                 path = root / 'lib/moo/graphics_settings_picker.cpp'
                 path.write_bytes(picker)
                 for patch in order:
@@ -189,3 +195,91 @@ assert(detector.presetId("MAX")==0&&detector.presetId("hIgH")==1&&detector.prese
             result = subprocess.run([str(path / 'probe')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([int(value) for value in result.stdout.split()], expected)
+
+    def test_device_startup_order_and_renderer_owner(self):
+        from test_stock_graphics_settings import fresh_engine, load_patch
+        detector = load_patch('patch_stock_graphics_detection')
+        graphics = load_patch('patch_stock_graphics_settings')
+        effects = load_patch('patch_stock_effect_owners')
+        archive = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        compiler = shutil.which(os.environ.get('CXX', 'c++'))
+        if not archive.is_file() or not compiler:
+            self.skipTest('Pinned SDK and C++ compiler are required')
+        with tempfile.TemporaryDirectory(prefix='graphics-startup-owner-') as folder:
+            root = Path(folder)
+            fresh_engine(root)
+            with tarfile.open(archive) as source:
+                prefix = source.getmembers()[0].name.split('/')[0] + '/programming/bigworld/'
+                for name in ('client/device_app.cpp', 'lib/moo/graphics_settings_picker.cpp',
+                             'lib/moo/renderer.cpp', 'lib/moo/renderer.hpp', 'lib/moo/render_context.cpp'):
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(source.extractfile(prefix + name).read())
+            effects.patch_macro_settings(root)
+            effects.patch_renderer_startup(root)
+            graphics.patch(root)
+            detector.patch(root)
+            before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            detector.patch(root)
+            self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()})
+            device = (root / 'client/device_app.cpp').read_text()
+            self.assertIn('if (!preferences && !Moo::GraphicsSetting::init(DataSectionPtr())) return false;', device)
+            self.assertLess(device.index('prepareStockGraphicsStartup(isSupportedDS)'), device.index('Moo::rc().createDevice('))
+            self.assertNotIn('renderer_->init(isAssetProcessor, isSupportedDS)', device)
+            context = (root / 'lib/moo/render_context.cpp').read_text()
+            anchor = context.index('fsQuad_.reset(new FullscreenQuad());')
+            hook = context.index('!Renderer::instance().finishStockGraphicsStartup()', anchor)
+            managed = context.index('DeviceCallback::createAllManaged();', hook)
+            unmanaged = context.index('createUnmanaged( requireForceCreate );', managed)
+            self.assertLess(anchor, hook)
+            self.assertLess(hook, managed)
+            self.assertLess(managed, unmanaged)
+            self.assertIn('!Renderer::instance().finishStockGraphicsStartup()) return false;', context)
+            renderer = (root / 'lib/moo/renderer.cpp').read_text()
+            methods = '\n'.join(graphics.function(renderer, marker) for marker in (
+                'void Renderer::prepareStockGraphicsStartup(', 'bool Renderer::finishStockGraphicsStartup(',
+                'bool Renderer::init(bool isAssetProcessor', 'IRendererPipeline::EType Renderer::pipelineType()'))
+            host = r'''
+#include <cassert>
+#include <memory>
+#include <vector>
+#include <string>
+#define BW_GUARD
+#define MF_ASSERT(x) assert(x)
+using uint=unsigned;
+static std::vector<int> events; static int detected=-1; static bool fail=false;
+struct Setting { std::vector<int> values;int option=0;const std::vector<int>& options(){return values;}
+void addOption(const char*,const char*,bool,const char*){values.push_back(0);}
+int activeOption(){return option;}void stockForceActiveOption(int v){option=v;} };
+static std::shared_ptr<Setting> g_pipelineMacroSetting=std::make_shared<Setting>();
+namespace Moo {struct GraphicsSetting{static void add(std::shared_ptr<Setting>){events.push_back(1);}};
+struct EffectMacroSetting{static void updateManagerInfix(){events.push_back(3);}};}
+struct IRendererPipeline {enum EType{TYPE_DEFERRED_SHADING,TYPE_FORWARD_SHADING};enum EGraphicsSetting{SETTING,GRAPHICS_SETTING_COUNT};
+virtual ~IRendererPipeline(){} virtual bool init(){events.push_back(4);return !fail;}void onGraphicsOptionSelected(EGraphicsSetting,int){} };
+struct DeferredPipeline:IRendererPipeline{};struct ForwardPipeline:IRendererPipeline{};
+void finishStockGraphicsDetectionStartup(){events.push_back(2);if(detected>=0)g_pipelineMacroSetting->option=detected;}
+struct Renderer {bool m_stockGraphicsStartupPending=false,m_stockSupportDS=false,m_inited=false;
+IRendererPipeline::EType m_type;std::unique_ptr<IRendererPipeline> m_pipeline;
+void prepareStockGraphicsStartup(bool); bool finishStockGraphicsStartup(); bool init(bool,bool);
+IRendererPipeline::EType pipelineType() const;
+void initGraphicsSettings(){} };
+@METHODS@
+int main(){
+for(int value:{-1,0,1}) { events.clear();g_pipelineMacroSetting=std::make_shared<Setting>();detected=value;fail=false;Renderer r;
+r.prepareStockGraphicsStartup(true);assert(r.m_stockGraphicsStartupPending&&g_pipelineMacroSetting->values.size()==2);
+assert(r.pipelineType()==IRendererPipeline::TYPE_DEFERRED_SHADING);
+assert(r.finishStockGraphicsStartup());assert(!r.m_stockGraphicsStartupPending&&r.m_inited);
+assert(g_pipelineMacroSetting->values.size()==2);assert((events==std::vector<int>{1,2,3,4}));
+assert(r.m_type==(value==1?IRendererPipeline::TYPE_FORWARD_SHADING:IRendererPipeline::TYPE_DEFERRED_SHADING));}
+events.clear();g_pipelineMacroSetting=std::make_shared<Setting>();detected=0;fail=false;Renderer unsupported;
+unsupported.prepareStockGraphicsStartup(false);assert(unsupported.finishStockGraphicsStartup());
+assert(unsupported.m_type==IRendererPipeline::TYPE_FORWARD_SHADING);
+events.clear();g_pipelineMacroSetting=std::make_shared<Setting>();detected=-1;fail=true;Renderer broken;
+broken.prepareStockGraphicsStartup(true);assert(!broken.finishStockGraphicsStartup());assert(!broken.m_inited);
+}
+'''.replace('@METHODS@', methods)
+            (root / 'host.cpp').write_text(host)
+            result = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',
+                                     str(root / 'host.cpp'), '-o', str(root / 'host')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([str(root / 'host')], check=True)

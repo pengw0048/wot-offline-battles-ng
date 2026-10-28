@@ -9,6 +9,31 @@ import argparse
 import re
 
 
+CHECKED_MESH = r'''template <class T>
+HRESULT CustomMesh<T>::drawEffectChecked(Moo::VertexDeclaration* decl)
+{
+    BW_GUARD;
+    const uint32 vertices = (uint32)this->size();
+    const uint32 count = Detail::nPrimitives(primitiveType_, vertices);
+    // The public strip/fan helper subtracts unsigned counts even below the
+    // minimum vertex count. Reject that underflow before accessing front().
+    if (!count || count > vertices) return E_FAIL;
+    const HRESULT declaration = decl ? Moo::rc().setVertexDeclaration(decl->declaration()) :
+        Moo::rc().setFVF(T::fvf());
+    if (FAILED(declaration)) return declaration;
+    uint32 lockIndex = 0;
+    Moo::DynamicVertexBufferBase2& vb = Moo::DynamicVertexBufferBase2::instance(sizeof(T));
+    if (!vb.lockAndLoad(&this->front(), (uint32)this->size(), lockIndex)) return E_FAIL;
+    const HRESULT bound = vb.set(0);
+    const HRESULT drawn = FAILED(bound) ? bound :
+        Moo::rc().drawPrimitive(primitiveType_, lockIndex, count);
+    const HRESULT unbound = vb.unset(0);
+    return FAILED(drawn) ? drawn : unbound;
+}
+
+'''
+
+
 def patch(root):
     root = Path(root)
     pending = {}
@@ -262,6 +287,39 @@ def patch(root):
         if text.count(old) != 1:
             raise ValueError('Dynamic-resolution fullscreen half-texel owner changed')
         pending[source] = text.replace(old, new, 1)
+
+    # The public drawEffect intentionally returns S_OK when no draw was issued.
+    # Keep that legacy API intact and give measured/checked callers a real result.
+    replace('lib/moo/custom_mesh.hpp',
+            '\tHRESULT\t\tdrawEffect( Moo::VertexDeclaration* decl = NULL );',
+            '\tHRESULT\t\tdrawEffect( Moo::VertexDeclaration* decl = NULL );\n'
+            '\tHRESULT\t\tdrawEffectChecked( Moo::VertexDeclaration* decl = NULL );')
+    replace('lib/moo/custom_mesh.ipp',
+            'template <class T>\nHRESULT CustomMesh<T>::drawRange( uint32 from, uint32 to )',
+            CHECKED_MESH + 'template <class T>\nHRESULT CustomMesh<T>::drawRange( uint32 from, uint32 to )',
+            'HRESULT CustomMesh<T>::drawEffectChecked(')
+    text = read(source)
+    old = 'success = SUCCEEDED(quadMesh.drawEffect(m_vecDclr));'
+    new = 'success = SUCCEEDED(quadMesh.drawEffectChecked(m_vecDclr));'
+    if new not in text:
+        if text.count(old) != 1:
+            raise ValueError('Dynamic-resolution checked fullscreen submission changed')
+        pending[source] = text.replace(old, new, 1)
+    replace(header, '\t\tvirtual void createManagedObjects();',
+            '\t\tbool initialiseStockDrawGeometry();\n\t\tvirtual void createManagedObjects();')
+    text = read(source)
+    geometry = '''    bool FullscreenQuad::initialiseStockDrawGeometry()
+    {
+        m_vecDclr = Moo::VertexDeclaration::get("xyzuv");
+        return m_vecDclr != NULL;
+    }
+
+'''
+    if geometry not in text:
+        anchor = '    void FullscreenQuad::createManagedObjects()'
+        if text.count(anchor) != 1:
+            raise ValueError('Dynamic-resolution fullscreen geometry owner changed')
+        pending[source] = text.replace(anchor, geometry + anchor, 1)
 
     # Only scene-space textures opt in. Merely matching the window dimensions
     # is deliberately insufficient: reflection and atlas owners use them too.

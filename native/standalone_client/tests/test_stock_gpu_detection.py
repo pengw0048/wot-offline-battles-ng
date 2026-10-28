@@ -50,7 +50,8 @@ int main(int argc,char** argv){assert(argc==2);std::ifstream f(argv[1],std::ios:
 std::vector<unsigned char> b((std::istreambuf_iterator<char>(f)),{});
 wot::StockEffectBinary e;std::string error;assert(wot::decode_stock_dx9_effect(b.data(),b.size(),e,error));
 for(const char* name:{"GenRandTex","Julia","RandTex"}){bool found=false;for(const auto& t:e.techniques)if(t.name==name){assert(t.passes.size()==1);found=true;}assert(found);}
-for(const char* name:{"g_texture0","g_texture1"}){bool found=false;for(const auto& r:e.resource_views)found|=r.name==name;assert(found);}}
+for(const char* name:{"g_texture0","g_texture1"}){bool found=false;for(const auto& r:e.resource_views)found|=r.name==name;assert(found);}
+bool fog=false;for(const auto& b:e.uniform_buffers)for(const auto& u:b.uniforms)if(u.semantic=="FogParams"){assert(u.flags&2);fog=true;}assert(fog);}
 '''
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -84,3 +85,21 @@ for(const char* name:{"g_texture0","g_texture1"}){bool found=false;for(const aut
             formats[index] = data[pointer - base:].split(b'\0', 1)[0].decode('ascii')
         self.assertEqual(formats[3], 'X8R8G8B8')
         self.assertEqual(formats[9], 'A8B8G8R8')
+
+    def test_original_video_memory_vendor_class(self):
+        import os
+        import struct
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('Exact #1513 client is required')
+        try:
+            from stock_debug_queries_oracle import OriginalDebugQueries
+            import stock_runtime_services_oracle as base
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required')
+        pe = OriginalDebugQueries(Path(client) / 'WorldOfTanks.exe')
+        cases = {0x1002: 1, 0x1022: 1, 0x10de: 0, 0x163c: 2,
+                 0x8085: 3, 0x8086: 2, 0x8087: 2, 0x8088: 3, 0: 3}
+        for vendor, expected in cases.items():
+            pe.u.mem_write(base.STATS + 0x18, struct.pack('<I', vendor))
+            self.assertEqual(pe.call(0x116ee00, base.STATS, []), expected)

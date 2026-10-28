@@ -77,7 +77,10 @@ static bool isPending(GraphicsSettingPtr,int&){return false;}static bool addPend
 static void add(GraphicsSettingPtr);bool selectOption(int,bool=false);bool selectOptionPriv(int,bool=false);
 static SettingsVector stockCurrentSettings();static void applyStockPreset(const SettingsVector&);
 static void captureStockPresetBaseline();static bool needsRestart();
-static void commitSettings(SettingsVector&);static void commitPending(){}
+private:
+static void commitSettings(SettingsVector&);
+public:
+static void commitPending(){}
 };
 struct GraphicsSettingsAutoDetector{
 static int invalidations,queries;static bool valid;static GraphicsSetting::SettingsVector detected;
