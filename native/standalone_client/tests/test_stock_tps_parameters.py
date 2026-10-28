@@ -43,7 +43,9 @@ struct ID3DXEffect {
     std::array<float,8> value{};bool failed=false;
     int SetValue(D3DXHANDLE name,const void* bytes,unsigned size) {
         assert(std::string(name)=="ParticlesParams"&&size==sizeof(value));
-        if(failed)return -1;std::memcpy(value.data(),bytes,size);return 0;
+        if(failed)return -1;
+        std::memcpy(value.data(),bytes,size);
+        return 0;
     }
 };
 namespace Moo {

@@ -22,7 +22,7 @@ EXTRA = ('lib/moo/base_texture.cpp', 'lib/moo/streaming_texture.cpp')
 def sources(test):
     archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
     if not archive.is_file():
-        test.skipTest('Pinned public engine archive is required')
+        raise unittest.SkipTest('Pinned public engine archive is required')
     with tarfile.open(archive) as tar:
         prefix = tar.getmembers()[0].name.split('/')[0] + '/programming/bigworld/'
         return {name: tar.extractfile(prefix+name).read().decode('utf-8') for name in PATCH.FILES + EXTRA}
