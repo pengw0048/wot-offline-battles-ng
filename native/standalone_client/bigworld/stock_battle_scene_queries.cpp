@@ -12,6 +12,7 @@
 #include "space/space_manager.hpp"
 
 #include <cfloat>
+#include <cmath>
 
 BW_BEGIN_NAMESPACE
 
@@ -245,6 +246,124 @@ private:
     bool failed_;
 };
 
+// The material-near-point callback (0174cf00, f610d0) visits every intersection:
+// distance from the requested point, not distance from the ray origin, wins.
+class MaterialNearPointQuery : public CollisionCallback
+{
+public:
+    MaterialNearPointQuery( const ClientSpacePtr & space, const Vector3 & start,
+        const Vector3 & end, const Vector3 & point, PyObjectPtr broken ) :
+        space_( space ), start_( start ), direction_( end - start ), point_( point ),
+        broken_( broken ), nearest_( FLT_MAX ), found_( false ), failed_( false ),
+        interrupted_( false ), hitPoint_( 0.f, 0.f, 0.f ), normal_( 0.f, 0.f, 0.f ),
+        kind_( 0 ), chunk_( 0 ), item_( 0 )
+    {
+        D3DXVec3Normalize( &direction_, &direction_ );
+    }
+
+    bool useHighestAvailableLod() override { return true; }
+
+    int operator()( const CollisionObstacle & obstacle,
+        const WorldTriangle & triangle, float distance ) override
+    {
+        if (failed_ || interrupted_) return COLLIDE_STOP;
+        if (triangle.flags() & 0x80) return COLLIDE_ALL;
+        const Vector3 hit( start_.x + direction_.x * distance,
+            start_.y + direction_.y * distance, start_.z + direction_.z * distance );
+        const Vector3 delta = hit - point_;
+        const float separation = std::sqrt( delta.y * delta.y + delta.x * delta.x +
+            delta.z * delta.z );
+        if (separation >= nearest_) return COLLIDE_ALL;
+        // f64630: compiled StaticModelFeature has no material fashion.
+        uint32 chunk = 0, item = 0;
+        readStockObstacleItem( obstacle, chunk, item );
+        if (PyErr_Occurred()) { failed_ = true; return COLLIDE_STOP; }
+        const uint32 kind = triangle.materialKind();
+        BW::string filename;
+        if (kind >= 71 && kind <= 100)
+        {
+            // Damaged material, or no callback: record the kind only. The caller
+            // uses this even if no surface was accepted (f613ee).
+            if (!broken_ || kind >= 87) { kind_ = kind; return COLLIDE_ALL; }
+            readStockObstacleFilename( obstacle, filename );
+            if (PyErr_Occurred()) { failed_ = true; return COLLIDE_STOP; }
+            PyObjectPtr args( PyTuple_New( 4 ), PyObjectPtr::STEAL_REFERENCE );
+            if (!args) { failed_ = true; return COLLIDE_STOP; }
+            PyTuple_SET_ITEM( args.get(), 0, unsignedObject( chunk ) );
+            PyTuple_SET_ITEM( args.get(), 1, PyInt_FromLong( uint16( item ) ) );
+            PyTuple_SET_ITEM( args.get(), 2, unsignedObject( kind ) );
+            // f6124e intentionally passes the previously accepted filename.
+            PyTuple_SET_ITEM( args.get(), 3, PyString_FromStringAndSize(
+                filename_.data(), filename_.size() ) );
+            for (Py_ssize_t i = 0; i != 4; ++i)
+                if (!PyTuple_GET_ITEM( args.get(), i ))
+                { failed_ = true; return COLLIDE_STOP; }
+            PyObjectPtr callback = broken_;
+            bool reject = true;
+            {
+                PyObjectPtr result( PyObject_Call( callback.get(), args.get(), NULL ),
+                    PyObjectPtr::STEAL_REFERENCE );
+                if (!result) PyErr_PrintEx( 0 );
+                else if (Script::setData( result.get(), reject, "callback result" ) < 0)
+                {
+                    // Preserve the conversion error without returning a tuple
+                    // with an exception pending as the original wrapper does.
+                    failed_ = true;
+                    return COLLIDE_STOP;
+                }
+            } // An int subclass destructor may retire the space too.
+            if (space_->cleared()) { interrupted_ = true; return COLLIDE_STOP; }
+            if (reject) return COLLIDE_ALL;
+        }
+        if (space_->cleared()) { interrupted_ = true; return COLLIDE_STOP; }
+        nearest_ = separation;
+        hitPoint_ = hit;
+        const Vector3 a = triangle.v2() - triangle.v0();
+        const Vector3 b = triangle.v2() - triangle.v1();
+        const Vector3 cross( a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x );
+        D3DXVec3TransformNormal( &normal_, &cross, &obstacle.transform() );
+        D3DXVec3Normalize( &normal_, &normal_ );
+        chunk_ = chunk;
+        item_ = uint16( item );
+        kind_ = kind;
+        filename_ = filename;
+        found_ = true;
+        return COLLIDE_ALL;
+    }
+
+    PyObject * result() const
+    {
+        if (failed_) return NULL;
+        // Miss vectors/kind are uninitialised in the original constructor.
+        // Deterministic zero defaults avoid exposing stack bytes; accepted hits
+        // and the original damaged-kind side effect retain their exact values.
+        PyObject * result = PyTuple_New( 7 );
+        if (!result) return NULL;
+        PyTuple_SET_ITEM( result, 0, PyBool_FromLong( found_ && !interrupted_ && !space_->cleared() ) );
+        PyTuple_SET_ITEM( result, 1, Script::getData( hitPoint_ ) );
+        PyTuple_SET_ITEM( result, 2, Script::getData( normal_ ) );
+        PyTuple_SET_ITEM( result, 3, unsignedObject( kind_ ) );
+        PyTuple_SET_ITEM( result, 4, PyString_FromStringAndSize( filename_.data(), filename_.size() ) );
+        PyTuple_SET_ITEM( result, 5, PyInt_FromLong( item_ ) );
+        PyTuple_SET_ITEM( result, 6, unsignedObject( chunk_ ) );
+        for (Py_ssize_t i = 0; i != 7; ++i)
+            if (!PyTuple_GET_ITEM( result, i )) { Py_DECREF( result ); return NULL; }
+        return result;
+    }
+
+private:
+    ClientSpacePtr space_;
+    Vector3 start_, direction_, point_;
+    PyObjectPtr broken_;
+    float nearest_;
+    bool found_, failed_, interrupted_;
+    Vector3 hitPoint_, normal_;
+    uint32 kind_, chunk_;
+    uint16 item_;
+    BW::string filename_;
+};
+
 // Ccb_ (vtable 0174c304, operator f5c1d0) for the SPG gun marker: a skip and
 // a required collision-flag word over all 16 bits, then the nearest distance.
 class GunMarkerQuery : public CollisionCallback
@@ -417,6 +536,20 @@ PyObject * wg_collideSegment( SpaceID spaceID, const Vector3 & start,
     return result;
 }
 
+PyObject * wg_getMatInfoNearPoint( SpaceID spaceID, const Vector3 & start,
+    const Vector3 & end, const Vector3 & point, PyObjectPtr broken )
+{
+    ClientSpacePtr space = SpaceManager::instance().space( spaceID );
+    MaterialNearPointQuery query( space, start, end, point, broken );
+    if (!space)
+    {
+        PyErr_Format( PyExc_ValueError, "No space ID %d", spaceID );
+        return NULL;
+    }
+    if (!space->cleared() && !(start == end)) space->collide( start, end, query );
+    return query.result();
+}
+
 float wg_collideWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha )
 {
     return collideStockWater( start, end, edgeAlpha );
@@ -432,6 +565,8 @@ Vector4 wg_getSpaceBounds()
 PY_AUTO_MODULE_FUNCTION( RETOWN, wg_collideSegment, ARG( SpaceID, ARG( Vector3,
     ARG( Vector3, ARG( WorldTriangle::Flags, OPTARG( PyObjectPtr, NULL, END ) ) ) ) ),
     BigWorld )
+PY_AUTO_MODULE_FUNCTION( RETOWN, wg_getMatInfoNearPoint, ARG( SpaceID, ARG( Vector3,
+    ARG( Vector3, ARG( Vector3, OPTARG( PyObjectPtr, NULL, END ) ) ) ) ), BigWorld )
 PY_AUTO_MODULE_FUNCTION( RETDATA, wg_collideWater, ARG( Vector3, ARG( Vector3,
     OPTARG( bool, true, END ) ) ), BigWorld )
 PY_AUTO_MODULE_FUNCTION( RETDATA, wg_getSpaceBounds, END, BigWorld )

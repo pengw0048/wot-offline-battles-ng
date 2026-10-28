@@ -597,6 +597,14 @@ bool StockStaticModelSceneLoader::itemIdentity( const SceneObject & object,
     return true;
 }
 
+bool StockStaticModelSceneLoader::modelFilename(const SceneObject& object, BW::string& filename)
+{
+    if (!object.isType<State::Instance>()) return false;
+    // 014bc22c[0] -> 00d61890 returns the empty string without dereferencing
+    // the instance. A compiled primitive resource is not this model name.
+    filename.clear();return true;
+}
+
 bool StockStaticModelSceneLoader::collectStockDecalTriangles(const SceneObject& object,
     const Vector3& center, const Vector3& first, const Vector3& second, const Vector3& third,
     BW::vector<WorldTriangle>& output)

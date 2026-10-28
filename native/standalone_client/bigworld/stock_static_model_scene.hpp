@@ -2,6 +2,7 @@
 
 #include "compiled_space/loader.hpp"
 #include "cstdmf/bw_vector.hpp"
+#include "cstdmf/bw_string.hpp"
 #include <memory>
 
 BW_BEGIN_NAMESPACE
@@ -22,6 +23,8 @@ public:
     static void registerHandlers( Scene & scene );
     // The WGDE1 (chunk id, row) of a compiled instance, as 006ba9b0 reads it.
     static bool itemIdentity( const SceneObject & object, uint32 & chunkID, uint32 & itemIndex );
+    // Original StaticModelFeature model-operation slot 0 returns an empty name.
+    static bool modelFilename(const SceneObject& object, BW::string& filename);
     static bool collectStockDecalTriangles(const SceneObject& object, const Vector3& center,
         const Vector3& first, const Vector3& second, const Vector3& third,
         BW::vector<WorldTriangle>& output);

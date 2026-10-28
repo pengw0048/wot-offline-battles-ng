@@ -95,7 +95,7 @@ def ground_water_query():
 
 
 ENGINE_ARCHIVE = Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
-ENGINE_MEMBERS = ('client/script_bigworld.cpp', 'client/script_app.cpp',
+ENGINE_MEMBERS = ('client/script_bigworld.cpp', 'client/script_app.cpp', 'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp',
                   'lib/compiled_space/particle_system_loader.hpp',
                   'lib/compiled_space/particle_system_loader.cpp',
                   'lib/space/client_space.hpp', 'lib/space/client_space.cpp', 'lib/physics2/bsp.cpp')
@@ -142,6 +142,21 @@ def function(source, signature):
 
 def engine_includes(test, path, retirement=True):
     root = patched_engine(test, path / 'engine', retirement)
+    script = (root / 'lib/pyscript/script.cpp').read_text(encoding='utf-8-sig')
+    (path / 'include/stock_bool_converter.inc').write_text(
+        '#ifndef _WIN32\n#include <strings.h>\n#define _stricmp strcasecmp\n#endif\nnamespace BW {\n' +
+        function(script, 'int Script::setData( PyObject * pObject, bool & rBool,') + '}\n')
+    script_header = (root / 'lib/pyscript/script.hpp').read_text(encoding='utf-8-sig')
+    macros = script_header[script_header.index('// Section: Macros: Module Links'):script_header.index('// Section: Macros: Enums')]
+    macros += script_header[script_header.index('// Section: Macros: Recursion utilities'):script_header.index('// Section: PyModuleLink')]
+    converters = function(script, 'int Script::setData( PyObject * pObject, int & rInt,')
+    converters += function(script, 'int Script::setData( PyObject * pObject, SmartPointer<PyObject> & rPyObject,')
+    converters += function(script, 'PyObject * Script::argCountError(')
+    declaration = (ROOT / 'bigworld/stock_battle_scene_queries.cpp').read_text()
+    declaration = declaration[declaration.index('PY_AUTO_MODULE_FUNCTION( RETOWN, wg_getMatInfoNearPoint,'):]
+    declaration = declaration[:declaration.index('PY_AUTO_MODULE_FUNCTION( RETDATA, wg_collideWater,')]
+    (path / 'include/stock_material_binding.inc').write_text(
+        '#undef PY_AUTO_MODULE_FUNCTION\nnamespace BW {\n' + macros + converters + declaration + '}\n')
     bsp = (root / 'lib/physics2/bsp.cpp').read_text(encoding='utf-8-sig')
     (path / 'include/stock_sdk_bsp_node.inc').write_text(
         'namespace BW {\n' + function(bsp, 'bool BSPNode::intersectsThisNode(const Vector3 &') + '}\n')

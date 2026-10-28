@@ -14,6 +14,8 @@
 #define BW_BEGIN_NAMESPACE namespace BW {
 #define BW_END_NAMESPACE }
 #define PY_AUTO_MODULE_FUNCTION(...)
+#define BW_GUARD
+#define BW_STATIC_ASSERT(expression, message) static_assert(expression, #message)
 
 namespace BW {
 using string = std::string;
@@ -78,13 +80,23 @@ public:
         PyObject * old = p_; p_ = o.p_; Py_XINCREF(p_); Py_XDECREF(old); return *this;
     }
     PyObject * get() const { return p_; }
+    PyObject * getObject() const { return p_; }
     explicit operator bool() const { return p_ != nullptr; }
     bool operator!() const { return p_ == nullptr; }
 private:
     PyObject * p_;
 };
 
+template <class T> using SmartPointer = PyObjectPtr;
+struct PyModuleMethodLink {
+    PyModuleMethodLink(const char *, const char *, PyCFunction, const char *) {}
+};
 namespace Script {
+int setData(PyObject * object, int & value, const char * name);
+int setData(PyObject * object, PyObjectPtr & value, const char * name);
+int setData(PyObject * object, Vector3 & value, const char * name);
+PyObject * argCountError(const char *, int, int, ...);
+int setData(PyObject * object, bool & value, const char * name);
 // Math.Vector3/Vector4 are pure-Python fixtures installed by the consumer.
 inline PyObject * vector(const char * type, PyObject * args) {
     if (!args) return nullptr;

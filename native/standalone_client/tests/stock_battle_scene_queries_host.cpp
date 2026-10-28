@@ -7,7 +7,9 @@
 // Unchanged SDK BSPNode::intersectsThisNode and the patched ClientSpace bodies.
 #include "stock_sdk_bsp_node.inc"
 #include "stock_client_space.inc"
+#include "stock_bool_converter.inc"
 #include "stock_battle_scene_queries.cpp"
+#include "stock_material_binding.inc"
 
 #include <cstdio>
 #include <cstring>
@@ -71,6 +73,12 @@ bool readStockObstacleItem(const CollisionObstacle & obstacle, uint32 & chunkID,
     if (!obstacle.identity.known) return false;
     chunkID = obstacle.identity.chunkID;
     itemIndex = obstacle.identity.itemIndex;
+    return true;
+}
+
+bool readStockObstacleFilename(const CollisionObstacle & obstacle, BW::string & output) {
+    // A named chunk fixture, or the original empty compiled-static filename.
+    output = obstacle.identity.known ? "fixture.model" : "";
     return true;
 }
 
@@ -404,6 +412,7 @@ PyObject * waterDistance(PyObject *, PyObject * args) {
 
 PyMethodDef bigWorld[] = {
     {"wg_collideSegment", pyCollideSegment, METH_VARARGS, NULL},
+    {"wg_getMatInfoNearPoint", _py_wg_getMatInfoNearPoint, METH_VARARGS, NULL},
     {"wg_collideWater", pyCollideWater, METH_VARARGS, NULL},
     {"wg_getSpaceBounds", pySpaceBounds, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};
@@ -421,6 +430,14 @@ PyMethodDef hostMethods[] = {
     {NULL, NULL, 0, NULL}};
 }
 }
+
+namespace BW { namespace Script {
+// Vector3 is a tuple-backed fixture; the automatic wrapper and scalar/object
+// converters above are the unmodified SDK definitions.
+int setData(PyObject * object, Vector3 & value, const char *) {
+    return vector3(object, value, 1) ? 0 : -1;
+}
+}}
 
 int main(int argc, char ** argv) {
     assert(argc == 2);

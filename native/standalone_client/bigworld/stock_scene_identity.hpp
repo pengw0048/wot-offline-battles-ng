@@ -26,4 +26,7 @@ bool readStockObstacleIdentity(const CollisionObstacle& obstacle,
 bool readStockObstacleItem(const CollisionObstacle& obstacle,
     uint32& chunkID, uint32& itemIndex);
 
+// Exact StaticModelFeature filename; compiled instances intentionally return empty.
+bool readStockObstacleFilename(const CollisionObstacle& obstacle, BW::string& output);
+
 BW_END_NAMESPACE

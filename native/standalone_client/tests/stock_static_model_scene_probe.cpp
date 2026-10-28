@@ -19,6 +19,8 @@ int main(int argc,char** argv)
     assert(loader.loadFromSpace(&space,file,{},Matrix(),strings));assert(file.closes==3);
     assert(space.dynamic.nodes.empty());assert(loader.bind());assert(loader.bind());assert(space.dynamic.nodes.size()==2);
     std::vector<SceneObject> objects;for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
+    BW::string modelName="stale";assert(StockStaticModelSceneLoader::modelFilename(objects[0],modelName)&&modelName.empty());
+    assert(!StockStaticModelSceneLoader::modelFilename(SceneObject(),modelName));
     Moo::DrawContext draw;SceneDrawContext context{draw,Matrix()};
     auto* drawer=space.scene().getObjectOperation<DrawOperation>()->handler.get();
     auto* ticker=space.scene().getObjectOperation<TickOperation>()->handler.get();

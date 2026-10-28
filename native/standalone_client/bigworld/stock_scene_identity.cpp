@@ -114,4 +114,19 @@ bool readStockObstacleItem( const CollisionObstacle & obstacle,
     return CompiledSpace::StockStaticModelSceneLoader::itemIdentity( object, chunkID, itemIndex );
 }
 
+bool readStockObstacleFilename( const CollisionObstacle & obstacle, BW::string & output )
+{
+    const SceneObject & object = obstacle.sceneObject();
+    if (object.isType<ChunkItem>())
+    {
+        const StockChunkModel * model = dynamic_cast<const StockChunkModel *>(
+            object.getAs<ChunkItem>() );
+        StockObstacleIdentity identity;
+        if (!model || !model->identity( identity )) return false;
+        output = identity.filename;
+        return true;
+    }
+    return CompiledSpace::StockStaticModelSceneLoader::modelFilename( object, output );
+}
+
 BW_END_NAMESPACE
