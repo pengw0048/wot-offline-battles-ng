@@ -52,7 +52,8 @@ class ScaleformBitmapLifetimeTest(unittest.TestCase):
         if not fixed:
             self.skipTest('Set WOT_SCALEFORM_BITMAP_PROBE to run the real Windows SDK probe')
         for variable, case in [('WOT_SCALEFORM_BITMAP_BEFORE_PROBE', 'direct'),
-                               ('WOT_SCALEFORM_BITMAP_DESTRUCTOR_ONLY_PROBE', 'clone')]:
+                               ('WOT_SCALEFORM_BITMAP_DESTRUCTOR_ONLY_PROBE', 'clone'),
+                               ('WOT_SCALEFORM_BITMAP_FILL_BEFORE_PROBE', 'fill')]:
             negative = os.environ.get(variable)
             if negative:
                 result = subprocess.run([negative, case], capture_output=True, timeout=60)
@@ -63,7 +64,7 @@ class ScaleformBitmapLifetimeTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout.decode(errors='replace') +
                          result.stderr.decode(errors='replace'))
         output = result.stdout.replace(b'\r\n', b'\n')
-        for case in ('direct', 'dispose', 'rebind', 'clone'):
+        for case in ('direct', 'dispose', 'rebind', 'clone', 'fill', 'fill-rebind', 'bitmap-rebind'):
             self.assertEqual(output.count(('PASS BitmapData ' + case + '\n').encode()), 3)
         self.assertIn(b'PASS real SDK BitmapData ownership and full SDK reinitialization', output)
 

@@ -10,9 +10,14 @@
 #include <GFx/AMP/Amp_Server.h>
 #include <GFx/AS3/AS3_MovieRoot.h>
 #include <GFx/AS3/Obj/Display/AS3_Obj_Display_BitmapData.h>
+#include <GFx/AS3/Obj/Display/AS3_Obj_Display_Bitmap.h>
+#include <GFx/AS3/Obj/Display/AS3_Obj_Display_Graphics.h>
+#include <GFx/AS3/AS3_AvmBitmap.h>
 #include <GFx/GFx_MovieDef.h>
 #include <GFx/GFx_ImageResource.h>
 #include <GFx/GFx_ImageCreator.h>
+#include <GFx/GFx_DrawingContext.h>
+#include <Render/Render_TreeShape.h>
 #include <Render/Render_DrawableImage.h>
 #include <Kernel/HeapPT/HeapPT_SysAllocWinAPI.h>
 #include <AS3/AS3_Global.h>
@@ -80,7 +85,7 @@ struct Probe
     {
         AS3::Value value;
         AS3::Value args[] = { AS3::Value(SInt32(1)), AS3::Value(SInt32(1)) };
-        unsigned argc = std::strcmp(name, "Object") == 0 ? 0 : 2;
+        unsigned argc = std::strcmp(name, "flash.display.BitmapData") == 0 ? 2 : 0;
         check(vm.CreateObject(name, vm.GetFrameAppDomain(), value, argc, args), name);
         check(!vm.IsException(), "create exception");
         return value;
@@ -113,7 +118,82 @@ struct Probe
         AS3::Value value = create("flash.display.BitmapData");
         BitmapData& bitmap = *static_cast<BitmapData*>(value.GetObject());
         attach(bitmap, "lifetime-a.png");
-        if (std::strcmp(name, "dispose") == 0)
+        if (std::strncmp(name, "fill", 4) == 0)
+        {
+            // Invoke the real AS3 native producer. No new owner API or layout is
+            // referenced here, so the identical probe builds against before/after.
+            AS3::Value graphicsValue = create("flash.display.Graphics");
+            AS3::Instances::fl_display::Graphics& graphics =
+                *static_cast<AS3::Instances::fl_display::Graphics*>(graphicsValue.GetObject());
+            Ptr<DrawingContext> drawing = *vm.GetMovieImpl()->CreateDrawingContext();
+            graphics.pDrawing = drawing;
+            graphics.beginBitmapFill(&bitmap);
+            drawing->MoveTo(0, 0);
+            drawing->LineTo(20, 0);
+            drawing->LineTo(20, 20);
+            drawing->LineTo(0, 20);
+            drawing->LineTo(0, 0);
+            drawing->EndFill();
+            drawing->UpdateRenderNode();
+            check(drawing->GetTreeNode()->GetSize() == 1, "runtime bitmap render shape");
+            Ptr<Render::ShapeMeshProvider> snapshot =
+                static_cast<Render::TreeShape*>(drawing->GetTreeNode()->GetAt(0))->GetShape();
+            if (std::strcmp(name, "fill-rebind") == 0)
+            {
+                attach(bitmap, "lifetime-b.png");
+                graphics.beginBitmapFill(&bitmap);
+            }
+            value.SetUndefined();
+            vm.GetGC().ForceCollect(NULL);
+            std::puts("Source BitmapData released; drawing still holds PNG"); std::fflush(stdout);
+            if (std::strcmp(name, "fill-shutdown") == 0)
+            {
+                AS3::Value cycle = create("Object");
+                set(cycle, "self", cycle);
+                set(cycle, "graphics", graphicsValue);
+                graphicsValue.SetUndefined();
+                return;
+            }
+            graphicsValue.SetUndefined();
+            vm.GetGC().ForceCollect(NULL);
+            drawing->Clear();
+            drawing.Clear();
+            Render::FillData fill;
+            snapshot->GetFillData(&fill, 0, 0, 0);
+            check(fill.Type == Render::Fill_Image && fill.pImage, "snapshot bitmap fill");
+            check(fill.pImage->GetSize() == Render::ImageSize(1, 1), "PNG survives source/graphics/drawing retirement");
+            UByte pixel[4] = {0, 0, 0, 0};
+            Render::ImageData decoded(Render::Image_R8G8B8A8, 1, 1, 4, pixel);
+            check(fill.pImage->Decode(&decoded), "retained snapshot PNG decode");
+            check(pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255 && pixel[3] == 255,
+                  "retained snapshot PNG pixel");
+            snapshot.Clear();
+            std::puts("Drawing and retained snapshot released"); std::fflush(stdout);
+        }
+        else if (std::strcmp(name, "bitmap-rebind") == 0)
+        {
+            AS3::Value bitmapValue = create("flash.display.Bitmap");
+            AS3::Instances::fl_display::Bitmap& display =
+                *static_cast<AS3::Instances::fl_display::Bitmap*>(bitmapValue.GetObject());
+            display.bitmapDataSet(&bitmap);
+            check(display.GetAvmBitmap() != NULL, "runtime Bitmap display object");
+            Ptr<Render::ShapeMeshProvider> snapshot = static_cast<Render::TreeShape*>(
+                display.GetAvmBitmap()->GetRenderNode())->GetShape();
+            attach(bitmap, "lifetime-b.png");
+            display.bitmapDataSet(&bitmap);
+            bitmapValue.SetUndefined();
+            value.SetUndefined();
+            vm.GetGC().ForceCollect(NULL);
+            Render::FillData fill;
+            snapshot->GetFillData(&fill, 0, 0, 0);
+            check(fill.Type == Render::Fill_Image && fill.pImage, "rebound Bitmap snapshot fill");
+            UByte pixel[4] = {0, 0, 0, 0};
+            Render::ImageData decoded(Render::Image_R8G8B8A8, 1, 1, 4, pixel);
+            check(fill.pImage->Decode(&decoded) && pixel[0] == 255 && pixel[3] == 255,
+                  "rebound Bitmap snapshot PNG decode");
+            snapshot.Clear();
+        }
+        else if (std::strcmp(name, "dispose") == 0)
         {
             AS3::Value unused;
             bitmap.dispose(unused);
@@ -163,7 +243,8 @@ int main(int argc, char** argv)
 #ifdef _WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
-    const char* cases[] = {"direct", "dispose", "rebind", "clone", "shutdown"};
+    const char* cases[] = {"direct", "dispose", "rebind", "clone", "shutdown",
+                           "fill", "fill-rebind", "fill-shutdown", "bitmap-rebind"};
     check(argc <= 2, "expected at most one case name");
     bool selected = argc == 1;
     for (const char* name : cases)

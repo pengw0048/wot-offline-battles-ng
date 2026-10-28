@@ -3326,16 +3326,6 @@ of 1.06 MiB when the Scaleform string table allocation returned null. Packaging
 rejects a binary without this flag; resource lifetime still requires repeated
 Windows battle-cycle acceptance.
 
-The Flash value bridge restores Python set conversion and the original generic
-mapping-key rule: exact byte strings are borrowed; other keys use Python string
-conversion with balanced temporary references. A failed argument conversion
-returns before ActionScript invocation, preventing a pending exception from
-surfacing later in an unrelated event subscription. Display-object descriptors
-retain precedence over dynamic members. The AVM2 call-frame guard uses the
-original 1024-frame limit; the authored lobby scheduler can exceed the older
-SDK's 128 frames while draining a finite queue. Original PYC/ABC consumers and
-x86 branch checks cover these contracts; live timing remains runtime evidence.
-
 The battle-entry adapters expose the existing native `Math.Vector4Basic`,
 retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
 rendering, trajectory drawing, the tree collision-body provider, water ripples,
@@ -3349,6 +3339,15 @@ each rendering pipeline and compose the original Geometrics effect with its
 device creation; both ordinary and D3D9Ex resets retire the previous pixels.
 Teardown releases Python owners before interpreter finalization; the Python
 console also detaches its output hooks at that boundary.
+
+`BigWorld.Splodge` accepts the original transform, maximum LOD and height offset.
+The active forward renderer queues the adjusted world/local transforms and
+uses the original stencil-clear, cube-stencil and shadow-plane techniques with
+the tank occlusion texture. Deferred rendering returns no attachment, as the
+original factory does. Queued work validates attachment generation and space
+identity; detach, world exit and device resets retire stale submissions. Bounds
+and LOD gates follow the exact executable, while visible shadow output still
+requires Windows rendering acceptance.
 
 `FreeCamera` shares the original `SpeedTreeTargetedCamera` base with
 `HomingCamera`. Updates publish the retained tree target before either the
@@ -3372,6 +3371,22 @@ attached to the real display-object matrix instead of creating an undefined
 ActionScript shadow member that breaks the stock tween manager. Python `set`
 objects and their subclasses convert recursively to real GFx arrays; the stock
 battle page passes component-visibility and vehicle-tag sets through this path.
+Generic mapping keys retain the original conversion rule: exact byte strings
+are borrowed; other keys use Python string conversion with balanced temporary
+references. Failed argument conversion returns before ActionScript invocation,
+so its exception cannot surface later in an unrelated event subscription.
+The AVM2 call-frame guard uses the original 1024-frame limit; the authored lobby
+scheduler can exceed the older SDK's 128 frames while draining a finite queue.
+Original PYC/ABC consumers and x86 branch checks cover these contracts.
+
+Runtime Flash bitmap fills retain the loaded-image definition alongside the
+image in each render fill. This lease follows copied shapes and old snapshots
+through source BitmapData replacement, collection and movie shutdown; image
+payloads retire before their heap owner. Both Graphics fills and Bitmap render
+shapes use this ownership path. Static definition resources do not retain their
+own definition. A Windows SDK reproducer exposed the same PNG heap-release
+failure as the captured battle-to-lobby crash; full-cycle acceptance remains
+a separate check after the ownership repair.
 
 Ordinary battle calls into `WGReplayController` retain their original live-mode
 guards and presentation state: server aim, marker geometry, gun angles, reload

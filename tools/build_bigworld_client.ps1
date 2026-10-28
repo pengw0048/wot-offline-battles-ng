@@ -175,6 +175,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot, $ScaleformRoot) "scaleform-source-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_scheduler.py"),
         $ScaleformRoot) "stock-flash-scheduler-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_bitmap_fill.py"),
+        $ScaleformRoot) "stock-flash-bitmap-fill-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_display_object.py"),
         $EngineRoot) "stock-flash-display-object-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_collections.py"),
@@ -297,6 +299,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-worker-runtime-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_visuals.py"),
         $EngineRoot) "stock-vehicle-visuals-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_py_splodge.py"),
+        $EngineRoot) "stock-py-splodge-patch.log"
     # Ticks BigWorld.PyBallisticsSimulator tracer owners once per world frame.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ballistics.py"),
         $EngineRoot) "stock-ballistics-patch.log"
