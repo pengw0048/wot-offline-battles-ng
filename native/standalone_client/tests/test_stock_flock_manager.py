@@ -281,12 +281,17 @@ class StockFlockPatchTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 patcher.patch(root)
             self.assertEqual((root / SEAM_FILES[0]).read_bytes(), original)
-            # A duplicated seam is not mistaken for an applied one.
+            # A duplicated seam is not mistaken for an applied one, and nothing is written.
+            for name in SEAM_FILES:
+                shutil.copy(self.engine.integrated / name, root / name)
             world = root / 'client/world_app.cpp'
             world.write_text(world.read_text().replace('        tickStockFlockManagers();\n',
                                                        '        tickStockFlockManagers();\n' * 2))
+            self.assertEqual(world.read_text().count('        tickStockFlockManagers();\n'), 2)
+            duplicated = {name: (root / name).read_bytes() for name in SEAM_FILES}
             with self.assertRaises(ValueError):
                 patcher.patch(root)
+            self.assertEqual({name: (root / name).read_bytes() for name in SEAM_FILES}, duplicated)
             # A moved anchor fails instead of guessing a position.
             for name in SEAM_FILES:
                 shutil.copy(self.engine.reference / name, root / name)
