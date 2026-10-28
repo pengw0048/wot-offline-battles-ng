@@ -3312,6 +3312,44 @@ retail contact solver, rotational mesh sweep, suspension or airborne motion.
 Vehicle, camera translation and future muzzle positions share the committed
 current pose; admitted shots retain their original state.
 
+### Battle interface restoration
+
+The gameplay integration remains pinned to offline mod `v0.10.1` at
+`144619f6eb2925f8da4b13637bf65b8550fc898f` and Chinese HD
+`0.9.22.0.1 #1513` resources. The Windows executable target is x86 (Win32).
+`Hybrid` names the engine's optimized build configuration with debug symbols;
+it is independent of the target architecture and deployment environment.
+
+The battle-entry adapters expose the existing native `Math.Vector4Basic`,
+retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
+rendering, trajectory drawing, the tree collision-body provider, water ripples,
+vehicle attachment decals, effect-light properties and taskbar notification
+ownership. Particle cloning uses the native deep-copy implementation.
+Background particle loads retain weak callbacks, continue loading when the
+callback is absent or retired, and deliver `None` to a live callback on a
+resource failure. Ordinary hit flash effects retain native vector providers in
+each rendering pipeline and compose the original Geometrics effect with its
+512-square history texture. Managed-device callbacks load the material after
+device creation; both ordinary and D3D9Ex resets retire the previous pixels.
+Teardown releases Python owners before interpreter finalization; the Python
+console also detaches its output hooks at that boundary.
+
+Exact executable oracles and original Python consumers distinguish retained
+state from rendered behavior. The compiled-space light tick samples `bounds`
+and `shader`; `colorAnimator` and `multiplierAnimator` are retained properties
+without an additional tick consumer in this build. The three reviewed Havok
+entry points preserve their original empty-result behavior. Vehicle forward
+shadow decals currently support the original producer's material `6`; other
+material schemas remain unsupported. The single-system/single-Influx optimized
+particle background return path is not restored by the general weak-callback
+fix. These are explicit contract boundaries, not evidence of complete native
+API coverage.
+
+Focused tests execute production owners, SDK conversion/dispatch code, original
+PYC consumers and bounded x86 machine-code paths. Their render/device seams and
+successful x86 compilation do not establish final pixels, device-loss behavior,
+frame pacing or complete gameplay. Those remain Windows runtime acceptance.
+
 ### Compiled-space metadata
 
 The public engine's BWT2 and BWSG readers expect section version 1. The exact
