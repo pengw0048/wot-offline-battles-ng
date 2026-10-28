@@ -36,7 +36,8 @@ struct Vector4Animation:Vector4Provider {
 };
 @ANIMATION@
 template<class T>struct ComObjectWrap {
-    T* value=nullptr;operator T*()const{return value;}T** operator&(){return &value;}
+    T* value=nullptr;operator void*()const{return value;}T** operator&(){return &value;}
+    T* pComObject()const{return value;}
 };
 namespace DX {
 struct Surface {unsigned id;};

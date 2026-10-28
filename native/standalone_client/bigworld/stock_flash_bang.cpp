@@ -191,8 +191,8 @@ bool StockFlashBangSupport::draw()
         FAILED(history_->pSurface(destination))) return false;
     const RECT crop = {LONG(viewport.X), LONG(viewport.Y),
         LONG(viewport.X + viewport.Width), LONG(viewport.Y + viewport.Height)};
-    historyValid_ = SUCCEEDED(Moo::rc().device()->StretchRect(source, &crop,
-        destination, NULL, D3DTEXF_LINEAR));
+    historyValid_ = SUCCEEDED(Moo::rc().device()->StretchRect(source.pComObject(), &crop,
+        destination.pComObject(), NULL, D3DTEXF_LINEAR));
     return historyValid_;
 }
 
