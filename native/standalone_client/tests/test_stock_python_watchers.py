@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parents[1]
 TESTS = Path(__file__).resolve().parent
 ARCHIVE = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
-CLIENT = Path(os.environ.get('WOT_0922_CLIENT', '/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
+CLIENT = os.environ.get('WOT_0922_CLIENT')
 PY27 = Path(os.environ.get('WOT_PYTHON27', str(Path.home() / '.pyenv/versions/2.7.18/bin/python2.7')))
 SOURCES = ('lib/pyscript/pywatcher.cpp', 'lib/pyscript/script.hpp', 'lib/pyscript/script.cpp')
 
@@ -118,8 +118,10 @@ class PythonWatcherPatchTest(unittest.TestCase):
             self.assertEqual(target.read_bytes(), expected)
 
     def test_embedded_python_contract_and_exact_offline_map_creator(self):
+        if not CLIENT:
+            self.skipTest('WOT_0922_CLIENT is required for the exact #1513 OfflineMapCreator PYC')
         config = PY27.with_name('python2.7-config')
-        package = CLIENT / 'res/packages/scripts.pkg'
+        package = Path(CLIENT) / 'res/packages/scripts.pkg'
         if not config.exists() or not package.is_file():
             self.skipTest('CPython 2.7 development files and the exact #1513 scripts.pkg are required')
         header = self.sources['lib/pyscript/script.hpp'].decode('utf-8')
