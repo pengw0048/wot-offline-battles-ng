@@ -36,10 +36,11 @@ FILES = (
 
 def patch_text(text, token, edits):
     patched = [after in text for unused, after in edits]
-    if all(patched):
+    if all(patched) and all(text.count(after) == 1 for unused, after in edits) and \
+            text.count(token) == sum(after.count(token) for unused, after in edits):
         return text
     if any(patched) or token in text:
-        raise ValueError('WGFlockManager seam is partial: ' + token)
+        raise ValueError('WGFlockManager seam is partial or duplicated: ' + token)
     for before, after in edits:
         if text.count(before) != 1:
             raise ValueError('WGFlockManager anchor changed: ' + repr(before))
