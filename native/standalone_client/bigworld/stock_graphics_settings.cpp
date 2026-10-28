@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_graphics_settings.hpp"
 #include "stock_graphics_presets.hpp"
+#include "stock_graphics_detection.hpp"
 #include "wot/stock_graphics_settings.hpp"
 #include "moo/graphics_settings_picker.hpp"
 #include "pyscript/script.hpp"
@@ -90,6 +91,8 @@ bool prepareStockGraphicsPreferences(DataSectionPtr section,
         if (!detector.init() || !detector.getSettings(settings, overrideGroup)) return false;
     }
 
+    readStockGraphicsDetectionPreferences(section);
+
     // 91d670 resets texture quality when a saved non-HD distribution becomes
     // HD. The physical application metadata is the real content-type owner.
     const int content = BWResource::instance().stockActiveContentType();
@@ -105,6 +108,7 @@ bool prepareStockGraphicsPreferences(DataSectionPtr section,
 
 void writeStockGraphicsPreferencesMetadata(DataSectionPtr section)
 {
+    writeStockGraphicsDetectionPreferences(section);
     section->writeInt("graphicsSettingsVersion", preferencesVersion.major);
     section->writeInt("graphicsSettingsVersionMinor", preferencesVersion.minor);
     section->writeInt("graphicsSettingsVersionMaintainance", preferencesVersion.maintenance);

@@ -1,6 +1,7 @@
 #include <Python.h>
 #include "wot/stock_graphics_presets.hpp"
 #include "wot/stock_graphics_settings.hpp"
+#include "wot/stock_graphics_detection.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -29,6 +30,11 @@ std::string asString()const{return text;}
 std::string readString(const char* name,const char*)const{assert(std::string(name)=="label");return label;}
 int readInt(const char* name,int fallback)const{if(std::string(name)=="activeOption")return option;auto i=integers.find(name);return i==integers.end()?fallback:i->second;}
 void writeInt(const char* name,int value){integers[name]=value;}
+DataSectionPtr openSection(const char* name,bool create=false){
+for(const auto& p:children)if(p.first==name)return p.second;
+if(!create)return {};auto p=std::make_shared<DataSection>();children.emplace_back(name,p);return p;}
+std::int64_t readInt64(const char* name,std::int64_t fallback)const{auto i=integers.find(name);return i==integers.end()?fallback:i->second;}
+void writeInt64(const char* name,std::int64_t value){integers[name]=int(value);}
 };
 DataSectionPtr fixture(){@FIXTURE@}
 struct BWResource{

@@ -163,8 +163,16 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
                 'bool GraphicsSetting::needsRestart()'))
             production = '\n'.join(line for name in ('stock_graphics_presets.cpp', 'stock_graphics_settings.cpp')
                                    for line in (ROOT / 'bigworld' / name).read_text().splitlines() if not line.startswith('#include'))
-            interface = '\n'.join(line for name in ('stock_graphics_presets.hpp', 'stock_graphics_settings.hpp')
+            interface = '\n'.join(line for name in ('stock_graphics_presets.hpp', 'stock_graphics_settings.hpp', 'stock_graphics_detection.hpp')
                                   for line in (ROOT / 'bigworld' / name).read_text().splitlines() if not line.startswith(('#include', '#pragma')))
+            detector_source = (ROOT / 'bigworld/stock_graphics_detection.cpp').read_text()
+            # Compile the real new preference hooks into the existing registry
+            # owner fixture; hardware/profile queries have their own host.
+            state = detector_source[detector_source.index('wot::StockGraphicsDetection detection;'):
+                                    detector_source.index('bool ensureConfiguration()')]
+            production = 'namespace {\n' + state + '\n}\n' + '\n'.join(
+                graphics.function(detector_source, marker) for marker in
+                ('void readStockGraphicsDetectionPreferences(', 'void writeStockGraphicsDetectionPreferences(')) + '\n' + production
             view = (root / 'lib/romp/py_graphics_setting.cpp').read_text()
             production += '\n' + '\n'.join(graphics.function(view, marker) for marker in (
                 'static PyObject * graphicsSettings()', 'static bool setGraphicsSetting(', 'static int getGraphicsSetting('))
