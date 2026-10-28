@@ -249,6 +249,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-python-numeric-parsing-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_math_specials.py"),
         $EngineRoot) "stock-python-math-specials-patch.log"
+    # BigWorld.*Watcher Python functions keep #1513's consumer-build contract.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_watchers.py"),
+        $EngineRoot) "stock-python-watchers-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),
