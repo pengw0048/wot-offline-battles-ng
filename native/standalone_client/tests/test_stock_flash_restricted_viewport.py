@@ -58,7 +58,7 @@ class RestrictedViewportTests(unittest.TestCase):
             'void fullScreenViewport( GFx::Viewport &outGv, bool restricted )',
             'void rectFromClipBounds(', 'void runtimeGUIViewport('))
         include=root/'include';(include/'moo').mkdir(parents=True)
-        (include/'windows.h').write_text('#pragma once\n#ifndef _MSC_VER\n#define __cdecl\n#endif\n'
+        (include/'windows.h').write_text('#pragma once\n#ifndef __cdecl\n#define __cdecl\n#endif\n'
             'using HMODULE=void*;void* LoadLibraryW(const wchar_t*);void FreeLibrary(void*);'
             'void* GetProcAddress(void*,const char*);\n')
         (include/'moo/device_callback.hpp').write_text('#pragma once\n')
