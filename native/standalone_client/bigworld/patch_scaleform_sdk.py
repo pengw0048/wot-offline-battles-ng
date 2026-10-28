@@ -91,6 +91,32 @@ def sdk_edits(sdk_root, edit):
     translator_edits(sdk_root, edit)
     drop_shadow_edits(sdk_root, edit)
     bitmap_lifetime_edits(sdk_root, edit)
+    tracer_merge_edits(sdk_root, edit)
+
+
+def tracer_merge_edits(sdk_root, edit):
+    # #1513's 4.6.34 verifier join (00e41c60) raises #1068 only for a scope
+    # "with" mismatch (00e41d2a); a type pair without a common type becomes the
+    # any type, the ClassClass instance traits (00e64880, vm+0x134). Its
+    # coerce_a (00e40ee8) keeps non-numeric types, as here, so lobby.swf
+    # ContentTabBar.populateRendererData joins Boolean with IDataProvider.
+    tracer = sdk_root / 'Src/GFx/AS3/AS3_Tracer.cpp'
+    any_join = '        JoinSNodesUpdateType(to_v, from_v, GetClassType());\n        goto success;\n'
+    for label, head in (
+            ('null into a numeric type',
+             '            // We can store Null in Strings and non-numeric types.\n'
+             '            JoinSNodesAssign(to_v, from_v);\n            goto success;\n        }\n'),
+            ('numeric type into null',
+             '            // "to" already has a right type.\n'
+             '            JoinSNodesNoAssignment(ind, to_v, from_v, ms);\n            goto success;\n        }\n')):
+        edit(tracer, head + '        else\n            goto error;\n',
+             head + '        else\n        {\n    ' + any_join.replace('\n        ', '\n            ') + '        }\n',
+             'Tracer join of ' + label)
+    edit(tracer,
+         '    // For debugging.\n    if (result)\n        goto success;\n    else\n        goto error;\n',
+         '    // No common base: the any type.\n    if (!result)\n' + any_join.replace('        goto success;\n', '') +
+         '    goto success;\n',
+         'Tracer join without a common base')
 
 
 def bitmap_lifetime_edits(sdk_root, edit):
