@@ -1,4 +1,6 @@
 #include "stock_vehicle_decals_host.hpp"
+// The actual SDK already declares this type through its render headers.
+namespace BW { class Renderer {}; }
 #include "stock_vehicle_decals.cpp"
 namespace BW {
 std::vector<StockDeferredDecalPacket> submitted;

@@ -30,10 +30,11 @@ struct Image
     Moo::BaseTexturePtr source;
     std::map<unsigned,ComObjectWrap<DX::Texture>> views;
 };
+class VehicleDecalRenderer;
 struct Decal
 {
     std::shared_ptr<Image> image;
-    std::weak_ptr<class Renderer> renderer;
+    std::weak_ptr<VehicleDecalRenderer> renderer;
     unsigned material=2,priority=0,influence=2,generation=0;
     bool active=true;
 };
@@ -43,7 +44,7 @@ struct Pending
     Matrix world;
     unsigned generation;
 };
-class Renderer : public Moo::DeviceCallback
+class VehicleDecalRenderer : public Moo::DeviceCallback
 {
 public:
     bool open=true,frame=false;
@@ -102,7 +103,7 @@ public:
         images[name]=image; return image;
     }
 };
-std::shared_ptr<Renderer> renderer;
+std::shared_ptr<VehicleDecalRenderer> renderer;
 int selectedQuality=0;
 
 class SceneHit : public CollisionCallback
@@ -240,7 +241,7 @@ PY_FACTORY_NAMED(WGShadowForwardDecal,"WGShadowForwardDecal",BigWorld)
 bool initialiseStockVehicleDecals()
 {
     if(renderer) return true;
-    auto owner=std::make_shared<Renderer>(); owner->quality=selectedQuality;
+    auto owner=std::make_shared<VehicleDecalRenderer>(); owner->quality=selectedQuality;
     DataSectionPtr config=BWResource::openSection(configuration.value());
     DataSectionPtr scene=config?config->openSection("semiDynamic"):NULL;
     if(!scene) return failure("The original semiDynamic decal configuration is unavailable");
