@@ -29,9 +29,31 @@ def patch(root):
     const BW::vector<BoundingBox>& stockVisibleCells() const { return stockVisibleCells_; }''')
     source = replace(source, '\tBW::vector<Chunk*>\t\t\t\t\tvisibleChunks_;',
                      '\tBW::vector<Chunk*>\t\t\t\t\tvisibleChunks_;\n    BW::vector<BoundingBox> stockVisibleCells_;')
+    source = replace(source, '\tbool\t\t\t\t\t\t\t\tinitialised_;',
+                     '\tbool\t\t\t\t\t\t\t\tinitialised_;\n    bool stockQueryDataReady_;\n    uint64 stockQueryGeneration_;')
     pending.append((path, source))
     path = root / 'lib/romp/water.cpp'
-    source = replace(path.read_text(), '#define BANK_DIST_DEFAULT_VALUE std::make_pair(Vector2::zero(), 100000000.0f)',
+    source = replace(path.read_text(), '    initialised_( false ),',
+                     '    initialised_( false ),\n    stockQueryDataReady_( false ),\n    stockQueryGeneration_( ++s_stockWaterQueryGeneration ),')
+    source = replace(source, '''void Water::rebuild( const WaterState& state, const WaterResources& resources )
+{
+    BW_GUARD;''', '''void Water::rebuild( const WaterState& state, const WaterResources& resources )
+{
+    BW_GUARD;
+    {
+        // Wait for an old table producer before invalidating its queued completion.
+        SimpleMutexHolder guard(*deletionLock_);
+        stockQueryDataReady_ = false;
+        stockQueryGeneration_ = ++s_stockWaterQueryGeneration;
+    }''')
+    source = replace(source, '''    w3.stop();
+    static DogWatch w4( "Finalisation" );''', '''    // Main-thread completion follows doCreateTables; the alpha grid and
+    // actual bounds are now complete independently of GPU draw readiness.
+    stockQueryDataReady_ = true;
+
+    w3.stop();
+    static DogWatch w4( "Finalisation" );''')
+    source = replace(source, '#define BANK_DIST_DEFAULT_VALUE std::make_pair(Vector2::zero(), 100000000.0f)',
                      '#define BANK_DIST_DEFAULT_VALUE std::make_pair(Vector2::zero(), 10000.0f)')
     source = replace(source, '            minDist = 100000000.0f;', '            minDist = 10000.0f;')
     source = replace(source, """    transform_.setRotateY( state_.orientation_ );
@@ -91,13 +113,64 @@ def patch(root):
         (deferred ? state_.sunScaleDeferred_ : state_.sunScale_) );''')
     source = replace(source, '''    paramCache_->setBool( "enableWaterShadows", state_.useShadows_ );''', '''    paramCache_->setBool( "enableWaterShadows", state_.useShadows_ );
     paramCache_->setBool( "g_useHighQuality", Waters::s_highQuality_ );''')
-    source = replace(source, 'Water::Water( const WaterState& state, const WaterResources& resources, RompColliderPtr pCollider )', '''void Water::stockBeginVisibleCells()
+    source = replace(source, 'Water::Water( const WaterState& state, const WaterResources& resources, RompColliderPtr pCollider )', '''namespace
+{
+uint64 s_stockWaterQueryGeneration = 0;
+struct StockWaterTablesContext
+{
+    Water* water;
+    uint64 generation;
+    StockWaterTablesContext(Water* owner,uint64 identity):water(owner),generation(identity){}
+};
+class StockWaterTablesTask : public CStyleBackgroundTask
+{
+    // The actual queued task owns the context through completion or cancellation.
+    StockWaterTablesContext context_;
+public:
+    StockWaterTablesTask(Water* owner,uint64 generation,FUNC_PTR background,FUNC_PTR completion):
+        CStyleBackgroundTask("Water Load Task",background,&context_,completion,&context_),
+        context_(owner,generation){}
+};
+}
+
+void Water::stockBeginVisibleCells()
 {
     // 00a29740 resets once before this view's selected cells are appended.
     if (drawMark_ != Waters::nextDrawMark()) stockVisibleCells_.clear();
 }
 
 Water::Water( const WaterState& state, const WaterResources& resources, RompColliderPtr pCollider )''')
+    source = replace(source, '''            new CStyleBackgroundTask( "Water Load Task",
+                &Water::doCreateTables, this,
+                &Water::onCreateTablesComplete, this ) );''', '''            new StockWaterTablesTask(this,stockQueryGeneration_,
+                &Water::doCreateTables,&Water::onCreateTablesComplete) );''')
+    source = replace(source, '''        Water::doCreateTables( this );
+        Water::onCreateTablesComplete( this );''', '''        StockWaterTablesContext context(this,stockQueryGeneration_);
+        Water::doCreateTables( &context );
+        Water::onCreateTablesComplete( &context );''')
+    for signature in ('void Water::doCreateTables( void* self )',
+                      'void Water::onCreateTablesComplete( void * self )'):
+        source = replace(source, signature + '''
+{
+    BW_GUARD;
+
+    Water * selfWater = static_cast< Water * >( self );
+    if (Water::stillValid(selfWater))
+    {''', signature + '''
+{
+    BW_GUARD;
+
+    const StockWaterTablesContext* context = static_cast<StockWaterTablesContext*>(self);
+    Water* selfWater = context->water;
+    if (Water::stillValid(selfWater))
+    {
+        // stillValid holds deletionLock_: an old task may find a newer Water at
+        // the same address, but must never build or publish that object's data.
+        if (selfWater->stockQueryGeneration_ != context->generation)
+        {
+            if (Water::backgroundLoad()) deletionLock_->give();
+            return;
+        }''')
     source = replace(source, '''void Water::deleteWater(Water* water)
 {\x20\x20\x20
     BW_GUARD_PROFILER( Water_deleteWater );''', '''static void removeStockWaterFromDrawList(Water* water);

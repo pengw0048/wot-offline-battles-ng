@@ -177,6 +177,10 @@ class StockBallisticsTest(unittest.TestCase):
                 (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
                 (directory / 'include' / fake).write_text('#pragma once\n')
             (directory / 'include/stock_ground_water_query.inc').write_text(water)
+            script = engine_sources(self)['lib/pyscript/script.cpp']
+            converter = between(script, 'int Script::setData( PyObject * pObject, bool & rBool,', '\n}\n')
+            (directory / 'include/stock_bool_converter.inc').write_text(
+                '#ifndef _WIN32\n#include <strings.h>\n#define _stricmp strcasecmp\n#endif\nnamespace BW {\n' + converter + '}\n')
             core = directory / 'core.o'
             subprocess.run(['c++', *native_test_compile_flags('c++'), *STRICT, '-g', '-c', *CORE, '-o', str(core)],
                            check=True)

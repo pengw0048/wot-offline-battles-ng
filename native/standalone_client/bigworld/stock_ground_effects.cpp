@@ -16,6 +16,7 @@
 #include "terrain/base_terrain_block.hpp"
 #include "moo/renderer.hpp"
 #include "romp/water.hpp"
+#include "cstdmf/stock_worker_runtime.hpp"
 #include <array>
 #include <cstdlib>
 #include <deque>
@@ -30,7 +31,18 @@ float Water::stockGroundRayDistance(const Vector3& start,const Vector3& end) con
 {
     // a302e0's false-alpha branch. The original readiness and visibility writers
     // are a2ba50/a2d970 and a2ff10 respectively.
-    if (!initialised_||!visible_||start==end) return -1.f;
+    if (wot::stockSimulationWorker()) return collideStockWorkerWater(this,start,end);
+    if (!initialised_||!visible_) return -1.f;
+    return stockWaterGeometryDistance(start,end);
+}
+float Water::stockQueryRayDistance(const Vector3& start,const Vector3& end) const
+{
+    if (!stockQueryDataReady_) return -1.f;
+    return stockWaterGeometryDistance(start,end);
+}
+float Water::stockWaterGeometryDistance(const Vector3& start,const Vector3& end) const
+{
+    if (start==end) return -1.f;
     Vector3 normal;
     const Vector3 up(0.f,1.f,0.f);
     D3DXVec3TransformNormal(&normal,&up,&transform_);

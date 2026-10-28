@@ -150,7 +150,8 @@ assert(!weak.expired());runtime->pendingEffects.clear();assert(weak.expired()&&d
 
     def test_actual_surface_queries_and_water_guards(self):
         source=(ROOT / 'bigworld/stock_ground_effects.cpp').read_text()
-        water=body(source,'float Water::stockGroundRayDistance(')
+        water='\n'.join(body(source,'float Water::'+name+'(') for name in (
+            'stockGroundRayDistance','stockQueryRayDistance','stockWaterGeometryDistance'))
         surface=body(source,'struct Hit')+';\n'+body(source,'float waterDistance(')+'\n'+body(source,'Vector3 groundPoint(')
         probe=(ROOT / 'tests/stock_ground_effects_surface_probe.cpp').read_text().replace('@WATER@',water).replace('@SURFACE@',surface)
         compile_run(self,probe)

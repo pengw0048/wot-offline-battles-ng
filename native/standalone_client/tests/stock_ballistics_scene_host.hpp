@@ -11,6 +11,7 @@
 #include <vector>
 
 #define BW_BEGIN_NAMESPACE namespace BW {
+namespace wot { inline bool stockSimulationWorker() { return false; } }
 #define BW_END_NAMESPACE }
 #define PY_AUTO_MODULE_FUNCTION(...)
 
@@ -81,6 +82,7 @@ private:
 };
 
 namespace Script {
+int setData(PyObject*, bool&, const char*);
 // The Python wrappers are not called by this host.
 inline PyObject * getData(const Vector3 &) { Py_RETURN_NONE; }
 inline PyObject * getData(const Vector4 &) { Py_RETURN_NONE; }
@@ -204,6 +206,8 @@ inline ClientSpacePtr cameraSpace() { return ClientSpacePtr(); }
 class Water {
 public:
     struct WaterState { Vector2 size_; float tessellation_ = 1.f; bool useEdgeAlpha_ = false; };
+    float stockQueryRayDistance(const Vector3 & start, const Vector3 & end) const;
+    float stockWaterGeometryDistance(const Vector3 & start, const Vector3 & end) const;
     float stockGroundRayDistance(const Vector3 & start, const Vector3 & end) const;
     float stockWaterRayDistance(const Vector3 & start, const Vector3 & end, bool edgeAlpha) const;
     const Vector3 & position() const { return transform_.applyToOrigin(); }
@@ -212,8 +216,9 @@ public:
     uint32 gridSizeX_ = 0, gridSizeZ_ = 0;
     std::vector<uint32> wAlpha_;
     BoundingBox bbActual_;
-    bool initialised_ = true, visible_ = true;
+    bool initialised_ = true, visible_ = true, stockQueryDataReady_ = false;
 };
+inline float collideStockWorkerWater(const Water*,const Vector3&,const Vector3&) { return -1.f; }
 struct Waters : std::vector<Water *> { static Waters & instance() { static Waters w; return w; } };
 }
 

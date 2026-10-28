@@ -3373,6 +3373,20 @@ while their scene bounds and LOD remained at the initial transform. Focused
 tests execute the compound and SDK attachment/embodiment/tick bodies, including
 the old failure, rotation, late binding, offscreen updates and unload/rebind.
 They do not replace Windows validation of intermittent vehicle disappearance.
+Hidden-worker water queries use the current compiled space's bound water owner
+and completed CPU geometry. The common ground-ray entry covers water sensors,
+ground effects and `wg_collideWater`, retaining the original plane, bounds,
+surface order and optional edge-alpha arithmetic. Ordinary visible clients keep
+their original render-initialization and visibility guards. A real hidden-worker
+capture reproduced the old failure: a loaded water object remained uninitialized
+for rendering and returned no hit for the submerged vehicle's hull ray.
+CPU readiness is published only after table loading and actual bounds completion;
+unload revokes the mapping before scene callbacks. Table tasks retain the water
+generation through background work and foreground completion, so delayed work
+cannot initialize a new water object that reuses the old address. Focused tests
+exercise the SDK producers, loader ownership, original miss, address reuse,
+disabled surfaces and unload/rebind. End-to-end drowning still requires the real
+worker and unchanged server to accept the observation and complete the countdown.
 The Hybrid build's profiler checks optional callback metadata before string
 conversion and retains dynamic metadata until it has copied the profiling name.
 Native bound methods legitimately expose `__module__ = None`; profiling must

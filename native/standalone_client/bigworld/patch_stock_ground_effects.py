@@ -18,11 +18,17 @@ def apply(root):
     path = root / 'lib/romp/water.hpp'
     source = path.read_text(encoding='utf-8-sig')
     declaration = '\tfloat stockGroundRayDistance(const Vector3& start, const Vector3& end) const;'
+    declaration += ('\n\tfloat stockQueryRayDistance(const Vector3& start, const Vector3& end) const;'
+                    '\n\tfloat stockWaterGeometryDistance(const Vector3& start, const Vector3& end) const;')
     if declaration not in source:
         anchor = '\tbool visible() const { return visible_; }'
         if source.count(anchor) != 1:
             raise ValueError('Original Water visibility owner anchor changed')
-        source = source.replace(anchor, declaration + '\n' + anchor, 1)
+        previous = declaration.split('\n', 1)[0]
+        if previous in source:
+            source = source.replace(previous, declaration, 1)
+        else:
+            source = source.replace(anchor, declaration + '\n' + anchor, 1)
     here = Path(__file__).resolve().parent
     copied = {root / 'lib' / name: (here / name).read_text() for name in (
         'stock_ground_effects.hpp', 'stock_ground_effects.cpp', 'stock_ground_effects_data.hpp')}

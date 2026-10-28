@@ -2,6 +2,8 @@
 #include "stock_space_water_scene.hpp"
 #include "stock_space_water.hpp"
 #include "stock_space_water_geometry.hpp"
+#include "stock_ground_effects.hpp"
+#include "space/deprecated_space_helpers.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/string_table.hpp"
@@ -114,9 +116,18 @@ struct StockWaterSceneLoader::State
     Binary binary;
     std::vector<Water*> waters;
     std::vector<Cell> cells;
+    std::vector<bool> querySurfaces;
     std::vector<DynamicObjectHandle> memberships;
     CompiledSpace* space = NULL;
     bool bound = false;
+    bool binding = false;
+    bool queryable = false;
+    static std::vector<std::weak_ptr<State>>& queryOwners()
+    {
+        // Construction, bind, query and retirement all run on the main thread.
+        static std::vector<std::weak_ptr<State>> owners;
+        return owners;
+    }
     ~State()
     {
         for (Water* water : waters) if (water) Water::deleteWater(water);
@@ -165,7 +176,9 @@ bool StockWaterSceneLoader::doBind()
 {
     auto live = state_;
     if (!live) return false;
-    if (live->bound) return true;
+    if (live->binding) return false;
+    if (live->bound) return live->queryable;
+    live->binding = true;
     for (const auto& instance : live->binary.instances())
     {
         Water::WaterResources resources;
@@ -178,6 +191,7 @@ bool StockWaterSceneLoader::doBind()
         if (state_ != live) return false;
     }
     live->bound = true;
+    live->querySurfaces.resize(live->waters.size(),false);
     for (size_t index=0;index<live->cells.size();++index)
     {
         auto& cell = live->cells[index];
@@ -198,12 +212,25 @@ bool StockWaterSceneLoader::doBind()
             return false;
         }
         live->memberships.push_back(handle);
+        live->querySurfaces[cell.surface] = true;
     }
+    live->binding = false;
+    live->queryable = true;
+    State::queryOwners().push_back(live);
     return true;
 }
 void StockWaterSceneLoader::removeMembership(const std::shared_ptr<State>& live)
 {
+    // Revoke the entire mapping before any scene-observer callback can reenter.
     live->bound = false;
+    live->queryable = false;
+    auto& owners = State::queryOwners();
+    for (auto it=owners.begin();it!=owners.end();)
+    {
+        auto owner=it->lock();
+        if (!owner || owner==live) it=owners.erase(it);
+        else ++it;
+    }
     std::vector<DynamicObjectHandle> retired;
     retired.swap(live->memberships);
     for (const auto& handle : retired) live->space->dynamicScene().removeObject(handle);
@@ -222,5 +249,25 @@ void StockWaterSceneLoader::doUnload()
     removeMembership(live);
 }
 float StockWaterSceneLoader::percentLoaded() const { return state_?1.f:0.f; }
+float StockWaterSceneLoader::collide(const Water* water,const Vector3& start,const Vector3& end)
+{
+    ClientSpacePtr space = DeprecatedSpaceHelpers::cameraSpace();
+    if (!space || space->cleared()) return -1.f;
+    for (const auto& entry : State::queryOwners())
+    {
+        auto live = entry.lock();
+        if (!live || !live->bound || !live->queryable || live->space!=space.get()) continue;
+        for (size_t index=0;index<live->waters.size();++index)
+            if (live->waters[index]==water && live->querySurfaces[index])
+                // Cells admit their surface, as in the original draw owner; they
+                // do not clip its plane, bounding box or optional alpha test.
+                return water->stockQueryRayDistance(start,end);
+    }
+    return -1.f;
+}
+}
+float collideStockWorkerWater(const Water* water,const Vector3& start,const Vector3& end)
+{
+    return CompiledSpace::StockWaterSceneLoader::collide(water,start,end);
 }
 BW_END_NAMESPACE

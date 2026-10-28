@@ -6,6 +6,7 @@
 #include <vector>
 using uint32=std::uint32_t;
 namespace BW{using string=std::string;}
+namespace wot { inline bool stockSimulationWorker(){return false;} }
 struct Vector3 {
 float x,y,z;Vector3(float a=0,float b=0,float c=0):x(a),y(b),z(c){}
 Vector3 operator+(const Vector3& v)const{return {x+v.x,y+v.y,z+v.z};}
@@ -19,11 +20,14 @@ void D3DXVec3Transform(Vector4* out,const Vector3* v,const Matrix* m){*out={v->x
 void D3DXVec3Normalize(Vector3* out,const Vector3* v){const float n=sqrtf(v->x*v->x+v->y*v->y+v->z*v->z);if(n==0){*out={};return;}*out={v->x/n,v->y/n,v->z/n};}
 struct Box{Vector3 minimum{-10,-1,-20},maximum{10,1,20};const Vector3& minBounds()const{return minimum;}const Vector3& maxBounds()const{return maximum;}};
 struct Water{
-bool initialised_=true,visible_=true;Matrix transform_,invTransform_;Box bbActual_;
+bool initialised_=true,visible_=true,stockQueryDataReady_=false;Matrix transform_,invTransform_;Box bbActual_;
 Vector3 pos;const Vector3& position()const{return pos;}
 void height(float y){pos.y=y;transform_.y=y;invTransform_.y=-y;}
+float stockQueryRayDistance(const Vector3& start,const Vector3& end)const;
+float stockWaterGeometryDistance(const Vector3& start,const Vector3& end)const;
 float stockGroundRayDistance(const Vector3& start,const Vector3& end)const;
 };
+float collideStockWorkerWater(const Water*,const Vector3&,const Vector3&){return -1.f;}
 @WATER@
 struct Waters:std::vector<Water*> {
 unsigned ripples=0;Vector3 ripple;

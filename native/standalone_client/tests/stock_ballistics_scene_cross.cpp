@@ -4,6 +4,7 @@
 #include "stock_scene_identity.hpp"
 
 #include "stock_ground_water_query.inc"
+#include "stock_bool_converter.inc"
 #include "stock_battle_scene_queries.cpp"
 #include "stock_ballistics_scene.cpp"
 

@@ -4,6 +4,8 @@
 
 BW_BEGIN_NAMESPACE
 class Scene;
+class Water;
+class Vector3;
 namespace CompiledSpace
 {
 // BWWa2 owns complete Water surfaces and a separate set of visible local cells.
@@ -14,6 +16,7 @@ public:
     virtual ~StockWaterSceneLoader();
     virtual bool loadMustSucceed() const { return true; }
     static void registerHandlers(Scene& scene);
+    static float collide(const Water* water,const Vector3& start,const Vector3& end);
 protected:
     virtual bool doLoadFromSpace(ClientSpace* space, BinaryFormat& file,
         const DataSectionPtr& settings, const Matrix& mappingTransform, const StringTable& strings);
