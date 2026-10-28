@@ -148,6 +148,20 @@ class Stub(object):
         pass
 
 
+class LiveModels(object):
+    """#1513 Entity.models: a live PySTLSequence over the embodiment vector
+    (getter 00662710 -> 006a9490, no tp_iter), indexed per access."""
+
+    def __init__(self, attached):
+        self.attached = attached
+
+    def __len__(self):
+        return len(self.attached)
+
+    def __getitem__(self, index):
+        return self.attached[index]
+
+
 def check_flock_exotic():
     path = os.environ.get('STOCK_FLOCK_EXOTIC_PYC')
     if not path:
@@ -173,15 +187,14 @@ def check_flock_exotic():
             self.delayed = []
             self.sounds = []
 
-        # Snapshot view: Entity.models iteration semantics belong to the entity
-        # owner, not this motor, and are not asserted here.
         @property
         def models(self):
-            return list(self.attached)
+            return LiveModels(self.attached)
 
         def addModel(self, model):
             self.attached.append(model)
 
+        # 006614e0 -> 006784c0 erases the embodiment immediately (0067854a/0067858e).
         def delModel(self, model):
             self.attached.remove(model)
 
@@ -194,42 +207,62 @@ def check_flock_exotic():
         def _delSound(self):
             self.sounds.append(None)
 
-    flock = Flock()
-    function('__init__')(flock)
-    for name in ('__createMotor', '__getRandomSpawnPos', '__getRandomTargetPos', '__onFlightEnd'):
-        setattr(flock, '_FlockExotic' + name, types.MethodType(function(name), flock))
-    birds = [Host.Model() for unused in range(3)]
-    for bird in birds:
-        bird.visible = False
-    flock._FlockExotic__models = birds
-    random.seed(1513)
-    Host.setTime(431.25)
-    function('onTrigger')(flock)
-    assert flock.models == birds and all(bird.visible for bird in birds)
-    assert all(bird.actions() == ['FlockAnimAction'] for bird in birds)
-    assert all(len(bird.motors) == 1 and bird.motors[0].owner is bird for bird in birds)
-    assert len(flock.delayed) == 1 and flock.sounds == ['birds_flight']
-    flight, end = flock.delayed[0]
-    starts = [bird.world()[12:15] for bird in birds]
-    # Model-driven frames: birds leave their spawn and face their velocity.
-    clock = 431.25
-    while clock < 431.25 + flight + 1.:
-        clock += 1 / 30.
-        Host.setTime(clock)
+    def flight(count):
+        flock = Flock()
+        function('__init__')(flock)
+        for name in ('__createMotor', '__getRandomSpawnPos', '__getRandomTargetPos', '__onFlightEnd'):
+            setattr(flock, '_FlockExotic' + name, types.MethodType(function(name), flock))
+        birds = [Host.Model() for unused in range(count)]
         for bird in birds:
-            bird.tick(1 / 30.)
-    for bird, start in zip(birds, starts):
-        world = bird.world()
-        assert not close(world[12:15], start, 1.), (world[12:15], start)
-        forward = world[8:11]
-        assert abs(math.sqrt(sum(v * v for v in forward)) - 1.) < 1e-3
-    # Flight end clears the motors, hides and releases every bird.
-    end()
-    assert flock.models == [] and all(not bird.visible and bird.motors == () for bird in birds)
-    assert flock.sounds == ['birds_flight', None]
-    # A second trigger builds fresh motors on the same models.
+            bird.visible = False
+        flock._FlockExotic__models = birds
+        random.seed(1513 + count)
+        Host.setTime(431.25)
+        function('onTrigger')(flock)
+        assert flock.attached == birds and all(bird.visible for bird in birds)
+        assert all(bird.actions() == ['FlockAnimAction'] for bird in birds)
+        assert all(len(bird.motors) == 1 and bird.motors[0].owner is bird for bird in birds)
+        assert len(flock.delayed) == 1 and flock.sounds == ['birds_flight']
+        motors = [bird.motors[0] for bird in birds]
+        starts = [bird.world()[12:15] for bird in birds]
+        # Model-driven frames: birds leave their spawn and face their velocity.
+        clock = 431.25
+        while clock < 431.25 + flock.delayed[0][0] + 1.:
+            clock += 1 / 30.
+            Host.setTime(clock)
+            for bird in birds:
+                bird.tick(1 / 30.)
+        for bird, start in zip(birds, starts):
+            world = bird.world()
+            assert not close(world[12:15], start, 1.), (world[12:15], start)
+            assert abs(math.sqrt(sum(v * v for v in world[8:11])) - 1.) < 1e-3
+        flock.delayed[0][1]()
+        return flock, birds, motors, function
+
+    # One bird: flight end detaches, hides and releases it; a retrigger
+    # builds a fresh owned motor.
+    flock, birds, motors, function = flight(1)
+    assert flock.attached == [] and not birds[0].visible and birds[0].motors == ()
+    assert motors[0].owner is None and flock.sounds == ['birds_flight', None]
     function('onTrigger')(flock)
-    assert all(len(bird.motors) == 1 for bird in birds)
+    assert len(birds[0].motors) == 1 and birds[0].motors[0] is not motors[0]
+    assert birds[0].motors[0].owner is birds[0]
+
+    # Several birds: the stock loop deletes from the live sequence it is
+    # iterating, so every second bird is skipped exactly as on #1513. Each
+    # processed bird is fully torn down; each skipped bird keeps flying.
+    for count, skipped in ((3, [1]), (4, [1, 3])):
+        flock, birds, motors, unused = flight(count)
+        assert flock.attached == [birds[i] for i in skipped], (count, flock.attached)
+        for index, (bird, motor) in enumerate(zip(birds, motors)):
+            if index in skipped:
+                assert bird.visible and bird.motors == (motor,) and motor.owner is bird
+                before = bird.world()[12:15]
+                Host.setTime(500.)
+                bird.tick(1.)
+                assert bird.world()[12:15] != before
+            else:
+                assert not bird.visible and bird.motors == () and motor.owner is None
 
 
 check_native_contract()
