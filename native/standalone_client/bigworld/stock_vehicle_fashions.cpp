@@ -134,6 +134,8 @@ Moo::ComplexEffectMaterialPtr materialVariant(
     Moo::ComplexEffectMaterialPtr result = new Moo::ComplexEffectMaterial();
     if (!result->load( section ))
         return Moo::ComplexEffectMaterialPtr();
+    // The variant effect can introduce defaults absent from the saved material.
+    result->baseMaterial()->replaceDefaults();
     return result;
 }
 

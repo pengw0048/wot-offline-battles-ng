@@ -325,8 +325,6 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "vehicle-compound-rendering-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio.py"),
         $EngineRoot) "stock-audio-patch.log"
-    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio_space.py"),
-        $EngineRoot) "stock-audio-space-patch.log"
     # Keeps the simulation worker hidden; replaces its draw phase after audio.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_worker_runtime.py"),
         $EngineRoot) "stock-worker-runtime-patch.log"
@@ -467,6 +465,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-space-geometry-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_terrain.py"),
         $EngineRoot) "stock-space-terrain-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_terrain_detail_lod.py"),
+        $EngineRoot) "stock-terrain-detail-lod-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_terrain_vertices.py"),
         $EngineRoot) "stock-terrain-vertices-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_trees.py"),
@@ -497,6 +497,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-local-lighting-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_compiled_space_mapping.py"),
         $EngineRoot) "stock-compiled-space-mapping-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio_space.py"),
+        $EngineRoot) "stock-audio-space-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_scene_ownership.py"),
         $EngineRoot) "stock-dynamic-scene-ownership-patch.log"
 

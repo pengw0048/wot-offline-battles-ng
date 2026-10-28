@@ -11,6 +11,8 @@
 #endif
 #include "pch.hpp"
 #include "stock_audio.hpp"
+#include "stock_audio_space_path.hpp"
+#include "compiled_space/compiled_space.hpp"
 #include "stock_sound_zones.hpp"
 #include "stock_audio_source.hpp"
 #include "stock_audio_io.hpp"
@@ -24,6 +26,7 @@
 #include "romp/enviro_minder.hpp"
 #include "romp/weather.hpp"
 #include "space/client_space.hpp"
+#include "resmgr/bwresource.hpp"
 #include "space/deprecated_space_helpers.hpp"
 #include "terrain/base_terrain_block.hpp"
 #include <AK/SoundEngine/Common/AkMemoryMgr.h>
@@ -414,15 +417,26 @@ bool selectStockAudioBankSet(const BW::string& section) {
     return accepted;
 }
 
-void setStockAudioSpaceBankSet(DataSectionPtr spaceSettings) {
+void setStockAudioSpaceBankSet(const BW::string& geometryPath) {
     if (!stockAudioReady()) return;
-    // #1513 1255d29..1255de8 tests the presence of gameplayTypes, not
-    // its value. The native camera-space notification selects these authored
-    // lists before publishing the new space to script callbacks.
-    const BW::string section = spaceSettings && spaceSettings->openSection("gameplayTypes") ?
+    // 12477d0 -> 1246a10 -> 1255a20 reads the arena definition, not
+    // space.settings. Even a complete environment root lacks gameplayTypes.
+    const std::string resource = wot::stockAudioArenaResource(
+        std::string(geometryPath.c_str(), geometryPath.size()));
+    DataSectionPtr definition = resource.empty() ? NULL :
+        BWResource::openSection(BW::string(resource.c_str(), resource.size()));
+    const BW::string section = definition && definition->openSection("gameplayTypes") ?
         "SFX_soundbanks_arena" : "SFX_soundbanks_hangar";
+    INFO_MSG("StockAudio: space banks geometry=%s definition=%s group=%s\n",
+        geometryPath.c_str(), resource.c_str(), section.c_str());
     if (!selectStockAudioBankSet(section))
         ERROR_MSG("StockAudio: camera-space bank selection failed: %s\n", section.c_str());
+}
+
+void notifyStockAudioCameraSpace(ClientSpace* space) {
+    if (!space || DeprecatedSpaceHelpers::cameraSpace().get() != space) return;
+    auto* compiled = dynamic_cast<CompiledSpace::CompiledSpace*>(space);
+    setStockAudioSpaceBankSet(compiled ? compiled->stockAudioGeometryPath() : BW::string());
 }
 
 void tickStockAudio(const Matrix& cameraWorld, float elapsed) {

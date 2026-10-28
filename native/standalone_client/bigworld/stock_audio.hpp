@@ -13,7 +13,9 @@ BW_BEGIN_NAMESPACE
 bool initialiseStockAudio(DataSectionPtr configuration, void* window);
 bool stockAudioReady();
 bool selectStockAudioBankSet(const BW::string& section);
-void setStockAudioSpaceBankSet(DataSectionPtr spaceSettings);
+class ClientSpace;
+void setStockAudioSpaceBankSet(const BW::string& geometryPath);
+void notifyStockAudioCameraSpace(ClientSpace* space);
 bool setStockAudioAuxiliarySend(unsigned busID, float gain);
 void tickStockAudio(const Matrix& cameraWorld, float elapsed);
 void finiStockAudio();

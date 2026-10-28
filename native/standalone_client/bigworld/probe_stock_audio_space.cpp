@@ -3,7 +3,7 @@
 #define main unusedStockAudioObjectsMain
 #include "probe_stock_audio_objects.cpp"
 #undef main
-#include "resmgr/xml_section.hpp"
+#include "stock_audio_space_path.hpp"
 
 namespace
 {
@@ -50,18 +50,33 @@ int main(int argc,char**argv)
             "Actual SDK initialization failed");
         require(BW::selectStockAudioBankSet("SFX_soundbanks_login"),"Login banks failed");
         phase("login-before",false);
-        BW::DataSectionPtr arena=new BW::XMLSection("probe_arena");
-        require(arena->newSection("gameplayTypes")!=NULL,"Cannot create authored-section fixture");
-        BW::setStockAudioSpaceBankSet(arena);
-        phase("arena-first",true);
-        BW::DataSectionPtr hangar=new BW::XMLSection("probe_hangar");
-        BW::setStockAudioSpaceBankSet(hangar);
-        phase("hangar-after",false);
-        BW::setStockAudioSpaceBankSet(arena);
-        phase("arena-second",true);
+        // Exercise the real geometry -> arena_defs producer. Complete native
+        // space.settings deliberately has no gameplayTypes on these maps.
+        const char* maps[]={"33_fjord", "01_karelia", "33_fjord"};
+        for (unsigned index=0;index<sizeof(maps)/sizeof(maps[0]);++index)
+        {
+            const char* name=maps[index];
+            const BW::string geometry=BW::string("spaces/")+name;
+            const auto settings=BW::BWResource::openSection(geometry+"/space.settings");
+            require(settings&&!settings->openSection("gameplayTypes"),
+                "Exact map environment must not impersonate the arena definition");
+            const auto definition=BW::BWResource::openSection(
+                BW::string(wot::stockAudioArenaResource(geometry.c_str()).c_str()));
+            require(definition&&definition->openSection("gameplayTypes"),
+                "Actual authored arena definition is missing");
+            const BW::string music=definition->readString("wwmusicSetup/wwmusicLoading");
+            require(!music.empty(),"Actual initial music event is missing");
+            BW::setStockAudioSpaceBankSet(geometry);
+            // The authored initial producer runs after scene-bank publication.
+            // Acceptance is a real PostEvent receipt, not speaker/listening proof.
+            eventReceipt(name,music.c_str(),true);
+            phase(name,true);
+            BW::setStockAudioSpaceBankSet("spaces/hangar_v2");
+            phase("hangar-after",false);
+        }
         require(BW::selectStockAudioBankSet("SFX_soundbanks_login"),"Return to login banks failed");
         phase("login-after",false);
-        std::cout<<"Actual SDK scene-bank negative/positive/unload/second-arena PASS"<<std::endl;
+        std::cout<<"Actual SDK real arena_defs producer / initial music / unload / same-and-other-arena PASS"<<std::endl;
         result=0;
     }
     catch(const std::exception& error){std::cerr<<error.what()<<std::endl;}

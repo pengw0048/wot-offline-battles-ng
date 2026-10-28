@@ -3347,6 +3347,12 @@ materials may omit those optional parameters. The adapter preserves existing
 property values and types without creating missing shader parameters or emitting
 an asset error on every draw. Required track and alpha-property handling is
 unchanged; Windows frame pacing remains a separate measurement.
+Compiled static materials and vehicle effect variants clone shared default
+properties once before their mutable bindings are published. The SDK default
+property objects otherwise alias across materials, allowing a later texture or
+scalar write to change an earlier model. Tests compile the original property
+loading, cloning and setter bodies and reproduce both ownership failures before
+applying the construction-boundary isolation.
 Compound bounds preserve the SDK's empty sentinel: disabled or unpopulated
 particle attachments contribute no geometry until their bounds become valid.
 Aggregation skips empty parts and attachments before transforming them, and
@@ -3518,10 +3524,12 @@ before releasing their scene membership.
 Authored sound-zone UDOs register the native camera-driven zone owner. Its
 original first-match and enter/exit order feeds live Wwise events and auxiliary
 sends; mapping completion supplies the map's default reverb, and native space
-destruction clears the registry. Camera-space changes select the authored
-arena or hangar sound-bank list before environment activation and the script
-notification; the presence of `gameplayTypes` selects the arena list. Login
-retains its explicit bank selection. A windowless Windows probe using the real
+destruction clears the registry. Camera-space changes resolve the active geometry mapping to its original
+`arena_defs` resource before selecting the authored arena or hangar sound-bank
+list. `gameplayTypes` belongs to that definition, not `space.settings`. Mapping
+publication also notifies an already-selected camera space before entities and
+ambient producers load; inactive preloads cannot switch the banks. Detachment
+and clearing re-query the remaining owner. Login retains its explicit selection. A windowless Windows probe using the real
 Wwise SDK and original resources reproduces the missing weapon, reload and
 engine events with only login banks, accepts them in the arena, unloads them
 in the hangar and accepts them again in the second arena. Its emitters are
@@ -3583,6 +3591,13 @@ unchanged. Tests compare uploaded bytes against the original native grid
 producer, exercise original shader inputs, and cover failed buffer creation,
 lock, upload and subsequent recovery. Correct final terrain pixels still require
 Windows rendering acceptance.
+
+Streamed detail heights retain the authored `ForcedLod` separately from the
+clamped render LOD. This preserves hangar blocks that provide only `heights3`
+instead of discarding that resource and repeatedly requesting missing `heights`.
+Unforced terrain continues to use the global quality setting, and real missing
+resources retain the existing failure and retry behavior. Tests execute the
+original native LOD selection and SDK evaluation, load and stream bodies.
 
 The public engine's BWT2 and BWSG readers expect section version 1. The exact
 #1513 numeric map packages examined contain BWTB version 1 containers with

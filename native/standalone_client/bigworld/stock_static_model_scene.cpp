@@ -286,6 +286,8 @@ bool StockStaticModelSceneLoader::State::loadMaterials( const StringTable & stri
         SmartPointer<Moo::ComplexEffectMaterial> material = new Moo::ComplexEffectMaterial;
         if (!material->initFromEffect( effect )) return fail( "Cannot initialise original compiled material effect" );
         Moo::EffectMaterialPtr base = material->baseMaterial();
+        // SDK defaults share EffectPropertyPtr with every user of this effect.
+        base->replaceDefaults();
         if (record.first != -1)
         {
             for (std::int32_t property = record.first; property <= record.last; ++property)

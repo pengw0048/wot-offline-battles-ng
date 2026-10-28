@@ -80,13 +80,14 @@ struct BaseTexture {std::string name;};using BaseTexturePtr=SmartPointer<BaseTex
 struct TextureManager{static TextureManager* instance(){static TextureManager p;return &p;}BaseTexturePtr get(const char* n){auto* t=new BaseTexture;t->name=n;return t;}};
 bool missingProperties=false;
 struct EffectMaterial {
- unsigned properties=0;bool boolean=true;float floating=0;int integer=0;Vector4 vector;std::string texture;
- bool setProperty(const char*,bool v,bool create){assert(create);if(missingProperties)return false;++properties;boolean=v;return true;}
- bool setProperty(const char*,float v,bool create){assert(create);if(missingProperties)return false;++properties;floating=v;return true;}
- bool setProperty(const char*,int v,bool create){assert(create);if(missingProperties)return false;++properties;integer=v;return true;}
- bool setProperty(const char*,const Matrix&,bool create){assert(create);if(missingProperties)return false;++properties;return true;}
- bool setProperty(const char*,const Vector4& v,bool create){assert(create);if(missingProperties)return false;++properties;vector=v;return true;}
- bool setProperty(const char*,const BaseTexturePtr& v,bool create){assert(create);if(missingProperties)return false;++properties;texture=v?v->name:"";return true;}
+ unsigned properties=0;bool boolean=true;float floating=0;int integer=0;Vector4 vector;std::string texture;bool isolated=false;
+ void replaceDefaults() {isolated=true;}
+ bool setProperty(const char*,bool v,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;boolean=v;return true;}
+ bool setProperty(const char*,float v,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;floating=v;return true;}
+ bool setProperty(const char*,int v,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;integer=v;return true;}
+ bool setProperty(const char*,const Matrix&,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;return true;}
+ bool setProperty(const char*,const Vector4& v,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;vector=v;return true;}
+ bool setProperty(const char*,const BaseTexturePtr& v,bool create){assert(create&&isolated);if(missingProperties)return false;++properties;texture=v?v->name:"";return true;}
 };using EffectMaterialPtr=SmartPointer<EffectMaterial>;
 struct ComplexEffectMaterial {EffectMaterialPtr base=new EffectMaterial;bool initFromEffect(const char* n){return std::string(n)=="original.fx";}const EffectMaterialPtr& baseMaterial()const{return base;}};
 struct Vertices{};using VerticesPtr=SmartPointer<Vertices>;
