@@ -617,6 +617,12 @@ public:
             parts[index].model->tick( elapsed );
         visitCompoundAttachments( state_, [elapsed]( CompoundAttachment & item )
             { item.object->tick( elapsed ); } );
+        // Parts draw from the compound's evaluated root. Publish that same
+        // root through the attachment liaison before the scene's post-tick
+        // spatial update, including while the compound is outside the view.
+        // Entity only installs an ActionMatcher for PyModel, not compounds.
+        if (state_->active)
+            this->worldTransform( state_->nodes[0].world );
     }
     virtual bool needsUpdate() const { return state_->active; }
     virtual bool isLodVisible() const { return this->visible(); }

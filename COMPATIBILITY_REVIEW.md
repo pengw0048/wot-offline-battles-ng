@@ -3366,6 +3366,13 @@ The original vehicle-sticker consumer skips the absent node during damaged-model
 refresh. Existing node handles and providers remain stable; a retired compound
 still raises its lifecycle error. Focused tests execute the original native
 missing-node branch and the unchanged sticker bytecode with the rebuilt lookup.
+Compound ticks publish their evaluated root transform through the attachment
+liaison before the scene's post-tick spatial update. Entity installs an
+ActionMatcher only for PyModel; without this publication, compound parts moved
+while their scene bounds and LOD remained at the initial transform. Focused
+tests execute the compound and SDK attachment/embodiment/tick bodies, including
+the old failure, rotation, late binding, offscreen updates and unload/rebind.
+They do not replace Windows validation of intermittent vehicle disappearance.
 The Hybrid build's profiler checks optional callback metadata before string
 conversion and retains dynamic metadata until it has copied the profiling name.
 Native bound methods legitimately expose `__module__ = None`; profiling must
