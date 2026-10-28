@@ -2,6 +2,8 @@
 import argparse
 from pathlib import Path
 
+DYNAMIC_MANAGER_GETTER='\tfloat stockObjectImpactSizeCoefficient() const { return decalObjectImpactSizeCoefficient; }\n'
+
 BSP_METHOD='''void BSPTree::visitStockDecalBox(const Vector3& center, const Vector3& first,
     const Vector3& second, const Vector3& third, CollisionVisitor* visitor) const
 {
@@ -60,6 +62,8 @@ def patch(root):
     # f5fb60 selects static objects; ab7fa0 forces selector10 (0x400),
     # produced by original SceneObjectFlags bit0x20. The public scene has no
     # collidable flag: its existing collision tree/inside-out bounds own it.
+    edit('lib/moo/dynamic_decal.hpp','\tDynamicDecalManager();',
+         DYNAMIC_MANAGER_GETTER+'\tDynamicDecalManager();')
     context='lib/scene/scene_intersect_context.hpp'
     edit(context,'\tbool includeStaticObjects() const;',
          '\tbool stockDecalCollisionOnly() const { return stockDecalCollisionOnly_; }\n'

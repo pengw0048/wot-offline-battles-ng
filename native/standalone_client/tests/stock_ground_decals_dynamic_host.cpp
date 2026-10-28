@@ -7,9 +7,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <type_traits>
+#include <utility>
 using std::string;
-struct Vector2 {float x,y;};
-struct Vector3 {float x=0,y=0,z=0;Vector3(){}Vector3(float a,float b,float c):x(a),y(b),z(c){}
+class Vector2 {public:float x,y;};
+class Vector3 {public:float x=0,y=0,z=0;Vector3(){}Vector3(float a,float b,float c):x(a),y(b),z(c){}
  Vector3 operator-(const Vector3& b)const{return {x-b.x,y-b.y,z-b.z};}Vector3 operator-()const{return {-x,-y,-z};}
  Vector3 operator+(const Vector3& b)const{return {x+b.x,y+b.y,z+b.z};}Vector3 operator*(float b)const{return {x*b,y*b,z*b};}};
 using D3DXVECTOR3=Vector3;
@@ -36,8 +38,18 @@ struct Owner {ClientSpacePtr space=std::make_shared<ClientSpace>();float time=12
  void syncSpace(){if(space&&space->cleared())space.reset();}
  std::shared_ptr<DynamicTextureSet> loadTextures(std::array<string,3>,string&){++loads;if(retire)space->dead=true;return fail?nullptr:std::make_shared<DynamicTextureSet>();}};
 std::shared_ptr<Owner> renderer=std::make_shared<Owner>();unsigned nextDynamicDecalPriority=0;
-namespace BW {using string=std::string;}
-struct DynamicDecalManager {float decalObjectImpactSizeCoefficient=.5f;static DynamicDecalManager& instance(){static DynamicDecalManager m;return m;}};
+namespace BW {using string=std::string;template<class T>using vector=std::vector<T>;}
+using int32=int;template<class T>using SmartPointer=std::shared_ptr<T>;
+template<class T>struct Singleton {static T& instance(){static T value;return value;}};
+float* watchedCoefficient=nullptr;
+#define BW_BEGIN_NAMESPACE
+#define BW_END_NAMESPACE
+#define MF_WATCH(path,value,...) watchedCoefficient=&value
+@DYNAMIC_MANAGER@
+@DYNAMIC_CONSTRUCTOR@
+template<class T,class=void>struct PublicCoefficient:std::false_type{};
+template<class T>struct PublicCoefficient<T,decltype(void(std::declval<T>().decalObjectImpactSizeCoefficient))>:std::true_type{};
+static_assert(!PublicCoefficient<DynamicDecalManager>::value,"The real SDK coefficient must stay private");
 bool dynamicFailure(string& error,const char* text){error=text;return false;}
 unsigned queries=0;bool queryAdmitted=true,querySuccess=true;
 bool queryStockGroundDecalProjection(const ClientSpacePtr&,const Vector3&,const Vector3&,const Vector2&,const WorldTriangle&,
@@ -45,12 +57,13 @@ bool queryStockGroundDecalProjection(const ClientSpacePtr&,const Vector3&,const 
 @PRODUCTION@
 int main()
 {
+ auto& registry=DynamicDecalManager::instance();assert(watchedCoefficient&&registry.stockObjectImpactSizeCoefficient()==.5f);
  string error;const Vector3 start(0,2,0),end(0,-2,0);const Vector2 size{2,4};
  auto submit=[&](bool simple){return addStockDynamicDecal(10,start,end,size,.3f,"d","n","s",simple,error);};
  assert(submit(true)&&queries==0&&renderer->decals.size()==1&&scaling[0]==2&&scaling[1]==4&&scaling[2]==.5f);
- renderer->space->flags=16;DynamicDecalManager::instance().decalObjectImpactSizeCoefficient=.25f;
+ renderer->space->flags=16;*watchedCoefficient=.25f;
  assert(submit(true)&&queries==0&&scaling[0]==.5f&&scaling[1]==1&&scaling[2]==.5f);
- DynamicDecalManager::instance().decalObjectImpactSizeCoefficient=.75f;
+ *watchedCoefficient=.75f;
  assert(submit(false)&&queries==0&&scaling[0]==1.5f&&scaling[1]==3);
  renderer->space->flags=8;assert(submit(false)&&queries==1&&scaling[0]==1.5f&&scaling[1]==3&&scaling[2]==.65f);
  unsigned count=renderer->decals.size(),loads=renderer->loads;queryAdmitted=false;

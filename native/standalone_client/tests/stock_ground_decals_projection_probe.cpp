@@ -1,5 +1,8 @@
-#include "stock_ground_decals_data.hpp"
 #include <cstdio>
+// WinDef.h defines these legacy pointer-qualifier macros on the real build.
+#define near
+#define far
+#include "stock_ground_decals_data.hpp"
 int main()
 {
     using namespace wot::GroundDecalMath;

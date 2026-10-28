@@ -198,9 +198,9 @@ inline bool project(const std::vector<SurfaceContact>& contacts,const Point& sta
     mean=scale(mean,div(1.f,static_cast<float>(contacts.size())));
     result.axis=scale(normalize(normals),-1.f);
     result.distance=std::sqrt(dot(mean,mean));
-    const float far=sub(std::sqrt(maximum),result.distance);
-    const float near=sub(result.distance,std::sqrt(minimum));
-    const float range=far>near?far:near;
+    const float farDistance=sub(std::sqrt(maximum),result.distance);
+    const float nearDistance=sub(result.distance,std::sqrt(minimum));
+    const float range=farDistance>nearDistance?farDistance:nearDistance;
     const float candidate=add(mul(std::abs(dot(result.axis,direction)),range),.4f);
     result.depth=candidate>=.4f?candidate:.4f;
     result.object=object;

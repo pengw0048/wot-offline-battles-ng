@@ -223,7 +223,7 @@ bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& e
     Vector3 axis = -hit.hit.normal();
     D3DXVec3Normalize(&axis, &axis);
     Vector3 position = start + direction * distance;
-    float width=(hit.hit.flags()&TRIANGLE_TERRAIN)?1.f:DynamicDecalManager::instance().decalObjectImpactSizeCoefficient;
+    float width=(hit.hit.flags()&TRIANGLE_TERRAIN)?1.f:DynamicDecalManager::instance().stockObjectImpactSizeCoefficient();
     float depth=.5f;
     if(!useSimpleCollision && (hit.hit.flags()&TRIANGLE_TERRAIN))
     {
@@ -232,7 +232,7 @@ bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& e
         if(!admitted) {error.clear();return true;}
         axis=Vector3(projection.axis[0],projection.axis[1],projection.axis[2]);
         position=start+direction*projection.distance;depth=projection.depth;
-        width=projection.object?DynamicDecalManager::instance().decalObjectImpactSizeCoefficient:1.f;
+        width=projection.object?DynamicDecalManager::instance().stockObjectImpactSizeCoefficient():1.f;
     }
     Vector3 up(1.f, 0.f, 0.f);
     const float parallel = 1.f - std::abs(axis.x);

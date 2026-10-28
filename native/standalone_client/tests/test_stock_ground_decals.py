@@ -58,9 +58,21 @@ class GroundDecalsTests(unittest.TestCase):
         from test_stock_dynamic_decals_owner import method
         source=(ROOT/'tests/stock_ground_decals_dynamic_host.cpp').read_text().replace('@PRODUCTION@',method(
             (ROOT/'bigworld/stock_dynamic_decals.cpp').read_text(),'bool addStockDynamicDecal('))
+        sys.path.insert(0,str(ROOT/'bigworld'))
+        import patch_stock_ground_decals as patcher
+        archive=Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.exists():self.skipTest('Pinned SDK required')
+        with tarfile.open(archive)as tar:
+            prefix=tar.getmembers()[0].name.split('/')[0]+'/programming/bigworld/'
+            header=tar.extractfile(prefix+'lib/moo/dynamic_decal.hpp').read().decode('utf-8-sig')
+            implementation=tar.extractfile(prefix+'lib/moo/dynamic_decal.cpp').read().decode('utf-8-sig')
+        header=header.replace('\tDynamicDecalManager();',patcher.DYNAMIC_MANAGER_GETTER+'\tDynamicDecalManager();')
+        header='\n'.join(line for line in header.splitlines()if not line.startswith(('#include','#pragma once')))
+        source=source.replace('@DYNAMIC_MANAGER@',header).replace('@DYNAMIC_CONSTRUCTOR@',method(implementation,'DynamicDecalManager::DynamicDecalManager()'))
         with tempfile.TemporaryDirectory(prefix='ground-decal-submission-')as name:
             directory=Path(name);(directory/'host.cpp').write_text(source);binary=directory/'host'
-            subprocess.run(compiler_command(self)+['-I'+str(ROOT/'bigworld'),'-I'+str(ROOT/'include'),str(directory/'host.cpp'),'-o',str(binary)],check=True)
+            # The unchanged SDK DecalGroup constructor lists names before lifetime.
+            subprocess.run(compiler_command(self)+['-Wno-reorder','-I'+str(ROOT/'bigworld'),'-I'+str(ROOT/'include'),str(directory/'host.cpp'),'-o',str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
 
     def test_actual_bsp_method_preserves_own_shared_and_collision_flag_filter(self):
@@ -90,7 +102,7 @@ class GroundDecalsTests(unittest.TestCase):
         import patch_stock_ground_decals as ground
         names=('lib/physics2/bsp.hpp','lib/physics2/bsp.cpp','lib/compiled_space/terrain2_scene_provider.hpp',
                'lib/compiled_space/terrain2_scene_provider.cpp','lib/scene/scene_intersect_context.hpp',
-               'lib/scene/scene_intersect_context.cpp','lib/space/dynamic_scene_provider.cpp')
+               'lib/scene/scene_intersect_context.cpp','lib/space/dynamic_scene_provider.cpp','lib/moo/dynamic_decal.hpp')
         archive=Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         if not archive.exists():self.skipTest('Pinned SDK required')
         with tempfile.TemporaryDirectory(prefix='ground-decal-broadphase-')as name,tarfile.open(archive)as tar:
@@ -119,7 +131,7 @@ class GroundDecalsTests(unittest.TestCase):
         import patch_stock_space_terrain as terrain
         names={'lib/physics2/bsp.hpp','lib/physics2/bsp.cpp','lib/compiled_space/terrain2_scene_provider.hpp',
                'lib/compiled_space/terrain2_scene_provider.cpp','lib/compiled_space/terrain2_types.hpp',
-               'lib/scene/scene_intersect_context.hpp','lib/scene/scene_intersect_context.cpp','lib/space/dynamic_scene_provider.cpp'}
+               'lib/scene/scene_intersect_context.hpp','lib/scene/scene_intersect_context.cpp','lib/space/dynamic_scene_provider.cpp','lib/moo/dynamic_decal.hpp'}
         names.update(re.findall(r"['\"](lib/[^'\"]+\.(?:cpp|hpp))['\"]",(ROOT/'bigworld/patch_stock_space_terrain.py').read_text()))
         archive=Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         if not archive.exists():self.skipTest('Pinned SDK required')
