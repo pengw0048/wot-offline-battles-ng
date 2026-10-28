@@ -1056,10 +1056,12 @@ print(json.dumps(out))
 
         # Production publishes exactly the 1d59f74 outcome to the old-ST4 owner.
         scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
-        state = scene[scene.index('struct TreeHidingState'):]
+        state = scene[scene.index('struct TreeCollisionBodyState'):]
         state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
         source = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
         production = '\n'.join(function(scene, signature) for signature in (
+            'void setStockTreeCollisionBody( MatrixProvider * target )',
+            'void closeStockTreeCollisionBody()',
             'void setStockTreeCameraTarget( MatrixProvider * target )', 'void closeStockTreeCameraTarget()',
             'void openStockTreeCameraTarget()')) + '\n' + \
             '\n'.join(function(source, signature) for signature in (

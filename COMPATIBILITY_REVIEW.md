@@ -3334,6 +3334,13 @@ device creation; both ordinary and D3D9Ex resets retire the previous pixels.
 Teardown releases Python owners before interpreter finalization; the Python
 console also detaches its output hooks at that boundary.
 
+`FreeCamera` shares the original `SpeedTreeTargetedCamera` base with
+`HomingCamera`. Updates publish the retained tree target before either the
+fixed-view or matrix-provider branch, and destruction clears that target
+before releasing the provider. `resetKeys` clears the native camera controls.
+These calls are required by the ordinary control-mode create/disable sequence,
+even when the player never selects the video camera.
+
 Ground impacts submit their original eight-argument `wg_addDecal` operation
 through the native texture registry and dynamic-decal renderer. Aggregate
 projection uses collision-purpose static candidates, BSP triangles and actual

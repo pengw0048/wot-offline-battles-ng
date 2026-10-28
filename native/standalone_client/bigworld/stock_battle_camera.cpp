@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_camera_collider.hpp"
+#include "stock_speedtree_targeted_camera.hpp"
 #include "stock_tree_scene.hpp"
 
 #include "camera/base_camera.hpp"
@@ -222,26 +223,6 @@ PY_END_ATTRIBUTES()
 
 PY_FACTORY( ThirdPersonProvider, BigWorld )
 
-
-/**
- *	#1513 SpeedTreeTargetedCamera (vtable 014d91cc): each update hands its
- *	target to the tree renderer slot that CursorCamera's sptHiding also uses.
- */
-class SpeedTreeTargetedCamera : public BaseCamera
-{
-    Py_Header( SpeedTreeTargetedCamera, BaseCamera )
-
-public:
-    explicit SpeedTreeTargetedCamera( PyTypeObject * pType ) : BaseCamera( pType ) {}
-
-    // #1513 007978e0.
-    void update( float ) override { setStockTreeCameraTarget( speedTreeTarget_.get() ); }
-
-    PY_RW_ATTRIBUTE_DECLARE( speedTreeTarget_, speedTreeTarget )
-
-private:
-    MatrixProviderPtr speedTreeTarget_;
-};
 
 PY_TYPEOBJECT( SpeedTreeTargetedCamera )
 

@@ -365,6 +365,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # Requires the ground-effects Water query and Python teardown owner above.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_cursor_camera.py"),
         $EngineRoot) "stock-cursor-camera-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_free_camera.py"),
+        $EngineRoot) "stock-free-camera-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_damage_sticker_registration.py"),
         $EngineRoot) "stock-damage-sticker-registration-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_stickers.py"),
