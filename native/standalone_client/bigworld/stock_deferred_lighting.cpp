@@ -76,7 +76,7 @@ public:
         {
             const auto & colour = Moo::rc().effectVisualContext().sunLight().m_ambient;
             scaleStockForwardSphericalHarmonics(activeSettings.sphericalHarmonics,
-                Vector3(colour[0], colour[1], colour[2]), activeSettings.forwardMultiplier, packed);
+                Vector3(colour.r, colour.g, colour.b), activeSettings.forwardMultiplier, packed);
             values = packed;
         }
         return SUCCEEDED(effect->SetValue(handle, values, sizeof(activeSettings.sphericalHarmonics)));

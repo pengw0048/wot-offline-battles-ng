@@ -71,6 +71,10 @@ struct ID3DXEffect {
     int SetTexture(D3DXHANDLE,void* value){if(fail)return -1;texture=value;return 0;}
 };
 namespace Moo {
+struct Colour {
+    float r,g,b,a;
+    Colour(float red=0,float green=0,float blue=0,float alpha=1):r(red),g(green),b(blue),a(alpha){}
+};
 struct BaseTexture {
     enum Status {STATUS_READY,STATUS_FAILED_TO_LOAD};
     Status state=STATUS_READY;
@@ -85,7 +89,7 @@ struct EffectVisualContext {
     enum Type {AUTO_CONSTANT_TYPE_PER_FRAME};
     std::map<std::string,std::shared_ptr<EffectConstantValue>> constants;
     unsigned registrations=0,removals=0;
-    struct Sun {Vector3 m_ambient;};
+    struct Sun {Colour m_ambient;};
     Sun sunlight;
     const Sun& sunLight() const {return sunlight;}
     void registerAutoConstant(Type,const char* name,EffectConstantValue* constant){assert(!constants.count(name));constants[name].reset(constant);++registrations;}
@@ -165,15 +169,16 @@ int main(){
     BWResource::resources["actual/forward.xml"]=source;
     assert(loadStockDeferredLightingSettings(environment,first,true)&&first.loaded&&first.forward&&!first.pmrem);
     activateStockDeferredLightingSettings(first);
-    context.sunlight.m_ambient=Vector3(.2f,.3f,.4f);
+    context.sunlight.m_ambient=Moo::Colour(.2f,.3f,.4f);
     sh=context.constants["REM_SH9"];
     assert((*sh)(&effect,"SH"));
+    const float expectedAmbient[]={.2f,.3f,.4f};
     for(unsigned colour=0;colour<3;++colour)
         for(unsigned component=0;component<4;++component)
-            assert(effect.uniform[colour*4+component]==first.sphericalHarmonics[colour*4+component]*(context.sunlight.m_ambient[colour]*first.forwardMultiplier));
+            assert(effect.uniform[colour*4+component]==first.sphericalHarmonics[colour*4+component]*(expectedAmbient[colour]*first.forwardMultiplier));
     for(unsigned i=12;i<28;++i)assert(effect.uniform[i]==first.sphericalHarmonics[i]);
     const auto previous=effect.uniform;
-    context.sunlight.m_ambient=Vector3(.8f,.7f,.6f);
+    context.sunlight.m_ambient=Moo::Colour(.8f,.7f,.6f);
     assert((*sh)(&effect,"SH")&&effect.uniform!=previous);
     first.forwardMultiplier=999;assert((*sh)(&effect,"SH")&&effect.uniform[0]!=999);
     finaliseStockDeferredLightingConstants();finaliseStockDeferredLightingConstants();
