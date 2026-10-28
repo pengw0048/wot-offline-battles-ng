@@ -14,12 +14,14 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 sys.path.insert(0, str(ROOT / 'tests'))
 import patch_stock_effect_lights as patcher
 from test_stock_screener import between
+from test_stock_vector4_basic import block
 
 FILES = ('lib/romp/py_omni_light.hpp', 'lib/romp/py_omni_light.cpp',
          'lib/compiled_space/omni_light_embodiment.hpp', 'lib/compiled_space/omni_light_embodiment.cpp',
          'lib/romp/chunk_omni_light_embodiment.hpp', 'lib/romp/chunk_omni_light_embodiment.cpp',
          'lib/pyscript/pyobject_plus.hpp', 'lib/pyscript/pyobject_plus.cpp',
-         'lib/pyscript/script.hpp', 'lib/pyscript/script.cpp')
+         'lib/pyscript/script.hpp', 'lib/pyscript/script.cpp',
+         'lib/pyscript/script_math.hpp', 'lib/pyscript/script_math.cpp')
 
 
 def sources(test):
@@ -50,6 +52,12 @@ def host(root):
     plus_cpp = read('lib/pyscript/pyobject_plus.cpp')
     script = read('lib/pyscript/script.hpp')
     body = read('lib/pyscript/script.cpp')
+    math_header=read('lib/pyscript/script_math.hpp')
+    math_source=read('lib/pyscript/script_math.cpp')
+    converters=script[script.index('#define PY_SCRIPT_CONVERTERS( CLASS )'):script.index('// Section: Macros: Module Links')]
+    converters=converters.replace('\\\n','\n')
+    smart=re.search(r'int Script::setData\(\s*PyObject \* pObject,\s*SmartPointer<CLASS> & rpDerived',converters)
+    assert smart is not None
     scalar = ''.join(between(body, 'int Script::setData( PyObject * pObject, ' + kind, '\n}\n')
                      for kind in ('bool & rBool,', 'int & rInt,', 'double & rDouble,', 'float & rFloat,'))
     macros = between(script, '// Section: Macros: Module Links', '// Section: Macros: Enums', False)
@@ -63,6 +71,13 @@ def host(root):
         '@PY_OMNI_SOURCE@': engine('lib/romp/py_omni_light.cpp'),
         '@OMNI_HEADER@': engine('lib/compiled_space/omni_light_embodiment.hpp'),
         '@OMNI_SOURCE@': engine('lib/compiled_space/omni_light_embodiment.cpp'),
+        '@VECTOR4_CONVERSION@':block(body,'int Script::setData( PyObject * pObject, Vector4 & rVector,'),
+        '@VECTOR4_BASIC_CLASS@':block(math_header,'class Vector4Basic :'),
+        '@VECTOR4_BASIC_CONSTRUCTOR@':block(math_source,'Vector4Basic::Vector4Basic('),
+        '@VECTOR4_COERCE@':block(math_source,'PyObjectPtr Vector4Provider::coerce('),
+        '@VECTOR4_POINTER_CONVERTER@':block(converters,smart.group()).replace(
+            '#CLASS','"Vector4Provider"').replace('CLASS','Vector4Provider'),
+        '@VECTOR4_VALUE_GETTER@':block(math_source,'PyObject * Vector4Provider::pyGet_value()'),
     }
     text = (ROOT / 'tests/stock_effect_lights_host.cpp').read_text()
     for key, value in replacements.items(): text = text.replace(key, value)

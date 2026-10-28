@@ -33,8 +33,9 @@ for factory in (BigWorld.PyOmniLight, BigWorld.PyChunkLight):
         except TypeError: pass
         else: raise AssertionError(('accepted invalid shadow flag', value))
         assert light.castShadows is True
-    providers = [Provider((3., 5., 7., 11.)), Provider((13., 17., 19., 23.))]
-    refs = [weakref.ref(value) for value in providers]
+    payloads = [Provider((3., 5., 7., 11.)), Provider((13., 17., 19., 23.))]
+    providers = [H.provider(value) for value in payloads]
+    refs = [weakref.ref(value) for value in payloads]
     del value
     light.colorAnimator, light.multiplierAnimator = providers
     assert light.colorAnimator is providers[0] and light.multiplierAnimator is providers[1]
@@ -45,25 +46,44 @@ for factory in (BigWorld.PyOmniLight, BigWorld.PyChunkLight):
     assert light.colour == before
     for name in ('colorAnimator', 'multiplierAnimator'):
         previous = getattr(light, name)
-        for invalid in (object(), 1, (1., 2., 3., 4.)):
+        for invalid in (object(), 1, (1., 2., 3.), [1., 2., 3., 4.], ('bad', 2., 3., 4.)):
             try: setattr(light, name, invalid)
             except TypeError: pass
             else: raise AssertionError(('accepted non-provider', name))
             assert getattr(light, name) is previous
         del previous
-    del providers
+    del providers,payloads
     gc.collect()
     assert all(ref() is not None for ref in refs)
     light.colorAnimator = None
     gc.collect()
     assert refs[0]() is None and refs[1]() is not None
-    light.shader = Provider((255., 127.5, 63.75, 255.))
+    light.shader = H.provider(Provider((255., 127.5, 63.75, 255.)))
     H.tick()
     assert all(abs(a-b) < 1e-6 for a, b in zip(light.colour, (1., .5, .25, 1.)))
     del light
     gc.collect()
     assert refs[1]() is None and H.state()[0] == 0
     assert H.state()[1] == H.state()[2]
+    assert H.providerCount()==0
+    # The real SDK Vector4 tuple parser, Vector4Provider::coerce and native
+    # Vector4Basic constructor/output execute, rather than a type-check fake.
+    light=factory()
+    light.colorAnimator=(1., 2., 3., 4.)
+    constant=light.colorAnimator
+    assert type(constant).__name__=='Vector4Basic' and constant.value==(1., 2., 3., 4.)
+    light.multiplierAnimator=(1., 2., 3., 4.)
+    assert light.multiplierAnimator is not constant
+    constant.value=(9., 8., 7., 6.)
+    assert light.colorAnimator is constant and light.multiplierAnimator.value==(1., 2., 3., 4.)
+    light.shader=(255., 127.5, 63.75, 255.)
+    H.tick()
+    assert all(abs(a-b)<1e-6 for a,b in zip(light.colour,(1., .5, .25, 1.)))
+    light.colorAnimator=None
+    assert constant.value==(9., 8., 7., 6.)
+    del constant,light
+    gc.collect()
+    assert H.providerCount()==0
 print('Effect light owner and provider lifetime passed')
 
 client = os.environ.get('WOT_0922_CLIENT')
@@ -86,7 +106,7 @@ if client:
     BigWorld.callback = callback
     BigWorld.cancelCallback = lambda ident: pending.pop(ident)
     math = types.ModuleType('Math')
-    math.Vector4Animation = Provider
+    math.Vector4Animation = lambda: H.provider(Provider())
     class Node(object):
         actualNode = Provider((10., 20., 30., 0.))
     node = Node()
@@ -112,7 +132,7 @@ if client:
     assert light.castShadows and H.shadowFlag() == 1
     assert light.colorAnimator.keyframes == [(0., (255., 0., 0., 255.)), (.5, (0., 0., 0., 0.))]
     assert light.multiplierAnimator.duration == 10000000.
-    refs = (weakref.ref(light.colorAnimator), weakref.ref(light.multiplierAnimator))
+    refs = (weakref.ref(H.payload(light.colorAnimator)), weakref.ref(H.payload(light.multiplierAnimator)))
     assert value.delete(entries[0], {}) is True
     assert not light.visible and light.source is None and entries[0]['light'] is None
     del light
@@ -123,4 +143,5 @@ if client:
     assert len(pending) == 1
     assert value.delete(entries[0], {}) is True and not pending
     assert H.state()[0] == 0
+    assert H.providerCount()==0
     print('Original EffectsList light lifecycle passed')

@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <strings.h>
+#include <type_traits>
 #define _stricmp strcasecmp
 #include <vector>
 #define BW_BEGIN_NAMESPACE namespace BW {
@@ -35,8 +36,10 @@ public:
     PyObjectPtr& operator=(const PyObjectPtr& other) {
         Py_XINCREF(other.object_); Py_XDECREF(object_); object_=other.object_; return *this;
     }
+    PyObjectPtr& operator=(PyObject* value) {Py_XINCREF(value);Py_XDECREF(object_);object_=value;return *this;}
     ~PyObjectPtr() { Py_XDECREF(object_); }
     PyObject* get() const { return object_; }
+    operator PyObject*()const{return object_;}
 };
 class ScriptObject : public PyObjectPtr {
 public:
@@ -79,6 +82,8 @@ struct Vector3 {
 };
 struct Vector4 {
     float x=0,y=0,z=0,w=0;
+    Vector4()=default;Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}
+    float& operator[](unsigned i){return (&x)[i];}
     Vector4& operator*=(float v) { x*=v;y*=v;z*=v;w*=v;return *this; }
 };
 struct Matrix { static Matrix identity; Vector3 position; Vector3 applyToOrigin()const{return position;} };
@@ -130,7 +135,6 @@ template<int Kind> struct ProviderPtr : std::shared_ptr<Provider> {
     ProviderPtr()=default;
     explicit ProviderPtr(PyObject* value):std::shared_ptr<Provider>(value?new Provider(value):NULL){}
 };
-using Vector4ProviderPtr=ProviderPtr<0>;
 using MatrixProviderPtr=ProviderPtr<1>;
 namespace Script {
 template<int Kind> int setData(PyObject* value,ProviderPtr<Kind>& result,const char* name="") {
@@ -152,6 +156,76 @@ int setData(PyObject* value,Moo::Colour& out,const char* = "") {
 PyObject* getData(Vector3 v){return Py_BuildValue("(fff)",v.x,v.y,v.z);}
 PyObject* getData(Moo::Colour v){return Py_BuildValue("(ffff)",v.r,v.g,v.b,v.a);}
 }
+// The SDK conversion and Vector4Basic below are real. The generic pointer
+// retains Python owners; non-Python scene pointers remain external views.
+template<class T>class SmartPointer {
+    T* value_=NULL;
+    using Python=typename std::is_base_of<PyObject,T>::type;
+    static void retain(T* value,std::true_type){Py_XINCREF(static_cast<PyObject*>(value));}
+    static void retain(T*,std::false_type){}
+    static void release(T* value,std::true_type){Py_XDECREF(static_cast<PyObject*>(value));}
+    static void release(T*,std::false_type){}
+public:
+    SmartPointer()=default;
+    SmartPointer(T* value):value_(value){retain(value_,Python());}
+    SmartPointer(const SmartPointer& other):SmartPointer(other.value_){}
+    SmartPointer& operator=(T* value){retain(value,Python());release(value_,Python());value_=value;return *this;}
+    SmartPointer& operator=(const SmartPointer& other){return *this=other.value_;}
+    ~SmartPointer(){release(value_,Python());}
+    T* get()const{return value_;}T* operator->()const{return value_;}
+    explicit operator bool()const{return value_!=NULL;}
+};
+unsigned nativeProviders=0;
+class Vector4Provider : public PyObjectPlusWithVD {
+    Py_Header(Vector4Provider,PyObjectPlusWithVD)
+public:
+    Vector4Provider(bool tick,PyTypeObject* type):PyObjectPlusWithVD(type){assert(!tick);++nativeProviders;}
+    virtual ~Vector4Provider(){--nativeProviders;}
+    virtual void output(Vector4&)=0;
+    static PyObjectPtr coerce(PyObject*);
+    PyObject* pyGet_value();
+    PY_RO_ATTRIBUTE_SET(value)
+};
+using Vector4ProviderPtr=SmartPointer<Vector4Provider>;
+// Native Math.Vector4 wrappers are outside this host. The SDK tuple parser,
+// coercion, reference-counted converter and constant provider execute below.
+template<class T>struct PyVector {static bool Check(PyObject*){return false;}T getVector(){return {};}};
+namespace Script {
+int setData(PyObject*,Vector4&,const char* = "");
+int setData(PyObject*,Vector4ProviderPtr&,const char* = "");
+PyObject* getData(Vector4 value){return Py_BuildValue("(ffff)",value.x,value.y,value.z,value.w);}
+template<class T>PyObject* getData(const SmartPointer<T>& value){
+    PyObject* object=value?static_cast<PyObject*>(value.get()):Py_None;Py_INCREF(object);return object;
+}
+}
+@VECTOR4_CONVERSION@
+@VECTOR4_BASIC_CLASS@;
+@VECTOR4_BASIC_CONSTRUCTOR@
+@VECTOR4_COERCE@
+@VECTOR4_POINTER_CONVERTER@
+@VECTOR4_VALUE_GETTER@
+PY_TYPEOBJECT(Vector4Provider)
+PY_BEGIN_METHODS(Vector4Provider) PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES(Vector4Provider) PY_ATTRIBUTE(value) PY_END_ATTRIBUTES()
+PY_TYPEOBJECT(Vector4Basic)
+PY_BEGIN_METHODS(Vector4Basic) PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES(Vector4Basic) PY_ATTRIBUTE(value) PY_END_ATTRIBUTES()
+// This provider's sampling and animation fields are the external data boundary.
+// Every light field sees an actual Vector4Provider and uses the SDK converter.
+class HostVector4Provider : public Vector4Provider {
+    Py_Header(HostVector4Provider,Vector4Provider)
+public:
+    PyObjectPtr payload;
+    explicit HostVector4Provider(PyObject* value):Vector4Provider(false,&s_type_),payload(value){}
+    void output(Vector4& value)override{Provider(payload.get()).output(value);}
+    PyObject* pyGet_duration(){return PyObject_GetAttrString(payload.get(),"duration");}
+    int pySet_duration(PyObject* value){return PyObject_SetAttrString(payload.get(),"duration",value);}
+    PyObject* pyGet_keyframes(){return PyObject_GetAttrString(payload.get(),"keyframes");}
+    int pySet_keyframes(PyObject* value){return PyObject_SetAttrString(payload.get(),"keyframes",value);}
+};
+PY_TYPEOBJECT(HostVector4Provider)
+PY_BEGIN_METHODS(HostVector4Provider) PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES(HostVector4Provider) PY_ATTRIBUTE(duration) PY_ATTRIBUTE(keyframes) PY_END_ATTRIBUTES()
 class ClientSpace {public:virtual ~ClientSpace()=default;};
 template<class T> class SpacePtr {
     T* value_=NULL;
@@ -161,8 +235,7 @@ public:
     T* get()const{return value_;} T* operator->()const{return value_;}
     explicit operator bool()const{return value_!=NULL;}
 };
-template<class T> using SmartPointer=SpacePtr<T>;
-using ClientSpacePtr=SpacePtr<ClientSpace>;
+using ClientSpacePtr=SmartPointer<ClientSpace>;
 class ILightEmbodiment;
 std::vector<ILightEmbodiment*> allOwners;
 class ILightEmbodiment {
@@ -204,6 +277,12 @@ IOmniLightEmbodiment* SpaceManager::createOmniLightEmbodiment(const PyOmniLight&
 } // BW
 
 static PyObject* setProviderType(PyObject*,PyObject* value){BW::providerType=value;Py_RETURN_NONE;}
+static PyObject* provider(PyObject*,PyObject* value){return new BW::HostVector4Provider(value);}
+static PyObject* payload(PyObject*,PyObject* value){
+    if(!BW::HostVector4Provider::Check(value)){PyErr_SetString(PyExc_TypeError,"Expected a sampled host provider");return NULL;}
+    auto* result=static_cast<BW::HostVector4Provider*>(value)->payload.get();Py_INCREF(result);return result;
+}
+static PyObject* providerCount(PyObject*,PyObject*){return PyInt_FromLong(BW::nativeProviders);}
 static PyObject* tick(PyObject*,PyObject*) {
     for(auto* owner:BW::allOwners){
         owner->updateLocation();
@@ -223,6 +302,7 @@ static PyObject* shadowFlag(PyObject*,PyObject*){
 }
 static PyMethodDef hostMethods[]={
     {"setProviderType",setProviderType,METH_O,NULL},{"tick",tick,METH_NOARGS,NULL},
+    {"provider",provider,METH_O,NULL},{"payload",payload,METH_O,NULL},{"providerCount",providerCount,METH_NOARGS,NULL},
     {"state",state,METH_NOARGS,NULL},{"shadowFlag",shadowFlag,METH_NOARGS,NULL},{NULL,NULL,0,NULL}};
 static PyMethodDef bigworldMethods[]={
     {"PyOmniLight",BW::PyOmniLight::_pyNew,METH_VARARGS,NULL},
@@ -233,6 +313,6 @@ int main(int argc,char** argv){
     Py_InitModule("_effect_lights_host",hostMethods);Py_InitModule("BigWorld",bigworldMethods);
     FILE* file=std::fopen(argv[1],"r");assert(file);
     int result=PyRun_SimpleFileEx(file,argv[1],1);
-    if(!result)assert(BW::Moo::OmniLight::alive==0 && BW::camera.scene.lights.empty());
+    if(!result)assert(BW::Moo::OmniLight::alive==0 && BW::camera.scene.lights.empty() && BW::nativeProviders==0);
     Py_Finalize();return result?1:0;
 }
