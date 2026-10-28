@@ -1,4 +1,15 @@
-# World of Tanks Offline Battles
+# World of Tanks Offline Battles NG
+
+This repository tracks development of an independent native client for offline
+World of Tanks battles, targeting Chinese HD `0.9.22.0.1 #1513`. It is a work
+in progress: a complete playable battle has not yet passed Windows acceptance.
+See [Independent client development](#independent-client-development) for the
+source layout, build instructions, runtime requirements and current boundaries.
+
+The original mod, LAN server and launcher are retained below as the foundation
+for this work. Their player instructions describe the existing mod-based game.
+
+## Original mod and launcher
 
 Play standard battles with bots in the Chinese HD Windows client
 `0.9.22.0.1 #1513`, alone or with friends on a LAN.
