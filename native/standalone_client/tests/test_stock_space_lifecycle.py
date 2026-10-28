@@ -677,19 +677,38 @@ class SpaceLifecycleTests(unittest.TestCase):
         package = str(Path(client) / 'res/packages/scripts.pkg') if client else ''
         self.execute('COMPAT=%r\nPACKAGE=%r\n' % (str(compat), package) + ENTITY_SEQUENCES)
 
+    # Every tree prepare_offline_fork reads: sources plus the pinned catalogs.
+    FORK_TREES = ('native', 'src', 'destructibles', 'foliage', 'navgraphs')
+
     def generated_compat(self):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('WOT_FORK_0101_SOURCE required for the pinned compat')
-        spec = importlib.util.spec_from_file_location('prepare_offline_fork', ROOT / 'bigworld/prepare_offline_fork.py')
-        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        source = self.directory / 'fork'
-        if not source.exists():
-            for name in ('native', 'src'):
-                shutil.copytree(Path(fork) / name, source / name)
-            (source / 'fork-source.json').write_text('{"revision":"%s"}' % module.PINNED_COMMIT)
-            module.prepare(source, self.directory / 'generated')
-        return self.directory / 'generated/offline-res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+        cls = type(self)
+        # Only a completed prepare() counts; a partial tree is regenerated.
+        if getattr(cls, 'generated', None) is None:
+            fork = Path(fork)
+            missing = [name for name in self.FORK_TREES if not (fork / name).is_dir()]
+            if not (fork / 'fork-source.json').is_file():
+                missing.append('fork-source.json')
+            if missing:
+                self.fail('WOT_FORK_0101_SOURCE lacks pinned inputs: ' + ', '.join(missing))
+            spec = importlib.util.spec_from_file_location('prepare_offline_fork', ROOT / 'bigworld/prepare_offline_fork.py')
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            source, generated = self.directory / 'fork', self.directory / 'generated'
+            for stale in (source, generated):
+                if stale.exists():
+                    shutil.rmtree(stale)
+            for name in self.FORK_TREES:
+                shutil.copytree(fork / name, source / name)
+            # prepare() validates this identity against the pinned commit.
+            shutil.copyfile(fork / 'fork-source.json', source / 'fork-source.json')
+            module.prepare(source, generated)
+            compat = generated / 'offline-res/scripts/client/gui/mods/offline_lan_0922/compat.py'
+            if not compat.is_file():
+                self.fail('prepare_offline_fork did not generate the pinned compat')
+            cls.generated = compat
+        return cls.generated
 
     def test_generated_pinned_compat_producer_sequences(self):
         client = os.environ.get('WOT_0922_CLIENT')
