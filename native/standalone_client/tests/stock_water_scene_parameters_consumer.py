@@ -65,9 +65,9 @@ class BigWorldRecorder(object):
         return call
 
 
-class Steps(object):
-    ALL_STEPS_PASSED = 15
-    INIT_COMPLETED = 16
+# The original Avatar._INIT_STEPS class body supplies the guard constants.
+Steps = type('_INIT_STEPS', (object,), eval(function('scripts/client/Avatar.pyc', '_INIT_STEPS'), {'__name__': 'Avatar'}))
+assert (Steps.ALL_STEPS_PASSED, Steps.INIT_COMPLETED) == (15, 16)
 
 
 class Arena(object):
