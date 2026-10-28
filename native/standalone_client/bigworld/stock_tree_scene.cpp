@@ -1063,7 +1063,9 @@ public:
             if (!instance || !instance->type || !instance->type->uploaded || !instance->type->registered) continue;
             const uint32 flags = instance->definition.flags;
             const uint32 requiredDecor = flags & 0x20 ? 2 : ((flags >> 4) & 1);
-            if ((flags & 8) || (requiredDecor && static_cast<int>( requiredDecor ) > decorLevel) ||
+            // 006c57e4: SpTr3's bit 4 is distinct from BSMI's bit 7.
+            if ((context.stockLowDetailedMode() && (flags & 0x10)) ||
+                (flags & 8) || (requiredDecor && static_cast<int>( requiredDecor ) > decorLevel) ||
                 (pass == Moo::RENDERING_PASS_REFLECTION && !(flags & 2)) ||
                 (pass == Moo::RENDERING_PASS_SHADOWS && !(flags & 1))) continue;
             if (!instance->type->wind || !advanceTreeWind( *owner, *instance->type->wind, weather )) continue;

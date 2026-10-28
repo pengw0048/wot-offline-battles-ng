@@ -316,12 +316,14 @@ int main(){Primitive primitive;Packet rigid;rigid.stockPreviousWorld_=true;
             without_includes = lambda value: '\n'.join(line for line in value.splitlines()
                 if not line.startswith(('#include', '#pragma once')))
             driver = root / 'scene.cpp'
-            driver.write_text(engine + '\n#include "wot/stock_static_model_binary.hpp"\n' +
+            driver.write_text(engine + '\n#include "wot/stock_static_model_binary.hpp"\n'
+                '#include "stock_scene_identity_data.hpp"\n' +
                 without_includes(header) + '\n' + without_includes(source) + '\n' +
                 (ROOT / 'tests/stock_static_model_scene_probe.cpp').read_text())
             binary = root / 'scene'
             command = ['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-UNDEBUG',
-                       '-I', str(ROOT / 'include'), str(driver), '-o', str(binary)]
+                       '-I', str(ROOT / 'include'), '-I', str(ROOT / 'bigworld'),
+                       str(driver), '-o', str(binary)]
             if sys.platform != 'win32':
                 command[1:1] = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
             result = subprocess.run(command, capture_output=True, text=True)

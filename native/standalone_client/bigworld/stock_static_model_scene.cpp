@@ -437,7 +437,10 @@ struct StockStaticModelSceneLoader::State::DrawHandler : IDrawOperationTypeHandl
             if (!live->bound || !available( instance )) continue;
             const auto & binary = live->binary;
             const uint32 flags = binary.instances.flags[instance.index].flags;
-            if ((pass == Moo::RENDERING_PASS_REFLECTION && !(flags & 2)) ||
+            // 006d122d..006d1242: only authored bit 7 yields to the primary scene's
+            // low-detail mode. Collision keeps its separate authored rule.
+            if ((context.stockLowDetailedMode() && (flags & 0x80)) ||
+                (pass == Moo::RENDERING_PASS_REFLECTION && !(flags & 2)) ||
                 (pass == Moo::RENDERING_PASS_SHADOWS ? !(flags & 1) : (flags & 8))) continue;
             const uint32 model = binary.instances.models[instance.index];
             const auto & lods = binary.models.lods[model];

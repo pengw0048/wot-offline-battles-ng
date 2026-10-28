@@ -12,6 +12,7 @@ add_library(wot_battle_core STATIC
     src/vehicle_control.cpp
     src/vehicle_collision.cpp
     src/gun_ballistics.cpp
+    src/stock_trajectory_drawer.cpp
     src/stock_gun_history.cpp
     src/stock_effect_binding.cpp
     src/stock_effect_reflection.cpp

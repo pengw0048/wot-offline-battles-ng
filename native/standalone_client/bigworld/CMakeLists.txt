@@ -23,7 +23,8 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_physics.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_suspension.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/vehicle_authority.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/../src/stock_ballistics.cpp")
+    "${CMAKE_CURRENT_LIST_DIR}/../src/stock_ballistics.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/stock_trajectory_drawer.cpp")
 set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/offline_fork_module.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_data.cpp"
@@ -110,6 +111,10 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_timed_warplane_motor_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_runtime_services.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_debug_queries.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_havok_sniper.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_control_mode_rendering.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_rendering.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_trajectory_drawer.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_hangar_presentation.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_flash.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_marker_canvas.cpp"

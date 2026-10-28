@@ -35,6 +35,7 @@ struct Matrix {
  void multiply(const Matrix& a,const Matrix& b){Matrix out;for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c){out[r][c]=0;for(unsigned k=0;k<4;++k)out[r][c]+=a[r][k]*b[k][c];}*this=out;}
  bool invert(const Matrix& m){*this=Matrix();for(unsigned n=0;n<3;++n)v[3][n]=-m[3][n];return true;}
 };
+Matrix* D3DXMatrixMultiply(Matrix* out,const Matrix* a,const Matrix* b){out->multiply(*a,*b);return out;}
 struct BoundingBox {
  Vector3 low{1,1,1},high{-1,-1,-1};static const BoundingBox s_insideOut_;
  BoundingBox(){}BoundingBox(Vector3 a,Vector3 b):low(a),high(b){}
@@ -47,9 +48,10 @@ struct DataSection {BinaryPtr readBinary(const char* name){assert(std::string(na
 using DataSectionPtr=SmartPointer<DataSection>;
 struct PrimitiveFile{static DataSectionPtr get(const char* name){assert(std::string(name)=="bsp.primitives");return new DataSection;}};
 struct FourCC{uint32 value;explicit FourCC(const char* n){std::memcpy(&value,n,4);}};
-struct SceneObject {
- void* value=nullptr;struct Flags{void isDynamic(bool){}void isReflectionVisible(bool){}void isCastingStaticShadow(bool){}void isCastingDynamicShadow(bool){}} bits;
- template<class T>void type(){}void handle(void* p){value=p;}Flags& flags(){return bits;}template<class T>T* getAs()const{return static_cast<T*>(value);}
+class SceneObject {
+public:
+ void* value=nullptr;const std::type_info* type_=nullptr;struct Flags{void isDynamic(bool){}void isReflectionVisible(bool){}void isCastingStaticShadow(bool){}void isCastingDynamicShadow(bool){}} bits;
+ template<class T>void type(){type_=&typeid(T);}template<class T>bool isType()const{return type_&&*type_==typeid(T);}void handle(void* p){value=p;}Flags& flags(){return bits;}template<class T>T* getAs()const{return static_cast<T*>(value);}
 };
 struct WorldTriangle {using Flags=std::uint16_t;Flags value=0;Flags flags()const{return value;}void flags(Flags f){value=f;}};
 using RealWTriangleSet=std::vector<WorldTriangle>;
@@ -118,7 +120,7 @@ struct RenderContext{Matrix projection_;const Matrix& projection()const{return p
 }
 struct LodSettings{static LodSettings& instance(){static LodSettings v;return v;}float stockCompiledLodScale()const{return 1;}float stockCompiledLodDefault(unsigned n)const{assert(n<5);return 1;}};
 static int decor=0;int stockDecorLevel(){return decor;}
-struct SceneDrawContext {Moo::DrawContext& draw;Matrix view;Moo::DrawContext& drawContext()const{return draw;}const Matrix& lodCameraView()const{return view;}};
+struct SceneDrawContext {Moo::DrawContext& draw;Matrix view;bool lowDetailed=false;bool stockLowDetailedMode()const{return lowDetailed;}Moo::DrawContext& drawContext()const{return draw;}const Matrix& lodCameraView()const{return view;}};
 struct IDrawOperationTypeHandler{virtual ~IDrawOperationTypeHandler(){}virtual void doDraw(const SceneDrawContext&,const SceneObject*,size_t)=0;};
 struct ISpatialQueryOperationTypeHandler{virtual ~ISpatialQueryOperationTypeHandler(){}virtual void getWorldTransform(const SceneObject&,Matrix*)=0;virtual void getWorldVisibilityBoundingBox(const SceneObject&,AABB*)=0;};
 struct ICollisionTypeHandler{virtual ~ICollisionTypeHandler(){}virtual bool doCollide(const SceneObject&,const Vector3&,const Vector3&,const SweepParams&,CollisionState&)const=0;virtual bool doCollide(const SceneObject&,const WorldTriangle&,const Vector3&,const SweepParams&,CollisionState&)const=0;};
@@ -133,6 +135,15 @@ struct DynamicSceneProvider {
  void removeObject(const DynamicObjectHandle& h){assert(nodes.count(h.index));auto f=std::move(onRemove);onRemove=nullptr;if(f)f();assert(nodes.count(h.index));nodes.erase(h.index);}
 };
 struct ClientSpace{virtual ~ClientSpace(){}};
+// This rendering fixture has no active native audio owner. Any attempted
+// publication beyond acquire's unavailable result is an invalid boundary use.
+struct StockSpaceSoundOwner{};
+using StockSpaceSounds=std::shared_ptr<StockSpaceSoundOwner>;
+using StockSpaceSoundHandle=std::uint64_t;
+StockSpaceSounds acquireStockSpaceSounds(ClientSpace*){return {};}
+StockSpaceSoundHandle addStockSpaceModelSound(const StockSpaceSounds&,uint32,const Matrix&){assert(false);return 0;}
+void removeStockSpaceSound(const StockSpaceSounds&,StockSpaceSoundHandle){assert(false);}
+void registerStockSpaceObjectSound(const StockSpaceSounds&,const void*,bool,uint32,StockSpaceSoundHandle){assert(false);}
 namespace CompiledSpace {
 struct CompiledSpace:ClientSpace{Scene scene_;DynamicSceneProvider dynamic;Scene& scene(){return scene_;}DynamicSceneProvider& dynamicScene(){return dynamic;}};
 struct StringTable {std::map<uint32,std::string> values;const char* entry(uint32 key)const{auto i=values.find(key);return i==values.end()?nullptr:i->second.c_str();}};

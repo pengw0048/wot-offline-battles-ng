@@ -68,6 +68,10 @@ bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
 // flag, or a negative value. The hit point is start + normalise(end-start) * d.
 float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end );
 
+// f5bf40 uses the same owner with caller supplied collision masks.
+float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end,
+    WorldTriangle::Flags skipFlags, WorldTriangle::Flags requiredFlags );
+
 // The native owner behind BigWorld.wg_collideWater: segment distance or -1.
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha );
 

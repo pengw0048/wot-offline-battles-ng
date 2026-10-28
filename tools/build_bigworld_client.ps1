@@ -304,6 +304,10 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # DebugApp frame sampling for BigWorld.getFPS.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_debug_queries.py"),
         $EngineRoot) "stock-debug-queries-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_console_lifecycle.py"),
+        $EngineRoot) "stock-console-lifecycle-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_control_mode_rendering.py"),
+        $EngineRoot) "stock-control-mode-rendering-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_resource_content.py"),
         $EngineRoot) "stock-resource-content-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_resources.py"),
@@ -331,6 +335,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-display-modes-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings_consumers.py"),
         $EngineRoot) "stock-graphics-settings-consumers-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_trajectory_drawer.py"),
+        $EngineRoot) "stock-trajectory-drawer-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_presets.py"),
         $EngineRoot) "stock-graphics-presets-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings.py"),

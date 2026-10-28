@@ -334,12 +334,18 @@ bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
 
 float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end )
 {
+    return stockGunMarkerSegmentCollision( start, end, 0x80, 0 );
+}
+
+float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end,
+    WorldTriangle::Flags skipFlags, WorldTriangle::Flags requiredFlags )
+{
     // f5d160 queries the camera space; f5d1c0 builds Ccb_(0x80, 0), whose
     // distance stays -1 without an accepted surface.
     ClientSpacePtr space = DeprecatedSpaceHelpers::cameraSpace();
     if (!space || start == end)
         return -1.f;
-    GunMarkerQuery query( 0x80, 0 );
+    GunMarkerQuery query( skipFlags, requiredFlags );
     space->collide( start, end, query );
     return query.distance();
 }

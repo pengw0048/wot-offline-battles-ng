@@ -78,6 +78,28 @@ int main(int argc,char** argv)
     drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
     assert(draw.items[5].packet->palette()[0].w==10&&draw.items[5].packet->palette()[3].w==11);
     draw.clear();missing.unload();assert(space.dynamic.nodes.empty()&&Moo::liveCaches.empty());
+    // Authored decoration is hidden only by the primary draw context. Its
+    // authored collision choices and independently constructed passes remain.
+    uint32 matrixCount;std::memcpy(&matrixCount,file.sections[0].data()+4,4);
+    const size_t flagsOffset=8+size_t(matrixCount)*64+8;
+    uint32 initialFlags;std::memcpy(&initialFlags,file.sections[0].data()+flagsOffset,4);
+    const uint32 decorationFlags=initialFlags|0x80;
+    std::memcpy(file.sections[0].data()+flagsOffset,&decorationFlags,4);
+    decor=1;StockStaticModelSceneLoader decoration(2);
+    assert(decoration.loadFromSpace(&space,file,{},Matrix(),strings));assert(decoration.bind());
+    objects.clear();for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
+    context.lowDetailed=true;
+    drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==3);
+    hit={};assert(!collision->doCollide(objects[0],Vector3(),Vector3(),SweepParams(),hit));
+    hit={};assert(collision->doCollide(objects[1],Vector3(),Vector3(),SweepParams(),hit));assert(hit.triangles==1);
+    draw.clear();context.lowDetailed=false;
+    drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
+    draw.clear();draw.pass=Moo::RENDERING_PASS_REFLECTION;
+    drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==3);
+    draw.clear();draw.pass=Moo::RENDERING_PASS_SHADOWS;
+    drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
+    draw.clear();decoration.unload();decor=0;draw.pass=Moo::RENDERING_PASS_COLOR;
+    std::memcpy(file.sections[0].data()+flagsOffset,&initialFlags,4);
     // An fx=-1 slot retains NULL instead of manufacturing a default material.
     const uint32 absent=0xffffffffu;std::memcpy(file.sections[2].data()+8,&absent,4);
     StockStaticModelSceneLoader noEffect(2);assert(noEffect.loadFromSpace(&space,file,{},Matrix(),strings));assert(noEffect.bind());
