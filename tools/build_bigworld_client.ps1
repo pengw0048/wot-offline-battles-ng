@@ -301,6 +301,9 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # App frame pacing for BigWorld.wg_setSpecialFPSMode/wg_setReducedFpsMode.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_runtime_services.py"),
         $EngineRoot) "stock-runtime-services-patch.log"
+    # DebugApp frame sampling for BigWorld.getFPS.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_debug_queries.py"),
+        $EngineRoot) "stock-debug-queries-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_resource_content.py"),
         $EngineRoot) "stock-resource-content-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_resources.py"),

@@ -109,6 +109,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_timed_warplane_motor.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_timed_warplane_motor_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_runtime_services.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_debug_queries.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_hangar_presentation.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_flash.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_marker_canvas.cpp"
