@@ -40,6 +40,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_water_ripples.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_decals.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_dynamic_decals.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_decals.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_local_lighting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_controller.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_replay_file.cpp"

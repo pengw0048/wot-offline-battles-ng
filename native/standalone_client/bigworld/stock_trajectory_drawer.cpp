@@ -8,6 +8,7 @@
 #include "moo/render_context.hpp"
 #include "pyscript/script.hpp"
 #include "pyscript/script_math.hpp"
+#include "pyscript/pyobject_plus.hpp"
 #include "space/client_space.hpp"
 #include "space/deprecated_space_helpers.hpp"
 #endif
@@ -162,18 +163,28 @@ public:
     }
 };
 std::shared_ptr<TrajectoryDrawer> owner;
-struct Wrapper {PyObject_HEAD std::shared_ptr<TrajectoryDrawer>* value;};
-PyTypeObject type={PyObject_HEAD_INIT(NULL) 0};
+// The original type 01a0e990 derives from PyObjectPlus. Use its real layout,
+// attribute dispatch and non-constructible Python type instead of a C wrapper.
+class WGTrajectoryDrawer : public PyObjectPlus {
+    Py_Header(WGTrajectoryDrawer,PyObjectPlus)
+public:
+    explicit WGTrajectoryDrawer(std::shared_ptr<TrajectoryDrawer> selected):
+        PyObjectPlus(&s_type_),value(std::move(selected)) {}
+    std::shared_ptr<TrajectoryDrawer> value;
+    PY_METHOD_DECLARE(py_setParams)
+    PY_METHOD_DECLARE(py_setColors)
+    PY_METHOD_DECLARE(py_setGetDynamicCollidersCallback)
+    PY_METHOD_DECLARE(py_setStrategicMode)
+    PY_METHOD_DECLARE(py_update)
+    PY_DEFERRED_ATTRIBUTE_DECLARE(visible)
+};
 PyObject* singleton=NULL;
 TrajectoryDrawer* live(PyObject* object) {
-    Wrapper* wrapper=reinterpret_cast<Wrapper*>(object);
-    if (!wrapper->value || !*wrapper->value || (*wrapper->value)->closed) {
+    WGTrajectoryDrawer* wrapper=static_cast<WGTrajectoryDrawer*>(object);
+    if (!wrapper->value || wrapper->value->closed) {
         PyErr_SetString(PyExc_RuntimeError,"TrajectoryDrawer owner has been closed");return NULL;
     }
-    return wrapper->value->get();
-}
-void destroy(PyObject* object) {
-    delete reinterpret_cast<Wrapper*>(object)->value;PyObject_Del(object);
+    return wrapper->value.get();
 }
 PyObject* getVisible(PyObject* object,void*) {
     TrajectoryDrawer* value=live(object);return value?Script::getData(value->state.visible):NULL;
@@ -216,7 +227,7 @@ PyObject* setStrategicMode(PyObject* object,PyObject* args) {
 PyObject* update(PyObject* object,PyObject* args) {
     TrajectoryDrawer* value=live(object);if (!value) return NULL;
     // This reference survives a callback that finalises the GUI owner.
-    std::shared_ptr<TrajectoryDrawer> selected=*reinterpret_cast<Wrapper*>(object)->value;
+    std::shared_ptr<TrajectoryDrawer> selected=static_cast<WGTrajectoryDrawer*>(object)->value;
     PyObject *a,*b,*c,*d;Vector3 target,start,velocity;float interval;
     if (!PyArg_UnpackTuple(args,"update",4,4,&a,&b,&c,&d) || Script::setData(a,target) ||
         Script::setData(b,start) || Script::setData(c,velocity) || Script::setData(d,interval)) return NULL;
@@ -224,38 +235,39 @@ PyObject* update(PyObject* object,PyObject* args) {
     catch (const std::exception& error) {PyErr_SetString(PyExc_ValueError,error.what());return NULL;}
     Py_RETURN_NONE;
 }
-// The exact method table uses METH_VARARGS | METH_KEYWORDS and ignores keywords.
-template<PyObject* (*Method)(PyObject*,PyObject*)>
-PyObject* withKeywords(PyObject* object,PyObject* args,PyObject*) {return Method(object,args);}
-#define TRAJECTORY_METHOD(name,method) {name,reinterpret_cast<PyCFunction>(withKeywords<method>),METH_VARARGS|METH_KEYWORDS,NULL}
-PyMethodDef methods[]={
-    TRAJECTORY_METHOD("setParams",setParams),TRAJECTORY_METHOD("setColors",setColors),
-    TRAJECTORY_METHOD("setGetDynamicCollidersCallback",setCallback),
-    TRAJECTORY_METHOD("setStrategicMode",setStrategicMode),TRAJECTORY_METHOD("update",update),
-    {NULL,NULL,0,NULL}};
-#undef TRAJECTORY_METHOD
-PyGetSetDef attributes[]={{const_cast<char*>("visible"),getVisible,setVisible,NULL,NULL},{NULL,NULL,NULL,NULL,NULL}};
+PyObject* WGTrajectoryDrawer::py_setParams(PyObject* args) {return setParams(this,args);}
+PyObject* WGTrajectoryDrawer::py_setColors(PyObject* args) {return setColors(this,args);}
+PyObject* WGTrajectoryDrawer::py_setGetDynamicCollidersCallback(PyObject* args) {return setCallback(this,args);}
+PyObject* WGTrajectoryDrawer::py_setStrategicMode(PyObject* args) {return setStrategicMode(this,args);}
+PyObject* WGTrajectoryDrawer::py_update(PyObject* args) {return update(this,args);}
+PyObject* WGTrajectoryDrawer::pyGet_visible() {return getVisible(this,NULL);}
+int WGTrajectoryDrawer::pySet_visible(PyObject* value) {return setVisible(this,value,NULL);}
+PY_TYPEOBJECT(WGTrajectoryDrawer)
+PY_BEGIN_METHODS(WGTrajectoryDrawer)
+    PY_METHOD(update)
+    PY_METHOD(setParams)
+    PY_METHOD(setColors)
+    PY_METHOD(setGetDynamicCollidersCallback)
+    PY_METHOD(setStrategicMode)
+PY_END_METHODS()
+PY_BEGIN_ATTRIBUTES(WGTrajectoryDrawer)
+    PY_ATTRIBUTE(visible)
+PY_END_ATTRIBUTES()
 } // namespace
 
 bool initialiseStockTrajectoryDrawer() {
     if (owner) return true;
-    if (!type.tp_name) {
-        type.tp_name=const_cast<char*>("TrajectoryDrawer");type.tp_basicsize=sizeof(Wrapper);
-        type.tp_flags=Py_TPFLAGS_DEFAULT;type.tp_dealloc=destroy;type.tp_methods=methods;type.tp_getset=attributes;
-    }
-    if (PyType_Ready(&type)<0) return false;
-    Wrapper* wrapper=PyObject_New(Wrapper,&type);
-    if (!wrapper) return false;
-    wrapper->value=NULL;
+    if (PyType_Ready(&WGTrajectoryDrawer::s_type_)<0) return false;
+    WGTrajectoryDrawer* wrapper=NULL;
     try {
         std::shared_ptr<TrajectoryDrawer> created=std::make_shared<TrajectoryDrawer>();
-        wrapper->value=new std::shared_ptr<TrajectoryDrawer>(created);
+        wrapper=new WGTrajectoryDrawer(created);
         created->createManagedObjects();
-        owner=created;singleton=reinterpret_cast<PyObject*>(wrapper);return true;
+        owner=created;singleton=wrapper;return true;
     } catch (const std::bad_alloc&) {
-        Py_DECREF(reinterpret_cast<PyObject*>(wrapper));PyErr_NoMemory();return false;
+        Py_XDECREF(wrapper);PyErr_NoMemory();return false;
     } catch (const std::exception& error) {
-        Py_DECREF(reinterpret_cast<PyObject*>(wrapper));
+        Py_XDECREF(wrapper);
         PyErr_SetString(PyExc_RuntimeError,error.what());return false;
     }
 }

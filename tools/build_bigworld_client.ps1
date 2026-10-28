@@ -347,6 +347,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-scene-settings-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_tps.py"),
         $EngineRoot) "stock-tps-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_particle_clone.py"),
+        $EngineRoot) "stock-particle-clone-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ground_effects.py"),
         $EngineRoot) "stock-ground-effects-patch.log"
     # Declares the alpha-aware Water query beside the ground-effects one above.
@@ -406,6 +408,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-models-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_lights.py"),
         $EngineRoot) "stock-space-lights-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_effect_lights.py"),
+        $EngineRoot) "stock-effect-lights-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_water.py"),
         $EngineRoot) "stock-space-water-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_water_ripples.py"),
@@ -416,6 +420,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_decals.py"),
         $EngineRoot) "stock-dynamic-decals-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_decals.py"),
+        $EngineRoot) "stock-vehicle-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_local_lighting.py"),
         $EngineRoot) "stock-local-lighting-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_compiled_space_mapping.py"),

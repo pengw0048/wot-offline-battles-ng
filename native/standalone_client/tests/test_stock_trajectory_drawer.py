@@ -11,6 +11,7 @@ import os
 import random
 import re
 import shlex
+import struct
 import subprocess
 import sys
 import tarfile
@@ -127,15 +128,44 @@ class StockTrajectoryDrawerTest(unittest.TestCase):
         self.assertTrue(all(mask==(128,1) for mask in original.mask_calls))
 
     def test_python_owner_and_original_producer(self):
+        if os.environ.get('WOT_0922_CLIENT'):
+            original=self.original()
+            # The initializer sets PyObjectPlus as base and installs its
+            # rejecting tp_new; the on-disk type record has both slots zero.
+            name=struct.unpack('<I',original.u.mem_read(0x1a0e99c,4))[0]
+            self.assertEqual(bytes(original.u.mem_read(name,19)),b'WGTrajectoryDrawer\0')
+            self.assertEqual(bytes(original.u.mem_read(0x5a6351,10)),
+                             b'\xc7\x05\x10\xea\xa0\x01\x00\xc6\xa0\x01')
+            self.assertEqual(bytes(original.u.mem_read(0x5a6397,10)),
+                             b'\xc7\x05\x2c\xea\xa0\x01\x50\x85\x6a\x00')
+            base_name=struct.unpack('<I',original.u.mem_read(0x1a0c60c,4))[0]
+            self.assertEqual(bytes(original.u.mem_read(base_name,13)),b'PyObjectPlus\0')
+            forbidden=b'%s() Cannot directly construct objects of this type\0'
+            self.assertEqual(bytes(original.u.mem_read(0x14baab8,len(forbidden))),forbidden)
         python=Path(os.environ.get('WOT_PYTHON27','/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
         config=python.with_name('python2.7-config')
         if not config.exists():self.skipTest('CPython 2.7 development files required')
         flags=shlex.split(subprocess.check_output([str(config),'--cflags'],text=True))
         libs=shlex.split(subprocess.check_output([str(config),'--ldflags'],text=True))
+        archive=Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.is_file():self.skipTest('Pinned public engine archive required')
+        sources={}
+        with tarfile.open(archive) as source:
+            for member in source:
+                for name in ('pyobject_plus.hpp','pyobject_plus.cpp'):
+                    if member.name.endswith('/programming/bigworld/lib/pyscript/'+name):
+                        sources[name]=source.extractfile(member).read().decode('utf-8-sig')
+        self.assertEqual(set(sources),{'pyobject_plus.hpp','pyobject_plus.cpp'})
+        plus=sources['pyobject_plus.hpp'];body=sources['pyobject_plus.cpp']
+        header=plus[plus.index('/// This must be the first line'):plus.index('// Section: Weak-referenceable macros')]
+        definitions=body[body.index('// Base needs to be 0.'):body.index('// Section: PyObjectPlusWithWeakReference')]
+        host=(ROOT/'tests/stock_trajectory_drawer_host.cpp').read_text().replace(
+            '@PYOBJECT_PLUS_HEADER@',header).replace('@PYOBJECT_PLUS_SOURCE@',definitions)
+        source=self.output/'host.cpp';source.write_text(host)
         binary=self.output/'host'
         subprocess.run(['c++','-std=c++14','-ffp-contract=off','-Wno-deprecated-register','-Wno-writable-strings',
             '-I',str(ROOT/'include'),'-I',str(ROOT/'bigworld'),*flags,'-UNDEBUG',
-            str(ROOT/'tests/stock_trajectory_drawer_host.cpp'),str(ROOT/'src/stock_trajectory_drawer.cpp'),
+            str(source),str(ROOT/'src/stock_trajectory_drawer.cpp'),
             str(ROOT/'src/gun_ballistics.cpp'),*libs,'-o',str(binary)],check=True)
         result=subprocess.run([str(binary),str(ROOT/'tests/stock_trajectory_drawer_consumer.py')],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)

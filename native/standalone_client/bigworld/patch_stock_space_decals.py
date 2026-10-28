@@ -19,8 +19,18 @@ def patch(root):
     edit(manager, '#include "deferred_decals_manager.hpp"',
          '#include "deferred_decals_manager.hpp"\n#include "stock_space_decals.hpp"', '#include "stock_space_decals.hpp"')
     edit(manager, 'DecalsManager::~DecalsManager()\n{',
-         'DecalsManager::~DecalsManager()\n{\n    finaliseStockSpaceDecals();')
-    edit(manager, '''    m_dynamicDecalsManager.reset(new DynamicDecalManager());
+         'DecalsManager::~DecalsManager()\n{\n    finaliseStockSpaceDecals();',
+         '    finaliseStockSpaceDecals();')
+    # Later providers extend this return expression. Only the call inside the
+    # pinned init function establishes that this owner was installed.
+    current = pending.get(manager, (root / manager).read_text(encoding='utf-8-sig'))
+    signature = 'bool DecalsManager::init()\n{'
+    if current.count(signature) != 1:
+        raise ValueError('Pinned WGSD2 init owner changed: ' + manager)
+    body = current.split(signature, 1)[1].split('\n}', 1)[0]
+    init_present = body.count('initialiseStockSpaceDecals()') == 1
+    if not init_present:
+        edit(manager, '''    m_dynamicDecalsManager.reset(new DynamicDecalManager());
 
     return true;''', '''    m_dynamicDecalsManager.reset(new DynamicDecalManager());
 

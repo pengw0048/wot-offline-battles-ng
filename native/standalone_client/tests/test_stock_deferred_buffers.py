@@ -39,7 +39,9 @@ class DeferredOwnerPatchTests(unittest.TestCase):
 #include <cstddef>
 #define FAILED(hr) ((hr)<0)
 #define SUCCEEDED(hr) ((hr)>=0)
-unsigned decalBegins=0,decalEnds=0;
+unsigned decalBegins=0,decalEnds=0,vehicleBegins=0,vehicleEnds=0;
+void beginStockVehicleDecals(){++vehicleBegins;assert(vehicleBegins==decalBegins);}
+void endStockVehicleDecals(){++vehicleEnds;assert(vehicleEnds==decalEnds+1);}
 void beginStockSpaceDecals(){++decalBegins;}
 void endStockSpaceDecals(){++decalEnds;}
 struct Surface{unsigned refs=1;void AddRef(){++refs;}void Release(){assert(refs);--refs;}};
@@ -232,6 +234,9 @@ assert((phase==0&&Moo::rc().target=="gbuffer0") || (phase==1&&(Moo::rc().target=
 assert(Moo::rc().scene);
 if(!step())return false;
 passes.push_back({phase==1?"WGSD_AO":"WGSD_COLOR",Moo::rc().target,true,true,Moo::rc().w,Moo::rc().h,{},{}});return true;}
+bool drawStockVehicleDecalsPhase(unsigned phase){
+assert((phase==0&&Moo::rc().target=="gbuffer0") || (phase==1&&(Moo::rc().target=="half"||Moo::rc().target=="full")));
+assert(Moo::rc().scene);return true;}
 bool drawStockDynamicDecals(){
 assert(Moo::rc().target=="gbuffer0"&&Moo::rc().scene);
 if(!step())return false;

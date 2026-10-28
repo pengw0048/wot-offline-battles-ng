@@ -2,6 +2,7 @@
 #include "stock_deferred_buffers.hpp"
 #include "stock_space_decals.hpp"
 #include "stock_dynamic_decals.hpp"
+#include "stock_vehicle_decals.hpp"
 #include "stock_dynamic_resolution.hpp"
 #include "stock_effect_adapter.hpp"
 #include "moo/effect_visual_context.hpp"
@@ -498,6 +499,7 @@ bool StockDeferredBuffers::begin()
     prepared_=false;
     kindCopied_=false;
     beginStockSpaceDecals();
+    beginStockVehicleDecals();
     return true;
 }
 
@@ -514,6 +516,7 @@ bool StockDeferredBuffers::end()
     if(!frameActive_)return true;
     frameActive_=false;
     temporalAA_.endFrame();
+    endStockVehicleDecals();
     endStockSpaceDecals();
     prepared_=false;
     kindCopied_=false;
@@ -819,7 +822,7 @@ bool StockDeferredBuffers::drawSpaceDecals()
         FAILED(Moo::rc().setRenderTarget(2,pipeline_.gbufferSurface(2))))return false;
     // Original effect channel order: material, encoded normal, albedo. The
     // public legacy decal effect uses a different order in its separate pass.
-    return drawStockSpaceDecalsPhase(0) && drawStockDynamicDecals();
+    return drawStockSpaceDecalsPhase(0) && drawStockDynamicDecals() && drawStockVehicleDecalsPhase(0);
 }
 
 bool StockDeferredBuffers::drawSpaceDecalsAO()
@@ -836,7 +839,7 @@ bool StockDeferredBuffers::drawSpaceDecalsAO()
     TargetScope target;
     if(!target.bind(surface,half?reducedDepth_->depthBuffer():depthSurface_.pComObject(),
         destination->width(),destination->height()))return false;
-    return drawStockSpaceDecalsPhase(1);
+    return drawStockSpaceDecalsPhase(1) && drawStockVehicleDecalsPhase(1);
 }
 
 StockDeferredBuffers* stockDeferredBuffers() { return owner; }

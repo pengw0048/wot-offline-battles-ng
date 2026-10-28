@@ -21,11 +21,19 @@ int main(int argc,char** argv) {
             {"Y0_enabled",4},{"X0_enabled",4},{"Y2_enabled",4},{"X2_enabled",4}};
         for(auto p:parameters){auto handle=reflection.parameter_by_name(p.first);auto type=reflection.parameter_type(handle);
             if(!type||type->basic_type!=p.second||!reflection.parameter_used(handle))throw std::runtime_error(p.first);}
+        for(auto p:parameters){auto handle=reflection.parameter_by_name(p.first);
+            if(reflection.annotation_by_name(handle,"artistEditable")||reflection.annotation_by_name(handle,"UIName"))
+                throw std::runtime_error("Manual simulation parameters must survive EffectMaterial::setProperties");}
     }else if(std::string(argv[2])=="water_deferred"){
         for(const char* name:{"simulationMap","useSimulation","combineSimulation","simulationPower"}) {
             auto handle=reflection.parameter_by_name(name);
             if(!handle||!reflection.parameter_used(handle))throw std::runtime_error(name);
+            if(reflection.annotation_by_name(handle,"artistEditable")||reflection.annotation_by_name(handle,"UIName"))
+                throw std::runtime_error("Manual water surface parameters must survive EffectMaterial::setProperties");
         }
+        float power=0;
+        if(!reflection.default_value(reflection.parameter_by_name("simulationPower"),&power,sizeof(power))||power!=1.f)
+            throw std::runtime_error("Water surface uses its original nonzero simulationPower default");
     }else{
         if(reflection.parameter_by_name("simulationMap")||reflection.parameter_by_name("useSimulation"))
             throw std::runtime_error("Forward water has no simulation texture consumer");

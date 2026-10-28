@@ -35,6 +35,83 @@ def patch(root):
         {
             ComObjectWrap<ID3DXEffect> pEffect = Waters::s_simulationEffect_->pEffect()->pEffect();'''
     text = replace_once(text, before, after)
+
+    # The parameter cache retains an ID3DXEffect, whereas ARIE's Properties
+    # owns the actual per-material binding. Select before any surface writes,
+    # including the first draw and a recompiled/replaced effect.
+    before = '''    if (!cells_.size() || !createdCells_ || (nVertices_==0))
+        return;\x20
+
+    static DogWatch waterWatch( "Water" );'''
+    after = '''    if (!cells_.size() || !createdCells_ || (nVertices_==0))
+        return;
+
+    Waters::s_effect_->checkEffectRecompiled();
+    if (!Waters::s_effect_->properties().select(*Waters::s_effect_->pEffect()))
+        return;
+    paramCache_->effect(Waters::s_effect_->pEffect()->pEffect());
+
+    static DogWatch waterWatch( "Water" );'''
+    text = replace_once(text, before, after)
+    text = replace_once(text, '        if (selfWater && Waters::s_effect_)',
+        '        if (selfWater && Waters::s_effect_ &&\n'
+        '            Waters::s_effect_->properties().select(*Waters::s_effect_->pEffect()))')
+    # A cell's manual parameters are consumed by BeginPass. CommitChanges
+    # between cells has no open pass, and a failed Begin/BeginPass must never
+    # issue a draw using a previous shader.
+    before = '''                if (bound)
+                    Waters::s_effect_->commitChanges();
+                else
+                {\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20
+                    bound=true;
+                    Waters::s_effect_->begin();
+                }'''
+    after = '''                if (!bound)
+                {
+                    if (!Waters::s_effect_->begin()) break;
+                    bound=true;
+                }'''
+    text = replace_once(text, before, after)
+    text = replace_once(text, '                    Waters::s_effect_->beginPass(pass);',
+        '                    if (!Waters::s_effect_->beginPass(pass)) continue;')
+
+    # These textures are explicitly supplied by Water, not automatic semantic
+    # textures. Release the existing binding's default-pool targets before the
+    # owner destroys/recreates them; do not allocate a binding during teardown.
+    helper = '''static void releaseStockWaterRenderTargets(Moo::EffectMaterialPtr material,
+    bool simulation)
+{
+    if (!material || !material->pEffect()) return;
+    ID3DXEffect* effect = material->properties().existingStockBinding();
+    if (!effect) effect = material->pEffect()->pEffect();
+    if (!effect) return;
+    static const char* const simulationTargets[] = {
+        "heightMap", "previousHeightMap", "neighbourHeightMap0",
+        "neighbourHeightMap1", "neighbourHeightMap2", "neighbourHeightMap3"
+    };
+    static const char* const surfaceTargets[] = {
+        "bbCopy", "simulationMap", "rainSimulationMap", "reflectionMap"
+    };
+    const char* const* names = simulation ? simulationTargets : surfaceTargets;
+    const size_t count = simulation ? sizeof(simulationTargets)/sizeof(*simulationTargets) :
+        sizeof(surfaceTargets)/sizeof(*surfaceTargets);
+    for (size_t index = 0; index != count; ++index)
+    {
+        D3DXHANDLE handle = effect->GetParameterByName(NULL, names[index]);
+        if (handle) effect->SetTexture(handle, NULL);
+    }
+}
+
+'''
+    text = replace_once(text, 'Water::~Water()\n{\n    BW_GUARD;',
+        helper + 'Water::~Water()\n{\n    BW_GUARD;\n'
+        '    releaseStockWaterRenderTargets(Waters::s_effect_, false);\n'
+        '    releaseStockWaterRenderTargets(Waters::s_simulationEffect_, true);')
+    text = replace_once(text, 'void Water::deleteUnmanagedObjects( )\n{\n    BW_GUARD;',
+        'void Water::deleteUnmanagedObjects( )\n{\n    BW_GUARD;\n'
+        '    releaseStockWaterRenderTargets(Waters::s_effect_, false);\n'
+        '    releaseStockWaterRenderTargets(Waters::s_simulationEffect_, true);\n'
+        '    paramCache_->effect(NULL);')
     pending[path] = text
 
     path = root / 'lib/romp/water_simulation.cpp'
@@ -43,6 +120,25 @@ def patch(root):
     # public source's removed perturb/edge integer shader selectors.
     text = replace_once(text, '\tpEffect->SetInt( "perturb", 0 );',
         '\tpEffect->SetBool( "g_highQuality", Waters::highQualityMode() );')
+    # The old once-only write assumed a permanent D3DX effect. A newly
+    # allocated/recompiled ARIE material starts from authored defaults instead.
+    text = replace_once(text, '''#ifndef EDITOR_ENABLED
+\tstatic bool once = true;
+
+\tif (once)
+\t{
+\t\tonce = false;
+#endif''', '\t// Republish cell constants to the current material binding.\n\t{')
+    text = replace_once(text, '''#ifndef EDITOR_ENABLED
+\t}
+#endif
+\t//TODO: cleanup the variable uploads...''',
+        '\t}\n\t//TODO: cleanup the variable uploads...')
+    # No pass has begun here; BeginPass commits these values below.
+    text = replace_once(text,
+        '\tpEffect->SetBool( "g_highQuality", Waters::highQualityMode() );\n\tpEffect->CommitChanges();',
+        '\tpEffect->SetBool( "g_highQuality", Waters::highQualityMode() );\n'
+        '\t// BeginPass uploads the current simulation uniforms.')
     text = replace_once(text, '\t\t\tpEffect->SetInt("perturb", 1);',
         '\t\t\teffect->hTechnique("WaterSimulationPerturb");')
     # 00a7d831 restores WaterSimulation after the impulse pass; later cells
@@ -51,7 +147,12 @@ def patch(root):
     after = '\t\teffect->end();\n\t\teffect->hTechnique("WaterSimulation");\n\t}\n}\n\n\n// -----------------------------------------------------------------------------\n// Section: Simulation'
     text = replace_once(text, before, after)
     rain_selector = '\tpEffect->SetInt( "edge", 0 );'
-    rain_replacement = '\t// #1513 selects edge behaviour through neighbour booleans and techniques.'
+    rain_replacement = ('\t// Rain has no cell neighbours; clear a prior edge cell\'s flags.\n' +
+        ''.join('\tpEffect->SetBool("%s", false);\n' % name
+                for name in ('Y0_enabled', 'X0_enabled', 'Y2_enabled', 'X2_enabled')).rstrip())
+    previous_rain = '\t// #1513 selects edge behaviour through neighbour booleans and techniques.'
+    if previous_rain in text:
+        text = replace_once(text, previous_rain, rain_replacement)
     if rain_replacement not in text:
         if text.count(rain_selector) != 2:
             raise RuntimeError('Water simulation edge selector sites changed')
@@ -82,6 +183,16 @@ def patch(root):
         text = text.replace(before, after)
     elif selected != 5:
         raise RuntimeError('Water simulation material patch is incomplete')
+    text = replace_once(text, '\teffect->begin();\n\teffect->beginPass(0);',
+        '\tif (!effect->begin()) return;\n'
+        '\tif (!effect->beginPass(0)) { effect->end(); return; }')
+    text = replace_once(text, '\t\t\teffect->begin();\n\t\t\teffect->beginPass(0);',
+        '\t\t\tif (!effect->begin())\n'
+        '\t\t\t{ effect->hTechnique("WaterSimulation"); return; }\n'
+        '\t\t\tif (!effect->beginPass(0))\n'
+        '\t\t\t{ effect->end(); effect->hTechnique("WaterSimulation"); return; }')
+    text = replace_once(text, '\t\tpEffect->CommitChanges();\n\t\tMoo::rc().drawPrimitive',
+        '\t\tif (FAILED(pEffect->CommitChanges())) continue;\n\t\tMoo::rc().drawPrimitive')
     pending[path] = text
     for path, text in pending.items():
         path.write_text(text)

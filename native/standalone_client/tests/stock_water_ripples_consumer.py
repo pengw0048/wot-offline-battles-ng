@@ -53,6 +53,18 @@ B.fixture('mode',0)
 B.fixture('render')
 assert B.fixture('inspect')==(0,2,200.)
 B.fixture('clear')
+# Shader failures must close their passes and never draw an old shader. A
+# subsequent valid frame still propagates and injects a newly queued impulse.
+for mode in (4,5,6):
+    B.fixture('mode',mode)
+    B.wg_addWaterRipples((0,20,0),2)
+    B.fixture('render')
+    assert B.fixture('inspect')==(0,0,0.)
+    B.fixture('mode',0)
+    B.wg_addWaterRipples((0,20,0),2)
+    B.fixture('render')
+    assert B.fixture('inspect')==(0,2,200.)
+    B.fixture('clear')
 
 client=os.environ.get('WOT_0922_CLIENT')
 if client:

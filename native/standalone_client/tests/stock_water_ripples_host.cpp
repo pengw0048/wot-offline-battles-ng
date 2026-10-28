@@ -14,6 +14,7 @@
 #define BW_GUARD
 #define INLINE
 #define MF_ASSERT(x) assert(x)
+#define FAILED(x) ((x)<0)
 #define D3DRS_COLORWRITEENABLE 1
 #define D3DCOLORWRITEENABLE_ALPHA 8
 #define D3DCOLORWRITEENABLE_RED 1
@@ -21,7 +22,7 @@
 #define D3DCOLORWRITEENABLE_BLUE 4
 #define D3DPT_TRIANGLEFAN 6
 #define SIM_BORDER_SIZE 3
-using uint32=unsigned;using uint=unsigned;
+using uint32=unsigned;using uint=unsigned;using uint16=unsigned short;using std::min;
 namespace BW {using string=std::string;}
 struct Vector3 {
     float x=0,y=0,z=0;
@@ -34,12 +35,14 @@ struct Vector3 {
 };
 struct Vector4 {float x=0,y=0,z=0,w=0;};
 struct Matrix {
+    static const Matrix identity;
     Vector3 scale{1,1,1},translation;
     Vector3 applyPoint(Vector3 p)const{return p-translation;}
     void setScale(float a,float b,float c){scale={a,b,c};translation={0,0,0};}
     void postTranslateBy(Vector3 p){translation+=p;}
     Vector4 row(int)const{return {translation.x,translation.y,translation.z,1};}
 };
+const Matrix Matrix::identity;
 struct BoundingBox {
     Vector3 lo{-50,-10,-40},hi{50,0,40};
     bool clip(Vector3& a,Vector3& b)const {
@@ -63,16 +66,18 @@ struct Simulation {
 };
 struct Snapshot {std::string technique;float strength=0;Matrix matrix;};
 std::vector<Snapshot> draws;
-bool materialAvailable=true;int selections=0,propagations=0;
+bool materialAvailable=true,failBegin=false,failPass=false,failCommit=false;
+int selections=0,propagations=0;
 struct Effect {
     bool mutableBinding=false;Snapshot snapshot;
     int SetInt(const char*,int){assert(!"Removed #1513 int selector");return -1;}
     int SetBool(const char*,bool){assert(mutableBinding);return 0;}
     int SetFloat(const char* name,float value){assert(mutableBinding);if(!strcmp(name,"impactStrength"))snapshot.strength=value;return 0;}
     int SetMatrix(const char* name,const Matrix* value){assert(mutableBinding&&!strcmp(name,"WorldViewProj"));snapshot.matrix=*value;return 0;}
-    int CommitChanges(){assert(mutableBinding);return 0;}
+    int CommitChanges(){assert(mutableBinding);return failCommit?-1:0;}
 };
 template<class T>using ComObjectWrap=T*;
+namespace DX {struct Viewport {unsigned X,Y,Width,Height;float MinZ,MaxZ;};}
 namespace Moo {
 struct ManagedEffect {Effect definition,binding;Effect* active=&definition;ManagedEffect(){binding.mutableBinding=true;}Effect* pEffect(){return active;}};
 struct EffectMaterial {
@@ -80,8 +85,11 @@ struct EffectMaterial {
     struct Properties {bool select(ManagedEffect& m){++selections;if(!materialAvailable)return false;m.active=&m.binding;return true;}} properties_;
     Properties& properties(){return properties_;}std::shared_ptr<ManagedEffect>& pEffect(){return managed;}
     bool hTechnique(const char* name){technique=name;return true;}
-    void begin(){assert(properties_.select(*managed));managed->binding.snapshot.technique=technique;}
-    void beginPass(int){}void endPass(){}void end(){managed->active=&managed->definition;}
+    bool begun=false,pass=false;
+    bool begin(){assert(!begun);if(failBegin)return false;assert(properties_.select(*managed));managed->binding.snapshot.technique=technique;begun=true;return true;}
+    bool beginPass(int){assert(begun&&!pass);if(failPass)return false;pass=true;return true;}
+    void endPass(){assert(begun&&pass);pass=false;}
+    void end(){assert(begun&&!pass);begun=false;managed->active=&managed->definition;}
 };
 using EffectMaterialPtr=std::shared_ptr<EffectMaterial>;
 EffectMaterialPtr currentEffect;
@@ -91,17 +99,21 @@ struct RenderContext {
     Matrix& invView(){return camera;}
     bool frameDrawn(unsigned& mark){bool same=mark==frame;mark=frame;return same;}
     void setRenderState(int,int){}
-    void drawPrimitive(int primitive,int,int count){assert(primitive==6&&count==2);auto* effect=currentEffect->pEffect()->pEffect();assert(effect->mutableBinding);draws.push_back(effect->snapshot);}
+    uint16 maxSimTextures(){return 5;}void setTexture(unsigned,void*){}
+    void setViewport(DX::Viewport*){}void world(const Matrix&){}void view(const Matrix&){}
+    void projection(const Matrix&){}void setFVF(int){}
+    void drawPrimitive(int primitive,int,int count){assert(primitive==6&&count==2);auto* effect=currentEffect->pEffect()->pEffect();assert(effect->mutableBinding&&currentEffect->begun&&currentEffect->pass);if(effect->snapshot.technique=="WaterSimulation")++propagations;else draws.push_back(effect->snapshot);}
 };
 RenderContext& rc(){static RenderContext context;return context;}
 }
-struct Block {bool push(){return true;}void pop(){}};
+struct Block {bool push(){return true;}void pop(){}int width(){return 256;}};
+using SimulationTextureBlock=Block;
 struct Waters;
 struct SimulationManager {
     static SimulationManager& instance(){static SimulationManager manager;return manager;}
     void drawMovements(Moo::EffectMaterialPtr,Simulation*);
     void setupSim(Block*,ComObjectWrap<Effect>& effect,float){assert(effect->mutableBinding);}
-    void simulateBlock(Moo::EffectMaterialPtr effect,Block*,int){assert(effect->technique=="WaterSimulation");++propagations;effect->begin();effect->end();}
+    void simulateBlock(Moo::EffectMaterialPtr,Block*,int=0);
 };
 struct SimulationCell:Simulation {
     Block block;Block* simulationTarget_=&block;bool active=true;int edge_=0;
@@ -111,6 +123,7 @@ struct SimulationCell:Simulation {
 };
 struct WaterCell:SimulationCell {using WaterCellVector=std::vector<WaterCell>;};
 struct Water {
+    struct Quad {void activate(){}};static Quad* s_quadVertexBuffer_;
     bool initialised_=true,visible_=true;
     struct State {struct {float x=100,y=80;}size_;float simCellSize_=50,tessellation_=1;}state_;
     Matrix invTransform_;BoundingBox bbActual_;WaterCell::WaterCellVector cells_=WaterCell::WaterCellVector(4);
@@ -120,6 +133,8 @@ struct Water {
     bool addMovement(const Vector3&,const Vector3&,float);
 };
 float Water::s_maxSimDistance_=200;
+Water::Quad quad;Water::Quad* Water::s_quadVertexBuffer_=&quad;
+struct VERTEX_TYPE {static int fvf(){return 0;}};
 struct Waters:std::vector<Water*> {
     static bool s_highQuality_;static Waters& instance(){static Waters list;return list;}
     static bool highQualityMode(){return s_highQuality_;}float movementImpact()const{return 20;}
@@ -130,6 +145,7 @@ bool Waters::s_highQuality_=false;
 @WATER_ADD@
 @WATERS_ADD@
 @DRAW_MOVEMENTS@
+@SIMULATE_BLOCK@
 @SIMULATE_CELL@
 namespace Script {
 int setData(PyObject* o,float& value,const char*="") {if(!PyFloat_Check(o)&&!PyInt_Check(o)){PyErr_SetString(PyExc_TypeError,"expected float");return -1;}value=float(PyFloat_AsDouble(o));return PyErr_Occurred()?-1:0;}
@@ -144,7 +160,7 @@ PyObject* fixture(PyObject*,PyObject* args){
     const char* action;int mode=0;if(!PyArg_ParseTuple(args,"s|i",&action,&mode))return NULL;
     if(!strcmp(action,"clear")){for(Water* water:Waters::instance())for(auto& cell:water->cells_)cell.clearMovements();draws.clear();}
     else if(!strcmp(action,"frame"))++Moo::rc().frame;
-    else if(!strcmp(action,"mode")){first.initialised_=mode!=1;first.visible_=mode!=2;materialAvailable=mode!=3;}
+    else if(!strcmp(action,"mode")){first.initialised_=mode!=1;first.visible_=mode!=2;materialAvailable=mode!=3;failBegin=mode==4;failPass=mode==5;failCommit=mode==6;}
     else if(!strcmp(action,"one"))Waters::instance().resize(1);
     else if(!strcmp(action,"remove"))Waters::instance().clear();
     else if(!strcmp(action,"details")){

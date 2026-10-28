@@ -17,8 +17,14 @@ def patch(root):
          '#include "stock_space_decals.hpp"\n#include "stock_dynamic_decals.hpp"')
     edit(manager, '    finaliseStockSpaceDecals();',
          '    finaliseStockDynamicDecals();\n    finaliseStockSpaceDecals();')
-    edit(manager, '    return initialiseStockSpaceDecals();',
-         '    return initialiseStockSpaceDecals() && initialiseStockDynamicDecals();')
+    current = pending.get(manager, (root / manager).read_text(encoding='utf-8-sig'))
+    signature = 'bool DecalsManager::init()\n{'
+    if current.count(signature) != 1:
+        raise ValueError('Pinned dynamic decal init owner changed: ' + manager)
+    body = current.split(signature, 1)[1].split('\n}', 1)[0]
+    if body.count('initialiseStockDynamicDecals()') != 1:
+        edit(manager, '    return initialiseStockSpaceDecals();',
+             '    return initialiseStockSpaceDecals() && initialiseStockDynamicDecals();')
     edit(manager, '    setStockSpaceDecalsQuality(option);',
          '    setStockSpaceDecalsQuality(option);\n    setStockDynamicDecalQuality(option);')
     pipeline = 'lib/moo/deferred_pipeline.cpp'

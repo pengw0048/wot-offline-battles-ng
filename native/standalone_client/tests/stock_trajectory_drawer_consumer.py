@@ -4,6 +4,7 @@ import gc
 import marshal
 import os
 import types
+import weakref
 import zipfile
 
 
@@ -18,6 +19,15 @@ expect(RuntimeError,B.wg_trajectory_drawer)
 B.fixture('init')
 a=B.wg_trajectory_drawer()
 assert a is B.wg_trajectory_drawer()
+assert type(a).__name__ == 'WGTrajectoryDrawer'
+assert type(a).__base__.__name__ == 'PyObjectPlus'
+expect(TypeError,type(a))
+expect(TypeError,weakref.ref,a)
+expect(AttributeError,setattr,a,'unregistered',True)
+# These lists and their read-only setters execute the public SDK macros.
+assert isinstance(a.__members__,list) and isinstance(a.__methods__,list)
+expect(TypeError,setattr,a,'__members__',[])
+expect(TypeError,setattr,a,'__methods__',[])
 assert a.visible is True
 for name,good in [('setParams',(1000.,(0,-10,0),(0,0))),
                   ('setColors',((0,255,0,255),(255,0,0,255),(128,128,128,255))),

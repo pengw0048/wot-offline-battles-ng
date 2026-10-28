@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <array>
+#include <vector>
 #include "wot/stock_trajectory_drawer.hpp"
 #define WOT_STOCK_TRAJECTORY_PORTABLE
 #define BW_BEGIN_NAMESPACE
@@ -68,6 +69,33 @@ int setData(PyObject* o,Vector4& v){return vector(o,&v.x,4);}
 PyObject* getData(bool value){return PyBool_FromLong(value);}
 PyObject* getData(Vector3 v){return Py_BuildValue("(fff)",v.x,v.y,v.z);}
 }
+// Only ScriptObject's reference wrappers are fixtures. PyObjectPlus, its type,
+// method and attribute macros and dispatch below come from the pinned SDK.
+class ScriptObject : public PyObjectPtr {
+public:
+    enum ReferenceType {FROM_BORROWED_REFERENCE,FROM_NEW_REFERENCE};
+    ScriptObject()=default;
+    ScriptObject(PyObject* object,ReferenceType reference):PyObjectPtr(object,STEAL_REFERENCE) {
+        if(reference==FROM_BORROWED_REFERENCE)Py_XINCREF(object);
+    }
+    PyObject* newRef()const {Py_XINCREF(get());return get();}
+};
+class ScriptString : public ScriptObject {
+public:
+    ScriptString(PyObject* object,ReferenceType reference):ScriptObject(object,reference) {}
+};
+class ScriptList : public ScriptObject {
+public:
+    ScriptList(PyObject* object):ScriptObject(object,FROM_NEW_REFERENCE) {}
+    static ScriptList create(){return ScriptList(PyList_New(0));}
+};
+namespace BW {template<class T>using vector=std::vector<T>;}
+#define PY_GET_DOC(value) value
+#define MF_ASSERT_DEV(expression) assert(expression)
+#define MF_ASSERT(expression) assert(expression)
+#define bw_snprintf std::snprintf
+@PYOBJECT_PLUS_HEADER@
+@PYOBJECT_PLUS_SOURCE@
 struct D3DXMATRIX {template<class...T> D3DXMATRIX(T...) {}};
 struct D3DXVECTOR4 {float x,y,z,w;D3DXVECTOR4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}};
 struct ID3DXEffect {
