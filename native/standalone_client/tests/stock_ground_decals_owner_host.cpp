@@ -68,7 +68,10 @@ struct Terrain2SceneProvider {
 @TERRAIN@
 struct StockStaticModelSceneLoader {
  static bool collectStockDecalTriangles(const SceneObject& object,const Vector3&,const Vector3&,const Vector3&,const Vector3&,vector<WorldTriangle>& output){
- if(object.type!=2)return false;order.push_back(object.type);output=object.triangles;return true;}
+ if(object.type!=2)return false;
+ order.push_back(object.type);
+ output=object.triangles;
+ return true;}
 };
 }
 using MathPoint=wot::GroundDecalMath::Point;

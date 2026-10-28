@@ -12,9 +12,10 @@ SANITIZERS = ('-fsanitize=address,undefined',)
 def _windows_runtime_flags(compiler):
     target = subprocess.run([compiler, '-dumpmachine'], capture_output=True, text=True)
     # Python's Windows DLL loader does not search the compiler's PATH entries.
-    # Only test artifacts link this runtime statically; production is unchanged.
+    # Include winpthreads, which static libstdc++ can still import separately.
+    # Only test artifacts link these runtimes statically; production is unchanged.
     if target.returncode == 0 and 'mingw' in target.stdout.lower():
-        return ('-static-libgcc', '-static-libstdc++')
+        return ('-static', '-static-libgcc', '-static-libstdc++')
     return ()
 
 

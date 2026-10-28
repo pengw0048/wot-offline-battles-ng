@@ -34,7 +34,7 @@ class NativeTestCompileFlagsTests(unittest.TestCase):
         diagnostic = io.StringIO()
         with mock.patch.object(flags.sys, 'platform', 'win32'), mock.patch.object(flags.subprocess, 'run', side_effect=run), redirect_stderr(diagnostic):
             selected = flags.native_test_compile_flags()
-            self.assertEqual(selected, ['-static-libgcc', '-static-libstdc++'])
+            self.assertEqual(selected, ['-static', '-static-libgcc', '-static-libstdc++'])
             self.assertEqual(flags.native_test_compile_flags(), selected)
             with self.assertRaises(subprocess.CalledProcessError):
                 subprocess.run(['c++', *selected, 'actual_test.cpp'], check=True)
