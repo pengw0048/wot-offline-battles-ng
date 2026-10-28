@@ -426,6 +426,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-preferences-callbacks-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_resolution.py"),
         $EngineRoot) "stock-dynamic-resolution-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_resource_access_logging.py"),
+        $EngineRoot) "stock-resource-access-logging-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_restricted_viewport.py"),
         $EngineRoot) "stock-flash-restricted-viewport-patch.log"
     # MouseCursor.inFocus and GUIApp's background/edge presentation owners.

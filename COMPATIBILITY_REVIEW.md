@@ -3260,6 +3260,15 @@ compiled effects load without the upstream legacy compiler flag. This startup
 does not establish WoT resource rendering or behavior. No client assets or
 original executable are bundled by this target.
 
+Normal rendering does not automatically arm the public engine's per-resource
+main-thread access tracer. Its synchronous warning for each package lookup
+measurably amplifies first-use loads, particularly under a debugger. The
+explicit tracing API, resource queries and ordinary error logging are retained.
+A focused test executes the real frame and tracing bodies, including the old
+behavior as a negative control. A Windows probe confirms identical existing and
+missing resource results with tracing enabled and disabled; this isolates
+diagnostic overhead, not total battle frame time.
+
 The native entry creates a local space and free camera, loads optional model
 assemblies through the engine's model/embodiment path, and releases attachments
 before the space. The personality only forwards input to the native camera and
