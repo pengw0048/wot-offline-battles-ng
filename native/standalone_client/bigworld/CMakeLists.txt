@@ -97,6 +97,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_scene_queries.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_entity_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_filter_helper.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_vector_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio_io.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bigworld_ipc.cpp"
