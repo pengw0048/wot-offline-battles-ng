@@ -12,7 +12,9 @@ import random
 import re
 import shlex
 import struct
+import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tarfile
 import tempfile
@@ -28,10 +30,12 @@ import patch_stock_trajectory_drawer as patcher
 class StockTrajectoryDrawerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not shutil.which('c++'):
+            raise unittest.SkipTest('C++ compiler unavailable: c++')
         cls.directory=tempfile.TemporaryDirectory(prefix='trajectory-drawer-')
         cls.output=Path(cls.directory.name)
         cls.binary=cls.output/'core.so'
-        subprocess.run(['c++','-std=c++14','-ffp-contract=off','-shared','-fPIC','-I',str(ROOT/'include'),
+        subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False),'-std=c++14','-ffp-contract=off','-shared','-fPIC','-I',str(ROOT/'include'),
             str(ROOT/'src/stock_trajectory_drawer.cpp'),str(ROOT/'src/gun_ballistics.cpp'),
             str(ROOT/'tests/stock_trajectory_drawer_core.cpp'),'-o',str(cls.binary)],check=True)
         cls.core=ctypes.CDLL(str(cls.binary))
@@ -163,7 +167,7 @@ class StockTrajectoryDrawerTest(unittest.TestCase):
             '@PYOBJECT_PLUS_HEADER@',header).replace('@PYOBJECT_PLUS_SOURCE@',definitions)
         source=self.output/'host.cpp';source.write_text(host)
         binary=self.output/'host'
-        subprocess.run(['c++','-std=c++14','-ffp-contract=off','-Wno-deprecated-register','-Wno-writable-strings',
+        subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False),'-std=c++14','-ffp-contract=off','-Wno-deprecated-register','-Wno-writable-strings',
             '-I',str(ROOT/'include'),'-I',str(ROOT/'bigworld'),*flags,'-UNDEBUG',
             str(source),str(ROOT/'src/stock_trajectory_drawer.cpp'),
             str(ROOT/'src/gun_ballistics.cpp'),*libs,'-o',str(binary)],check=True)
@@ -178,7 +182,7 @@ class StockTrajectoryDrawerTest(unittest.TestCase):
         client=os.environ.get('WOT_0922_CLIENT')
         if not client:self.skipTest('WOT_0922_CLIENT is required for original shader resources')
         binary=self.output/'effect'
-        subprocess.run(['c++','-std=c++17','-I',str(ROOT/'include'),
+        subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False),'-std=c++17','-I',str(ROOT/'include'),
             str(ROOT/'tests/stock_trajectory_drawer_effect.cpp'),str(ROOT/'src/stock_shader_binary.cpp'),
             str(ROOT/'src/stock_effect_reflection.cpp'),'-o',str(binary)],check=True)
         with zipfile.ZipFile(Path(client)/'res/packages/misc.pkg') as package:

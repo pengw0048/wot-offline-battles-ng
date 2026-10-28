@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tarfile
 import tempfile
@@ -125,9 +126,8 @@ class ScaleformResourceTests(unittest.TestCase):
         source += 'assert(wot::stockScaleformInitialResourcePath("GUI\\\\MAPS/Test.PNG")=="gui/maps/test.png");\n}\n'
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root/'probe.cpp').write_text(source)
-            command = [os.environ.get('CXX','c++'), '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I'+str(ROOT/'bigworld')]
-            if sys.platform != 'win32': command += ['-fsanitize=address,undefined']
+            (root/'probe.cpp').write_text(source, encoding='utf-8')
+            command = [os.environ.get('CXX','c++'), *native_test_compile_flags(os.environ.get('CXX','c++')), '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I'+str(ROOT/'bigworld')]
             result = subprocess.run(command+[str(root/'probe.cpp'),'-o',str(root/'probe')],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             result = subprocess.run([str(root/'probe')],capture_output=True,text=True)
@@ -152,7 +152,7 @@ class ScaleformResourceTests(unittest.TestCase):
             source += (ROOT / 'tests/stock_scaleform_resources_host.cpp').read_text()
             (root / 'host.cpp').write_text(source)
             prefix = python.parents[1]
-            command = ['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-register', '-fPIC', '-shared', '-undefined', 'dynamic_lookup', '-I'+str(prefix/'include/python2.7'), '-I'+str(root), str(root/'host.cpp'), '-o', str(root/'resource_owner.so')]
+            command = ['c++', *native_test_compile_flags('c++', sanitise=False), '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-register', '-fPIC', '-shared', '-undefined', 'dynamic_lookup', '-I'+str(prefix/'include/python2.7'), '-I'+str(root), str(root/'host.cpp'), '-o', str(root/'resource_owner.so')]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             script = (ROOT / 'tests/stock_scaleform_resources_consumer.py').read_text()

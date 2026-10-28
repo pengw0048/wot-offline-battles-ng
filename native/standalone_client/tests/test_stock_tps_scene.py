@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import tempfile
 import unittest
 
@@ -101,7 +102,7 @@ class StockTPSSceneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='wot-tps-scene-') as directory:
             work = Path(directory)
             (work / 'probe.cpp').write_text(make_probe())
-            subprocess.run(['c++', '-std=c++17', '-fsanitize=address,undefined',
+            subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++17',
                             '-Wall', '-Wextra', '-Werror', str(work / 'probe.cpp'),
                             '-o', str(work / 'probe')], check=True)
             subprocess.run([str(work / 'probe')], check=True)

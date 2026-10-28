@@ -4,6 +4,7 @@ import os
 import struct
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ class SpaceSoundTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix='stock-space-sounds-')
         cls.directory = Path(cls.temporary.name)
         cls.probe = cls.directory/'reader'
-        subprocess.run(['c++','-std=c++14','-O2','-Wall','-Wextra','-Werror','-UNDEBUG',
+        subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False),'-std=c++14','-O2','-Wall','-Wextra','-Werror','-UNDEBUG',
                         '-I'+str(ROOT/'bigworld'),'-I'+str(ROOT/'include'),str(ROOT/'tests/test_stock_space_sounds_data.cpp'),
                         '-o',str(cls.probe)],check=True)
 
@@ -33,8 +34,8 @@ class SpaceSoundTests(unittest.TestCase):
 
     def test_production_group_owner_lifetimes(self):
         probe=self.directory/'owners'
-        subprocess.run(['c++','-std=c++14','-O1','-g','-Wall','-Wextra','-Werror','-UNDEBUG',
-                        '-fsanitize=address,undefined',str(ROOT/'tests/test_stock_space_sound_owners.cpp'),
+        subprocess.run(['c++', *native_test_compile_flags('c++'),'-std=c++14','-O1','-g','-Wall','-Wextra','-Werror','-UNDEBUG',
+                        str(ROOT/'tests/test_stock_space_sound_owners.cpp'),
                         '-o',str(probe)],check=True)
         subprocess.run([str(probe)],check=True)
 

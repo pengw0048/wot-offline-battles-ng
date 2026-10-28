@@ -10,6 +10,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tarfile
 import tempfile
@@ -89,7 +90,7 @@ class StockBallisticsTest(unittest.TestCase):
             raise unittest.SkipTest('C++ compiler unavailable: c++')
         with tempfile.TemporaryDirectory(prefix='ballistics-core-') as directory:
             binary = Path(directory) / 'core'
-            subprocess.run(['c++', *STRICT, '-g', '-fsanitize=address,undefined', *CORE,
+            subprocess.run(['c++', *native_test_compile_flags('c++'), *STRICT, '-g', *CORE,
                             str(ROOT / 'tests/test_stock_ballistics.cpp'), '-o', str(binary)], check=True)
             result = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -105,7 +106,7 @@ class StockBallisticsTest(unittest.TestCase):
             self.skipTest('pefile and Unicorn are required for the original instruction oracle')
         with tempfile.TemporaryDirectory(prefix='ballistics-oracle-') as directory:
             library = Path(directory) / 'libballistics.so'
-            subprocess.run(['c++', *STRICT, '-O2', '-shared', '-fPIC', *CORE,
+            subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False), *STRICT, '-O2', '-shared', '-fPIC', *CORE,
                             str(ROOT / 'tests/stock_ballistics_oracle_shim.cpp'), '-o', str(library)],
                            check=True)
             counts, mismatches = oracle.run(executable, library)
@@ -150,9 +151,9 @@ class StockBallisticsTest(unittest.TestCase):
                      if flag != '-DNDEBUG']
             libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
             core = directory / 'core.o'
-            subprocess.run(['c++', *STRICT, '-c', *CORE, '-o', str(core)], check=True)
+            subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False), *STRICT, '-c', *CORE, '-o', str(core)], check=True)
             binary = directory / 'host'
-            subprocess.run(['c++', '-std=c++14', '-UNDEBUG', *flags, '-Wall', '-Werror', '-Wno-deprecated-register',
+            subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False), '-std=c++14', '-UNDEBUG', *flags, '-Wall', '-Werror', '-Wno-deprecated-register',
                             '-Wno-writable-strings', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-local-typedef',
                             '-I', str(directory / 'include'), '-I', str(ROOT / 'bigworld'), '-I', str(ROOT / 'include'),
                             str(directory / 'host.cpp'), str(core), *libs, '-o', str(binary)], check=True)
@@ -177,10 +178,10 @@ class StockBallisticsTest(unittest.TestCase):
                 (directory / 'include' / fake).write_text('#pragma once\n')
             (directory / 'include/stock_ground_water_query.inc').write_text(water)
             core = directory / 'core.o'
-            subprocess.run(['c++', *STRICT, '-g', '-fsanitize=address,undefined', '-c', *CORE, '-o', str(core)],
+            subprocess.run(['c++', *native_test_compile_flags('c++'), *STRICT, '-g', '-c', *CORE, '-o', str(core)],
                            check=True)
             binary = directory / 'cross'
-            subprocess.run(['c++', '-std=c++14', '-g', '-UNDEBUG', *flags, '-fsanitize=address,undefined',
+            subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++14', '-g', '-UNDEBUG', *flags,
                             '-ffp-contract=off', '-Wall', '-Werror', '-Wno-deprecated-register',
                             '-Wno-unused-function', '-Wno-writable-strings',
                             '-I', str(directory / 'include'), '-I', str(owner), '-I', str(ROOT / 'bigworld'),

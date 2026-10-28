@@ -6,6 +6,7 @@ import io
 import shutil
 import struct
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tempfile
 import tarfile
@@ -130,7 +131,7 @@ struct MatrixProviderPtr:std::shared_ptr<Provider> {
  using std::shared_ptr<Provider>::operator=;
  MatrixProviderPtr(){};
  MatrixProviderPtr(const std::shared_ptr<Provider>&value):std::shared_ptr<Provider>(value){}
- MatrixProviderPtr(Provider*value,bool):std::shared_ptr<Provider>(value){}
+ template<class T> MatrixProviderPtr(T*value,bool):std::shared_ptr<Provider>(value){}
  MatrixProviderPtr& operator=(std::nullptr_t){reset();return *this;}
 };
 struct PyAttachment:PyObject {
@@ -460,9 +461,7 @@ class CompoundNodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='compound-stipple-resource-') as temporary:
             root = Path(temporary)
             (root / 'probe.cpp').write_text(host)
-            command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-UNDEBUG']
-            if sys.platform != 'win32':
-                command += ['-fsanitize=address,undefined']
+            command = ['c++', *native_test_compile_flags('c++'), '-std=c++17', '-Wall', '-Wextra', '-Werror', '-UNDEBUG']
             subprocess.run(command + [str(root / 'probe.cpp'), '-o', str(root / 'probe')], check=True)
             subprocess.run([str(root / 'probe')], check=True)
 
@@ -544,9 +543,7 @@ class CompoundNodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='compound-node-owner-') as temporary:
             directory = Path(temporary)
             (directory / 'probe.cpp').write_text(production_harness())
-            command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-UNDEBUG']
-            if sys.platform != 'win32':
-                command += ['-fsanitize=address,undefined']
+            command = ['c++', *native_test_compile_flags('c++'), '-std=c++17', '-Wall', '-Wextra', '-Werror', '-UNDEBUG']
             subprocess.run(command + [str(directory / 'probe.cpp'), '-o', str(directory / 'probe')], check=True)
             subprocess.run([str(directory / 'probe')], check=True)
 

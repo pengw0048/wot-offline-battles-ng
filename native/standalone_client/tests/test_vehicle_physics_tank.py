@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import tempfile
 import unittest
 
@@ -487,8 +488,8 @@ class VehiclePhysicsTankTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='vehicle-tank-graph-') as temporary:
             root = Path(temporary)
             (root / 'probe.cpp').write_text(SOURCE)
-            command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                       '-ffp-contract=off', '-fno-fast-math', '-fsanitize=address,undefined',
+            command = ['c++', *native_test_compile_flags('c++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                       '-ffp-contract=off', '-fno-fast-math',
                        '-fno-sanitize-recover=all', '-I', str(ROOT / 'include'), str(root / 'probe.cpp')]
             command += [str(ROOT / 'src' / name) for name in
                         ['vehicle_physics.cpp', 'vehicle_dynamics.cpp', 'point_velocity.cpp']]

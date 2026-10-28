@@ -9,6 +9,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tempfile
 import unittest
@@ -79,7 +80,7 @@ def compile_kernel(path):
     if not shutil.which(CXX):
         raise unittest.SkipTest('C++ compiler unavailable: ' + CXX)
     (path / 'kernel.cpp').write_text(KERNEL)
-    subprocess.run([CXX, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-UNDEBUG', '-ffp-contract=off',
+    subprocess.run([CXX, *native_test_compile_flags(CXX, sanitise=False), '-std=c++14', '-Wall', '-Wextra', '-Werror', '-UNDEBUG', '-ffp-contract=off', '-D_CRT_SECURE_NO_WARNINGS',
                     '-I', str(ROOT / 'bigworld'), str(path / 'kernel.cpp'), '-o', str(path / 'kernel')],
                    check=True)
     return path / 'kernel'
@@ -178,7 +179,7 @@ def build_host(test, path, retirement=True):
     libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
     binary = path / 'host'
     # AddressSanitizer reads every geometry access after a retirement.
-    subprocess.run(['c++', '-std=c++14', '-g', '-fsanitize=address', '-fno-omit-frame-pointer',
+    subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++14', '-g', '-fno-omit-frame-pointer',
                     '-Wno-deprecated-register', '-Wno-writable-strings',
                     '-Wno-unused-function', '-UNDEBUG', '-ffp-contract=off',
                     '-I', str(path / 'include'), '-I', str(ROOT / 'bigworld'),
@@ -442,7 +443,7 @@ class StockBattleSceneQueriesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='scene-query-wgde-') as directory:
             path = Path(directory)
             (path / 'probe.cpp').write_text(IDENTITY_PROBE)
-            subprocess.run([CXX, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'bigworld'),
+            subprocess.run([CXX, *native_test_compile_flags(CXX, sanitise=False), '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'bigworld'),
                             str(path / 'probe.cpp'), '-o', str(path / 'probe')], check=True)
             spaces = keys = shifted = 0
             lakeville = None

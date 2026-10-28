@@ -102,7 +102,9 @@ struct DataSection {
  string name;
  DataSectionPtr openSection(const string& n){return std::make_shared<DataSection>(DataSection{n});}
  int readInt(const string&,int d){return d;}unsigned readUInt(const string& n,unsigned d=0){
- if(n=="minWidth"||n=="minHeight")return 1;if(n=="maxWidth"||n=="maxHeight")return 4096;return d;}
+ if(n=="minWidth"||n=="minHeight"){return 1;}
+ if(n=="maxWidth"||n=="maxHeight"){return 4096;}
+ return d;}
  string readString(const string& n){return n=="name"?"OtherDecals":"DXT5";}string asString(){return name;}
  void openSections(const string& n,vector<DataSectionPtr>& output){if(n=="type"||n=="atlas")output.push_back(std::make_shared<DataSection>());}
 };

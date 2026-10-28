@@ -5,6 +5,7 @@ from pathlib import Path
 import struct
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tempfile
 import unittest
@@ -111,8 +112,8 @@ class StockSpaceWaterTests(unittest.TestCase):
         cls.work = Path(cls.temporary.name)
         (cls.work / 'probe.cpp').write_text(DRIVER)
         cls.probe = cls.work / 'probe'
-        subprocess.run(['c++', '-std=c++17', '-DWOT_STOCK_SPACE_WATER_PORTABLE', '-Wall', '-Wextra', '-Werror',
-                        '-fsanitize=address,undefined', '-ffp-contract=off', '-I', str(ROOT / 'bigworld'),
+        subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++17', '-DWOT_STOCK_SPACE_WATER_PORTABLE', '-Wall', '-Wextra', '-Werror',
+                         '-ffp-contract=off', '-I', str(ROOT / 'bigworld'),
                         str(ROOT / 'bigworld/stock_space_water.cpp'), str(cls.work / 'probe.cpp'), '-o', str(cls.probe)], check=True)
 
     @classmethod

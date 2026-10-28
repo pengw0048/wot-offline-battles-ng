@@ -4,7 +4,9 @@ import itertools
 import os
 import shlex
 import struct
+import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tempfile
 import unittest
@@ -24,9 +26,11 @@ INCLUDES=('pch.hpp','cstdmf/stdmf.hpp','duplo/py_attachment.hpp','moo/device_cal
 
 
 def compile_probe(directory,source):
+    if not shutil.which('c++'):
+        raise unittest.SkipTest('C++ compiler unavailable: c++')
     path=directory/'probe.cpp';path.write_text(source)
     binary=directory/'probe'
-    subprocess.run(['c++','-std=c++14','-Wall','-Wextra','-Werror','-UNDEBUG','-fsanitize=address,undefined',
+    subprocess.run(['c++', *native_test_compile_flags('c++'),'-std=c++14','-Wall','-Wextra','-Werror','-UNDEBUG',
         '-I'+str(directory/'include'),'-I'+str(ROOT/'bigworld'),'-I'+str(ROOT/'tests'),str(path),'-o',str(binary)],check=True)
     return binary
 
@@ -92,7 +96,7 @@ static PyMethodDef hostMethods[] = {
     flags=[f for f in shlex.split(subprocess.check_output([str(config),'--cflags'],text=True)) if f!='-DNDEBUG']
     libs=shlex.split(subprocess.check_output([str(config),'--ldflags'],text=True))
     (directory/'binding.cpp').write_text(source);binary=directory/'binding'
-    subprocess.run(['c++','-std=c++14','-UNDEBUG',*flags,'-Wall','-Werror','-Wno-writable-strings',
+    subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False),'-std=c++14','-UNDEBUG',*flags,'-Wall','-Werror','-Wno-writable-strings',
         '-Wno-deprecated-register','-Wno-unused-function',str(directory/'binding.cpp'),*libs,'-o',str(binary)],check=True)
     return binary
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import tarfile
 import tempfile
 import unittest
@@ -59,8 +60,8 @@ int main() {
         with tempfile.TemporaryDirectory(prefix='replay-callback-reentry-') as directory:
             path = Path(directory)
             (path / 'probe.cpp').write_text(probe + body + cases)
-            subprocess.run([os.environ.get('CXX', 'clang++'), '-std=c++17',
-                            '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
+            subprocess.run([os.environ.get('CXX', 'clang++'), *native_test_compile_flags(os.environ.get('CXX', 'clang++')), '-std=c++17',
+                            '-Wall', '-Wextra', '-Werror',
                             str(path / 'probe.cpp'), '-o', str(path / 'probe')], check=True)
             subprocess.run([str(path / 'probe')], check=True)
 

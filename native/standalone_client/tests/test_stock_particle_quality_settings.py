@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import tempfile
 import unittest
 
@@ -112,8 +113,8 @@ int main() {
         with tempfile.TemporaryDirectory(prefix='stock-particle-settings-') as directory:
             path = Path(directory)
             (path / 'probe.cpp').write_text(host + accessor + callbacks + registration + cases)
-            subprocess.run([os.environ.get('CXX', 'clang++'), '-std=c++17',
-                            '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
+            subprocess.run([os.environ.get('CXX', 'clang++'), *native_test_compile_flags(os.environ.get('CXX', 'clang++')), '-std=c++17',
+                            '-Wall', '-Wextra', '-Werror',
                             '-I', str(ROOT / 'include'), str(path / 'probe.cpp'),
                             '-o', str(path / 'probe')], check=True)
             subprocess.run([str(path / 'probe')], check=True)

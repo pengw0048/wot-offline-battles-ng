@@ -1,7 +1,16 @@
 #include "stock_vehicle_decals_host.hpp"
 // The actual SDK already declares this type through its render headers.
 namespace BW { class Renderer {}; }
+// GCC diagnoses the production attachment's TU-private base, even though the
+// host consumes the complete owner in this one translation unit.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsubobject-linkage"
+#endif
 #include "stock_vehicle_decals.cpp"
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 namespace BW {
 std::vector<StockDeferredDecalPacket> submitted;
 unsigned stockDeferredDecalVisibleLimit(){return 1024;}

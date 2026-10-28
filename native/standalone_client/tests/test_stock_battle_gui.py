@@ -15,6 +15,7 @@ import shlex
 import struct
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import sys
 import tarfile
 import tempfile
@@ -38,8 +39,8 @@ def build_core(directory):
     if not shutil.which('c++'):
         raise unittest.SkipTest('C++ compiler unavailable: c++')
     library = Path(directory) / 'libstock_battle_gui.so'
-    subprocess.run(['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic',
-                    '-ffp-contract=off', '-fno-fast-math', '-shared', '-fPIC',
+    subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False), '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic',
+                    '-ffp-contract=off', '-fno-fast-math', '-DWOT_STOCK_BATTLE_GUI_HOST_MATH', '-shared', '-fPIC',
                     '-I', str(ROOT / 'bigworld'), str(ROOT / 'tests/stock_battle_gui_core.cpp'),
                     '-o', str(library)], check=True)
     core = ctypes.CDLL(str(library))
@@ -142,7 +143,7 @@ def build_host(test, directory):
              if flag != '-DNDEBUG']
     libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
     binary = directory / 'host'
-    subprocess.run(['c++', '-std=c++17', '-UNDEBUG', '-DWOT_STOCK_BATTLE_GUI_HOST_MATH', *flags,
+    subprocess.run(['c++', *native_test_compile_flags('c++', sanitise=False), '-std=c++17', '-UNDEBUG', '-DWOT_STOCK_BATTLE_GUI_HOST_MATH', *flags,
                     '-Wall', '-Werror', '-Wno-deprecated-register', '-Wno-register', '-Wno-writable-strings',
                     '-Wno-unused-function', '-Wno-missing-field-initializers', '-Wno-unused-private-field',
                     '-ffp-contract=off', '-I', str(include), '-I', str(ROOT / 'bigworld'),

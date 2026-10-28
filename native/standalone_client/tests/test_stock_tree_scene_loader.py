@@ -6,6 +6,7 @@ notification ordering. It proves loader ownership, not D3D rendering/BSP data.
 from pathlib import Path
 import shutil
 import subprocess
+from native_test_compile_flags import native_test_compile_flags
 import tempfile
 import unittest
 
@@ -200,8 +201,8 @@ class StockTreeSceneLoaderTests(unittest.TestCase):
             (directory / 'engine.hpp').write_text(ENGINE)
             (directory / 'test.cpp').write_text(TEST)
             binary = directory / 'probe'
-            subprocess.run(['c++', '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
-                            '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+            subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+                             '-fno-omit-frame-pointer',
                             '-I'+str(directory), str(directory / 'test.cpp'), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
