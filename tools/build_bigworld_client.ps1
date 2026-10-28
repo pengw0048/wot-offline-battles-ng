@@ -177,6 +177,10 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $ScaleformRoot) "stock-flash-scheduler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_bitmap_fill.py"),
         $ScaleformRoot) "stock-flash-bitmap-fill-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_vertical_autosize.py"),
+        $ScaleformRoot) "stock-flash-vertical-autosize-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_drawable_images.py"),
+        $EngineRoot) "stock-flash-drawable-images-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_display_object.py"),
         $EngineRoot) "stock-flash-display-object-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_collections.py"),

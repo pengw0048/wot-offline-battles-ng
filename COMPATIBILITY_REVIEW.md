@@ -3420,6 +3420,20 @@ and the player exited normally without an assertion or access-violation capture.
 Successful battle completion and repeated full-cycle acceptance remain separate
 checks.
 
+The native Scaleform manager supplies the same render-command queue to its HAL
+and every Movie instance. This enables real DrawableImage allocation for the
+stock damage panel's BitmapData atlas, preserving SDK completion events and
+references through synchronous readback and shutdown. The current engine's
+Movie creation, advancement and retirement all execute on the render thread;
+the queue retains that boundary and uses Moo's nested scene owner while
+preserving device state. A Windows D3D9/SDK probe reproduces the missing image
+without the queue, then checks atlas copyPixels, exact pixel values, disposal,
+two Movie rounds and three SDK lifecycles with it. TextFieldEx also exposes the
+original vertical autosize setter/getter and delegates layout to the existing
+DocView owner. Original executable branches, stock damage-panel consumers and
+actual SDK layout functions cover its alignment, invalid-input and reformat
+behavior. The complete damage-panel rendering still requires game acceptance.
+
 Ordinary battle calls into `WGReplayController` retain their original live-mode
 guards and presentation state: server aim, marker geometry, gun angles, reload
 and consumable progress, arena timing, and playback event arguments. Effect

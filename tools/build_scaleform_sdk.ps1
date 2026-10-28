@@ -70,6 +70,9 @@ if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the SDK call-frame capacity." }
 & python (Join-Path $RepositoryRoot "native\standalone_client\bigworld\patch_stock_flash_bitmap_fill.py") `
     $PreparedSdkRoot
 if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the SDK runtime bitmap resource leases." }
+& python (Join-Path $RepositoryRoot "native\standalone_client\bigworld\patch_stock_flash_vertical_autosize.py") `
+    $PreparedSdkRoot
+if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the SDK vertical text autosizing." }
 & python (Join-Path $RepositoryRoot "native\standalone_client\bigworld\patch_stock_ime_lifecycle.py") `
     --sdk-only $PreparedSdkRoot
 if ($LASTEXITCODE -ne 0) { throw "Cannot prepare the SDK IME focus guards." }
