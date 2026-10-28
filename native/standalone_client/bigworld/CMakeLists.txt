@@ -181,6 +181,10 @@ target_sources(bwclient PRIVATE
 if(MSVC)
     set_source_files_properties(${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/std:c++17;/fp:strict;/arch:SSE2")
+    # The recovered flock output lives in the original SDK translation unit.
+    # Preserve its observed SSE2 double-to-float step and scalar operation order.
+    set_property(SOURCE "${BW_SOURCE_DIR}/client/boids_filter.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "/fp:strict;/arch:SSE2")
     # The legacy engine selects /arch:SSE, which leaves scalar arithmetic on
     # x87. Recovered numerical code is checked against the original SSE2 path.
     # These adapters include the public engine's C++14 STL declarations.
