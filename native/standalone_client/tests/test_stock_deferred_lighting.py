@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('patch_lighting', ROOT / 'bigworld/patch_stock_deferred_lighting.py')
 PATCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PATCH)
-PUBLIC_FILES = ('lib/romp/enviro_minder.hpp', 'lib/romp/enviro_minder.cpp', 'lib/moo/deferred_lights_manager.cpp')
+PUBLIC_FILES = ('lib/romp/enviro_minder.hpp', 'lib/romp/enviro_minder.cpp',
+                'lib/moo/deferred_lights_manager.cpp', 'lib/moo/forward_pipeline.cpp')
 
 HOST = r'''
 #include <iostream>
@@ -77,15 +78,30 @@ class StockDeferredLightingTests(unittest.TestCase):
             self.assertEqual(cpp.read_text(), text)
             self.assertEqual(text.count('void EnviroMinder::loadStockDeferredLighting('), 1)
             self.assertLess(text.index('    deactivateStockDeferredLightingSettings();'), text.index('    s_activatedEM_ = NULL;'))
-            self.assertIn('loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_);', text)
+            self.assertIn('loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_,', text)
+            self.assertIn('Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING', text)
             self.assertIn('if (s_activatedEM_ == this)', text)
             managed = (root / 'lib/moo/deferred_lights_manager.cpp').read_text()
             self.assertEqual(managed.count('if (!initialiseStockDeferredLightingConstants())'), 1)
             self.assertEqual(managed.count('    finaliseStockDeferredLightingConstants();'), 1)
+            forward = (root / 'lib/moo/forward_pipeline.cpp').read_text()
+            self.assertEqual(forward.count('    initialiseStockForwardLightingConstants();'), 1)
+            self.assertEqual(forward.count('    finaliseStockDeferredLightingConstants();'), 2)
+            forward_path = root / 'lib/moo/forward_pipeline.cpp'
+            # Later central patches prepend their own teardown/update owners.
+            # Their presence must not hide the already-installed lighting call.
+            for signature in ('ForwardPipeline::~ForwardPipeline()',
+                              'void ForwardPipeline::createManagedObjects()',
+                              'void ForwardPipeline::deleteManagedObjects()'):
+                anchor = signature + '\n{'
+                forward = forward.replace(anchor, anchor + '\n    otherPipelineOwner();', 1)
+            forward_path.write_text(forward)
+            PATCH.apply(root)
+            self.assertEqual(forward_path.read_text(), forward)
         with tempfile.TemporaryDirectory(prefix='stock-lighting-failure-') as temporary:
             root = Path(temporary)
             self.fixture(root)
-            broken = root / PUBLIC_FILES[-1]
+            broken = root / 'lib/moo/deferred_lights_manager.cpp'
             broken.write_text(broken.read_text().replace('void LightsManager::createManagedObjects()', 'void missingManagedOwner()'))
             before = {name: (root / name).read_bytes() for name in PUBLIC_FILES}
             with self.assertRaises(RuntimeError):

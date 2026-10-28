@@ -23,17 +23,21 @@ namespace BW {using string=std::string;}
 struct DataSection {
     std::map<std::string,std::string> strings;
     std::map<std::string,Vector3> vectors;
+    std::map<std::string,float> scalars;
     unsigned luminanceReads=0;
     std::string readString(const char* name){return strings[name];}
     Vector3 readVector3(const char* name,const Vector3& fallback){auto at=vectors.find(name);return at==vectors.end()?fallback:at->second;}
-    float readFloat(const char* name,float fallback){assert(std::string(name)=="max_lum");++luminanceReads;return fallback;}
+    float readFloat(const char* name,float fallback){if(std::string(name)=="max_lum")++luminanceReads;auto at=scalars.find(name);return at==scalars.end()?fallback:at->second;}
 };
 using DataSectionPtr=std::shared_ptr<DataSection>;
 namespace Moo {struct BaseTexture;using BaseTexturePtr=std::shared_ptr<BaseTexture>;}
 struct StockDeferredLightingSettings {
     float sphericalHarmonics[28]={};bool loaded=false;
     std::string pmremResource;Moo::BaseTexturePtr pmrem;float pmremMips[4]={};
+    float forwardMultiplier=1.f;bool forward=false;
 };
+bool loadStockDeferredLightingSettings(DataSectionPtr,StockDeferredLightingSettings&,bool forward=false);
+bool initialiseStockForwardLightingConstants();
 struct AutoConfigString {
     explicit AutoConfigString(const char* name){assert(std::string(name)=="system/PMREMTexture");}
     const std::string& value()const{static std::string resource="system/maps/PMREM.dds";return resource;}
@@ -81,6 +85,9 @@ struct EffectVisualContext {
     enum Type {AUTO_CONSTANT_TYPE_PER_FRAME};
     std::map<std::string,std::shared_ptr<EffectConstantValue>> constants;
     unsigned registrations=0,removals=0;
+    struct Sun {Vector3 m_ambient;};
+    Sun sunlight;
+    const Sun& sunLight() const {return sunlight;}
     void registerAutoConstant(Type,const char* name,EffectConstantValue* constant){assert(!constants.count(name));constants[name].reset(constant);++registrations;}
     void unregisterAutoConstant(Type,const char* name){assert(constants.erase(name)==1);++removals;}
 };
@@ -149,5 +156,27 @@ int main(){
     assert(!(*brdf)(&effect,"BRDF"));
     assert(initialiseStockDeferredLightingConstants());finaliseStockDeferredLightingConstants();
     assert(context.registrations==8&&context.removals==8);
+    // A forward owner neither requires nor creates deferred-only BRDF/PMREM.
+    BWResource::textureExists=false;BWResource::pmremExists=false;
+    assert(initialiseStockForwardLightingConstants()&&initialiseStockForwardLightingConstants());
+    assert(context.constants.size()==1&&context.constants.count("REM_SH9"));
+    environment->strings["PBS/FORWARD/REM_SH"]="actual/forward.xml";
+    environment->scalars["PBS/FORWARD/SH_multiplier"]=2.29f;
+    BWResource::resources["actual/forward.xml"]=source;
+    assert(loadStockDeferredLightingSettings(environment,first,true)&&first.loaded&&first.forward&&!first.pmrem);
+    activateStockDeferredLightingSettings(first);
+    context.sunlight.m_ambient=Vector3(.2f,.3f,.4f);
+    sh=context.constants["REM_SH9"];
+    assert((*sh)(&effect,"SH"));
+    for(unsigned colour=0;colour<3;++colour)
+        for(unsigned component=0;component<4;++component)
+            assert(effect.uniform[colour*4+component]==first.sphericalHarmonics[colour*4+component]*(context.sunlight.m_ambient[colour]*first.forwardMultiplier));
+    for(unsigned i=12;i<28;++i)assert(effect.uniform[i]==first.sphericalHarmonics[i]);
+    const auto previous=effect.uniform;
+    context.sunlight.m_ambient=Vector3(.8f,.7f,.6f);
+    assert((*sh)(&effect,"SH")&&effect.uniform!=previous);
+    first.forwardMultiplier=999;assert((*sh)(&effect,"SH")&&effect.uniform[0]!=999);
+    finaliseStockDeferredLightingConstants();finaliseStockDeferredLightingConstants();
+    assert(context.constants.empty()&&context.registrations==9&&context.removals==9);
     std::cout<<"Production SH/BRDF load, publication, failures and repeated managed lifecycle passed"<<std::endl;
 }

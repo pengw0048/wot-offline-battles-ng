@@ -3386,6 +3386,13 @@ and local offset, and carries it explicitly through deferred draw items and
 battleground layers to sprite-quad sizes. Other renderers retain their original
 matrix rules without invented width or size multipliers. Simulation, emission
 actions, definitions and bounds do not change when the wrapper scale changes.
+Sprite material mode selects the configured default or shimmer effect on every
+assignment, including repeated modes and transitions from a custom effect.
+The next draw reloads the selected material before submitting deferred particles.
+Original shooting resources use the shimmer effect to write an alpha mask; the
+ordinary sprite effect writes colour instead. Original setter instructions, SDK
+serialization and clone paths, and both pipeline shader assets exercise this
+contract. Complete refraction output still requires Windows visual acceptance.
 Background particle loads retain weak callbacks, continue loading when the
 callback is absent or retired, and deliver `None` to a live callback on a
 resource failure. Ordinary hit flash effects retain native vector providers in
@@ -3591,6 +3598,14 @@ unchanged. Tests compare uploaded bytes against the original native grid
 producer, exercise original shader inputs, and cover failed buffer creation,
 lock, upload and subsequent recovery. Correct final terrain pixels still require
 Windows rendering acceptance.
+
+Forward terrain lighting registers its shared spherical-harmonic constant through
+the forward pipeline's managed-resource lifetime. Environment loading selects the
+original forward SH resource separately from the deferred resource; each forward
+submission scales its three linear RGB vectors by the current sunlight ambient
+colour and the authored multiplier. The remaining packed coefficients retain
+the original values. Exact native callbacks and original terrain pixel-register
+consumers cover this arithmetic without substituting arbitrary ambient light.
 
 Streamed detail heights retain the authored `ForcedLod` separately from the
 clamped render LOD. This preserves hangar blocks that provide only `heights3`

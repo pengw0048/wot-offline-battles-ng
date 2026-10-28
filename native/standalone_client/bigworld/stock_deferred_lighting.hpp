@@ -11,13 +11,19 @@ struct StockDeferredLightingSettings
     BW::string pmremResource;
     Moo::BaseTexturePtr pmrem;
     float pmremMips[4] = {};
+    float forwardMultiplier = 1.f;
+    bool forward = false;
     bool loaded = false;
 };
 
 void packStockDeferredSphericalHarmonics( const Vector3 (&source)[9], float (&packed)[28] );
-bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferredLightingSettings & settings );
+void scaleStockForwardSphericalHarmonics( const float (&source)[28], const Vector3 & ambient,
+    float multiplier, float (&packed)[28] );
+bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferredLightingSettings & settings,
+    bool forward = false );
 void activateStockDeferredLightingSettings( const StockDeferredLightingSettings & settings );
 void deactivateStockDeferredLightingSettings();
 bool initialiseStockDeferredLightingConstants();
+bool initialiseStockForwardLightingConstants();
 void finaliseStockDeferredLightingConstants();
 BW_END_NAMESPACE

@@ -4,7 +4,13 @@ import argparse
 from pathlib import Path
 
 
-def replace_once(text, old, new, label, marker=None):
+def replace_once(text, old, new, label, marker=None, scope=None):
+    if scope:
+        if text.count(scope) != 1:
+            raise RuntimeError('Unexpected public engine source for ' + label)
+        begin = text.index(scope)
+        end = text.index('\n}', begin) + 2
+        return text[:begin] + replace_once(text[begin:end], old, new, label, marker) + text[end:]
     if (marker or new) in text:
         return text
     if text.count(old) != 1:
@@ -43,6 +49,8 @@ def apply(root):
          'StockDeferredLightingSettings stockDeferredLightingSettings_;\n    void loadStockDeferredLighting(const DataSectionPtr& data, bool loadFromExternal);\n    void loadHDR(const DataSectionPtr& data, bool loadFromExternal);', 'environment SH owner', 'StockDeferredLightingSettings stockDeferredLightingSettings_;'),
     ])
     edit('lib/romp/enviro_minder.cpp', [
+        ('#include "enviro_minder.hpp"',
+         '#include "enviro_minder.hpp"\n#include "moo/renderer.hpp"', 'active lighting pipeline include', '#include "moo/renderer.hpp"'),
         ('        loadTimeOfDay(pDS, loadFromExternal);',
          '        loadTimeOfDay(pDS, loadFromExternal);\n        loadStockDeferredLighting(pDS, loadFromExternal);', 'load real environment SH', '        loadStockDeferredLighting(pDS, loadFromExternal);'),
         ('    s_activatedEM_ = this;',
@@ -51,6 +59,10 @@ def apply(root):
          '    deactivateStockDeferredLightingSettings();\n    s_activatedEM_ = NULL;', 'retire previous environment SH', '    deactivateStockDeferredLightingSettings();'),
         ('void EnviroMinder::loadHDR(const DataSectionPtr& data, bool loadFromExternal)',
          READER + 'void EnviroMinder::loadHDR(const DataSectionPtr& data, bool loadFromExternal)', 'environment SH reader', 'void EnviroMinder::loadStockDeferredLighting('),
+        ('loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_);',
+         'loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_,\n'
+         '        Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING);',
+         'active forward/deferred SH source'),
     ])
     edit('lib/moo/deferred_lights_manager.cpp', [
         ('#include "deferred_lights_manager.hpp"',
@@ -59,6 +71,21 @@ def apply(root):
          'void LightsManager::createManagedObjects()\n{\n    BW_GUARD;\n    if (!initialiseStockDeferredLightingConstants())\n        ERROR_MSG("Deferred lighting: original shared inputs could not be initialised\\n");', 'managed lighting inputs', '    if (!initialiseStockDeferredLightingConstants())'),
         ('void LightsManager::deleteManagedObjects()\n{\n    BW_GUARD;',
          'void LightsManager::deleteManagedObjects()\n{\n    BW_GUARD;\n    finaliseStockDeferredLightingConstants();', 'managed lighting teardown', '    finaliseStockDeferredLightingConstants();'),
+    ])
+    edit('lib/moo/forward_pipeline.cpp', [
+        ('#include "forward_pipeline.hpp"',
+         '#include "forward_pipeline.hpp"\n#include "stock_deferred_lighting.hpp"', 'forward SH owner include', '#include "stock_deferred_lighting.hpp"'),
+        ('void ForwardPipeline::createManagedObjects()\n{\n    BW_GUARD;',
+         'void ForwardPipeline::createManagedObjects()\n{\n    BW_GUARD;\n'
+         '    initialiseStockForwardLightingConstants();', 'forward SH registration',
+         '    initialiseStockForwardLightingConstants();', 'void ForwardPipeline::createManagedObjects()'),
+        ('void ForwardPipeline::deleteManagedObjects()\n{\n    BW_GUARD;',
+         'void ForwardPipeline::deleteManagedObjects()\n{\n    BW_GUARD;\n'
+         '    finaliseStockDeferredLightingConstants();', 'forward SH managed retirement',
+         '    finaliseStockDeferredLightingConstants();', 'void ForwardPipeline::deleteManagedObjects()'),
+        ('ForwardPipeline::~ForwardPipeline()\n{',
+         'ForwardPipeline::~ForwardPipeline()\n{\n    finaliseStockDeferredLightingConstants();', 'forward SH owner retirement',
+         '    finaliseStockDeferredLightingConstants();', 'ForwardPipeline::~ForwardPipeline()'),
     ])
     header = Path(__file__).with_name('stock_deferred_lighting.hpp').read_text()
     # Validate all anchors and inputs before publishing any engine source.

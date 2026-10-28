@@ -444,6 +444,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-battleground-elements-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_particle_scale.py"),
         $EngineRoot) "stock-particle-scale-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_sprite_shimmer.py"),
+        $EngineRoot) "stock-sprite-shimmer-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_deferred_buffers.py"),
         $EngineRoot) "stock-deferred-buffers-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_antialiasing.py"),

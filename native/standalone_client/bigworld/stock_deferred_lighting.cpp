@@ -30,12 +30,27 @@ void packStockDeferredSphericalHarmonics( const Vector3 (&source)[9], float (&pa
     packed[27] = 0.f;
 }
 
+void scaleStockForwardSphericalHarmonics( const float (&source)[28], const Vector3 & ambient,
+    float multiplier, float (&packed)[28] )
+{
+    // a746f0/a7472e: forward scales only the three linear RGB vectors by
+    // the current SunLight ambient colour and the authored SH multiplier.
+    for (unsigned i = 0; i < 28; ++i) packed[i] = source[i];
+    for (unsigned colour = 0; colour < 3; ++colour)
+    {
+        const float factor = ambient[colour] * multiplier;
+        for (unsigned component = 0; component < 4; ++component)
+            packed[colour * 4 + component] = source[colour * 4 + component] * factor;
+    }
+}
+
 #ifndef WOT_STOCK_DEFERRED_LIGHTING_CORE_ONLY
 namespace
 {
 StockDeferredLightingSettings activeSettings;
 Moo::BaseTexturePtr brdfLut;
 bool constantsRegistered = false;
+bool sphericalHarmonicsRegistered = false;
 // 5c8990 constructs exactly this AutoConfigString. a74bc0 uses its value
 // only when the environment's authored prefiltered map cannot be loaded.
 AutoConfigString defaultPmrem("system/PMREMTexture");
@@ -54,8 +69,17 @@ public:
     virtual bool operator()( ID3DXEffect * effect, D3DXHANDLE handle )
     {
         // An absent environment is not a black ambient-lighting result.
-        return activeSettings.loaded && SUCCEEDED( effect->SetValue(
-            handle, activeSettings.sphericalHarmonics, sizeof( activeSettings.sphericalHarmonics ) ) );
+        if (!activeSettings.loaded) return false;
+        float packed[28];
+        const float * values = activeSettings.sphericalHarmonics;
+        if (activeSettings.forward)
+        {
+            const auto & colour = Moo::rc().effectVisualContext().sunLight().m_ambient;
+            scaleStockForwardSphericalHarmonics(activeSettings.sphericalHarmonics,
+                Vector3(colour[0], colour[1], colour[2]), activeSettings.forwardMultiplier, packed);
+            values = packed;
+        }
+        return SUCCEEDED(effect->SetValue(handle, values, sizeof(activeSettings.sphericalHarmonics)));
     }
 };
 
@@ -89,10 +113,13 @@ public:
 };
 }
 
-bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferredLightingSettings & settings )
+bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferredLightingSettings & settings,
+    bool forward )
 {
     settings.loaded = false;
     settings.pmrem = NULL;
+    settings.forward = forward;
+    settings.forwardMultiplier = 1.f;
     if (!environment)
     {
         ERROR_MSG( "Deferred lighting: the original environment resource is unavailable\n" );
@@ -100,11 +127,13 @@ bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferre
     }
     // a82950 reads the PBS child; a74bc0 selects the deferred SH resource.
     // a827a0's original default path is empty, with no fabricated black SH.
-    const BW::string resource = environment->readString( "PBS/DEFERRED/REM_SH" );
+    const BW::string resource = environment->readString(
+        forward ? "PBS/FORWARD/REM_SH" : "PBS/DEFERRED/REM_SH" );
     DataSectionPtr source = resource.empty() ? NULL : BWResource::openSection( resource );
     if (!source)
     {
-        ERROR_MSG( "Deferred lighting: cannot load original PBS/DEFERRED/REM_SH '%s'\n", resource.c_str() );
+        ERROR_MSG( "Environment lighting: cannot load original %s SH '%s'\n",
+            forward ? "forward" : "deferred", resource.c_str() );
         return false;
     }
     Vector3 coefficients[9];
@@ -114,6 +143,13 @@ bool loadStockDeferredLightingSettings( DataSectionPtr environment, StockDeferre
     // The original reader reads then discards max_lum (a750c6/fstp).
     source->readFloat( "max_lum", 1.f );
     packStockDeferredSphericalHarmonics( coefficients, settings.sphericalHarmonics );
+    if (forward)
+    {
+        // a82950 reads this independently; a746f0 samples it at consumption.
+        settings.forwardMultiplier = environment->readFloat("PBS/FORWARD/SH_multiplier", 1.f);
+        settings.loaded = true;
+        return true;
+    }
     // a82950/a74bc0: this is an already-prefiltered authored DDS, not a
     // generated cube or an alias for an unrelated environment texture.
     settings.pmremResource = environment->readString("PBS/DEFERRED/PMREM");
@@ -166,8 +202,7 @@ bool initialiseStockDeferredLightingConstants()
     }
     if (!constantsRegistered)
     {
-        Moo::rc().effectVisualContext().registerAutoConstant(
-            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9", new SphericalHarmonicsConstant );
+        initialiseStockForwardLightingConstants();
         Moo::rc().effectVisualContext().registerAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "EnvBRDFLut", new BrdfLutConstant );
         Moo::rc().effectVisualContext().registerAutoConstant(
@@ -181,12 +216,27 @@ bool initialiseStockDeferredLightingConstants()
     return true;
 }
 
+bool initialiseStockForwardLightingConstants()
+{
+    if (!sphericalHarmonicsRegistered)
+    {
+        Moo::rc().effectVisualContext().registerAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9", new SphericalHarmonicsConstant);
+        sphericalHarmonicsRegistered = true;
+    }
+    return true;
+}
+
 void finaliseStockDeferredLightingConstants()
 {
-    if (constantsRegistered)
+    if (sphericalHarmonicsRegistered)
     {
         Moo::rc().effectVisualContext().unregisterAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9" );
+        sphericalHarmonicsRegistered = false;
+    }
+    if (constantsRegistered)
+    {
         Moo::rc().effectVisualContext().unregisterAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "EnvBRDFLut" );
         Moo::rc().effectVisualContext().unregisterAutoConstant(
