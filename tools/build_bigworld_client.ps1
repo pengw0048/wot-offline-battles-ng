@@ -303,6 +303,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-py-splodge-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_texture_streaming.py"),
         $EngineRoot) "stock-texture-streaming-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_script_callback_metadata.py"),
+        $EngineRoot) "stock-script-callback-metadata-patch.log"
     # Ticks BigWorld.PyBallisticsSimulator tracer owners once per world frame.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ballistics.py"),
         $EngineRoot) "stock-ballistics-patch.log"

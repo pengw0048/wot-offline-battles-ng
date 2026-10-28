@@ -3335,6 +3335,13 @@ component owner with strict zero-argument calls. The original base and vehicle
 factories create an empty component collection; activation does not gate garage
 materials or invent track components. The ordinary appearance activation,
 damaged-model replacement and subsequent battle consumers exercise this path.
+The Hybrid build's profiler checks optional callback metadata before string
+conversion and retains dynamic metadata until it has copied the profiling name.
+Native bound methods legitimately expose `__module__ = None`; profiling must
+not manufacture a Python error before Svarog invokes them. The real SDK
+resolver and callback dispatch run with CPython 2.7 in focused tests, including
+the original failure, dynamic attributes and preservation of actual callback
+exceptions. This does not change component activation or teardown ordering.
 Vehicle traces use the shared LOD settings parser: the ordinary assembler's
 `LodSettings(distance, None)` keeps the unrestricted priority, and the native
 trace owner receives the converted settings only after successful conversion.
