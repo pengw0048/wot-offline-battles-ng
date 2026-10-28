@@ -807,8 +807,9 @@ public:
             (found == state_->names.end() ? state_->nodes.size() : found->second);
         if (index >= state_->nodes.size())
         {
-            PyErr_Format( PyExc_ValueError, "CompoundModel has no node named %s", name.c_str() );
-            return NULL;
+            // #1513 008dd57c returns a null adapter; Script::getData at
+            // 0068ed50 converts it to None for optional authored nodes.
+            Py_RETURN_NONE;
         }
         if (source)
         {

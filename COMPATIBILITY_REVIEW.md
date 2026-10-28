@@ -3348,6 +3348,12 @@ rechecks attachment ownership after callbacks. A Windows battle dump captured
 the previous transform assertion with an actual PyMetaParticleSystem and
 FLT_MAX/-FLT_MAX bounds. Focused tests execute the SDK bounds and particle
 consumers, including empty-to-populated transitions and normal affine bounds.
+Optional compound-node lookup returns `None` when a live model has no authored
+node with that name, as the original native lookup and pointer converter do.
+The original vehicle-sticker consumer skips the absent node during damaged-model
+refresh. Existing node handles and providers remain stable; a retired compound
+still raises its lifecycle error. Focused tests execute the original native
+missing-node branch and the unchanged sticker bytecode with the rebuilt lookup.
 The Hybrid build's profiler checks optional callback metadata before string
 conversion and retains dynamic metadata until it has copied the profiling name.
 Native bound methods legitimately expose `__module__ = None`; profiling must
