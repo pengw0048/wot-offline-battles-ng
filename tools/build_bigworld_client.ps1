@@ -349,6 +349,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-tps-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_particle_clone.py"),
         $EngineRoot) "stock-particle-clone-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_particle_background.py"),
+        $EngineRoot) "stock-particle-background-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ground_effects.py"),
         $EngineRoot) "stock-ground-effects-patch.log"
     # Declares the alpha-aware Water query beside the ground-effects one above.
