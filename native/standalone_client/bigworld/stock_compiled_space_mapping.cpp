@@ -8,6 +8,7 @@
 #include "stock_space_water_scene.hpp"
 #include "stock_space_decals.hpp"
 #include "stock_space_sounds.hpp"
+#include "stock_space_control_points.hpp"
 #include "stock_tree_scene_loader.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/compiled_space_mapping.hpp"
@@ -30,7 +31,7 @@ public:
         AssetClient * assetClient, uint32 visibilityMask ) :
         CompiledSpaceMapping( path, transform, settings, space, assetClient ),
         models_( visibilityMask ), trees_( visibilityMask ), flares_( visibilityMask ),
-        decals_( visibilityMask ),
+        decals_( visibilityMask ), controlPoints_( visibilityMask ),
         particles_( space.dynamicScene() )
     {
         addLoader( &terrain_ );
@@ -42,6 +43,7 @@ public:
         addLoader( &flares_ );
         addLoader( &decals_ );
         addLoader( &destructibles_ );
+        addLoader( &controlPoints_ );
         // Original WTau binds after the model, tree, particle and WGDE owners.
         addLoader( &sounds_ );
     }
@@ -52,6 +54,7 @@ public:
         // every concrete loader still exists. The base destructor is idempotent.
         unloadSync();
         removeLoader( &sounds_ );
+        removeLoader( &controlPoints_ );
         removeLoader( &destructibles_ );
         removeLoader( &decals_ );
         removeLoader( &flares_ );
@@ -69,6 +72,7 @@ private:
     StockTreeSceneLoader trees_;
     StockFlareSceneLoader flares_;
     StockSpaceDecalsLoader decals_;
+    StockControlPointSceneLoader controlPoints_;
     ParticleSystemLoader particles_;
     StockLightSceneLoader lights_;
     StockWaterSceneLoader water_;
@@ -95,6 +99,7 @@ void registerStockCompiledSpaceHandlers( Scene & scene )
     StockStaticModelSceneLoader::registerHandlers( scene );
     StockWaterSceneLoader::registerHandlers( scene );
     StockFlareSceneLoader::registerHandlers( scene );
+    StockControlPointSceneLoader::registerHandlers( scene );
 }
 }
 BW_END_NAMESPACE

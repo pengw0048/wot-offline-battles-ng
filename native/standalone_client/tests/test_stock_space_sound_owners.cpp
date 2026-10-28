@@ -96,6 +96,21 @@ int main()
     assert(owner->groups.begin()->second->positions.size()==1);
     owner->remove(older);assert(owner->groups.begin()->second->positions.front().handle==newer);
     removeStockSpaceSoundMapping(owner,&mappingB);assert(owner->groups.empty());
+    // WTCP's 736f90 uses 124a700's direct-event path, unlike generic named
+    // model/particle lookups. It preserves the supplied HP_FlagSound position.
+    Matrix identity;
+    const char* flagEvent="ambient_static_objects_flag_flapping";
+    assert(addStockSpaceNamedSound(owner,flagEvent,identity)==INVALID_STOCK_SPACE_SOUND);
+    assert(addStockSpaceControlPointSound(owner,"",Vector3())==INVALID_STOCK_SPACE_SOUND);
+    const auto flag=addStockSpaceControlPointSound(owner,flagEvent,Vector3(101,37,3));
+    assert(flag!=INVALID_STOCK_SPACE_SOUND&&owner->groups.size()==1);
+    const auto flagGroup=owner->groups.begin()->second;
+    assert(flagGroup->definition->name==std::string("static_")+flagEvent);
+    assert(flagGroup->voice->event==flagEvent&&!flagGroup->voice->playing);
+    assert(flagGroup->positions[0].position.x==101&&flagGroup->positions[0].position.y==37);
+    owner->start();assert(flagGroup->voice->playing&&flagGroup->voice->starts==1);
+    removeStockSpaceSound(owner,flag);
+    assert(owner->groups.empty()&&!flagGroup->voice->playing);
     // Explicit space retirement removes its identity before callbacks; another
     // space's live groups and later cleanup of the retired handle stay separate.
     auto secondSpace=std::make_shared<ClientSpace>();auto second=acquireStockSpaceSounds(secondSpace.get());

@@ -212,11 +212,17 @@ StockSpaceSoundHandle addStockSpaceNamedSound(const StockSpaceSounds& owner,
     if (!owner || !owner->usable()) return INVALID_STOCK_SPACE_SOUND;
     const auto found=database.definitions.find(name);
     // Generic model/tree/particle dispatch (124a240) uses lookup-only; the
-    // direct-event fallback belongs exclusively to WTau's 124a700 path.
+    // direct-event fallback belongs to WTau/WTCP's 124a700 path.
     if (found==database.definitions.end()) return INVALID_STOCK_SPACE_SOUND;
     Vector3 offset;
     D3DXVec3TransformNormal(&offset,&found->second->offset,&world);
     return owner->add(found->second,offset+world.applyToOrigin());
+}
+StockSpaceSoundHandle addStockSpaceControlPointSound(const StockSpaceSounds& owner,
+    const BW::string& event, const Vector3& position)
+{
+    if (!owner || !owner->usable() || event.empty()) return INVALID_STOCK_SPACE_SOUND;
+    return owner->add(database.event(event),position);
 }
 
 void removeStockSpaceSound(const StockSpaceSounds& owner,StockSpaceSoundHandle handle)

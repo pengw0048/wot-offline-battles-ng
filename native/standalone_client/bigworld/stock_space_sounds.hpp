@@ -15,6 +15,9 @@ StockSpaceSoundHandle addStockSpaceModelSound(const StockSpaceSounds& owner,
     uint32 definitionIndex, const Matrix& world);
 StockSpaceSoundHandle addStockSpaceNamedSound(const StockSpaceSounds& owner,
     const BW::string& name, const Matrix& world);
+// WTCP bind (736f90) uses the same direct-event path as WTau (124a700).
+StockSpaceSoundHandle addStockSpaceControlPointSound(const StockSpaceSounds& owner,
+    const BW::string& event, const Vector3& position);
 void removeStockSpaceSound(const StockSpaceSounds& owner, StockSpaceSoundHandle handle);
 // The mapping identity is its actual BinaryFormat owner, never an object
 // pointer masquerading as a compiled instance index. WGDE supplies the index.
