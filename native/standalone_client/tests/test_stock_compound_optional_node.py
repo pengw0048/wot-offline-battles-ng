@@ -33,8 +33,9 @@ struct PyCompoundNode:PyObject {
  PyCompoundNode(const CompoundStatePtr&,size_t){};
 };
 struct PyObjectPtr:std::shared_ptr<PyObject> {
- enum {STEAL_REFERENCE};using std::shared_ptr<PyObject>::shared_ptr;
- PyObjectPtr(PyObject*value,int):std::shared_ptr<PyObject>(value){}
+ enum ReferenceType {STEAL_REFERENCE};
+ PyObjectPtr()=default;
+ template<class T> PyObjectPtr(T*value,ReferenceType):std::shared_ptr<PyObject>(value){}
 };
 PyObject none;int error=0;int PyExc_ValueError=1;
 #define Py_RETURN_NONE return &none
