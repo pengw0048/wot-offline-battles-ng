@@ -474,32 +474,49 @@ GENERATED
 namespace original {
 PUBLIC
 }
-// PS c0 that BeginPass uploads for this technique after the producer ran.
+// Registers that BeginPass uploads from the GUIColour uniform for one technique.
 template<class Producer>
-Vector4 pixelFactor(const std::shared_ptr<wot::StockEffectBinary>& effect,std::size_t technique,
-                    Producer& producer) {
+std::vector<Vector4> uploadedFactor(const std::shared_ptr<wot::StockEffectBinary>& effect,
+                                    std::size_t technique,const wot::StockEffectParameterReference& factor,
+                                    Producer& producer) {
     wot::StockEffectUniformPool pool;wot::StockEffectUniformContext shared(pool);
     wot::StockEffectBinding binding(effect,shared);wot::StockEffectReflection reflection(effect,{});
     ID3DXEffect handle{&reflection,&binding};
-    assert(producer(&handle,"factor"));
+    assert(producer(&handle,factor.name.c_str()));
+    const auto offset=effect->uniform_buffers[factor.owner].uniforms[factor.member].byte_offset;
     wot::StockDx9PassSelection pass;std::string error;
-    assert(binding.select_pass(technique,0,pass,error)&&pass.pixel_shader);
-    const auto& shader=effect->shaders[*pass.pixel_shader];
-    std::vector<wot::StockShaderUniformView> views;
-    std::vector<std::shared_ptr<wot::StockEffectUniformStorage>> owners;
-    for(const auto& resource:shader.resources) if(resource.kind==3) {
-        std::optional<std::uint32_t> buffer;
-        assert(wot::resolve_stock_effect_reference(*effect,binding.selection(),
-            wot::StockEffectResourceTable::uniform_buffer,resource.resource_index,buffer,error)&&buffer);
-        auto storage=binding.uniform_buffer(*buffer);
-        if(resource.shader_slot>=views.size()) views.resize(resource.shader_slot+1);
-        views[resource.shader_slot]={storage->bytes().data(),storage->bytes().size()};
-        owners.push_back(storage);
+    assert(binding.select_pass(technique,0,pass,error));
+    std::vector<Vector4> values;
+    for(const auto selected:{pass.vertex_shader,pass.pixel_shader}) {
+        if(!selected) continue;
+        const auto& shader=effect->shaders[*selected];
+        std::vector<wot::StockShaderUniformView> views;
+        std::vector<std::shared_ptr<wot::StockEffectUniformStorage>> owners;
+        std::vector<std::uint32_t> slotBuffer;
+        for(const auto& resource:shader.resources) if(resource.kind==3) {
+            std::optional<std::uint32_t> buffer;
+            assert(wot::resolve_stock_effect_reference(*effect,binding.selection(),
+                wot::StockEffectResourceTable::uniform_buffer,resource.resource_index,buffer,error)&&buffer);
+            auto storage=binding.uniform_buffer(*buffer);
+            if(!storage) continue;
+            if(resource.shader_slot>=views.size()) {
+                views.resize(resource.shader_slot+1);slotBuffer.resize(resource.shader_slot+1,~0u);
+            }
+            views[resource.shader_slot]={storage->bytes().data(),storage->bytes().size()};
+            slotBuffer[resource.shader_slot]=*buffer;
+            owners.push_back(storage);
+        }
+        wot::StockShaderRegisters registers;
+        assert(wot::stage_stock_shader_registers(shader,views,registers,error));
+        for(const auto& copy:shader.register_copies)
+            if(copy.kind==wot::StockShaderRegisterKind::floating&&copy.uniform_slot<slotBuffer.size()&&
+               slotBuffer[copy.uniform_slot]==factor.owner&&copy.source_offset==offset) {
+                Vector4 value;
+                std::memcpy(&value,registers[2].words.data()+copy.destination_offset/4,sizeof(value));
+                values.push_back(value);
+            }
     }
-    wot::StockShaderRegisters registers;
-    assert(wot::stage_stock_shader_registers(shader,views,registers,error));
-    Vector4 c0;std::memcpy(&c0,registers[2].words.data(),sizeof(c0));
-    return c0;
+    return values;
 }
 std::shared_ptr<wot::StockEffectBinary> load(const char* path) {
     std::ifstream input(path,std::ios::binary);
@@ -514,37 +531,49 @@ std::string semantic(const std::shared_ptr<wot::StockEffectBinary>& effect,const
     assert(parameter&&parameter->semantic_present);
     return parameter->semantic;
 }
+bool same(const Vector4& a,const Vector4& b){return a.x==b.x&&a.y==b.y&&a.z==b.z&&a.w==b.w;}
+// argv: font 10/11, then every original dx9 effect in the client catalogue.
 int main(int argc,char**argv) {
-    assert(argc==5);
+    assert(argc>3);
     const DWORD button=0xf518374e; // waiting_room_ui control colour (24,55,78,245)
-    const Vector4 tint=Colour::getVector4Normalised(button);
-    for(int n=1;n<3;++n) {
+    const Vector4 tint=Colour::getVector4Normalised(button),white(1,1,1,1);
+    // GUI.Text keeps its colour: the font factor is FontColour, not GUIColour.
+    for(int n=1;n<3;++n) assert(semantic(load(argv[n]),"factor")=="FontColour");
+    int consumers=0;
+    for(int n=3;n<argc;++n) {
         auto effect=load(argv[n]);
-        // Ashes factor is the only GUIColour sink, and every GUI mode reads it at PS c0.
-        assert(semantic(effect,"factor")=="GUIColour");
-        for(std::size_t t=0;t<effect->techniques.size();++t) {
-            generated::TFactorSetter current;current.colour(button);
-            const Vector4 c0=pixelFactor(effect,t,current);
-            assert(c0.x==1&&c0.y==1&&c0.z==1&&c0.w==1);
-            // Failing control: the public producer tints the textured quad.
-            original::TFactorSetter unpatched;unpatched.colour(button);
-            const Vector4 tinted=pixelFactor(effect,t,unpatched);
-            assert(tinted.x==tint.x&&tinted.y==tint.y&&tinted.z==tint.z&&tinted.w==tint.w);
+        wot::StockEffectReflection reflection(effect,{});
+        for(std::size_t p=0;p<reflection.parameter_count();++p) {
+            const auto* factor=reflection.parameter_reference(reflection.parameter(p));
+            if(factor->kind!=wot::StockEffectParameterKind::uniform||!factor->semantic_present||
+               factor->semantic!="GUIColour") continue;
+            ++consumers;
+            std::size_t read=0;
+            for(std::size_t t=0;t<effect->techniques.size();++t) {
+                generated::TFactorSetter current;current.colour(button);
+                for(const auto& value:uploadedFactor(effect,t,*factor,current)) {
+                    assert(same(value,white));++read;
+                }
+                // Failing control: the public producer tints the textured quad.
+                original::TFactorSetter unpatched;unpatched.colour(button);
+                for(const auto& value:uploadedFactor(effect,t,*factor,unpatched)) assert(same(value,tint));
+            }
+            assert(read>0); // a declared consumer must actually upload the constant
+            std::cout<<"GUIColour consumer "<<argv[n]<<" "<<factor->name<<" registers="<<read<<"\n";
         }
     }
-    // GUI.Text keeps its colour: the font factor is FontColour, not GUIColour.
-    for(int n=3;n<5;++n) assert(semantic(load(argv[n]),"factor")=="FontColour");
+    assert(consumers>=4); // at least ashes and gobo 10/11 in misc.pkg
     // Legacy D3DX effects keep the public component colour.
     generated::TFactorSetter current;current.colour(button);
     ID3DXEffect legacy{nullptr,nullptr};
-    assert(current(&legacy,"factor")&&legacy.legacy.x==tint.x&&legacy.legacy.w==tint.w);
-    std::cout<<"Original GUI factor matches #1513 for every ashes mode; text and legacy keep colour.\n";
+    assert(current(&legacy,"factor")&&same(legacy.legacy,tint));
+    std::cout<<"Every original GUIColour consumer uploads the #1513 constant factor; text and legacy keep colour.\n";
 }
 """
 
 
 class StockGUIFactorTests(unittest.TestCase):
-    def test_original_gui_factor_is_not_the_component_colour(self):
+    def test_every_original_gui_colour_consumer_uses_the_constant_factor(self):
         archive = Path(os.environ.get(
             'WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         compiler = shutil.which('c++')
@@ -572,13 +601,24 @@ class StockGUIFactorTests(unittest.TestCase):
                 return text[text.index('class TFactorSetter'):text.index('SimpleGUI::SimpleGUI() :')]
             effects = []
             with zipfile.ZipFile(package) as original:
-                for material in ('ashes', 'font'):
-                    for variant in ('10', '11'):
-                        name = 'system/materials/%s.%s.dx9.fxo' % (material, variant)
-                        with zipfile.ZipFile(io.BytesIO(original.read(name))) as nested:
-                            path = root / ('%s-%s.effect' % (material, variant))
-                            path.write_bytes(nested.read('effect'))
-                            effects.append(path)
+                for variant in ('10', '11'):
+                    name = 'system/materials/font.%s.dx9.fxo' % variant
+                    with zipfile.ZipFile(io.BytesIO(original.read(name))) as nested:
+                        path = root / ('font-%s.effect' % variant)
+                        path.write_bytes(nested.read('effect'))
+                        effects.append(path)
+            # Every original DX9 effect is audited; none is excluded by name.
+            catalogue = root / 'catalogue'
+            catalogue.mkdir()
+            for archive_path in sorted((Path(client) / 'res/packages').glob('*.pkg')):
+                with zipfile.ZipFile(archive_path) as original:
+                    for name in original.namelist():
+                        if name.endswith('.dx9.fxo'):
+                            with zipfile.ZipFile(io.BytesIO(original.read(name))) as nested:
+                                path = catalogue / (archive_path.stem + '__' + name.replace('/', '__'))
+                                path.write_bytes(nested.read('effect'))
+                                effects.append(path)
+            self.assertGreater(len(effects), 400)
             source = root / 'probe.cpp'
             source.write_text(FACTOR_HARNESS.replace('GENERATED', producer(generated)).replace(
                 'PUBLIC', producer(public)))
@@ -590,7 +630,11 @@ class StockGUIFactorTests(unittest.TestCase):
                             str(ROOT / 'src/stock_effect_binding.cpp'),
                             str(ROOT / 'src/stock_effect_reflection.cpp'),
                             '-o', str(binary)], check=True)
-            subprocess.run([str(binary)] + [str(path) for path in effects], check=True)
+            result = subprocess.run([str(binary)] + [str(path) for path in effects],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('materials__gobo.10.dx9.fxo factor', result.stdout)
+            self.assertIn('materials__ashes.11.dx9.fxo factor', result.stdout)
 
 if __name__ == '__main__':
     unittest.main()
