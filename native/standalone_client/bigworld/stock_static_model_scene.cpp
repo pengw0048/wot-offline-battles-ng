@@ -647,8 +647,8 @@ struct StockStaticModelSceneLoader::State::DrawHandler : IDrawOperationTypeHandl
                     }
                     else
                     {
-                        // The compiled placement is immutable; its actual
-                        // previous world is the same authored placement.
+                        // Nonanimated packets use the current placement
+                        // for both world operands.
                         matrices[0] = instance.world;
                         matrices[1] = instance.world;
                     }

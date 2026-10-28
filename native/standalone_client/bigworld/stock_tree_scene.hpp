@@ -4,6 +4,7 @@
 #include "resmgr/datasection.hpp"
 #include "math/boundbox.hpp"
 #include <memory>
+#include <string>
 
 BW_BEGIN_NAMESPACE
 class MatrixProvider;
@@ -47,6 +48,7 @@ public:
     bool objectAvailable( size_t index ) const;
     BW::string soundResource( size_t index ) const;
     bool destructibleSnapshot( size_t index, StockDestructibleSnapshot & output ) const;
+    bool setDestructibleTransform( size_t index, const Matrix & world, float wind, std::string & error );
     void worldCollisionBounds( size_t index, BoundingBox & bounds ) const;
     virtual SceneTypeSystem::RuntimeTypeID typeID() const;
     virtual SceneTypeSystem::RuntimeTypeID runtimeTypeID() const;

@@ -26,6 +26,7 @@ def build_binding(test,directory):
     header=manager.read_text();header=header[header.index('class SPACE_API SpaceManager'):header.index('BW_END_NAMESPACE')].replace('SPACE_API ','')
     boundary=boundary.replace('@SPACE_MANAGER@',header)
     boundary=boundary.replace('@INT_SET_DATA@','namespace BW {\n'+between(engine['lib/pyscript/script.cpp'],'int Script::setData( PyObject * pObject, int & rInt,','\n}\n')+'}\n')
+    boundary=boundary.replace('@UINT_SET_DATA@','namespace BW {\n'+between(engine['lib/pyscript/script.cpp'],'int Script::setData( PyObject * pObject, uint & rUint,','\n}\n')+'}\n')
     for tag,filename in (('@DESTRUCTIBLES_HEADER@','stock_destructibles.hpp'),('@DESTRUCTIBLES_SOURCE@','stock_destructibles.cpp')):
         text=(ROOT/'bigworld'/filename).read_text()
         text='\n'.join(line for line in text.splitlines()if not line.startswith('#include')and line!='#pragma once')
@@ -68,7 +69,7 @@ class StockDestructiblesTests(unittest.TestCase):
     def test_production_tree_metadata_reads_live_owner_and_masked_slots(self):
         source=(ROOT/'bigworld/stock_tree_scene.cpp').read_text()
         begin=source.index('bool StockTreeSceneHandler::destructibleSnapshot(')
-        end=source.index('void StockTreeSceneHandler::worldCollisionBounds(',begin)
+        end=source.index('bool StockTreeSceneHandler::setDestructibleTransform(',begin)
         header=(ROOT/'bigworld/stock_destructibles.hpp').read_text()
         snapshot=header[header.index('struct StockDestructibleSnapshot'):header.index('class StockDestructibleObjects')]
         prelude=r"""

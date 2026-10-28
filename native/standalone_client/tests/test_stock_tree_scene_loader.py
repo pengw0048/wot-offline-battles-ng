@@ -38,12 +38,13 @@ using DataSectionPtr=std::shared_ptr<DataSection>;
 struct SceneObject { unsigned id=0; };
 struct DynamicObjectHandle { unsigned id=0; };
 static std::set<unsigned> liveObjects;
+static std::map<unsigned,Matrix> liveWorlds;
 static unsigned nextObject=1;
 struct SpatialQueryOperation {
  bool isSupported(const SceneObject& object) { return liveObjects.count(object.id)!=0; }
- void getWorldTransform(const SceneObject& object,Matrix* world) { assert(isSupported(object));world->x=float(object.id); }
+ void getWorldTransform(const SceneObject& object,Matrix* world) { assert(isSupported(object));*world=liveWorlds.at(object.id); }
  void getWorldVisibilityBoundingBox(const SceneObject& object,BoundingBox* bounds) {
-  assert(isSupported(object));bounds->empty=false;bounds->minimum=float(object.id)-1;bounds->maximum=float(object.id)+1;
+  assert(isSupported(object));bounds->empty=false;bounds->minimum=liveWorlds.at(object.id).x-1;bounds->maximum=liveWorlds.at(object.id).x+1;
  }
 };
 struct Scene { SpatialQueryOperation spatial;template<class T>T* getObjectOperation(){return &spatial;} };
@@ -53,7 +54,7 @@ struct DynamicSceneProvider {
  std::function<void()> onAdd,onRemove;
  unsigned next=1;
  DynamicObjectHandle addObject(const SceneObject& object,const Matrix& world,const BoundingBox& collision,const BoundingBox& visibility) {
-  assert(liveObjects.count(object.id));assert(world.x==float(object.id));
+  assert(liveObjects.count(object.id));assert(world.x==liveWorlds.at(object.id).x);
   assert(!visibility.empty&&visibility.minimum==world.x-1&&visibility.maximum==world.x+1);
   DynamicObjectHandle handle{next++};nodes.emplace(handle.id,Node{object,world,collision,visibility});
   // Native add notifies after insertion, before returning its handle.
@@ -120,17 +121,20 @@ struct StockTreeSceneHandler {
  ~StockTreeSceneHandler(){unload();}
  bool load(BinaryFormat& file,const StringTable&,const DataSectionPtr&,uint32 mask){
   assert(!loaded);if(!file.valid)return false;loaded=true;
-  for(unsigned i=0;i<file.count;++i){values.push_back(SceneObject{nextObject++});liveObjects.insert(values.back().id);available.push_back((mask&(i%2?2U:1U))!=0);}
+  for(unsigned i=0;i<file.count;++i){values.push_back(SceneObject{nextObject++});liveObjects.insert(values.back().id);liveWorlds[values.back().id].x=float(values.back().id);available.push_back((mask&(i%2?2U:1U))!=0);}
   return true;
  }
  bool bind(){return loaded;}float loadPercent()const{return loaded?1.f:0.f;}
  size_t objectCount()const{return values.size();}const SceneObject* objects()const{return values.data();}
  bool objectAvailable(size_t i)const{return available[i];}
  bool destructibleSnapshot(size_t i,StockDestructibleSnapshot&)const;
+ bool setDestructibleTransform(size_t i,const Matrix& world,float,std::string& error){
+  if(!loaded||i>=values.size()){error="Tree unavailable";return false;}liveWorlds.at(values[i].id)=world;return true;
+ }
  void worldCollisionBounds(size_t i,BoundingBox& bounds)const {assert(i<values.size());bounds=BoundingBox{};}
  // Every third original tree resource has no sound definition.
  string soundResource(size_t i)const {assert(i<values.size());return i%3==2?"silent":"sound"+std::to_string(i);}
- void unload(){for(auto object:values)assert(liveObjects.erase(object.id)==1);values.clear();available.clear();loaded=false;}
+ void unload(){for(auto object:values){assert(liveObjects.erase(object.id)==1);assert(liveWorlds.erase(object.id)==1);}values.clear();available.clear();loaded=false;}
 };
 }
 }
@@ -153,6 +157,13 @@ int main(){
   // Masked slots retain WGDE indices even though they have no scene membership.
   assert(endpoint&&endpoint->snapshot(1,snapshot)&&snapshot.filename=="tree1");}
  assert(loader.bind()&&space.dynamic.nodes.size()==2);
+ {auto endpoint=registeredDestructibles.lock();StockDestructibleSnapshot snapshot;Matrix moved;moved.x=41;std::string error;
+  assert(endpoint->transform(0,moved,.25f,error)&&space.dynamic.nodes.size()==2);
+  assert(endpoint->snapshot(0,snapshot)&&snapshot.world.x==41);
+  bool found=false;for(const auto& n:space.dynamic.nodes)if(n.second.world.x==41){assert(n.second.visibility.minimum==40);found=true;}assert(found);
+  moved.x=73;assert(endpoint->transform(1,moved,0,error)&&space.dynamic.nodes.size()==2);
+  assert(endpoint->snapshot(1,snapshot)&&snapshot.world.x==73); // Masked slot has no geometry to manufacture.
+ }
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&loader.loadStatus()==0);
  assert(registeredDestructibles.expired());
  assert(liveSounds.empty()&&soundOwners[&space].expired());
@@ -186,7 +197,13 @@ int main(){
  assert(loader.loadFromSpace(&space,file,settings,mapping,strings)&&loader.bind());
  assert(space.dynamic.nodes.size()==2&&liveSounds.empty()&&soundOwners[&space].expired());
  loader.unload();assert(space.dynamic.nodes.empty()&&liveObjects.empty());
- std::puts("Production tree-loader notification, mask, failure and teardown tests passed");
+ // Transform retirement must remove the in-flight handle and invalidate the endpoint.
+ space.clearedFlag=false;assert(loader.loadFromSpace(&space,file,settings,mapping,strings)&&loader.bind());
+ auto endpoint=registeredDestructibles.lock();Matrix moved;moved.x=88;std::string error;
+ space.dynamic.onAdd=[&]{loader.unload();};assert(!endpoint->transform(0,moved,0,error));
+ StockDestructibleSnapshot retired;assert(!endpoint->snapshot(0,retired));endpoint.reset();
+ assert(space.dynamic.nodes.empty()&&liveObjects.empty()&&registeredDestructibles.expired());
+ std::puts("Production tree-loader notification, mask, transform, failure and teardown tests passed");
 }
 '''
 
@@ -212,7 +229,10 @@ class StockTreeSceneLoaderTests(unittest.TestCase):
             snapshots='''
 namespace BW {namespace CompiledSpace {
 bool StockTreeSceneHandler::destructibleSnapshot(size_t index,StockDestructibleSnapshot& output)const {
- if(!loaded||index>=values.size())return false;output.filename="tree"+std::to_string(index);return true;
+ if(!loaded||index>=values.size()) { return false; }
+ output.filename="tree"+std::to_string(index);
+ output.world=liveWorlds.at(values[index].id);
+ return true;
 }
 }}
 '''

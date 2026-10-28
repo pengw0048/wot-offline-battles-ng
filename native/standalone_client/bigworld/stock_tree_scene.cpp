@@ -100,7 +100,7 @@ struct TreeInstanceConstants
     float windOffset;
     float blend;
     float alpha;
-    float padding;
+    float windMultiplier;
 };
 static_assert( sizeof( TreeInstanceConstants ) == 64, "Original tree instance constants must remain 64 bytes" );
 
@@ -715,6 +715,34 @@ struct TreeInstance
     // afe460 [record+38]/[record+3c]: leaf and branch fades of the last colour pass.
     float leavesAlpha = 1.f, branchAlpha = 1.f;
 };
+
+bool updateTreeInstanceTransform( TreeInstance & instance, const Matrix & world, std::string & error )
+{
+    const float * values = reinterpret_cast<const float *>( &world );
+    for (unsigned index = 0; index < 16; ++index)
+        if (!std::isfinite( values[index] )) { error = "Original tree transform is nonfinite"; return false; }
+    Matrix inverse;
+    if (!inverse.invert( world )) { error = "Cannot invert original tree instance transform"; return false; }
+    instance.definition.world = world;
+    instance.inverse = inverse;
+    // 11bdcd0 uses the same normalise-rows/flip-Z algorithm as BlendTransform.
+    const BlendTransform transform( world );
+    const Quaternion & rotation = transform.rotation();
+    const Vector3 & position = transform.translation();
+    const Vector3 & scale = transform.scaling();
+    instance.constants.rotation[0] = rotation.x;
+    instance.constants.rotation[1] = rotation.y;
+    instance.constants.rotation[2] = rotation.z;
+    instance.constants.rotation[3] = rotation.w;
+    for (unsigned component = 0; component < 3; ++component)
+    {
+        instance.constants.position[component] = position[component];
+        instance.constants.scale[component] = scale[component];
+    }
+    instance.constants.uniformScale = mulTreeScalar( addTreeScalar( addTreeScalar( scale.x, scale.y ), scale.z ), .333f );
+    error.clear();
+    return true;
+}
 
 uint32 treeRandom( void * ) { return static_cast<uint32>( std::rand() ); }
 
@@ -1661,32 +1689,15 @@ bool StockTreeSceneHandler::loadInstances( BinaryFormat & file, const StringTabl
         // afcf30 consumes the per-thread Win32 CRT RNG before type loading.
         instance.constants.windOffset = static_cast<float>( (std::rand() * 10) / 32767 );
         instance.constants.blend = 1.f;
-        instance.constants.padding = 1.f;
+        instance.constants.windMultiplier = 1.f;
         instance.type = owner->acquire( filename, source.seed );
         if (!instance.type) continue;
-        if (!instance.inverse.invert( instance.definition.world ))
+        std::string error;
+        if (!updateTreeInstanceTransform( instance, instance.definition.world, error ))
         {
             instance.type.reset();
-            owner->fail( "Cannot invert original tree instance transform" );
-            continue;
+            owner->fail( error );
         }
-        // Original 11bdcd0 is speedtree_util::decomposeMatrix. Its exact
-        // normalise-rows/flip-Z algorithm is shared by BlendTransform::init;
-        // D3DXMatrixDecompose has a different reflected-scale contract.
-        const BlendTransform transform( instance.definition.world );
-        const Quaternion & rotation = transform.rotation();
-        const Vector3 & position = transform.translation();
-        const Vector3 & scale = transform.scaling();
-        instance.constants.rotation[0] = rotation.x;
-        instance.constants.rotation[1] = rotation.y;
-        instance.constants.rotation[2] = rotation.z;
-        instance.constants.rotation[3] = rotation.w;
-        for (unsigned component = 0; component < 3; ++component)
-        {
-            instance.constants.position[component] = position[component];
-            instance.constants.scale[component] = scale[component];
-        }
-        instance.constants.uniformScale = mulTreeScalar( addTreeScalar( addTreeScalar( scale.x, scale.y ), scale.z ), .333f );
     }
     implementation_->loaded = true;
     return true;
@@ -1769,6 +1780,20 @@ bool StockTreeSceneHandler::destructibleSnapshot( size_t index, StockDestructibl
             result.height = geometry.maximumBounds[1] - geometry.minimumBounds[1];
     }
     output = result;
+    return true;
+}
+
+bool StockTreeSceneHandler::setDestructibleTransform( size_t index, const Matrix & world,
+    float wind, std::string & error )
+{
+    if (!implementation_->loaded || index >= implementation_->instances.size())
+    { error = "The original compiled-tree instance is unavailable"; return false; }
+    if (!std::isfinite( wind )) { error = "The original tree wind multiplier is nonfinite"; return false; }
+    auto & instance = implementation_->instances[index];
+    if (!updateTreeInstanceTransform( instance, world, error )) return false;
+    // b03580 -> afe506: the original per-instance float reaches g_instance
+    // byte60 (row3.w), separately from random windOffset at byte48.
+    instance.constants.windMultiplier = wind;
     return true;
 }
 

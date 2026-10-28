@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "stock_destructibles.hpp"
+#include "stock_destructible_falling_query.hpp"
+#include <cmath>
 #include "stock_space_sounds_data.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "duplo/pyfashion.hpp"
@@ -223,6 +225,18 @@ PyObject* wg_getNMHardPointMatrix(int space,int chunk,int item,int module)
     if(!object.lookup(space,chunk,item,module)||!object.snapshot(state))Py_RETURN_NONE;
     return Script::getData(state.hardpointWorld);
 }
+PyObject* wg_getDestructibleFallPitchConstr(uint32 space,uint32 chunk,uint32 item,float yaw)
+{
+    Resolved object;StockDestructibleSnapshot state;
+    if(!object.lookup(space,chunk,item)||!object.snapshot(state))Py_RETURN_NONE;
+    if(!std::isfinite(yaw))return unavailable("A destructible fall yaw must be finite");
+    Matrix cell=chunkMatrix(chunk),inverse,local;D3DXMatrixInverse(&inverse,NULL,&cell);
+    D3DXMatrixMultiply(&local,&state.world,&inverse);
+    // Preserve 6b5119..6b5143's local + chunk translation round trip.
+    const Vector3 origin=local.applyToOrigin()+cell.applyToOrigin();
+    const float pitch=queryStockDestructibleFallPitch(*object.space,origin,state.height,yaw);
+    return Py_BuildValue("(fI)",pitch,0u); // 6b4f73 deliberately returns kind0.
+}
 float wg_getDestructibleLifetimeEffectChance(int,int,int,int){return 1.f;} // 6b2990 validates four ints then returns1.
 PyObject* wg_getChunkModelFashion(int,int,int){Py_RETURN_NONE;} // Both original compiled type handlers return NULL.
 bool wg_setChunkModelFashion(int space,int chunk,int item,PyObjectPtr fashion,bool)
@@ -274,6 +288,7 @@ PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getChunkModelFashion,STOCK_DESTR_THREE,BigWorl
 PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getDestructibleEffectCategory,STOCK_DESTR_FOUR,BigWorld)
 PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getDestructibleEffectScale,STOCK_DESTR_FOUR,BigWorld)
 PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getNMHardPointMatrix,STOCK_DESTR_FOUR,BigWorld)
+PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getDestructibleFallPitchConstr,ARG(uint32,ARG(uint32,ARG(uint32,ARG(float,END)))),BigWorld)
 PY_AUTO_MODULE_FUNCTION(RETDATA,wg_getDestructibleLifetimeEffectChance,STOCK_DESTR_FOUR,BigWorld)
 PY_AUTO_MODULE_FUNCTION(RETOWN,wg_getDestructibleEffectName,ARG(int,ARG(int,ARG(int,ARG(int,ARG(BW::string,END))))),BigWorld)
 PY_AUTO_MODULE_FUNCTION(RETDATA,wg_setChunkModelFashion,ARG(int,ARG(int,ARG(int,ARG(PyObjectPtr,ARG(bool,END))))),BigWorld)

@@ -9,11 +9,12 @@
 #define ERROR_MSG(...) std::fprintf(stderr,__VA_ARGS__)
 namespace BW {
 template<class K,class V>using map=std::map<K,V>;
-using uint32=std::uint32_t;using uint64=std::uint64_t;using int64=std::int64_t;using SpaceID=int;
-struct Vector3 {float x,y,z;Vector3(float a,float b,float c):x(a),y(b),z(c){}};
+using uint=unsigned;using uint32=std::uint32_t;using uint64=std::uint64_t;using int64=std::int64_t;using SpaceID=int;
+struct Vector3 {float x,y,z;Vector3(float a,float b,float c):x(a),y(b),z(c){}Vector3 operator+(const Vector3& b)const{return Vector3(x+b.x,y+b.y,z+b.z);}};
 struct Matrix {
  float v[16];Matrix(){setZero();v[0]=v[5]=v[10]=v[15]=1.f;}
  void setZero(){std::memset(v,0,sizeof(v));}
+ Vector3 applyToOrigin()const{return Vector3(v[12],v[13],v[14]);}
  void setTranslate(const Vector3& p){*this=Matrix();v[12]=p.x;v[13]=p.y;v[14]=p.z;}
 };
 Matrix* D3DXMatrixInverse(Matrix* out,void*,const Matrix* in){*out=*in;for(int n=12;n<15;++n)out->v[n]=-in->v[n];return out;}
@@ -23,6 +24,7 @@ using MatrixProviderPtr=std::shared_ptr<MatrixProvider>;
 struct PyFashion {static bool Check(PyObject* o){return PyCapsule_IsValid(o,"PyFashion");}};
 namespace Script {
 int setData(PyObject* o,int& value,const char* name="");
+int setData(PyObject* o,uint& value,const char* name="");
 int setData(PyObject* o,PyObjectPtr& value,const char* = ""){Py_INCREF(o);value=PyObjectPtr(o,PyObjectPtr::STEAL_REFERENCE);return 0;}
 int setData(PyObject* o,MatrixProviderPtr& value,const char* name=""){
  if(!PyCapsule_IsValid(o,"MatrixProvider")){PyErr_Format(PyExc_TypeError,"%s must be a MatrixProvider",name);return -1;}
@@ -72,14 +74,18 @@ struct ILoader {
 }
 }
 @INT_SET_DATA@
+@UINT_SET_DATA@
 @DESTRUCTIBLES_HEADER@
+namespace BW {float queryStockDestructibleFallPitch(ClientSpace& space,const Vector3& origin,float height,float yaw){
+ assert(space.id()==41&&origin.x==120&&origin.y==3&&origin.z==240&&height==7&&yaw==.25f);return .5f;
+}}
 @DESTRUCTIBLES_SOURCE@
 
 namespace BW {
 struct TestDestructibles:StockDestructibleObjects {
  bool retired=false;std::vector<std::array<int,5>> calls;
  bool snapshot(uint32 index,StockDestructibleSnapshot& out)const override {
-  if(retired||index>=3)return false;out.world.setTranslate(Vector3(120.f+index,3.f,240.f));out.hardpointWorld=out.world;
+  if(retired||index>=3){return false;}out.world.setTranslate(Vector3(120.f+index,3.f,240.f));out.hardpointWorld=out.world;
   out.category=2;out.height=7.f;out.effectScale=1.25f;out.effects[4]="ram";out.effects[5]="hit";return true;
  }
  bool transform(uint32 index,const Matrix& world,float wind,std::string&)override{calls.push_back({0,int(index),int(world.v[12]),int(world.v[14]),int(wind)});return !retired;}

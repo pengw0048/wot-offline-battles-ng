@@ -4,7 +4,7 @@ import sys
 import types
 import zipfile
 import _destructibles_host as host
-assert host.initScripts()==17
+assert host.initScripts()==18
 import BigWorld
 class Value(object):
     def __init__(self,**values):self.__dict__.update(values)
@@ -42,6 +42,8 @@ assert BigWorld.wg_getDestructibleEffectName(41,chunk,0,0,'hitEffect')=='hit'
 assert BigWorld.wg_getDestructibleEffectName(41,chunk,0,0,'unknown')=='none'
 assert BigWorld.wg_getDestructibleEffectScale(41,chunk,0,0)==1.25
 assert BigWorld.wg_getDestructibleHeight(41,chunk,0)==7.
+assert BigWorld.wg_getDestructibleFallPitchConstr(41,chunk,0,.25)==(.5,0)
+assert BigWorld.wg_getDestructibleFallPitchConstr(99,chunk,0,.25)is None
 assert BigWorld.wg_getFallingParams(41,chunk,0)==(0.,)*16
 assert BigWorld.wg_getDestructibleLifetimeEffectChance(-1,-1,-1,-1)==1.
 assert BigWorld.wg_getChunkModelFashion(41,chunk,0)is None
@@ -71,7 +73,7 @@ fragile(self,41,chunk,0,True,False,False,None,False)
 module(self,41,chunk,1,1,False,True,False,False)
 assert host.calls()[-2:]==[(1,0,1,0,0),(1,1,0,1,0)]
 for name,valid in (
- ('wg_getChunkMatrix',(41,chunk)),('wg_getChunkDestrFilenames',(41,chunk)),
+ ('wg_getDestructibleFallPitchConstr',(41,chunk,0,.25)),('wg_getChunkMatrix',(41,chunk)),('wg_getChunkDestrFilenames',(41,chunk)),
  ('wg_getDestructibleMatrix',(41,chunk,0)),('wg_getDestructibleFilename',(41,chunk,0)),
  ('wg_getDestructibleHeight',(41,chunk,0)),('wg_getFallingParams',(41,chunk,0)),
  ('wg_getChunkModelFashion',(41,chunk,0)),('wg_getDestructibleEffectCategory',(41,chunk,0,0)),

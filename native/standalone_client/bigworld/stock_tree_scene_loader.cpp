@@ -9,6 +9,7 @@
 #include "scene/spatial_query_operation.hpp"
 #include "space/dynamic_scene_provider.hpp"
 #include <vector>
+#include <map>
 
 BW_BEGIN_NAMESPACE
 namespace CompiledSpace
@@ -17,7 +18,7 @@ struct StockTreeSceneLoader::State : StockDestructibleObjects
 {
     StockTreeSceneHandler handler;
     CompiledSpace * space = NULL;
-    std::vector<DynamicObjectHandle> membership;
+    std::map<size_t,DynamicObjectHandle> membership;
     const void* soundMapping = NULL;
     StockSpaceSounds soundOwner;
     StockDestructibles destructibleOwner;
@@ -25,12 +26,38 @@ struct StockTreeSceneLoader::State : StockDestructibleObjects
     bool bound = false;
     bool snapshot(uint32 index,StockDestructibleSnapshot& output)const override
     {return bound && handler.destructibleSnapshot(index,output);}
-    bool transform(uint32,const Matrix&,float,std::string& error)override
-    {error="The compiled-tree falling transform owner is unavailable";return false;}
+    bool transform(uint32 index,const Matrix& world,float wind,std::string& error)override;
     // The original compiled-tree destroy/restore type-handler slots are empty.
     bool destroy(uint32,bool,bool,bool,std::string&)override{return bound;}
     bool restore(std::string&)override{return bound;}
 };
+
+bool StockTreeSceneLoader::State::transform(uint32 index,const Matrix& world,float wind,std::string& error)
+{
+    if(!bound){error="The compiled-tree mapping retired";return false;}
+    if(!handler.setDestructibleTransform(index,world,wind,error))return false;
+    auto found=membership.find(index);
+    if(found!=membership.end())
+    {
+        const auto handle=found->second;membership.erase(found);
+        space->dynamicScene().removeObject(handle);
+        if(!bound){error="The compiled-tree mapping retired during removal";return false;}
+    }
+    if(handler.objectAvailable(index))
+    {
+        const auto& object=handler.objects()[index];
+        auto* spatial=space->scene().getObjectOperation<SpatialQueryOperation>();
+        Matrix current;BoundingBox collision,visibility;
+        spatial->getWorldTransform(object,&current);
+        spatial->getWorldVisibilityBoundingBox(object,&visibility);
+        handler.worldCollisionBounds(index,collision);
+        // Commit the real collision broadphase now, before the next animator call.
+        const auto handle=space->dynamicScene().addObject(object,current,collision,visibility);
+        if(!bound){space->dynamicScene().removeObject(handle);error="The compiled-tree mapping retired during publication";return false;}
+        membership[index]=handle;
+    }
+    error.clear();return true;
+}
 
 StockTreeSceneLoader::StockTreeSceneLoader( uint32 mask ) : mask_( mask ) {}
 StockTreeSceneLoader::~StockTreeSceneLoader() { doUnload(); }
@@ -55,7 +82,6 @@ bool StockTreeSceneLoader::doLoadFromSpace( ClientSpace * space, BinaryFormat & 
     // transforms are already world transforms; multiplying mappingTransform
     // here would transform them a second time.
     if (!candidate->handler.load( reader, strings, settings, mask_ )) return false;
-    candidate->membership.reserve( candidate->handler.objectCount() );
     state_ = candidate;
     return true;
 }
@@ -110,7 +136,7 @@ bool StockTreeSceneLoader::doBind()
             state->space->dynamicScene().removeObject( handle );
             return false;
         }
-        state->membership.push_back( handle );
+        state->membership[index]=handle;
     }
     state->destructibleOwner = acquireStockDestructibles(state->space);
     registerStockDestructibleObjects(state->destructibleOwner,state->soundMapping,true,state);
@@ -125,9 +151,9 @@ void StockTreeSceneLoader::removeMembership( const std::shared_ptr<State> & stat
     std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
     for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );
     state->soundOwner.reset();
-    std::vector<DynamicObjectHandle> retired;
+    std::map<size_t,DynamicObjectHandle> retired;
     retired.swap( state->membership );
-    for (const auto & handle : retired) state->space->dynamicScene().removeObject( handle );
+    for (const auto & item : retired) state->space->dynamicScene().removeObject( item.second );
 }
 
 void StockTreeSceneLoader::doUnload()
