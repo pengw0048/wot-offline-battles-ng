@@ -10,6 +10,7 @@ bool initialiseStockDynamicDecals();
 void finaliseStockDynamicDecals();
 void tickStockDynamicDecals(float elapsed);
 void setStockDynamicDecalQuality(int option);
+void clearStockDynamicDecals();
 bool drawStockDynamicDecals();
 float stockDynamicDecalGroupLifetime(const BW::string& name);
 bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& end,

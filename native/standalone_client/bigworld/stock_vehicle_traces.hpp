@@ -10,5 +10,6 @@ bool initialiseStockVehicleTraceRenderer();
 void finaliseStockVehicleTraceRenderer();
 void tickStockVehicleTraceRenderer(float elapsed);
 void setStockVehicleTraceQuality(unsigned option);
+void clearStockVehicleTraceRenderer();
 bool drawStockVehicleTraces();
 BW_END_NAMESPACE

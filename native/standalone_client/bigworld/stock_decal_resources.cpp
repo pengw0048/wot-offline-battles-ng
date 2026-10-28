@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "stock_decal_resources.hpp"
+#include "stock_dynamic_decals.hpp"
+#include "stock_vehicle_traces.hpp"
 #include "moo/dynamic_decal.hpp"
 #include "moo/renderer.hpp"
 #include "moo/sticker_decal.hpp"
@@ -76,6 +78,17 @@ void wg_addDecalGroup(const BW::string &name, float lifeTime, int trianglesCount
 }
 PY_AUTO_MODULE_FUNCTION(RETVOID, wg_addDecalGroup,
     ARG(BW::string, ARG(float, ARG(int, END))), BigWorld)
+
+void wg_clearDecals()
+{
+    // 931650 clears only the deferred owner's dynamic decals and vehicle traces.
+    Renderer *renderer = Renderer::pInstance();
+    if (!renderer || renderer->pipelineType() != IRendererPipeline::TYPE_DEFERRED_SHADING)
+        return;
+    clearStockDynamicDecals();
+    clearStockVehicleTraceRenderer();
+}
+PY_AUTO_MODULE_FUNCTION(RETVOID, wg_clearDecals, END, BigWorld)
 
 int wg_decalTextureIndex(const BW::string &name)
 {

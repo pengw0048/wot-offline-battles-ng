@@ -579,6 +579,8 @@ bool initialiseStockVehicleTraceRenderer()
 void finaliseStockVehicleTraceRenderer(){traceRenderer.reset();}
 void tickStockVehicleTraceRenderer(float elapsed){if(traceRenderer)traceRenderer->tick(elapsed);}
 void setStockVehicleTraceQuality(unsigned option){if(traceRenderer)traceRenderer->setQuality(option);}
+// a61280 is the strip and layout-cache reset that a62c40 also inlines.
+void clearStockVehicleTraceRenderer(){if(traceRenderer)traceRenderer->clear();}
 bool drawStockVehicleTraces()
 {
     if(Renderer::instance().pipelineType()==IRendererPipeline::TYPE_FORWARD_SHADING)return true;

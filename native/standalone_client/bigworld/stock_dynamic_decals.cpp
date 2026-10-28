@@ -346,4 +346,6 @@ void setStockDynamicDecalQuality(int option)
     if (renderer) renderer->quality = option;
 }
 bool drawStockDynamicDecals() { auto owner = renderer; return owner && owner->draw(); }
+// 931650 zeroes only the deferred_decal::DynamicManager record count.
+void clearStockDynamicDecals() { auto owner = renderer; if (owner) owner->decals.clear(); }
 BW_END_NAMESPACE
