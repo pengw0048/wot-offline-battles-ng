@@ -66,6 +66,8 @@ public:
             profiles_.push_back(*preset);
         }
         stockArrayOptions(true);
+        // 91e2d9 keeps the preset container out of the quality-control list.
+        stockImportant(false);
     }
     virtual void onOptionSelected(int option)
     {

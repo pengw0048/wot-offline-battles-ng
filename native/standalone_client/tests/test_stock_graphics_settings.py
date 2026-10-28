@@ -240,13 +240,16 @@ def find(member,name,line=None):
   if c.co_name==name and (line is None or c.co_firstlineno==line):return c
   todo.extend(v for v in c.co_consts if isinstance(v,types.CodeType))
  raise AssertionError((member,name,line))
-def klass(member,name,scope):
+def klass(member,name,scope,bases=(object,)):
  scope=dict(scope,__name__=member)
- return type(name,(object,),eval(find(member,name),scope))
+ return type(name,bases,eval(find(member,name),scope))
+def cell(value):return (lambda:value).func_closure[0]
 constants=types.ModuleType('account_helpers.settings_core.settings_constants')
 constants.GRAPHICS=klass('scripts/client/account_helpers/settings_core/settings_constants.pyc','GRAPHICS',{})
 utilities=types.ModuleType('gui.shared.utils')
-utilities.GRAPHICS_SETTINGS=klass('scripts/client/gui/shared/utils/graphics.pyc','GRAPHICS_SETTINGS',{})
+container=klass('scripts/client_common/shared_utils/__init__.pyc','CONST_CONTAINER',
+ {'ScalarTypes':(types.IntType,types.LongType,types.FloatType,types.BooleanType)+types.StringTypes})
+utilities.GRAPHICS_SETTINGS=klass('scripts/client/gui/shared/utils/graphics.pyc','GRAPHICS_SETTINGS',{},(container,))
 for name in ('account_helpers','account_helpers.settings_core','gui','gui.shared'):
  module=types.ModuleType(name);module.__path__=[];sys.modules[name]=module
 sys.modules[constants.__name__]=constants;sys.modules[utilities.__name__]=utilities
@@ -259,7 +262,15 @@ assert names==('AA_FIRST','HIDDEN','ZZ_LAST','presets')
 assert p._calls()==[('ZZ_LAST',2),('AA_FIRST',1),('HIDDEN',4)]
 assert constants.GRAPHICS.AA_FIRST=='AA_FIRST' and constants.GRAPHICS.HIDDEN=='HIDDEN'
 assert utilities.GRAPHICS_SETTINGS.AA_FIRST=='AA_FIRST' and not hasattr(utilities.GRAPHICS_SETTINGS,'HIDDEN')
-views=p.graphicsSettings();assert [r[0]for r in views]==['AA_FIRST','ZZ_LAST','presets']
+# The original SettingsCore qualityOrder reader and CONST_CONTAINER iterator
+# must expose control settings only. GraphicSettings.update casts every entry
+# to SettingsControlProp; the separately supplied presets value is SettingsDataVo.
+qualityOrder=types.FunctionType(find('scripts/client/account_helpers/settings_core/SettingsCore.pyc','<lambda>',260),
+ {},closure=(cell(utilities),))
+assert set(qualityOrder())=={'AA_FIRST','ZZ_LAST'},qualityOrder()
+assert constants.GRAPHICS.presets=='presets' and not hasattr(utilities.GRAPHICS_SETTINGS,'presets')
+views=p.graphicsSettings();assert [r[0]for r in views]==['AA_FIRST','ZZ_LAST']
+assert p.getGraphicsPresetPropertyNames()==('AA_FIRST','ZZ_LAST')
 assert all(len(r)==8 for r in views)
 view=p.graphicSetting('AA_FIRST');assert view==('AA_FIRST',1,[['option',i,False,True]for i in range(5)],'description',False,True,False,False)
 p._supported('AA_FIRST',3,0)
@@ -301,7 +312,6 @@ controller_scope['graphics'].getGraphicsSetting=get
 controller.__init__=types.FunctionType(find('scripts/client/account_helpers/settings_core/options.pyc','__init__',1017),controller_scope,argdefs=(False,))
 controller.getApplyMethod=types.FunctionType(find('scripts/client/account_helpers/settings_core/options.pyc','getApplyMethod',1070),controller_scope)
 options=types.ModuleType('options');options.GraphicSetting=controller
-def cell(value):return (lambda:value).func_closure[0]
 make=types.FunctionType(find('scripts/client/account_helpers/settings_core/SettingsCore.pyc','<lambda>',116),{},closure=(cell(options),))
 constructed=tuple(map(make,names))
 assert [name for name,value in constructed]==list(names)

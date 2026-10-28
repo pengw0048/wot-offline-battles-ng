@@ -190,14 +190,14 @@ struct GraphicsSetting{
 using GraphicsSettingPtr=Ptr<GraphicsSetting>;using GraphicsSettingVector=std::vector<GraphicsSettingPtr>;
 using SettingsVector=std::vector<std::pair<std::string,uint32>>;using StringIntMap=std::map<std::string,int>;
 struct Option{std::string m_label,m_desc;bool m_supported,m_advanced;};
-std::string label_,desc_;int activeOption_;bool delayed_,needsRestart_,advanced_;std::vector<Option> options_;GraphicsSettingVector slaves_;
+std::string label_,desc_;int activeOption_;bool delayed_,needsRestart_,advanced_,important_=true;std::vector<Option> options_;GraphicsSettingVector slaves_;
 GraphicsSetting(const char* label,const char* desc,int active,bool delay,bool restart,bool advanced=false):
 label_(label),desc_(desc),activeOption_(active),delayed_(delay),needsRestart_(restart),advanced_(advanced){}
 virtual ~GraphicsSetting(){}virtual void onOptionSelected(int)=0;
 void addOption(const char* l,const char* d,bool s,bool a=false){options_.push_back({l,d,s,a});}
 const std::string& label()const{return label_;}int activeOption()const{return activeOption_;}
 bool requiresRestart()const{return needsRestart_;}
-bool stockImportant()const{return true;}void stockArrayOptions(bool){}
+bool stockImportant()const{return important_;}void stockImportant(bool value){important_=value;}void stockArrayOptions(bool){}
 const std::vector<Option>& options()const{return options_;}
 void addSlave(GraphicsSettingPtr p){slaves_.push_back(p);}
 struct Data{GraphicsSettingVector s_settings;StringIntMap s_latentSettings;SettingsVector s_oldSettings;bool s_needsRestart=false,s_advanced=true;};
@@ -267,24 +267,24 @@ assert p.getGraphicsPresets()==[]
 for label in ('VEHICLE_DUST_ENABLED','VEHICLE_TRACES_ENABLED','LIGHTING_QUALITY'):
  p._register(label,0,0)
 p._calls();p._initialise();p._initialise()
-assert p._calls()==[] and p._previous()==dict((k,v)for k,v in p._current().items()if k!='presets')
+assert p._calls()==[] and p._previous()==p._current()
 assert p.currentGraphicPresetKey()=='MEDIUM'
 assert p.getGraphicsPresetsIndices()=={'CUSTOM':0,'HIGH':1,'LOW':2,'MAX':3,'MEDIUM':4,'MIN':5}
 assert p.getGraphicsPreset(0)=={} and p.getGraphicsPreset(3)==by_name['MAX']
 assert p.getGraphicsPreset(-1) is None and p.getGraphicsPreset(6) is None
 assert p.getGraphicsPresets()==[{},by_name['HIGH'],by_name['LOW'],by_name['MAX'],by_name['MEDIUM'],by_name['MIN']]
-assert p.getGraphicsPresetPropertyNames()==('LIGHTING_QUALITY','VEHICLE_DUST_ENABLED','VEHICLE_TRACES_ENABLED','presets')
+assert p.getGraphicsPresetPropertyNames()==('LIGHTING_QUALITY','VEHICLE_DUST_ENABLED','VEHICLE_TRACES_ENABLED')
 assert p.isCustomGraphicPreset() is False
 before=p._current();p._select('presets',4)
-assert p._calls()==[] and p._current()==dict(before,presets=4) and p._desired()==by_name['MIN']
+assert p._calls()==[] and p._current()==before and p._desired()==by_name['MIN']
 assert p.currentGraphicPresetKey()=='MIN'
 before=p._current()
 p.setGraphicPresetByIndex(0);assert len(p._calls())==3
 assert p._previous()==before
-assert p._current()==dict([(k,by_name['MAX'][k])for k in before if k!='presets']+[('presets',before['presets'])])
+assert p._current()==dict((k,by_name['MAX'][k])for k in before)
 assert p._desired()==by_name['MIN']
 p.setGraphicPresetByName('LOW');assert len(p._calls())==3
-low=dict([(k,by_name['LOW'][k])for k in before if k!='presets']+[('presets',before['presets'])]);assert p._current()==low
+low=dict((k,by_name['LOW'][k])for k in before);assert p._current()==low
 assert p.applyGraphicPreset('MIN') is True and p._current()==low and p._calls()==[]
 p.updateCurrentPresetIndex();assert p._calls()==[] and p.currentGraphicPresetKey()=='CUSTOM' and p._desired()=={}
 assert p.applyGraphicPreset('MAX') is True and len(p._calls())==3
