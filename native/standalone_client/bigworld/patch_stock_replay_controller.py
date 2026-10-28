@@ -86,6 +86,30 @@ void ConnectionControl::stopStockReplayConnection( BWNullConnection * expected )
 '''
     source = before(source, anchor, addition)
     updates.append((path, source))
+    path = root / 'client/entity.hpp'
+    source = before(path.read_text(), '\tbool loadingPrerequisites() const { return loadingPrerequisites_; }',
+                    '\t// #1513 Entity +0x140 suppresses replay effects during entry callbacks.\n'
+                    '\tbool stockReplayEnteringWorld() const { return stockReplayEnteringWorld_; }\n\n')
+    source = before(source, '\tbool loadingPrerequisites_;', '\tbool stockReplayEnteringWorld_ = false;\n')
+    updates.append((path, source))
+    path = root / 'client/entity.cpp'
+    source = path.read_text()
+    start = source.index('void Entity::onEnterWorld()\n{')
+    end = source.index('\nvoid Entity::onPositionUpdated()', start)
+    section = source[start:end]
+    section = before(section, '\tthis->onEnterSpace( /* transient */ false );', '''
+	// #1513 679b0d..679d63 brackets the native and script entry operations.
+	// Restore on exceptional/partial entry too; nested entry preserves its owner.
+	struct StockReplayEntryScope
+	{
+		bool & entering;
+		bool previous;
+		explicit StockReplayEntryScope( bool & value ) : entering( value ), previous( value ) { entering = true; }
+		~StockReplayEntryScope() { entering = previous; }
+	} stockReplayEntryScope( stockReplayEnteringWorld_ );
+
+''')
+    updates.append((path, source[:start] + section + source[end:]))
     for path, source in updates:
         path.write_text(source)
 

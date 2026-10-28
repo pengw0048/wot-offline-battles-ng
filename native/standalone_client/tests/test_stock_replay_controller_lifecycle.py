@@ -21,6 +21,58 @@ def load(name):
 
 
 class ReplayControllerLifecycle(unittest.TestCase):
+    def test_entity_entry_effect_scope_restores_nested_and_failed_entry(self):
+        archive = Path(os.environ.get('WOT_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.exists():
+            self.skipTest('Pinned public-source archive unavailable')
+        paths = ['client/script_bigworld.cpp', 'client/script_app.cpp',
+                 'client/connection_control.hpp', 'client/connection_control.cpp',
+                 'client/entity.hpp', 'client/entity.cpp']
+        with tempfile.TemporaryDirectory(prefix='replay-entry-scope-') as directory:
+            root = Path(directory)
+            with tarfile.open(archive) as source:
+                names = source.getnames()
+                for name in paths:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(source.extractfile(next(item for item in names if item.endswith('/' + name))).read())
+            load('replay_controller').patch(root)
+            entity = (root / 'client/entity.cpp').read_text()
+            scope_start = entity.index('\t// #1513 679b0d..679d63')
+            enter = entity.index('\tthis->onEnterSpace( /* transient */ false );', scope_start)
+            scope = entity[scope_start:enter]
+            self.assertLess(scope_start, entity.index('pPyEntity_.callMethod( "onEnterWorld"'))
+            cpp = r'''
+#include <cassert>
+#include <functional>
+#include <stdexcept>
+void enter(bool& stockReplayEnteringWorld_,const std::function<void()>& callback){
+@SCOPE@
+    assert(stockReplayEnteringWorld_);
+    callback();
+}
+int main(){
+    bool entering=false;
+    enter(entering,[&]{
+        assert(entering);
+        enter(entering,[&]{assert(entering);});
+        assert(entering);
+        try{enter(entering,[]{throw std::runtime_error("partial entry");});}
+        catch(const std::runtime_error&){}
+        assert(entering);
+    });
+    assert(!entering);
+    try{enter(entering,[]{throw std::runtime_error("partial entry");});}
+    catch(const std::runtime_error&){}
+    assert(!entering);
+}
+'''.replace('@SCOPE@', scope)
+            (root / 'scope.cpp').write_text(cpp)
+            subprocess.run([os.environ.get('CXX', 'clang++'), *native_test_compile_flags(os.environ.get('CXX', 'clang++')),
+                            '-std=c++17', '-Wall', '-Wextra', '-Werror', str(root / 'scope.cpp'),
+                            '-o', str(root / 'scope')], check=True)
+            subprocess.run([str(root / 'scope')], check=True)
+
     def test_replacing_callback_publishes_before_destructor_reentry(self):
         if not shutil.which(os.environ.get('CXX', 'clang++')):
             raise unittest.SkipTest('C++ compiler unavailable: ' + os.environ.get('CXX', 'clang++'))
@@ -71,7 +123,7 @@ int main() {
             self.skipTest('Pinned public-source archive unavailable')
         paths = ['client/script_bigworld.cpp', 'client/script_app.cpp',
                  'client/connection_control.hpp', 'client/connection_control.cpp',
-                 'client/device_app.cpp']
+                 'client/device_app.cpp', 'client/entity.hpp', 'client/entity.cpp']
         with tarfile.open(archive) as source:
             names = source.getnames()
             original = {name: source.extractfile(next(item for item in names if item.endswith('/' + name))).read() for name in paths}

@@ -3319,6 +3319,12 @@ The gameplay integration remains pinned to offline mod `v0.10.1` at
 `0.9.22.0.1 #1513` resources. The Windows executable target is x86 (Win32).
 `Hybrid` names the engine's optimized build configuration with debug symbols;
 it is independent of the target architecture and deployment environment.
+The executable also retains the original PE large-address-aware flag. Without
+it, map loading and the battle-to-lobby transition exhausted the 2 GiB address
+space: a captured full dump showed only 25 MiB free and a largest free region
+of 1.06 MiB when the Scaleform string table allocation returned null. Packaging
+rejects a binary without this flag; resource lifetime still requires repeated
+Windows battle-cycle acceptance.
 
 The battle-entry adapters expose the existing native `Math.Vector4Basic`,
 retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
@@ -3349,6 +3355,21 @@ The viewport owner refreshes after device resets and releases its NVAPI lease
 before device-callback teardown. Exact-client constructor bytecode and viewport
 instructions are covered by focused tests; multi-display rendering still needs
 acceptance on the corresponding hardware.
+
+The Python-to-Flash bridge dispatches native property writes before ActionScript
+members, as the original `PyGFxValue` setter does. This keeps `displayMatrix`
+attached to the real display-object matrix instead of creating an undefined
+ActionScript shadow member that breaks the stock tween manager. Python `set`
+objects and their subclasses convert recursively to real GFx arrays; the stock
+battle page passes component-visibility and vehicle-tag sets through this path.
+
+Ordinary battle calls into `WGReplayController` retain their original live-mode
+guards and presentation state: server aim, marker geometry, gun angles, reload
+and consumable progress, arena timing, and playback event arguments. Effect
+queries consult the active entity and suppress effects during its actual
+`onEnterWorld` scope, including nested or failed entry. Tests execute the stock
+Python producers and original x86 branches; recording packet production and
+playback time-warp remain outside this live-battle restoration.
 
 Ground impacts submit their original eight-argument `wg_addDecal` operation
 through the native texture registry and dynamic-decal renderer. Aggregate

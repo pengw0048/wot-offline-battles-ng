@@ -240,6 +240,7 @@ std::string StockReplayController::arenaInfo() const{return file_.stream().metad
 #if !defined(WOT_REPLAY_CONTROLLER_HOST_BUILD)
 #include "connection_control.hpp"
 #include "entity_type.hpp"
+#include "entity.hpp"
 #include "app_config.hpp"
 #include "connection_model/bw_null_connection.hpp"
 #include "connection_model/bw_server_connection.hpp"
@@ -247,6 +248,7 @@ std::string StockReplayController::arenaInfo() const{return file_.stream().metad
 #include "cstdmf/memory_stream.hpp"
 #include "cstdmf/debug.hpp"
 #include "pyscript/script.hpp"
+#include "pyscript/script_math.hpp"
 #include "script/pickler.hpp"
 #include <shellapi.h>
 #include <Python.h>
@@ -311,6 +313,15 @@ struct State {
     wot::StockReplayController controller{std::unique_ptr<wot::StockReplayConnection>(new Endpoint)};
     std::string resultName,mapName,vehicleName,autoStart;
     bool overwrite=false,modalWindows=true;
+    // #1513 6fd780 and the 700a30..701030/7032e0..703df0 accessors.
+    Vector3 gunRotatorTargetPoint=Vector3::zero(),gunMarkerPosition=Vector3::zero(),gunMarkerDirection=Vector3::zero();
+    Vector2 spgGunMarkerParams=Vector2(-1.f,-1.f);
+    float gunMarkerDiameter=.01f,arcadeGunMarkerSize=-1.f,turretYaw=-100000.f,gunPitch=-100000.f;
+    int fps=0,ping=0,activeConsumableSlot=-1;
+    bool serverAim=false,lagging=false,arenaLengthPending=false;
+    unsigned int arenaPeriod=0;
+    float arenaEnd=0.f,reloadDuration=0.f;
+    double reloadStart=0.;
     std::vector<std::pair<int,int>> streamFilters;
     std::set<std::string> methodFilters;
     std::map<std::string,PyObject*> dataCallbacks;
@@ -415,6 +426,119 @@ PyObject* compressed(PyController* self,PyObject* args,PyObject* kwargs){if(!noA
 PyObject* timeMark(PyController* self,PyObject* args,PyObject* kwargs){unsigned int id=0;char* names[]={const_cast<char*>("id"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"I",names,&id))return NULL;return PyFloat_FromDouble(self->state->controller.timeMark(id));}
 PyObject* confirm(PyController* self,PyObject* args,PyObject* kwargs){int accepted=0;char* names[]={const_cast<char*>("accepted"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"i",names,&accepted))return NULL;self->state->controller.confirmVersion(accepted!=0);Py_RETURN_NONE;}
 PyObject* arenaInfo(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;return string(self->state->controller.arenaInfo());}
+// Live battles share these presentation fields with recording/playback. In
+// particular 6ff240 always stores serverAim; only recording writes its packet.
+PyObject* serverAim(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;char* names[]={const_cast<char*>("serverAim"),NULL};bool enabled=false;
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,enabled,"onServerAim")!=0)return NULL;
+    self->state->serverAim=enabled;Py_RETURN_NONE;
+}
+PyObject* getArcadeSize(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;return Script::getData(self->state->arcadeGunMarkerSize);}
+PyObject* setArcadeSize(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;char* names[]={const_cast<char*>("size"),NULL};float size=0;
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,size,"setArcadeGunMarkerSize")!=0)return NULL;
+    self->state->arcadeGunMarkerSize=size;Py_RETURN_NONE;
+}
+PyObject* getSPGParams(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;return Script::getData(self->state->spgGunMarkerParams);}
+PyObject* setSPGParams(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;char* names[]={const_cast<char*>("params"),NULL};Vector2 params;
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,params,"setSPGGunMarkerParams")!=0)return NULL;
+    self->state->spgGunMarkerParams=params;Py_RETURN_NONE;
+}
+PyObject* setAimPosition(PyController*,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;char* names[]={const_cast<char*>("position"),NULL};Vector2 position;
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,position,"setAimClipPosition")!=0)return NULL;
+    // 6ff9a8 only changes the attached recording codec, never a live camera.
+    // startRecording cannot attach a writer until its network producers exist.
+    Py_RETURN_NONE;
+}
+double replayPresentationTime(PyController* self){return self->state->controller.timeMark(0x80000002);}
+float replayCooldownAmount(PyController* self){
+    const float elapsed=static_cast<float>(replayPresentationTime(self)-self->state->reloadStart);
+    const float duration=self->state->reloadDuration;
+    // #1513 701100 preserves negative elapsed values; no invented lower clamp.
+    if(duration<0.f)return 0.f;
+    if(duration==0.f||elapsed>=duration)return 1.f;
+    return elapsed/duration;
+}
+PyObject* getReloadAmount(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;return Script::getData(replayCooldownAmount(self));}
+PyObject* setReloadTime(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* startValue=NULL;PyObject* durationValue=NULL;float start=0,duration=0;
+    char* names[]={const_cast<char*>("startTime"),const_cast<char*>("duration"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OO",names,&startValue,&durationValue)||
+       Script::setData(startValue,start,"setGunReloadTime argument 1")!=0||Script::setData(durationValue,duration,"setGunReloadTime argument 2")!=0)return NULL;
+    // 6ffe97 leaves live state unchanged; playback stores a time-relative start.
+    if(self->state->controller.playing()){self->state->reloadStart=replayPresentationTime(self)+start;self->state->reloadDuration=duration;}
+    Py_RETURN_NONE;
+}
+PyObject* getConsumableAmount(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;unsigned int slot=0;char* names[]={const_cast<char*>("slot"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,slot,"getConsumableSlotCooldownAmount")!=0)return NULL;
+    return Script::getData(static_cast<unsigned int>(self->state->activeConsumableSlot)==slot?replayCooldownAmount(self):0.f);
+}
+PyObject* setConsumableSlot(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;int slot=0;char* names[]={const_cast<char*>("slot"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,slot,"setActiveConsumableSlot")!=0)return NULL;
+    // 6ff919 changes the slot only during playback (recording writes a packet).
+    if(self->state->controller.playing())self->state->activeConsumableSlot=slot;
+    Py_RETURN_NONE;
+}
+PyObject* resetPeriod(PyController* self,PyObject* args,PyObject* kwargs){if(!noArgs(args,kwargs))return NULL;self->state->arenaLengthPending=true;Py_RETURN_NONE;}
+PyObject* effectNeeded(PyController*,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;int id=0;char* names[]={const_cast<char*>("entityID"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,id,"isEffectNeedToPlay")!=0)return NULL;
+    auto* control=ConnectionControl::pInstance();Entity* entity=control?control->findEntity(id):NULL;
+    // 6fec30 finds an active entity; 6fec55 suppresses effects during its
+    // native onEnterWorld scope, including synchronous script re-entry.
+    return Script::getData(entity&&!entity->stockReplayEnteringWorld());
+}
+PyObject* replayEvent(PyController* self,std::size_t index,PyObject* arguments){
+    if(!arguments)return NULL;
+    PyObject* callback=self->callbacks[index];
+    if(self->state->controller.playing()&&callback&&callback!=Py_None){
+        Py_INCREF(callback);PyObject* result=PyObject_CallObject(callback,arguments);
+        if(!result)PyErr_WriteUnraisable(callback);else Py_DECREF(result);Py_DECREF(callback);
+    }
+    Py_DECREF(arguments);Py_RETURN_NONE;
+}
+#define REPLAY_INT_EVENT(FUNCTION,INDEX) \
+PyObject* FUNCTION(PyController* self,PyObject* args,PyObject* kwargs){ \
+    PyObject* value=NULL;int number=0;char* names[]={const_cast<char*>("value"),NULL}; \
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,number,#FUNCTION)!=0)return NULL; \
+    return replayEvent(self,INDEX,Py_BuildValue("(i)",number)); \
+}
+REPLAY_INT_EVENT(ammoPressed,2)
+REPLAY_INT_EVENT(cruiseMode,7)
+REPLAY_INT_EVENT(equipmentID,8)
+#undef REPLAY_INT_EVENT
+PyObject* sniperMode(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;bool enabled=false;char* names[]={const_cast<char*>("enabled"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&value)||Script::setData(value,enabled,"onSniperMode")!=0)return NULL;
+    return replayEvent(self,10,Py_BuildValue("(O)",enabled?Py_True:Py_False));
+}
+PyObject* lockTarget(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;PyObject* enabledValue=NULL;int id=0;bool enabled=false;
+    char* names[]={const_cast<char*>("entityID"),const_cast<char*>("enabled"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OO",names,&value,&enabledValue)||Script::setData(value,id,"onLockTarget argument 1")!=0||Script::setData(enabledValue,enabled,"onLockTarget argument 2")!=0)return NULL;
+    return replayEvent(self,6,Py_BuildValue("(iO)",id,enabled?Py_True:Py_False));
+}
+PyObject* chatMessage(PyController* self,PyObject* args,PyObject* kwargs){
+    PyObject* value=NULL;PyObject* ownValue=NULL;std::string message;bool own=false;
+    char* names[]={const_cast<char*>("messageText"),const_cast<char*>("isCurrentPlayer"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OO",names,&value,&ownValue)||!text(value,message)||Script::setData(ownValue,own,"onBattleChatMessage argument 2")!=0)return NULL;
+    PyObject* encoded=string(message);if(!encoded)return NULL;
+    PyObject* arguments=Py_BuildValue("(OO)",encoded,own?Py_True:Py_False);Py_DECREF(encoded);
+    return replayEvent(self,5,arguments);
+}
+PyObject* serializeData(PyController*,PyObject* args,PyObject* kwargs){
+    PyObject* name=NULL;PyObject* data=NULL;std::string key;
+    char* names[]={const_cast<char*>("name"),const_cast<char*>("data"),NULL};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OO",names,&name,&data)||!text(name,key))return NULL;
+    // 6ff767 always pickles before 70bc30 checks the disabled recording writer.
+    Pickler::pickle(ScriptObject(data,ScriptObject::FROM_BORROWED_REFERENCE));
+    if(PyErr_Occurred())return NULL;
+    Py_RETURN_NONE;
+}
 // The exact setters validate their strings but only mutate an attached
 // recording file (0x6ffa80/0x6ffb70). This playback-only subset has none.
 PyObject* metadata(PyController*,PyObject* args,PyObject* kwargs){PyObject* object=NULL;char* names[]={const_cast<char*>("value"),NULL};if(!PyArg_ParseTupleAndKeywords(args,kwargs,"O",names,&object))return NULL;std::string value;if(!text(object,value))return NULL;Py_RETURN_NONE;}
@@ -474,7 +598,49 @@ PyObject* getVersion(PyController* self,void*){return string(self->state->contro
 int setVersion(PyController* self,PyObject* value,void*){if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay client version");return -1;}return text(value,self->state->controller.clientVersion)?0:-1;}
 PyObject* getName(PyController* self,void* index){return string(reinterpret_cast<std::size_t>(index)?self->state->vehicleName:self->state->mapName);}
 int setName(PyController* self,PyObject* value,void* index){if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay name");return -1;}return text(value,reinterpret_cast<std::size_t>(index)?self->state->vehicleName:self->state->mapName)?0:-1;}
-PyObject* getDuration(PyController* self,void*){if(self->state->controller.playing()){PyErr_SetString(PyExc_NotImplementedError,"Replay arena-period markers have not yet been recovered");return NULL;}return PyFloat_FromDouble(0);}
+PyObject* getDuration(PyController* self,void*){return Script::getData(self->state->arenaEnd-static_cast<float>(replayPresentationTime(self)));}
+int setDuration(PyController* self,PyObject* value,void*){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay arena length");return -1;}
+    float length=0;if(Script::setData(value,length,"arenaLength")!=0)return -1;
+    // 70330d admits one length after a reset or an arena-period transition.
+    if(self->state->arenaLengthPending){self->state->arenaEnd=static_cast<float>(replayPresentationTime(self))+length;self->state->arenaLengthPending=false;}
+    return 0;
+}
+PyObject* getPeriod(PyController* self,void*){return Script::getData(self->state->arenaPeriod);}
+int setPeriod(PyController* self,PyObject* value,void*){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay arena period");return -1;}
+    unsigned int period=0;if(Script::setData(value,period,"arenaPeriod")!=0)return -1;
+    if(self->state->arenaPeriod!=period){self->state->arenaPeriod=period;self->state->arenaLengthPending=true;}
+    return 0;
+}
+Vector3& presentationVector(PyController* self,std::size_t field){return field==0?self->state->gunRotatorTargetPoint:field==1?self->state->gunMarkerPosition:self->state->gunMarkerDirection;}
+PyObject* getPresentationVector(PyController* self,void* field){return Script::getData(presentationVector(self,reinterpret_cast<std::size_t>(field)));}
+int setPresentationVector(PyController* self,PyObject* value,void* field){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay vector");return -1;}
+    Vector3 vector;if(Script::setData(value,vector,"replay vector")!=0)return -1;
+    // 70384d calls _isnan on the target; infinities and marker NaNs survive.
+    if(reinterpret_cast<std::size_t>(field)!=0||(!std::isnan(vector.x)&&!std::isnan(vector.y)&&!std::isnan(vector.z)))presentationVector(self,reinterpret_cast<std::size_t>(field))=vector;
+    return 0;
+}
+float& presentationReal(PyController* self,std::size_t field){return field==0?self->state->gunMarkerDiameter:field==1?self->state->turretYaw:self->state->gunPitch;}
+PyObject* getPresentationReal(PyController* self,void* field){return Script::getData(presentationReal(self,reinterpret_cast<std::size_t>(field)));}
+int setPresentationReal(PyController* self,PyObject* value,void* field){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay value");return -1;}
+    float number=0;if(Script::setData(value,number,"replay value")!=0)return -1;
+    presentationReal(self,reinterpret_cast<std::size_t>(field))=number;return 0;
+}
+PyObject* getPerformance(PyController* self,void* field){return Script::getData(reinterpret_cast<std::size_t>(field)?self->state->ping:self->state->fps);}
+int setPerformance(PyController* self,PyObject* value,void* field){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay performance value");return -1;}
+    int number=0;if(Script::setData(value,number,"replay performance value")!=0)return -1;
+    (reinterpret_cast<std::size_t>(field)?self->state->ping:self->state->fps)=number;return 0;
+}
+PyObject* getPresentationBool(PyController* self,void* field){return Script::getData(reinterpret_cast<std::size_t>(field)?self->state->lagging:self->state->serverAim);}
+int setPresentationBool(PyController* self,PyObject* value,void* field){
+    if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay flag");return -1;}
+    bool enabled=false;if(Script::setData(value,enabled,"replay flag")!=0)return -1;
+    (reinterpret_cast<std::size_t>(field)?self->state->lagging:self->state->serverAim)=enabled;return 0;
+}
 PyObject* getError(PyController* self,void*){return string(self->state->controller.error());}
 PyObject* getVehicle(PyController* self,void*){return PyInt_FromLong(self->state->controller.playerVehicleID);}
 int setVehicle(PyController* self,PyObject* value,void*){if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay player identity");return -1;}const long id=PyInt_AsLong(value);if(PyErr_Occurred())return -1;if(id<INT32_MIN||id>INT32_MAX){PyErr_SetString(PyExc_OverflowError,"Replay player identity exceeds int32");return -1;}auto& owner=self->state->controller;if(owner.playerVehicleID!=id){owner.playerVehicleID=static_cast<int>(id);if(owner.playing())notify(self,3);}return 0;}
@@ -484,9 +650,9 @@ PyObject* getCamera(PyController* self,void*){return PyInt_FromLong(self->state-
 int setCamera(PyController* self,PyObject* value,void*){if(!value){PyErr_SetString(PyExc_TypeError,"Cannot delete replay camera control");return -1;}const int enabled=PyObject_IsTrue(value);if(enabled<0)return -1;if(self->state->controller.playing()){PyErr_SetString(PyExc_NotImplementedError,"Replay camera packet owner has not yet been recovered");return -1;}self->state->controller.controllingCamera=enabled!=0;return 0;}
 PyObject* getModal(PyController* self,void*){return PyBool_FromLong(self->state->modalWindows);}
 #define REPLAY_METHOD(name,method) {name,reinterpret_cast<PyCFunction>(method),METH_VARARGS|METH_KEYWORDS,NULL}
-PyMethodDef methods[]={REPLAY_METHOD("startRecording",record),REPLAY_METHOD("startPlayback",play),REPLAY_METHOD("beginTimeWarp",unsupported),REPLAY_METHOD("getTimeMark",timeMark),REPLAY_METHOD("stop",stop),REPLAY_METHOD("onClientReady",ready),REPLAY_METHOD("onCommonSfwUnloaded",commonUnloaded),REPLAY_METHOD("onAmmoButtonPressed",unsupported),REPLAY_METHOD("registerWotReplayFileExtension",registerExtension),REPLAY_METHOD("getAutoStartFileName",autoStart),REPLAY_METHOD("setResultingFileName",resultName),REPLAY_METHOD("getGunReloadAmountLeft",unsupported),REPLAY_METHOD("setGunReloadTime",unsupported),REPLAY_METHOD("getArcadeGunMarkerSize",unsupported),REPLAY_METHOD("setArcadeGunMarkerSize",unsupported),REPLAY_METHOD("getSPGGunMarkerParams",unsupported),REPLAY_METHOD("setSPGGunMarkerParams",unsupported),REPLAY_METHOD("getAimClipPosition",unsupported),REPLAY_METHOD("setAimClipPosition",unsupported),REPLAY_METHOD("getConsumableSlotCooldownAmount",unsupported),REPLAY_METHOD("setActiveConsumableSlot",unsupported),REPLAY_METHOD("setArenaInfoStr",metadata),REPLAY_METHOD("getArenaInfoStr",arenaInfo),REPLAY_METHOD("setArenaStatisticsStr",metadata),REPLAY_METHOD("onBattleChatMessage",unsupported),REPLAY_METHOD("onLockTarget",unsupported),REPLAY_METHOD("onSniperMode",unsupported),REPLAY_METHOD("onSetCruiseMode",unsupported),REPLAY_METHOD("isPlaying",playing),REPLAY_METHOD("isEffectNeedToPlay",unsupported),REPLAY_METHOD("onServerAim",unsupported),REPLAY_METHOD("onSetEquipmentID",unsupported),REPLAY_METHOD("resetArenaPeriod",unsupported),REPLAY_METHOD("confirmDlgAccepted",confirm),REPLAY_METHOD("setDataCallback",setDataCallback),REPLAY_METHOD("serializeCallbackData",unsupported),REPLAY_METHOD("getCallbackHandler",getDataCallback),REPLAY_METHOD("isFileCompressed",compressed),REPLAY_METHOD("setupStreamExcludeFilter",streamFilter),REPLAY_METHOD("setupAvatarMethodExcludeFilter",methodFilter),{NULL,NULL,0,NULL}};
+PyMethodDef methods[]={REPLAY_METHOD("startRecording",record),REPLAY_METHOD("startPlayback",play),REPLAY_METHOD("beginTimeWarp",unsupported),REPLAY_METHOD("getTimeMark",timeMark),REPLAY_METHOD("stop",stop),REPLAY_METHOD("onClientReady",ready),REPLAY_METHOD("onCommonSfwUnloaded",commonUnloaded),REPLAY_METHOD("onAmmoButtonPressed",ammoPressed),REPLAY_METHOD("registerWotReplayFileExtension",registerExtension),REPLAY_METHOD("getAutoStartFileName",autoStart),REPLAY_METHOD("setResultingFileName",resultName),REPLAY_METHOD("getGunReloadAmountLeft",getReloadAmount),REPLAY_METHOD("setGunReloadTime",setReloadTime),REPLAY_METHOD("getArcadeGunMarkerSize",getArcadeSize),REPLAY_METHOD("setArcadeGunMarkerSize",setArcadeSize),REPLAY_METHOD("getSPGGunMarkerParams",getSPGParams),REPLAY_METHOD("setSPGGunMarkerParams",setSPGParams),REPLAY_METHOD("getAimClipPosition",unsupported),REPLAY_METHOD("setAimClipPosition",setAimPosition),REPLAY_METHOD("getConsumableSlotCooldownAmount",getConsumableAmount),REPLAY_METHOD("setActiveConsumableSlot",setConsumableSlot),REPLAY_METHOD("setArenaInfoStr",metadata),REPLAY_METHOD("getArenaInfoStr",arenaInfo),REPLAY_METHOD("setArenaStatisticsStr",metadata),REPLAY_METHOD("onBattleChatMessage",chatMessage),REPLAY_METHOD("onLockTarget",lockTarget),REPLAY_METHOD("onSniperMode",sniperMode),REPLAY_METHOD("onSetCruiseMode",cruiseMode),REPLAY_METHOD("isPlaying",playing),REPLAY_METHOD("isEffectNeedToPlay",effectNeeded),REPLAY_METHOD("onServerAim",serverAim),REPLAY_METHOD("onSetEquipmentID",equipmentID),REPLAY_METHOD("resetArenaPeriod",resetPeriod),REPLAY_METHOD("confirmDlgAccepted",confirm),REPLAY_METHOD("setDataCallback",setDataCallback),REPLAY_METHOD("serializeCallbackData",serializeData),REPLAY_METHOD("getCallbackHandler",getDataCallback),REPLAY_METHOD("isFileCompressed",compressed),REPLAY_METHOD("setupStreamExcludeFilter",streamFilter),REPLAY_METHOD("setupAvatarMethodExcludeFilter",methodFilter),{NULL,NULL,0,NULL}};
 #undef REPLAY_METHOD
-PyGetSetDef properties[callbackCount+16];
+PyGetSetDef properties[callbackCount+32];
 bool prepare(){
     if(registered)return true;
     type.tp_name=const_cast<char*>("WGReplayController");type.tp_basicsize=sizeof(PyController);type.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_HAVE_GC;
@@ -498,7 +664,16 @@ bool prepare(){
     properties[i++]={const_cast<char*>("clientVersion"),reinterpret_cast<getter>(getVersion),reinterpret_cast<setter>(setVersion),NULL,NULL};
     properties[i++]={const_cast<char*>("recMapName"),reinterpret_cast<getter>(getName),reinterpret_cast<setter>(setName),NULL,NULL};
     properties[i++]={const_cast<char*>("recPlayerVehicleName"),reinterpret_cast<getter>(getName),reinterpret_cast<setter>(setName),NULL,reinterpret_cast<void*>(1)};
-    properties[i++]={const_cast<char*>("arenaLength"),reinterpret_cast<getter>(getDuration),NULL,NULL,NULL};
+    properties[i++]={const_cast<char*>("arenaLength"),reinterpret_cast<getter>(getDuration),reinterpret_cast<setter>(setDuration),NULL,NULL};
+    properties[i++]={const_cast<char*>("arenaPeriod"),reinterpret_cast<getter>(getPeriod),reinterpret_cast<setter>(setPeriod),NULL,NULL};
+    const char* vectors[]={"gunRotatorTargetPoint","gunMarkerPosition","gunMarkerDirection"};
+    for(std::size_t f=0;f<3;++f)properties[i++]={const_cast<char*>(vectors[f]),reinterpret_cast<getter>(getPresentationVector),reinterpret_cast<setter>(setPresentationVector),NULL,reinterpret_cast<void*>(f)};
+    const char* reals[]={"gunMarkerDiameter","turretYaw","gunPitch"};
+    for(std::size_t f=0;f<3;++f)properties[i++]={const_cast<char*>(reals[f]),reinterpret_cast<getter>(getPresentationReal),reinterpret_cast<setter>(setPresentationReal),NULL,reinterpret_cast<void*>(f)};
+    const char* performance[]={"fps","ping"};
+    for(std::size_t f=0;f<2;++f)properties[i++]={const_cast<char*>(performance[f]),reinterpret_cast<getter>(getPerformance),reinterpret_cast<setter>(setPerformance),NULL,reinterpret_cast<void*>(f)};
+    const char* presentationFlags[]={"isServerAim","isLaggingNow"};
+    for(std::size_t f=0;f<2;++f)properties[i++]={const_cast<char*>(presentationFlags[f]),reinterpret_cast<getter>(getPresentationBool),reinterpret_cast<setter>(setPresentationBool),NULL,reinterpret_cast<void*>(f)};
     properties[i++]={const_cast<char*>("lastError"),reinterpret_cast<getter>(getError),NULL,NULL,NULL};
     properties[i++]={const_cast<char*>("playerVehicleID"),reinterpret_cast<getter>(getVehicle),reinterpret_cast<setter>(setVehicle),NULL,NULL};
     properties[i++]={const_cast<char*>("controlMode"),reinterpret_cast<getter>(getMode),reinterpret_cast<setter>(setMode),NULL,NULL};

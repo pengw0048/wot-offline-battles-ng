@@ -173,6 +173,10 @@ print('Licensed SDK input extracted: %d files' % len(members))
         "--strip-components", "1") "scaleform-source-extract.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_scaleform_sdk.py"),
         $EngineRoot, $ScaleformRoot) "scaleform-source-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_display_object.py"),
+        $EngineRoot) "stock-flash-display-object-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flash_collections.py"),
+        $EngineRoot) "stock-flash-collections-patch.log"
     # Edits only lib/scaleform/util.cpp, which patch_scaleform_sdk.py does not touch.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_lobby_input.py"),
         $EngineRoot) "stock-lobby-input-patch.log"
