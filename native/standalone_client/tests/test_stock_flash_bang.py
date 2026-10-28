@@ -31,7 +31,8 @@ def sources(test):
     if not archive.exists():test.skipTest('Pinned public engine archive required')
     needed={'lib/moo/renderer.hpp','lib/moo/deferred_pipeline.hpp','lib/moo/deferred_pipeline.cpp',
         'lib/moo/forward_pipeline.hpp','lib/moo/forward_pipeline.cpp','client/script_app.cpp',
-        'lib/pyscript/script_math.cpp'}
+        'lib/pyscript/script_math.cpp', 'lib/moo/device_callback.cpp',
+        'lib/moo/device_callback.ipp', 'lib/moo/render_target.ipp'}
     output={}
     with tarfile.open(archive) as original:
         for member in original:
@@ -74,6 +75,27 @@ class FlashBangTests(unittest.TestCase):
         generated=generated.replace('@HEADER@',header).replace('@ANIMATION@','\n'.join(
             body(original['lib/pyscript/script_math.cpp'],signature) for signature in (
                 'void Vector4Animation::tick(', 'void Vector4Animation::output(')))
+        generated=generated.replace('@DEVICE_CALLBACK_DEFAULT@', body(
+            original['lib/moo/device_callback.ipp'], 'bool DeviceCallback::recreateForD3DExDevice('))
+        generated=generated.replace('@DEVICE_CALLBACK_DISPATCH@', '\n'.join(
+            body(original['lib/moo/device_callback.cpp'], signature) for signature in (
+                'void DeviceCallback::deleteAllUnmanaged(', 'void DeviceCallback::createAllUnmanaged(',
+                'void DeviceCallback::createAllManaged(')))
+        generated=generated.replace('@RENDER_TARGET_EX@', body(
+            original['lib/moo/render_target.ipp'], 'bool\tRenderTarget::recreateForD3DExDevice('))
+        with tempfile.TemporaryDirectory(prefix='flash-startup-patch-') as staging:
+            staging=Path(staging)
+            for relative,text in original.items():
+                path=staging/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text)
+            patcher.patch(staging)
+            lifecycle=[]
+            for name in ('Deferred','Forward'):
+                source=(staging/('lib/moo/%s_pipeline.cpp'%name.lower())).read_text()
+                lifecycle.extend(body(source, signature) for signature in (
+                    '%sPipeline::%sPipeline()'%(name,name),
+                    '%sPipeline::~%sPipeline()'%(name,name),
+                    'bool %sPipeline::init()'%name))
+            generated=generated.replace('@PIPELINE_LIFECYCLE@','\n'.join(lifecycle))
         with tempfile.TemporaryDirectory(prefix='stock-flash-bang-') as directory:
             directory=Path(directory);source=directory/'host.cpp';source.write_text(generated);binary=directory/'host'
             flags=shlex.split(subprocess.check_output([str(config),'--cflags'],text=True))
@@ -114,6 +136,8 @@ class FlashBangTests(unittest.TestCase):
             result=subprocess.run([str(binary),str(ROOT/'tests/stock_flash_bang_consumer.py')],env=environment,capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertIn('FlashBang actual provider, shader draw, history/reset and CPython contracts passed',result.stdout)
+            self.assertIn('SDK Ex/non-Ex filtered reset retires flash history before reuse',result.stdout)
+            self.assertIn('SDK pipeline constructors/init precede device-managed flash material loading',result.stdout)
             if os.environ.get('WOT_0922_CLIENT'):
                 self.assertIn('Original EffectsList flash-bang producer/lifecycle passed',result.stdout)
                 self.assertIn('Original authored flash-bang descriptors passed',result.stdout)

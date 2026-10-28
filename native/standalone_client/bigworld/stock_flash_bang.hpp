@@ -25,6 +25,8 @@ public:
     void createManagedObjects() override;
     void deleteManagedObjects() override;
     void deleteUnmanagedObjects() override;
+    // RenderTarget also recreates on Ex resets; its old pixels retire with it.
+    bool recreateForD3DExDevice() const override { return true; }
 private:
     std::vector<Vector4ProviderPtr> animations_;
     Vector4 colour_;

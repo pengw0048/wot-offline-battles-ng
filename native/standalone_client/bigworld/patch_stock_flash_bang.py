@@ -45,9 +45,6 @@ def patch(root):
             edit(cpp, '    MF_WATCH("Render/DS/show g-buffer channel",',
                 '    m_stockFlashBang.reset(new StockFlashBangSupport());\n'
                 '    MF_WATCH("Render/DS/show g-buffer channel",')
-            edit(cpp, 'bool DeferredPipeline::init()\n{\n    BW_GUARD;\n    bool success = true;',
-                'bool DeferredPipeline::init()\n{\n    BW_GUARD;\n    bool success = true;\n'
-                '    success &= m_stockFlashBang->initialise();')
             edit(cpp, '    m_HDRSupport->tick(dt);',
                 '    m_HDRSupport->tick(dt);\n'
                 '    const auto flashBang = m_stockFlashBang;\n'
@@ -63,9 +60,6 @@ def patch(root):
             edit(cpp, 'ForwardPipeline::ForwardPipeline()\n{',
                 'ForwardPipeline::ForwardPipeline()\n{\n'
                 '    m_stockFlashBang.reset(new StockFlashBangSupport());')
-            edit(cpp, '    Chunk::unregisterFactory("staticDecal");',
-                '    if (!m_stockFlashBang->initialise()) return false;\n'
-                '    Chunk::unregisterFactory("staticDecal");')
             edit(cpp, 'void ForwardPipeline::tick(float /*dt*/)\n{\n    BW_GUARD;',
                 'void ForwardPipeline::tick(float /*dt*/)\n{\n    BW_GUARD;\n'
                 '    const auto flashBang = m_stockFlashBang;\n'

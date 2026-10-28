@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,8 @@
 #define SUCCEEDED(v) ((v)>=0)
 #define ERROR_MSG(...)
 #define PY_AUTO_MODULE_FUNCTION(...)
+#define BW_GUARD
+#define MF_WATCH(...)
 using uint32=unsigned;using LONG=long;using HRESULT=int;
 enum {D3DFMT_A8R8G8B8=21,D3DPT_TRIANGLESTRIP=5,D3DTEXF_LINEAR=2};
 struct RECT {LONG left,top,right,bottom;};
@@ -45,6 +48,7 @@ struct Viewport {unsigned X=0,Y=0,Width=1280,Height=720;float MinZ=0,MaxZ=1;};
 }
 struct Texture {unsigned id,refs=1;};
 bool failSelect=false,failBegin=false,failPass=false,failCopy=false,failLoad=false,failTarget=false;
+bool deviceReady=false;unsigned effectLoads=0;
 struct ID3DXEffect {
     std::map<std::string,float> scalars;Texture* texture=nullptr;Vector4 colour;
     ID3DXEffect(){scalars["outputAlphaType"]=2;scalars["outputColourType"]=0;}
@@ -58,7 +62,19 @@ struct ID3DXEffect {
 using D3DXHANDLE=const char*;
 namespace Moo {
 struct VertexTLUV {Vector4 pos_;uint32 colour_;Vector2 uv_;static int fvf(){return 0x144;}};
-struct DeviceCallback {virtual ~DeviceCallback(){}virtual void createManagedObjects(){}virtual void deleteManagedObjects(){}virtual void deleteUnmanagedObjects(){}};
+struct DeviceCallback {
+    using CallbackList=std::list<DeviceCallback*>;
+    static CallbackList callbacks;
+    DeviceCallback(){callbacks.push_back(this);}
+    virtual ~DeviceCallback(){callbacks.remove(this);}
+    virtual void createManagedObjects(){}virtual void deleteManagedObjects(){}
+    virtual void deleteUnmanagedObjects(){}virtual void createUnmanagedObjects(){}
+    virtual bool recreateForD3DExDevice()const;
+    static void deleteAllUnmanaged(bool=false);static void createAllUnmanaged(bool=false);
+    static void createAllManaged();
+};
+DeviceCallback::CallbackList DeviceCallback::callbacks;
+@DEVICE_CALLBACK_DEFAULT@
 struct Effect {ID3DXEffect definition,binding;ID3DXEffect* selected=&definition;ID3DXEffect* pEffect(){return selected;}};
 struct EffectMaterial {
     std::shared_ptr<Effect> effect=std::make_shared<Effect>();std::string technique;bool begun=false,pass=false;
@@ -75,10 +91,11 @@ struct EffectMaterial {
     bool end(){assert(begun&&!pass);begun=false;effect->selected=&effect->definition;return true;}
 };
 using EffectMaterialPtr=std::shared_ptr<EffectMaterial>;
-struct RenderTarget {Texture texture{3};DX::Surface surface{3};~RenderTarget(){assert(texture.refs==1);}Texture* pTexture(){return &texture;}int pSurface(ComObjectWrap<DX::Surface>& v){v.value=&surface;return 0;}};
+struct RenderTarget:DeviceCallback {Texture texture{3};DX::Surface surface{3};~RenderTarget(){assert(texture.refs==1);}Texture* pTexture(){return &texture;}int pSurface(ComObjectWrap<DX::Surface>& v){v.value=&surface;return 0;}bool recreateForD3DExDevice()const override;};
+@RENDER_TARGET_EX@
 using RenderTargetPtr=std::shared_ptr<RenderTarget>;
 EffectMaterial* drawnMaterial=nullptr;
-bool createEffect(EffectMaterialPtr& m,const char* n){assert(!strcmp(n,"system/materials/geometrics.fx"));m=std::make_shared<EffectMaterial>();drawnMaterial=m.get();return !failLoad;}
+bool createEffect(EffectMaterialPtr& m,const char* n){assert(deviceReady&&"EffectManager/device do not exist before createDevice");++effectLoads;assert(!strcmp(n,"system/materials/geometrics.fx"));m=std::make_shared<EffectMaterial>();drawnMaterial=m.get();return !failLoad;}
 bool createRenderTarget(RenderTargetPtr& r,int w,int h,int format,const char* n,bool a,bool b){assert(w==512&&h==512&&format==21&&!strcmp(n,"FlashBang")&&!a&&b);r=std::make_shared<RenderTarget>();return !failTarget;}
 struct Draw {std::string technique;uint32 colour;bool previous;float alphaType,colourType;Vector2 corner;};
 std::vector<Draw> draws;unsigned copies=0;
@@ -92,7 +109,8 @@ struct Device {
     }
 };
 struct Context {
-    Device device_;int format=0;float screenWidth(){return 1280;}float screenHeight(){return 720;}
+    Device device_;int format=0;bool exDevice=false;bool usingD3DDeviceEx(){return exDevice;}
+    float screenWidth(){return 1280;}float screenHeight(){return 720;}
     Device* device(){return &device_;}void setFVF(int f){format=f;}void setTexture(unsigned slot,void* t){assert(slot==0&&!t);}
     int drawPrimitiveUP(int primitive,int count,const void* data,unsigned stride){
         assert(primitive==5&&count==2&&stride==28&&format==0x144);
@@ -108,6 +126,14 @@ struct Context {
     }
 };
 Context& rc(){static Context context;return context;}
+struct CallbackLock {void grab(){}void give(){}};
+struct DeviceCallbackStatics {
+    DeviceCallback::CallbackList* callbacks_=&DeviceCallback::callbacks;
+    CallbackLock lock;CallbackLock* callbacksLock_=&lock;DeviceCallback* s_curCallback=nullptr;
+    static DeviceCallbackStatics& instance(){static DeviceCallbackStatics state;return state;}
+};
+bool& getLocked(){static bool locked=false;return locked;}
+@DEVICE_CALLBACK_DISPATCH@
 }
 @HEADER@
 struct IRendererPipeline {std::shared_ptr<StockFlashBangSupport> owner;std::shared_ptr<StockFlashBangSupport> stockFlashBangSupport(){return owner;}};
@@ -117,6 +143,37 @@ struct Renderer {
 };
 Renderer* Renderer::selected=nullptr;
 #include "stock_flash_bang.cpp"
+struct PipelineSubsystem {bool init(void* =nullptr){return true;}void fini(){}};
+using DecalsManager=PipelineSubsystem;using LightsManager=PipelineSubsystem;
+using ShadowManager=PipelineSubsystem;using HDRSupport=PipelineSubsystem;
+using SSAOSupport=PipelineSubsystem;using SpeedTreeOptimizer=PipelineSubsystem;
+struct DeferredPipeline {
+    std::shared_ptr<StockFlashBangSupport> m_stockFlashBang;
+    std::unique_ptr<PipelineSubsystem> m_decalsManager,m_lightsManager,m_dynamicShadowManager,m_HDRSupport,m_SSAOSupport,m_spt;
+    DeferredPipeline();~DeferredPipeline();bool init();
+};
+struct ForwardPipeline {
+    std::shared_ptr<StockFlashBangSupport> m_stockFlashBang;
+    ForwardPipeline();~ForwardPipeline();bool init();
+};
+struct Chunk {static void unregisterFactory(const char*){}};
+@PIPELINE_LIFECYCLE@
+template<class Pipeline>void checkPreDevicePipelineInit(){
+    deviceReady=false;const auto before=effectLoads;
+    Pipeline selected;assert(selected.init());assert(effectLoads==before);
+    // RenderContext creates the device/managers before this real SDK dispatch.
+    deviceReady=true;Moo::DeviceCallback::createAllManaged();assert(effectLoads==before+1);
+    selected.m_stockFlashBang->add(std::make_shared<Constant>(Vector4(1,1,1,1)));
+    selected.m_stockFlashBang->tick();
+    assert(selected.m_stockFlashBang->draw()&&Moo::draws.back().technique=="standard2D");
+    assert(selected.m_stockFlashBang->draw()&&Moo::draws.back().technique=="textured2D");
+}
+void checkPipelineStartup(){
+    checkPreDevicePipelineInit<DeferredPipeline>();
+    checkPreDevicePipelineInit<ForwardPipeline>();
+    Moo::draws.clear();Moo::copies=0;
+    puts("SDK pipeline constructors/init precede device-managed flash material loading");
+}
 struct Animation:PyObject {Vector4Animation* native;};
 PyTypeObject animationType={PyObject_HEAD_INIT(NULL) 0};
 std::vector<Animation*> animations;
@@ -166,6 +223,33 @@ struct HookProvider:Vector4Provider {
     ~HookProvider(){if(finalise)finalise();}
     void output(Vector4& value)override{if(sample)sample();value=Vector4(1,1,1,1);}
 };
+void checkFilteredDeviceReset(){
+    // These calls use the SDK dispatchers, including the actual Ex filtering.
+    // A default callback stays resident on Ex while both the flash owner and
+    // its SDK RenderTarget opt into retirement on either kind of device.
+    struct Resident:Moo::DeviceCallback {
+        unsigned releases=0,creates=0;
+        void deleteUnmanagedObjects()override{++releases;}
+        void createUnmanagedObjects()override{++creates;}
+    } resident;
+    initStockFlashBangAnimations();
+    auto owner=std::make_shared<StockFlashBangSupport>();
+    owner->add(std::make_shared<Constant>(Vector4(1,1,1,1)));owner->tick();
+    assert(owner->draw()&&Moo::draws.back().technique=="standard2D");
+    assert(owner->draw()&&Moo::draws.back().technique=="textured2D");
+    for(bool ex:{true,false}){
+        Moo::rc().exDevice=ex;
+        const auto releases=resident.releases,creates=resident.creates;
+        Moo::DeviceCallback::deleteAllUnmanaged(!ex);
+        Moo::DeviceCallback::createAllUnmanaged(!ex);
+        assert(resident.releases==releases+unsigned(!ex));
+        assert(resident.creates==creates+unsigned(!ex));
+        assert(owner->draw()&&Moo::draws.back().technique=="standard2D"&&!Moo::draws.back().previous);
+        assert(owner->draw()&&Moo::draws.back().technique=="textured2D"&&Moo::draws.back().previous);
+    }
+    owner->close();
+    puts("SDK Ex/non-Ex filtered reset retires flash history before reuse");
+}
 void checkReentry(){
     initStockFlashBangAnimations();
     auto owner=std::make_shared<StockFlashBangSupport>();
@@ -200,7 +284,7 @@ int main(int argc,char**argv){
     animationType.tp_getset=attributes;assert(PyType_Ready(&animationType)==0);
     PyMethodDef methods[]={{"flashBangAnimation",add,METH_VARARGS,NULL},{"removeFlashBangAnimation",remove,METH_VARARGS,NULL},{"fixture",fixture,METH_VARARGS,NULL},{NULL,NULL,0,NULL}};
     assert(Py_InitModule("BigWorld",methods));auto* math=Py_InitModule("Math",NULL);Py_INCREF(&animationType);assert(!PyModule_AddObject(math,"Vector4Animation",reinterpret_cast<PyObject*>(&animationType)));
-    Renderer::selected=&renderer;renderer.current=&pipeline;pipeline.owner=std::make_shared<StockFlashBangSupport>();
+    Renderer::selected=&renderer;renderer.current=&pipeline;checkPipelineStartup();pipeline.owner=std::make_shared<StockFlashBangSupport>();
     FILE* input=fopen(argv[1],"r");assert(input);int result=PyRun_SimpleFile(input,argv[1]);fclose(input);
-    checkReentry();finiStockFlashBangAnimations();pipeline.owner.reset();Py_Finalize();return result?1:0;
+    checkFilteredDeviceReset();checkReentry();finiStockFlashBangAnimations();pipeline.owner.reset();Py_Finalize();return result?1:0;
 }
