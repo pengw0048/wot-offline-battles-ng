@@ -3,9 +3,11 @@
 Recorded matrices/camera/node storage do not establish Windows rendering.
 """
 from pathlib import Path
+import importlib.util
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,12 +20,25 @@ sys.path.insert(0, str(TESTS))
 
 
 class PositionBindingsTest(unittest.TestCase):
+    def setUp(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for exact #1513 resources')
+        self.client = Path(client)
+        for resource in ('res/packages/scripts.pkg', 'WorldOfTanks.exe'):
+            self.assertTrue((self.client / resource).is_file(),
+                            'Configured #1513 client resource missing: ' + resource)
+
     def test_cpython_original_callers_and_live_lod(self):
         python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
         config = python.with_name('python2.7-config')
-        self.assertTrue(config.exists(), 'Pinned CPython 2.7 development files required')
-        client = os.environ.get('WOT_0922_CLIENT')
-        self.assertTrue(client, 'Exact #1513 client required')
+        if os.environ.get('WOT_PYTHON27'):
+            self.assertTrue(python.is_file(), 'Configured CPython 2.7 interpreter missing')
+            self.assertTrue(config.is_file(), 'Configured CPython 2.7 development files missing')
+        elif not python.is_file() or not config.is_file():
+            self.skipTest('Pinned CPython 2.7 development files unavailable')
+        if not shutil.which('c++'):
+            self.skipTest('C++ compiler unavailable')
         source = (ROOT / 'bigworld/stock_vehicle_visuals.cpp').read_text()
         with tempfile.TemporaryDirectory(prefix='vehicle-position-binding-') as directory:
             path = Path(directory)
@@ -65,7 +80,7 @@ struct Matrix {''', 1)
                             '-UNDEBUG', '-I', str(path), '-I', str(ROOT / 'bigworld'),
                             str(path / 'host.cpp'), *flags, *libs, '-o', str(path / 'host')], check=True)
             environment = dict(os.environ)
-            with zipfile.ZipFile(Path(client) / 'res/packages/scripts.pkg') as archive:
+            with zipfile.ZipFile(self.client / 'res/packages/scripts.pkg') as archive:
                 for module in ('vehicle_assembler', 'CompoundAppearance'):
                     target = path / (module + '.pyc')
                     target.write_bytes(archive.read('scripts/client/vehicle_systems/' + module + '.pyc'))
@@ -74,10 +89,11 @@ struct Matrix {''', 1)
                            env=environment, check=True)
 
     def test_exact_x86_owner_dispatch_and_ground_node_vector(self):
+        for dependency in ('pefile', 'unicorn'):
+            if importlib.util.find_spec(dependency) is None:
+                self.skipTest(dependency + ' is required for the original instruction oracle')
         from stock_vehicle_position_bindings_oracle import check
-        client = os.environ.get('WOT_0922_CLIENT')
-        self.assertTrue(client, 'Exact #1513 client required')
-        check(Path(client) / 'WorldOfTanks.exe')
+        check(self.client / 'WorldOfTanks.exe')
 
 
 if __name__ == '__main__':

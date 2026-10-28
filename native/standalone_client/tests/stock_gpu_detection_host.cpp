@@ -6,6 +6,9 @@
 #define BW_BEGIN_NAMESPACE
 #define BW_END_NAMESPACE
 #define WINAPI
+#ifdef __uuidof
+#undef __uuidof
+#endif
 #define __uuidof(x) 0
 using int64=long long; using UINT=unsigned; using DWORD=unsigned; using UINT64=unsigned long long;
 using SIZE_T=unsigned; using HRESULT=int; using HMONITOR=void*; using HMODULE=void*; using REFIID=int;
