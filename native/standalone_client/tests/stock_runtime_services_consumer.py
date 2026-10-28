@@ -210,16 +210,59 @@ if MODE == 'absent':
     print('absent: noteHangarLoadingState, spaceLoadStarted and onDisconnected raise AttributeError')
     sys.exit(0)
 
-# Registration: eleven BigWorld functions, one link each; only purge takes keywords.
-assert host.initScripts() == 11
+# Registration: thirteen BigWorld functions, one link each; only purge takes keywords.
+assert host.initScripts() == 13
 links = host.links()
-assert len(set(name for unused, name, unused in links)) == 11, links
+assert len(set(name for unused, name, unused in links)) == 13, links
 assert all(module_name == 'BigWorld' for module_name, unused, unused in links)
 assert dict((name, flags) for unused, name, flags in links) == dict(
     [(name, 1) for name in ('timeExact', 'wg_getFrameTimestamp', 'addUPLMessage', 'enableBattleStatisticCollector',
                             'enableLoadingTimer', 'wg_getClientStatistics', 'wg_setSpecialFPSMode',
-                            'wg_disableSpecialFPSMode', 'wg_setReducedFpsMode', 'wg_clearTextureReuseList')] +
+                            'wg_disableSpecialFPSMode', 'wg_setReducedFpsMode', 'wg_clearTextureReuseList',
+                            'PFbeginFrame', 'PFendFrame')] +
     [('purgeUrlRequestCache', 3)])
+
+# The shipped decorators module assigns IS_DEVELOPMENT=True, selecting the
+# enabled trackFrame branch even in this client build. Execute its complete
+# class body and closure rather than reproducing the call sequence.
+decorators = code_of('scripts/client/gui/shared/utils/decorators.pyc')
+assignment = (chr(dis.opmap['LOAD_NAME']) + struct.pack('<H', decorators.co_names.index('True')) +
+              chr(dis.opmap['STORE_NAME']) + struct.pack('<H', decorators.co_names.index('IS_DEVELOPMENT')))
+assert assignment in decorators.co_code
+namespace = {'__builtins__': __builtins__, '__name__': 'original_decorators', 'BigWorld': BigWorld}
+frame_class = nested(decorators, '_TrackFrameEnabled')
+attributes = types.FunctionType(frame_class, namespace)()
+TrackFrame = type('_TrackFrameEnabled', (object,), attributes)
+namespace['_TrackFrameEnabled'] = TrackFrame
+calls = []
+wrapped = TrackFrame('battle.frame')(lambda *args, **kwargs: calls.append((args, kwargs)) or 42)
+assert wrapped(7, value=3) is None and calls == [((7,), {'value': 3})]
+assert BigWorld.PFbeginFrame(u'battle.frame') is None and BigWorld.PFendFrame() is None
+expect_error(TypeError, 'PFbeginFrame() expects 1 argument of type BW::string', BigWorld.PFbeginFrame)
+expect_error(TypeError, 'PFbeginFrame() expects 1 argument of type BW::string', BigWorld.PFbeginFrame, 'a', 'b')
+expect_error(TypeError, '() argument 1 must be set to a string.', BigWorld.PFbeginFrame, None)
+expect_error(TypeError, 'PFendFrame() takes no arguments.', BigWorld.PFendFrame, 1)
+expect_error(TypeError, 'PFendFrame() takes no keyword arguments', BigWorld.PFendFrame, name='x')
+for missing in ('PFbeginFrame', 'PFendFrame'):
+    saved = getattr(BigWorld, missing)
+    delattr(BigWorld, missing)
+    try:
+        wrapped()
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError('Original trackFrame closure did not require ' + missing)
+    setattr(BigWorld, missing, saved)
+# Its exception path deliberately never closes the frame and propagates the
+# function's exception; the native no-op must not add state requiring cleanup.
+end = BigWorld.PFendFrame
+ended = []
+BigWorld.PFendFrame = lambda: ended.append(True)
+def fail_frame():
+    raise ValueError('frame failed')
+expect_error(ValueError, 'frame failed', TrackFrame('failed.frame')(fail_frame))
+assert not ended
+BigWorld.PFendFrame = end
 
 # timeExact samples the App timer on every call; wg_getFrameTimestamp is the frame identity.
 host.setTicks(1000)
@@ -241,7 +284,7 @@ expect_error(TypeError, 'timeExact() takes no arguments.', BigWorld.timeExact, 1
 expect_error(TypeError, 'timeExact() takes no keyword arguments', BigWorld.timeExact, now=1)
 expect_error(TypeError, 'wg_getFrameTimestamp() takes no arguments.', BigWorld.wg_getFrameTimestamp, None)
 
-# Optional telemetry: typed and inert; statistics are unavailable as None.
+# Telemetry dictionary remains unavailable; frame collection has a separate real owner.
 assert BigWorld.addUPLMessage('HANGAR LOADING STATE: CONNECTED') is None
 expect_error(TypeError, 'addUPLMessage() expects 1 argument of type BW::string', BigWorld.addUPLMessage)
 expect_error(TypeError, 'addUPLMessage() expects 1 argument of type BW::string', BigWorld.addUPLMessage, 'a', 'b')

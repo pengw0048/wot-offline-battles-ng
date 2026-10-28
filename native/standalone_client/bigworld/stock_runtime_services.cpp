@@ -27,14 +27,11 @@ static void addUPLMessage( const BW::string & )
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, addUPLMessage, ARG( BW::string, END ), BigWorld )
 
-// Battle and loading telemetry (006d8340, 006d8450, 006d8750) is not collected;
-// only the shared statistics owner's ping state follows the original switches.
+// 006d8340 reads the original enabled .data flag (01a0d761 is one).
+// The shared statistics task owns real frame sampling and the ping reset.
 static void enableBattleStatisticCollector( bool enabled )
 {
-	if (enabled)
-	{
-		wot::resetStockStatPing();
-	}
+	wot::enableStockBattleStatistics( enabled );
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, enableBattleStatisticCollector,
 	ARG( bool, END ), BigWorld )
@@ -45,7 +42,8 @@ static void enableLoadingTimer( bool enabled )
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, enableLoadingTimer, ARG( bool, END ), BigWorld )
 
-// statistics.getStatistics and Avatar.leaveArena treat None as unavailable.
+// Only the disabled/unavailable telemetry result is restored here. The full
+// #1513 dictionary additionally needs its GPU and telemetry producers.
 static PyObject * wg_getClientStatistics()
 {
 	Py_RETURN_NONE;
@@ -94,5 +92,16 @@ static PyObject * py_purgeUrlRequestCache( PyObject *, PyObject * )
 	Py_RETURN_NONE;
 }
 PY_MODULE_FUNCTION_WITH_KEYWORDS( purgeUrlRequestCache, BigWorld )
+
+// 00618500/006185c0 retain argument checks but invoke no profiler backend.
+static void PFbeginFrame( const BW::string & )
+{
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, PFbeginFrame, ARG( BW::string, END ), BigWorld )
+
+static void PFendFrame()
+{
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, PFendFrame, END, BigWorld )
 
 BW_END_NAMESPACE

@@ -7,7 +7,7 @@ import sys
 import _debug_host as host
 
 plan = json.loads(sys.argv[1])
-assert host.initScripts() == 2
+assert host.initScripts() == 4
 import BigWorld
 
 frames = []

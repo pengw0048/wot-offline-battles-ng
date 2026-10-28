@@ -27,6 +27,7 @@ typedef unsigned int uint;
 typedef std::string string;
 
 struct Vector4 { float x, y, z, w; };
+struct Vector3 {float x,y,z;Vector3(float a,float b,float c):x(a),y(b),z(c){}};
 
 struct HostMethodLink { std::string module; PyMethodDef def; };
 std::deque<HostMethodLink> & hostMethodLinks() { static std::deque<HostMethodLink> links; return links; }
@@ -41,6 +42,8 @@ struct PyModuleMethodLink
 namespace Script {
 template <class T> struct IsValidArgType { static const bool isValid = true; };
 PyObject * getData(const float data);
+int setData(PyObject*,bool&,const char* = "");
+inline PyObject* getData(const Vector3& data){return Py_BuildValue("(fff)",data.x,data.y,data.z);}
 // Fixture for the engine's PyVectorCopy<Vector4>: the components in order.
 inline PyObject * getData(const Vector4 & data)
 {
@@ -118,6 +121,10 @@ DebugApp DebugApp::instance;
 @PYAUTO_MACROS@
 
 #include "stock_debug_queries.cpp"
+namespace BW {
+@ENABLE_BATTLE_BINDING@
+}
+
 
 static BW::ConnectionControl s_control;
 static BW::BWServerConnection s_connection;
@@ -148,9 +155,11 @@ static PyObject * hostTasks(PyObject *, PyObject *)
 }
 
 // One active frame of the main loop: every registered task ticks.
-static PyObject * hostTickStatistics(PyObject *, PyObject *)
+static PyObject * hostTickStatistics(PyObject *, PyObject * args)
 {
-	for (const BW::HostTask & task : BW::hostTasks()) task.task->tick(0.f, 0.f);
+	float elapsed=0.f;
+	if (!PyArg_ParseTuple(args,"|f",&elapsed)) return NULL;
+	for (const BW::HostTask & task : BW::hostTasks()) task.task->tick(0.f, elapsed);
 	Py_RETURN_NONE;
 }
 
@@ -200,7 +209,7 @@ static PyObject * hostSetLoadingTimer(PyObject *, PyObject * args)
 static PyMethodDef hostMethods[] = {
 	{"initScripts", hostInitScripts, METH_NOARGS, NULL},
 	{"tasks", hostTasks, METH_NOARGS, NULL},
-	{"tickStatistics", hostTickStatistics, METH_NOARGS, NULL},
+	{"tickStatistics", hostTickStatistics, METH_VARARGS, NULL},
 	{"tickDebugApp", hostTickDebugApp, METH_VARARGS, NULL},
 	{"resetDebugApp", hostResetDebugApp, METH_NOARGS, NULL},
 	{"setConnection", hostSetConnection, METH_VARARGS, NULL},

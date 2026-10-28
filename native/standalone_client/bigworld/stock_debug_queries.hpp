@@ -4,8 +4,11 @@
 namespace wot
 {
 
-// #1513 enableBattleStatisticCollector(True) resets the statistics owner (006da280).
+// Reset the ping field as part of the statistics owner reset.
 void resetStockStatPing();
+
+// #1513 006d8340 resets/enables, or stops while retaining the last FPS result.
+void enableStockBattleStatistics( bool enabled );
 
 // #1513 enableLoadingTimer writes +0x2642; the per-frame tick then keeps the ping.
 void setStockLoadingTimer( bool enabled );

@@ -107,7 +107,7 @@ if MODE == 'absent':
     print('absent: every DebugController interval raises AttributeError at statPing')
     sys.exit(0)
 
-assert host.initScripts() == 2
+assert host.initScripts() == 4
 assert host.tasks() == [('StockClientStatistics', '>Finale')], host.tasks()
 expect_error(TypeError, 'statPing() takes no arguments.', BigWorld.statPing, 1)
 expect_error(TypeError, 'getFPS() takes no arguments.', BigWorld.getFPS, None)

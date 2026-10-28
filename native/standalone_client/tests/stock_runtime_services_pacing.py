@@ -7,7 +7,7 @@ import sys
 import _runtime_host as host
 
 RATES = {0: 0, 8: 120, 16: 60}  # timeGetTime milliseconds -> renderer/*FrameRate
-assert host.initScripts() == 11
+assert host.initScripts() == 13
 import BigWorld
 
 CALLS = {'set': BigWorld.wg_setSpecialFPSMode, 'disable': BigWorld.wg_disableSpecialFPSMode,

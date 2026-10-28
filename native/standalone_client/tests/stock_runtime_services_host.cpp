@@ -162,6 +162,7 @@ namespace wot {
 int hostPingResets = 0;
 bool hostLoadingTimer = false;
 void resetStockStatPing() { ++hostPingResets; }
+void enableStockBattleStatistics(bool enabled) { if (enabled) ++hostPingResets; }
 void setStockLoadingTimer( bool enabled ) { hostLoadingTimer = enabled; }
 }
 

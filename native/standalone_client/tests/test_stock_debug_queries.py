@@ -62,7 +62,9 @@ def generated_source(sources, debug_app):
         '@RET_DATA@': between(script_hpp, 'template <class T>\n\tclass IsValidRetData',
                               'return Script::IsValidRetData<T>::getData( data );\n\t}'),
         '@SCRIPT_BODIES@': between(script_cpp, 'PyObject * Script::getData( const float data )', '\n}\n') +
-        between(script_cpp, 'PyObject * Script::argCountError(', '\n}\n'),
+        between(script_cpp, 'PyObject * Script::argCountError(', '\n}\n') +
+        between(script_cpp, 'int Script::setData( PyObject * pObject, bool & rBool,', '\n}\n'),
+        '@ENABLE_BATTLE_BINDING@': between((ROOT/'bigworld/stock_runtime_services.cpp').read_text(), 'static void enableBattleStatisticCollector(', 'ARG( bool, END ), BigWorld )'),
         '@PYAUTO_MACROS@': between(script_hpp, '// Section: Macros: Module Links', '// Section: Macros: Enums',
                                    False) +
         between(script_hpp, '// Section: Macros: Recursion utilities', '// Section: PyModuleLink', False),
@@ -84,7 +86,7 @@ def build_host(test, directory, sources):
         test.skipTest('Pinned CPython 2.7 development files unavailable')
     debug_app = patched_debug_app(sources, directory / 'engine')
     for fake in ('pch.hpp', 'connection_control.hpp', 'debug_app.hpp', 'connection/server_connection.hpp',
-                 'connection_model/bw_server_connection.hpp', 'cstdmf/main_loop_task.hpp', 'math/vector4.hpp',
+                 'connection_model/bw_server_connection.hpp', 'cstdmf/main_loop_task.hpp', 'math/vector4.hpp', 'math/vector3.hpp',
                  'pyscript/script.hpp'):
         (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
         (directory / 'include' / fake).write_text('#pragma once\n')

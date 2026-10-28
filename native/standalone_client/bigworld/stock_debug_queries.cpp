@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_debug_queries.hpp"
+#include "stock_battle_fps.hpp"
 
 #include "connection_control.hpp"
 #include "debug_app.hpp"
@@ -7,6 +8,7 @@
 #include "connection_model/bw_server_connection.hpp"
 #include "cstdmf/main_loop_task.hpp"
 #include "math/vector4.hpp"
+#include "math/vector3.hpp"
 #include "pyscript/script.hpp"
 
 BW_BEGIN_NAMESPACE
@@ -17,6 +19,7 @@ namespace
 // #1513 statistics owner fields +0x2618 (ping) and +0x2642 (loading timer).
 float s_ping = 0.f;
 bool s_loadingTimer = false;
+wot::StockBattleFps s_battleFps;
 
 // 006da4f6..006da56d: the server round trip in ms, or 999 without one.
 float sampleStockPing()
@@ -47,12 +50,13 @@ public:
 		MainLoopTasks::root().add( this, "StockClientStatistics", ">Finale", NULL );
 	}
 
-	void tick( float, float ) override
+	void tick( float, float dRenderTime ) override
 	{
 		if (!s_loadingTimer)
 		{
 			s_ping = sampleStockPing();
 		}
+		s_battleFps.tick( dRenderTime );
 	}
 };
 
@@ -76,7 +80,21 @@ static Vector4 getFPS()
 }
 PY_AUTO_MODULE_FUNCTION( RETDATA, getFPS, END, BigWorld )
 
+// 006d84e0: min/max of retained half-second samples, frames/elapsed average.
+static Vector3 getBattleFPS()
+{
+	const auto values = s_battleFps.snapshot();
+	return Vector3( values[0], values[1], values[2] );
+}
+PY_AUTO_MODULE_FUNCTION( RETDATA, getBattleFPS, END, BigWorld )
+
 BW_END_NAMESPACE
+
+void wot::enableStockBattleStatistics( bool enabled )
+{
+	if (enabled) BW_NAMESPACE s_ping = 0.f;
+	BW_NAMESPACE s_battleFps.enable( enabled );
+}
 
 void wot::resetStockStatPing()
 {

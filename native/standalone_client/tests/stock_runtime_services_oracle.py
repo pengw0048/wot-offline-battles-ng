@@ -19,6 +19,7 @@ from unicorn.x86_const import (UC_X86_REG_CR0, UC_X86_REG_CR4, UC_X86_REG_EAX, U
                                UC_X86_REG_GDTR, UC_X86_REG_MXCSR, UC_X86_REG_SS)
 
 WRAPPERS = {
+    'PFbeginFrame': 0x618500, 'PFendFrame': 0x6185c0,
     'timeExact': 0x6529f0, 'wg_getFrameTimestamp': 0x653850, 'addUPLMessage': 0x6d8280,
     'enableBattleStatisticCollector': 0x6d8340, 'enableLoadingTimer': 0x6d8450,
     'wg_getClientStatistics': 0x6d8750, 'wg_setSpecialFPSMode': 0x6548d0,
@@ -187,7 +188,7 @@ def wrapper_cases():
     return cases
 
 
-VALUES = {'addUPLMessage': ['HANGAR LOADING STATE: CONNECTED'], 'enableBattleStatisticCollector': [True],
+VALUES = {'PFbeginFrame': ['battle.frame'], 'addUPLMessage': ['HANGAR LOADING STATE: CONNECTED'], 'enableBattleStatisticCollector': [True],
           'enableLoadingTimer': [True], 'wg_setReducedFpsMode': [False], 'wg_setSpecialFPSMode': [30.0]}
 
 
