@@ -569,7 +569,7 @@ public:
             BoundingBox bounds;
             model->localBoundingBox( bounds );
             if (!state_->active || part_ >= state_->parts.size() ||
-                state_->parts[part_].model.get() != model.get() || bounds.insideOut())
+                state_->parts[part_].model.get() != model.get())
             {
                 result = last_;
                 return;

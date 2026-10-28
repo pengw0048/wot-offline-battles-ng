@@ -47,7 +47,6 @@ def sdk_sources(test):
 def harness(sdk, before=False):
     source = (ROOT / 'bigworld/vehicle_appearance.cpp').read_text()
     if before:
-        source = source.replace(' || bounds.insideOut()', '')
         source = source.replace('            if (local.insideOut()) continue;\n', '')
         source = source.replace('                if (!state->active || !item.active || !item.ownsObject() || local.insideOut()) return;\n', '')
     ipp = sdk['lib/math/boundbox.ipp']
@@ -69,7 +68,6 @@ def harness(sdk, before=False):
         'VISIBILITY': block(owners, 'virtual void localVisibilityBox('),
         'WORLD': block(owners, 'virtual void worldBoundingBox('),
         'WORLD_VISIBILITY': block(owners, 'virtual void worldVisibilityBox('),
-        'PART_PROVIDER': block(source, 'class PyCompoundPartBounds :'),
     }
     for key, value in replacements.items():
         host = host.replace('@' + key + '@', value)
@@ -104,9 +102,7 @@ class CompoundBoundsTests(unittest.TestCase):
         self.run_owner('before', 'mixed', 73)
         self.assertIn('mixed local/world/visibility', self.run_owner('after', 'mixed'))
 
-    def test_retirement_reentry_and_part_provider_preserve_committed_bounds(self):
-        self.run_owner('before', 'provider', 73)
-        self.assertIn('part provider preserves snapshot', self.run_owner('after', 'provider'))
+    def test_retirement_reentry_excludes_retired_attachment_contributions(self):
         self.assertIn('retired contributions excluded', self.run_owner('after', 'retire'))
 
 

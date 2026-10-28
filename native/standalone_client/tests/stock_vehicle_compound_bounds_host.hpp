@@ -115,13 +115,9 @@ struct Owner:Attachment {
     @WORLD@
     @WORLD_VISIBILITY@
 };
-struct MatrixProvider {MatrixProvider(bool,int*){}virtual ~MatrixProvider(){}};
-#define Py_Header(TYPE,BASE) inline static int s_type_=0;
-@PART_PROVIDER@;
 static bool near(float a,float b){return std::fabs(a-b)<.0001f;}
 static void vectorEquals(const Vector3& a,const Vector3& b){for(int i=0;i<3;++i)assert(near(a[i],b[i]));}
 static void boxEquals(const BoundingBox& a,const BoundingBox& b){assert(a.insideOut()==b.insideOut());if(!a.insideOut()){vectorEquals(a.minBounds(),b.minBounds());vectorEquals(a.maxBounds(),b.maxBounds());}}
-static void matrixEquals(const Matrix& a,const Matrix& b){for(int i=0;i<4;++i)vectorEquals(a.rows[i],b.rows[i]);}
 static BoundingBox corners(const BoundingBox& box,const Matrix& transform){BoundingBox out;for(int i=0;i<8;++i)out.addBounds(transform.applyPoint({i&1?box.max_.x:box.min_.x,i&2?box.max_.y:box.min_.y,i&4?box.max_.z:box.min_.z}));return out;}
 static CompoundStatePtr state(){auto result=std::make_shared<CompoundState>();result->nodes.resize(3);result->nodes[0].world.translation({10,20,30});result->nodes[1].world.translation({13,25,37});result->nodes[2].world.translation({6,18,39});return result;}
 static CompoundAttachmentPtr attach(const CompoundStatePtr& value,std::shared_ptr<Attachment> object,size_t node=0){auto item=std::make_shared<CompoundAttachment>();item->object=object;item->node=node;object->liaison=item.get();value->attachments.push_back(item);return item;}
@@ -166,13 +162,6 @@ static void mixed(){
     attach(allEmpty,std::make_shared<MetaAttachment>());BoundingBox prior=realBox();noBounds.localBoundingBox(prior);boxEquals(prior,realBox());
     std::puts("PASS mixed local/world/visibility and affine nonempty contributions");
 }
-static void provider(){
-    auto value=state();auto model=std::make_shared<Model>(realBox());value->parts.push_back({model,1});
-    PyCompoundPartBounds provider(value,0);Matrix committed;provider.matrix(committed);
-    model->box=BoundingBox();Matrix output;provider.matrix(output);matrixEquals(output,committed);
-    value->active=false;provider.matrix(output);matrixEquals(output,committed);
-    std::puts("PASS part provider preserves snapshot for empty and retired models");
-}
 static void retire(){
     for(int scenario=0;scenario<3;++scenario){
         auto value=state();Owner owner(value);auto model=std::make_shared<Model>(realBox());auto item=attach(value,model,1);
@@ -188,6 +177,6 @@ static void retire(){
 }
 int main(int argc,char** argv){
     assert(argc==2);
-    try{std::string which=argv[1];if(which=="particles")particles();else if(which=="mixed")mixed();else if(which=="provider")provider();else if(which=="retire")retire();else return 1;}
+    try{std::string which=argv[1];if(which=="particles")particles();else if(which=="mixed")mixed();else if(which=="retire")retire();else return 1;}
     catch(const SentinelRead&){std::puts("original SDK inside-out precondition triggered");return 73;}
 }

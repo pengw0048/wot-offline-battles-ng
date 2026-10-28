@@ -59,7 +59,6 @@ struct Matrix {
 };
 const Matrix Matrix::identity;
 struct BoundingBox {
- bool insideOut()const{return false;}
  Vector3 minBounds()const{return {2,0,0};}
  Vector3 maxBounds()const{return {5,0,0};}
 };
