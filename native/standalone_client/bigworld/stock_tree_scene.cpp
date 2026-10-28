@@ -1020,6 +1020,12 @@ void treeBillboardRotation( float (&rotation)[4] )
     rotation[3] = vertical.y;
 }
 
+ID3DXEffect * selectTreeBinding( Moo::EffectMaterial & material )
+{
+    if (!material.pEffect() || !material.properties().select( *material.pEffect() )) return NULL;
+    return material.pEffect()->pEffect();
+}
+
 // b07e90/b08030/b081d0/b07e30: one part of one faded tree with a
 // semitransparent.fx state. Leaves take the leaf fade, billboards stay opaque.
 bool drawSemitransparentPart( TreeRenderingOwner & owner, Moo::EffectMaterial & material, unsigned part,
@@ -1035,7 +1041,10 @@ bool drawSemitransparentPart( TreeRenderingOwner & owner, Moo::EffectMaterial & 
     instance.constants.blend = part == wot::treeLeaf ? instance.leavesAlpha :
         (part == wot::treeBillboard ? 1.f : instance.branchAlpha);
     instance.constants.material = static_cast<float>( type.materialHandle * 4 + part );
-    ID3DXEffect * effect = material.pEffect()->pEffect();
+    // begin() selects this material's private ARIE binding. Select it before
+    // manual writes too, so they reach the same owner as beginPass/commit.
+    ID3DXEffect * effect = selectTreeBinding( material );
+    if (!effect) return owner.fail( "Cannot select original semitransparent tree material" );
     D3DXHANDLE instanceHandle = effect->GetParameterByName( NULL, "g_instance" );
     Moo::rc().setVertexDeclaration( owner.vertexDeclarations[part]->declaration() );
     bool result = instanceHandle && SUCCEEDED( gpu.vertices.set( 0, 0, source.vertexStride ) ) &&
@@ -1396,11 +1405,17 @@ Vector4 hidingTargetProjection( const Moo::RenderTargetPtr & target )
     return Vector4( value.parameters[0], value.parameters[1], value.parameters[2], value.parameters[3] );
 }
 
-void setHidingAlpha( TreeRenderingOwner & owner, bool value )
+bool setHidingAlpha( TreeRenderingOwner & owner, bool value )
 {
+    bool result = true;
     for (auto & state : owner.semitransparentMaterials)
         for (auto & material : state)
-            if (material && material->pEffect()) material->pEffect()->pEffect()->SetBool( "g_useAlpha", value );
+            if (material && material->pEffect())
+            {
+                ID3DXEffect * effect = selectTreeBinding( *material );
+                result = (effect && SUCCEEDED( effect->SetBool( "g_useAlpha", value ) )) && result;
+            }
+    return result;
 }
 
 // 9d62e0 with 9c5080's parameters: identical to a69bb7's Gaussian except
@@ -1418,7 +1433,8 @@ bool blurHidingTarget( TreeRenderingOwner & owner, HidingScreenConstants & const
         // a69bb7's blur binds no depth; this pass has no depth test either.
         if (!target.bind( outputs[pass], false ) || !material->hTechnique( techniques[pass] )) return false;
         constants.apply();
-        ID3DXEffect * effect = material->pEffect()->pEffect();
+        ID3DXEffect * effect = selectTreeBinding( *material );
+        if (!effect) return false;
         const Vector4 screen( float( width ), float( height ), 1.f / width, 1.f / height );
         const Vector4 projection = hidingTargetProjection( inputs[pass] );
         const bool success = !(FAILED( effect->SetInt( "g_depthMode", 2 ) ) ||
@@ -1478,9 +1494,14 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
             drawStockTreeSemitransparent( true );
             return;
         }
-        setHidingAlpha( *owner, true );
-        drawStockTreeSemitransparent( skipDrawing );
-        setHidingAlpha( *owner, false );
+        const bool alphaSet = setHidingAlpha( *owner, true );
+        drawStockTreeSemitransparent( skipDrawing || !alphaSet );
+        const bool alphaReset = setHidingAlpha( *owner, false );
+        if (!alphaSet || !alphaReset)
+        {
+            owner->fail( "Cannot bind original tree-hiding alpha mode" );
+            return;
+        }
     }
     if (blur && !blurHidingTarget( *owner, constants ))
     {
@@ -1492,7 +1513,12 @@ void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool b
     // parameters).
     constants.restore();
     auto & material = owner->upsampleMaterial;
-    ID3DXEffect * effect = material->pEffect()->pEffect();
+    ID3DXEffect * effect = selectTreeBinding( *material );
+    if (!effect)
+    {
+        owner->fail( "Cannot select original tree-hiding composite material" );
+        return;
+    }
     const Vector4 projection = hidingTargetProjection( targets[0] );
     const bool success = material->hTechnique( "UPSAMPLE_RT" ) &&
         SUCCEEDED( effect->SetTexture( "g_srcMap", targets[0]->pTexture() ) ) &&

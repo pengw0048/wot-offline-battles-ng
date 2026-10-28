@@ -779,8 +779,15 @@ int main( int argc, char ** argv )
             std::printf( "T %s %zu\n", technique.name.c_str(), technique.passes.size() );
         for (const auto & buffer : effect.uniform_buffers)
             for (const auto & uniform : buffer.uniforms)
+            {
                 std::printf( "U %s %u\n", uniform.name.c_str(),
                     effect.types.at( uniform.type_index ).byte_size * (uniform.elements ? uniform.elements : 1) );
+                if (uniform.name == "g_instance")
+                {
+                    const auto first = buffer.defaults.begin() + uniform.byte_offset;
+                    for (auto byte = first; byte != first + 64; ++byte) if (*byte) return 2;
+                }
+            }
         std::printf( "-\n" );
     }
 }
@@ -1157,6 +1164,10 @@ struct EffectMaterial
     std::string name;
     std::unique_ptr<ManagedEffect> managed{ new ManagedEffect };
     ManagedEffect * pEffect() { return managed.get(); }
+    // Binding isolation is exercised by test_stock_tree_material_binding;
+    // this oracle records the original stage's target/constant call order.
+    struct Properties { bool select( ManagedEffect & ) const { return true; } } properties_;
+    Properties & properties() { return properties_; }
     bool hTechnique( const char * technique )
     {
         event( "technique " + name + " " + technique );
@@ -1291,7 +1302,8 @@ def stage_host_source():
     start = scene.index('namespace\n{\nclass HidingTargetScope')
     helpers = scene[start:scene.index('// #1513 009c4ed0. Near-camera')]
     stage = function(scene, 'void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur )')
-    return STAGE_HOST.replace('@PRODUCTION@', helpers + stage)
+    binding = function(scene, 'ID3DXEffect * selectTreeBinding(')
+    return STAGE_HOST.replace('@PRODUCTION@', binding + helpers + stage)
 
 
 STAGE_ORACLE = r"""
