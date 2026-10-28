@@ -306,6 +306,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-debug-queries-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_console_lifecycle.py"),
         $EngineRoot) "stock-console-lifecycle-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_windows_notifier.py"),
+        $EngineRoot) "stock-windows-notifier-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_control_mode_rendering.py"),
         $EngineRoot) "stock-control-mode-rendering-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_resource_content.py"),
@@ -406,6 +408,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-lights-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_water.py"),
         $EngineRoot) "stock-space-water-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_water_ripples.py"),
+        $EngineRoot) "stock-water-ripples-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_flares.py"),
         $EngineRoot) "stock-space-flares-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_decals.py"),

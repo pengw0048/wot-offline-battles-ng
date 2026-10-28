@@ -3,6 +3,7 @@
 #include "stock_scene_collision.hpp"
 #include "stock_vehicle_native_math.hpp"
 
+#include "py_entity.hpp"
 #include "pyscript/script_math.hpp"
 #include "wot/vehicle_physics.hpp"
 
@@ -600,12 +601,16 @@ class PyWGVehiclePhysics : public PyObjectPlusWithWeakReference
 
 public:
     PyWGVehiclePhysics() : PyObjectPlusWithWeakReference( &s_type_ ),
+        ownerEntityID_( 0 ),
         collisionProvider_( makeStockGroundCollisionProvider() )
     {
         core_.set_collision_provider( collisionProvider_.get() );
     }
 
     wot::VehiclePhysics & core() { return core_; }
+
+    PyObject * pyGet_owner();
+    int pySet_owner( PyObject * value );
 
     // #1513 f50b00 returns the published entity matrix, not the rigid body's
     // centre-of-mass transform. f56240 owns the offset correction.
@@ -736,11 +741,64 @@ public:
     PY_AUTO_FACTORY_DECLARE( PyWGVehiclePhysics, END )
 
 private:
+    // f556b0 retains the weak-reference object, never the Entity itself.
+    PyObjectPtr owner_;
+    EntityID ownerEntityID_;
     // #1513 creates one scene-obstacle query cache per physics wrapper.
     // Its lifetime encloses the core's non-owning provider reference.
     std::unique_ptr<wot::VehicleCollisionProvider> collisionProvider_;
     wot::VehiclePhysics core_;
 };
+
+PyObject * PyWGVehiclePhysics::pyGet_owner()
+{
+    // f7ca60 reports TypeError even when this owner has not been assigned.
+    PyErr_Format( PyExc_TypeError,
+        "Sorry, the attribute owner in %s is write-only", this->typeName() );
+    return NULL;
+}
+
+int PyWGVehiclePhysics::pySet_owner( PyObject * value )
+{
+    if (!value || value == Py_None)
+    {
+        PyObjectPtr previous;
+        std::swap( owner_, previous );
+        // The original clears the reference without resetting its cached ID.
+        return 0;
+    }
+    if (!PyWeakref_Check( value ))
+    {
+        PyErr_SetString( PyExc_TypeError,
+            "WGVehiclePhysics.owner requires a weak reference to an Entity" );
+        return -1;
+    }
+    PyObject * target = PyWeakref_GetObject( value );
+    if (!target) return -1;
+    if (!PyEntity::Check( target ))
+    {
+        // f556b0 rejects a dead/non-Entity referent without setting an error.
+        // Preserve rejection but supply the exception required by CPython.
+        PyErr_SetString( PyExc_TypeError,
+            "WGVehiclePhysics.owner requires a live Entity weak reference" );
+        return -1;
+    }
+    PyObjectPtr targetPin( target );
+    PyEntity * entity = static_cast<PyEntity *>( target );
+    if (entity->isDestroyed())
+    {
+        PyErr_SetString( PyExc_ValueError,
+            "WGVehiclePhysics.owner cannot reference a destroyed Entity" );
+        return -1;
+    }
+    const EntityID identity = entity->entityID();
+    PyObjectPtr previous( value );
+    std::swap( owner_, previous );
+    ownerEntityID_ = identity;
+    // Publish both fields before releasing the previous weakref: a subclass
+    // finalizer may reenter and install a newer owner during that release.
+    return 0;
+}
 
 PyObject * PyWGVehiclePhysics::py_addDamperSpring( PyObject * args )
 {
@@ -841,6 +899,7 @@ PY_BEGIN_METHODS( PyWGVehiclePhysics )
     PY_METHOD( configure )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )
+    PY_ATTRIBUTE( owner )
     PY_ATTRIBUTE( matrix )
     PY_ATTRIBUTE( velocity )
     PY_ATTRIBUTE( angVelocity )
