@@ -4,6 +4,7 @@
 #include "stock_preferences_callbacks.hpp"
 #include "moo/render_context.hpp"
 #include "moo/init.hpp"
+#include "pyscript/script.hpp"
 #include <wtsapi32.h>
 #endif
 
@@ -19,6 +20,7 @@ enum WindowMode { WINDOWED = 0, EXCLUSIVE = 1, BORDERLESS = 2 };
 struct DisplayState
 {
     HWND window = NULL;
+    int observedMonitor = -1;
     int selected[3] = { 0, 0, 0 };
     RECT normalRect = {};
     LONG normalStyle = 0;
@@ -32,6 +34,35 @@ DisplayState displayState;
 // WindowController starts visible and unlocked before receiving native events.
 bool windowPresentationActive = true;
 bool windowSessionLocked = false;
+PyObject * adapterOrdinalCallback = NULL;
+bool adapterCallbacksClosed = false;
+
+void replaceAdapterCallback( PyObject * callback )
+{
+    // 00654466 publishes before DECREF: the old receiver can re-enter here.
+    Py_XINCREF( callback );
+    PyObject * previous = adapterOrdinalCallback;
+    adapterOrdinalCallback = callback;
+    Py_XDECREF( previous );
+}
+
+void notifyAdapterOrdinal()
+{
+    if (adapterCallbacksClosed || !adapterOrdinalCallback) return;
+    // 00658cc0 admits a strong reference and calls with no ordinal argument.
+    PyObject * admitted = adapterOrdinalCallback;
+    Py_INCREF( admitted );
+    Script::call( admitted, PyTuple_New( 0 ), "", true );
+}
+
+class DisplayCallbacksShutdown : public Script::FiniTimeJob
+{
+    void fini() override
+    {
+        adapterCallbacksClosed = true;
+        replaceAdapterCallback( NULL );
+    }
+} displayCallbacksShutdown;
 
 int windowMode()
 {
@@ -72,6 +103,16 @@ int actualMonitor()
     return static_cast<int>( Moo::rc().deviceIndex() );
 }
 
+void observeWindowMonitor()
+{
+    if (adapterCallbacksClosed || !Moo::isInitialised() || !Moo::rc().device() ||
+        !Moo::rc().windowHandle()) return;
+    const int ordinal = actualMonitor();
+    if (ordinal == displayState.observedMonitor) return;
+    displayState.observedMonitor = ordinal;
+    notifyAdapterOrdinal();
+}
+
 void rememberNormalWindow()
 {
     HWND window = Moo::rc().windowHandle();
@@ -95,6 +136,7 @@ bool ready()
     {
         displayState = DisplayState();
         displayState.window = Moo::rc().windowHandle();
+        displayState.observedMonitor = actualMonitor();
         for (int & selected : displayState.selected) selected = actualMonitor();
         if (windowMode() == WINDOWED) rememberNormalWindow();
     }
@@ -175,6 +217,7 @@ void stockRememberDisplayWindow()
     // while the HWND still carries its actual normal client area and styles.
     displayState = DisplayState();
     displayState.window = Moo::rc().windowHandle();
+    displayState.observedMonitor = Moo::rc().deviceIndex();
     for (int & selected : displayState.selected) selected = Moo::rc().deviceIndex();
     rememberNormalWindow();
 }
@@ -205,6 +248,11 @@ void stockDisplayWindowMessage( UINT message, WPARAM wParam, LPARAM lParam )
     case WM_ACTIVATE:
         windowPresentationActive = !HIWORD(wParam) &&
             (Moo::rc().windowed() || LOWORD(wParam) != WA_INACTIVE);
+        break;
+    case WM_MOVE:
+    case WM_DISPLAYCHANGE:
+    case WM_WINDOWPOSCHANGED:
+        observeWindowMonitor();
         break;
     case WM_WTSSESSION_CHANGE:
         if (wParam == WTS_SESSION_LOCK) windowSessionLocked = true;
@@ -522,7 +570,13 @@ static PyObject * py_setActiveMonitorIndex( PyObject * args )
     MONITORINFOEXW info;
     if (!validMode( mode ) || !monitorInfo( index, info ))
         return PyErr_Format( PyExc_ValueError, "Invalid monitor or window mode" );
+    const bool changed = selectedMonitor( mode ) != index;
     displayState.selected[mode] = index;
+    // 00651b2e -> 00b0c4a0 dispatches for inactive modes too, before applying
+    // an active mode. A synchronous receiver may replace this selection.
+    if (changed) notifyAdapterOrdinal();
+    if (adapterCallbacksClosed || !Moo::isInitialised() || !Moo::rc().device() ||
+        displayState.selected[mode] != index) Py_RETURN_NONE;
     if (mode == windowMode() && mode == BORDERLESS)
     {
         if (!stockChangeVideoMode( -1, BORDERLESS ))
@@ -540,6 +594,15 @@ static PyObject * py_setActiveMonitorIndex( PyObject * args )
     Py_RETURN_NONE;
 }
 PY_MODULE_FUNCTION( setActiveMonitorIndex, BigWorld )
+
+// 006543b0 accepts any PyObjectPtr; None clears, callability is checked at
+// dispatch by Script::call. It does not synchronously invoke on registration.
+static void wg_setAdapterOrdinalNotifyCallback( PyObjectPtr callback )
+{
+    if (!adapterCallbacksClosed) replaceAdapterCallback( callback.get() );
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, wg_setAdapterOrdinalNotifyCallback,
+    ARG( PyObjectPtr, END ), BigWorld )
 
 PY_MODULE_ATTRIBUTE( BigWorld, WindowModeWindowed, PyInt_FromLong( WINDOWED ) )
 PY_MODULE_ATTRIBUTE( BigWorld, WindowModeExclusiveFullscreen, PyInt_FromLong( EXCLUSIVE ) )

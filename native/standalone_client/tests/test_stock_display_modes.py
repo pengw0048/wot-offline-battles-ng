@@ -33,7 +33,7 @@ HOST = r'''
 #define FAILED(x) ((x)<0)
 using HWND=void*;using HMONITOR=void*;using LONG=int;using DWORD=unsigned;using UINT=unsigned;
 using WPARAM=unsigned;using LPARAM=int;
-const unsigned WM_CREATE=1,WM_SIZE=5,WM_ACTIVATE=6,WM_WTSSESSION_CHANGE=0x2b1;
+const unsigned WM_CREATE=1,WM_MOVE=3,WM_SIZE=5,WM_ACTIVATE=6,WM_WINDOWPOSCHANGED=0x47,WM_DISPLAYCHANGE=0x7e,WM_WTSSESSION_CHANGE=0x2b1;
 const unsigned SIZE_MINIMIZED=1,SIZE_MAXHIDE=4,WA_INACTIVE=0,WTS_SESSION_LOCK=7,WTS_SESSION_UNLOCK=8;
 unsigned LOWORD(unsigned value){return value&0xffff;}unsigned HIWORD(unsigned value){return value>>16;}
 bool deviceLost=false;bool stockDisplayDeviceLost(){return deviceLost;}
@@ -102,9 +102,25 @@ RenderContext& rc(){assert(initialized);static RenderContext value;return value;
 std::vector<int> preferenceReads;
 void(*preferenceReadHook)(int)=nullptr;
 void stockNotifyReadPreferences(int mode){preferenceReads.push_back(mode);if(preferenceReadHook)preferenceReadHook(mode);}
+@CALLBACK_SUPPORT@
 #include "@PRODUCTION@"
 PyObject* modeIndex(PyObject*,PyObject*){return PyInt_FromLong(activeMode);}
 #define METHOD(name) {#name,[](PyObject*,PyObject* args)->PyObject*{return py_##name(args);},METH_VARARGS,NULL}
+PyObject* hostWindowMonitor(PyObject*,PyObject* args){
+    int index;if(!PyArg_ParseTuple(args,"i",&index))return nullptr;
+    const int width=outer.right-outer.left,height=outer.bottom-outer.top;
+    outer={index?100:-1800,100,(index?100:-1800)+width,100+height};
+    stockDisplayWindowMessage(WM_WINDOWPOSCHANGED,0,0);Py_RETURN_NONE;
+}
+PyObject* hostFinish(PyObject*,PyObject*){for(auto* job:Script::finiJobs())job->fini();Py_RETURN_NONE;}
+PyObject* hostErrorCount(PyObject*,PyObject*){return PyInt_FromLong(callbackErrors);}
+PyObject* hostLateWindowEvent(PyObject*,PyObject*){
+    Moo::initialized=false;stockDisplayWindowMessage(WM_WINDOWPOSCHANGED,0,0);
+    Moo::initialized=true;Py_RETURN_NONE;
+}
+PyMethodDef hostMethods[]={{"windowMonitor",hostWindowMonitor,METH_VARARGS,nullptr},
+    {"finish",hostFinish,METH_NOARGS,nullptr},{"errorCount",hostErrorCount,METH_NOARGS,nullptr},
+    {"lateWindowEvent",hostLateWindowEvent,METH_NOARGS,nullptr},{nullptr,nullptr,0,nullptr}};
 PyMethodDef methods[]={METHOD(isWindowVisible),METHOD(listVideoModesAllMonitors),METHOD(listBorderlessResolutionsAllMonitors),
 METHOD(wg_getMaxWindowedResolution),METHOD(wg_getMaxBorderlessResolution),METHOD(getWindowMode),METHOD(getAspectRatio),
 METHOD(getActiveMonitorIndex),METHOD(getExclusiveFullscreenMonitorIndex),METHOD(wg_getCurrentResolution),
@@ -114,6 +130,12 @@ void run(const char* code){if(PyRun_SimpleString(code)){PyErr_Print();fputs(code
 int main(){
     deviceReady=false;stockRememberDisplayWindow();deviceReady=true;
     Py_Initialize();auto module=Py_InitModule("BigWorld",methods);assert(module);
+    assert(Py_InitModule("_display_host",hostMethods));
+    assert(hostMethodLinks().size()==1);
+    for(auto& link:hostMethodLinks()){
+        PyObject* f=PyCFunction_NewEx(&link.def,nullptr,nullptr);assert(f);
+        assert(PyObject_SetAttrString(module,link.def.ml_name,f)==0);Py_DECREF(f);
+    }
     PyModule_AddIntConstant(module,"WindowModeWindowed",WINDOWED);
     PyModule_AddIntConstant(module,"WindowModeExclusiveFullscreen",EXCLUSIVE);
     PyModule_AddIntConstant(module,"WindowModeBorderless",BORDERLESS);
@@ -217,12 +239,32 @@ int main(){
         " eval(marshal.loads(open(os.environ['DISPLAY_GRAPHICS_PYC'],'rb').read()[8:]),graphics.__dict__)\n"
         " assert graphics.g_monitorSettings.activeMonitor==0\n"
         " assert graphics.g_monitorSettings.videoModes[-1].refreshRate==75\n");
-    assert(releases>0);Py_Finalize();
+    run("import os\n"
+        "if os.environ.get('DISPLAY_CALLBACK_CONSUMER'):\n"
+        " execfile(os.environ['DISPLAY_CALLBACK_CONSUMER'])\n");
+    assert(releases>0);
+    for(auto* job:Script::finiJobs())job->fini();
+    assert(adapterOrdinalCallback==nullptr);
+    Py_Finalize();
 }
 '''
 
 
 class DisplayModesTest(unittest.TestCase):
+    def test_original_inactive_mode_setter_dispatches_zero_argument_notification(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('Exact #1513 client is required for the native event oracle')
+        try:
+            from stock_display_callbacks_oracle import OriginalDisplayCallbacks
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for the native event oracle')
+        original = OriginalDisplayCallbacks(Path(client) / 'WorldOfTanks.exe')
+        self.assertEqual(original.select(1, 1), [[0, 1, 0]])
+        self.assertEqual(original.select(1, 1), [[0, 1, 0]])
+        self.assertEqual(original.select(2, 1), [[0, 1, 0], [0, 1, 1]])
+        self.assertEqual(original.select(1, 0), [[0, 1, 0], [0, 1, 1], [0, 0, 1]])
+
     def test_real_adapter_schemas_transitions_and_exact_consumer(self):
         python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
         config = python.with_name('python2.7-config')
@@ -231,13 +273,26 @@ class DisplayModesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='display-modes-') as directory:
             folder = Path(directory)
             source = folder / 'host.cpp'
-            source.write_text(HOST.replace('@PRODUCTION@', str(ROOT / 'bigworld/stock_display_modes.cpp')))
+            from test_stock_runtime_services import between, engine_sources
+            engine = engine_sources(self)
+            script = engine['lib/pyscript/script.hpp']
+            support = (ROOT / 'tests/stock_display_callbacks_host.hpp').read_text()
+            support = support.replace('@SCRIPT_CONVERTERS@',
+                between(engine['lib/pyscript/script.cpp'], 'PyObject * Script::argCountError(', '\n}\n') +
+                between(engine['lib/pyscript/script.cpp'],
+                        'int Script::setData( PyObject * pObject, SmartPointer<PyObject> & rPyObject,', '\n}\n'))
+            support = support.replace('@AUTO_MACROS@',
+                between(script, '// Section: Macros: Module Links', '// Section: Macros: Enums', False) +
+                between(script, '// Section: Macros: Recursion utilities', '// Section: PyModuleLink', False))
+            source.write_text(HOST.replace('@PRODUCTION@', str(ROOT / 'bigworld/stock_display_modes.cpp'))
+                              .replace('@CALLBACK_SUPPORT@', support))
             flags = [item for item in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
                      if item != '-DNDEBUG']
             libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
             binary = folder / 'host'
             subprocess.run(['c++', '-std=c++14', '-Wno-deprecated-register', '-UNDEBUG', str(source), *flags, *libs, '-o', str(binary)], check=True)
             environment = dict(os.environ)
+            environment['DISPLAY_CALLBACK_CONSUMER'] = str(ROOT / 'tests/stock_display_callbacks_consumer.py')
             client = environment.get('WOT_0922_CLIENT')
             if client:
                 with zipfile.ZipFile(Path(client) / 'res/packages/scripts.pkg') as archive:
