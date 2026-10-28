@@ -2,6 +2,7 @@
 #include "app.hpp"
 #include "moo/render_context.hpp"
 #include "pyscript/script.hpp"
+#include "stock_debug_queries.hpp"
 #include "urlrequest/manager.hpp"
 
 BW_BEGIN_NAMESPACE
@@ -26,15 +27,21 @@ static void addUPLMessage( const BW::string & )
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, addUPLMessage, ARG( BW::string, END ), BigWorld )
 
-// Battle and loading telemetry (006d8340, 006d8450, 006d8750) is not collected.
-static void enableBattleStatisticCollector( bool )
+// Battle and loading telemetry (006d8340, 006d8450, 006d8750) is not collected;
+// only the shared statistics owner's ping state follows the original switches.
+static void enableBattleStatisticCollector( bool enabled )
 {
+	if (enabled)
+	{
+		wot::resetStockStatPing();
+	}
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, enableBattleStatisticCollector,
 	ARG( bool, END ), BigWorld )
 
-static void enableLoadingTimer( bool )
+static void enableLoadingTimer( bool enabled )
 {
+	wot::setStockLoadingTimer( enabled );
 }
 PY_AUTO_MODULE_FUNCTION( RETVOID, enableLoadingTimer, ARG( bool, END ), BigWorld )
 

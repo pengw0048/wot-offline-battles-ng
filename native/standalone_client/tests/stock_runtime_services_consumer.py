@@ -251,6 +251,11 @@ for name in ('enableBattleStatisticCollector', 'enableLoadingTimer', 'wg_setRedu
     expect_error(TypeError, '%s() expects 1 argument of type bool' % name, call, True, False)
 for name in ('enableBattleStatisticCollector', 'enableLoadingTimer'):
     assert getattr(BigWorld, name)(True) is None and getattr(BigWorld, name)(0) is None
+# Only the statistics owner's ping state follows them: True resets, the timer freezes.
+assert host.state()['pingResets'] == 1 and not host.state()['loadingTimer']
+BigWorld.enableLoadingTimer(1)
+assert host.state()['loadingTimer']
+BigWorld.enableLoadingTimer(False)
 none_references = sys.getrefcount(None)
 for unused in range(1000):
     assert BigWorld.wg_getClientStatistics() is None

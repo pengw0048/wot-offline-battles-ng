@@ -157,6 +157,14 @@ Manager * Manager::s_managerInstance_ = NULL;
 }
 }
 
+// The statistics owner's ping state is exercised in the debug-query host.
+namespace wot {
+int hostPingResets = 0;
+bool hostLoadingTimer = false;
+void resetStockStatPing() { ++hostPingResets; }
+void setStockLoadingTimer( bool enabled ) { hostLoadingTimer = enabled; }
+}
+
 #include "stock_runtime_services.cpp"
 
 static PyObject * hostInitScripts(PyObject *, PyObject *)
@@ -235,12 +243,14 @@ static PyObject * hostSleep(PyObject *, PyObject * args)
 static PyObject * hostState(PyObject *, PyObject *)
 {
 	const BW::App & app = BW::App::instance();
-	return Py_BuildValue("{s:K,s:O,s:O,s:I,s:i}",
+	return Py_BuildValue("{s:K,s:O,s:O,s:I,s:i,s:i,s:O}",
 		"minFrameTime", (unsigned long long)app.minFrameTime_,
 		"special", app.framePacing_.special() ? Py_True : Py_False,
 		"reduced", app.framePacing_.reduced() ? Py_True : Py_False,
 		"frame", BW::Moo::rc().currentFrame_,
-		"reuseListClears", BW::Moo::rc().reuseListClears);
+		"reuseListClears", BW::Moo::rc().reuseListClears,
+		"pingResets", wot::hostPingResets,
+		"loadingTimer", wot::hostLoadingTimer ? Py_True : Py_False);
 }
 
 static PyMethodDef hostMethods[] = {
