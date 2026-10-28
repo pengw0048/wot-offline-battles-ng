@@ -187,11 +187,31 @@ bool sampleStockTranslationLink( PyObject * link, Vector3 & value )
 class LodCalculator;
 namespace
 {
+bool sampleStockLodPositionLink( PyObject * link, Vector3 & cached, Vector3 & value )
+{
+    if (sampleStockTranslationLink( link, value ))
+        return true;
+    if (!link || !PyCallable_Check( link ))
+        return false;
+    // #1513 00759340 retains the previous Vector3 when the Python producer
+    // fails to return a convertible value. Keep the callable alive across
+    // synchronous replacement/destruction by its own callback.
+    PyObjectPtr pin( link );
+    PyObjectPtr result( PyObject_CallObject( pin.get(), NULL ), PyObjectPtr::STEAL_REFERENCE );
+    if (result)
+        Script::setData( result.get(), cached );
+    if (PyErr_Occurred())
+        PyErr_PrintEx( 0 );
+    value = cached;
+    return true;
+}
+
 struct LodState : public StockComponentState
 {
     explicit LodState( PyObject * link, bool useFrustum, uint32 priorityGroup, bool player ) :
         positionLink( link ), frustum( useFrustum ), group( priorityGroup ),
-        ownVehicle( player ), active( false ), priority( 0 ), distance( 0.f ) {}
+        ownVehicle( player ), active( false ), priority( 0 ), distance( 0.f ),
+        cachedPosition( 0.f, 0.f, 0.f ) {}
     virtual void activate();
     virtual void deactivate();
     virtual void destroy();
@@ -203,6 +223,7 @@ struct LodState : public StockComponentState
     bool active;
     uint32 priority;
     float distance;
+    Vector3 cachedPosition;
 };
 struct LodGroup
 {
@@ -283,12 +304,17 @@ void updateLodCalculators()
         {
             std::shared_ptr<LodState> state = values[index].lock();
             Vector3 position;
+            PyObjectPtr producer( state ? state->positionLink.get() : NULL );
+            Vector3 cached = state ? state->cachedPosition : Vector3( 0.f, 0.f, 0.f );
             if (!state || !state->valid() ||
-                !sampleStockTranslationLink( state->positionLink.get(), position ))
+                !sampleStockLodPositionLink( producer.get(), cached, position ))
             {
                 ERROR_MSG( "Svarog LOD lost its native position DataLink\n" );
                 return;
             }
+            if (!state->valid() || state->positionLink.get() != producer.get())
+                return;
+            state->cachedPosition = cached;
             const Vector3 difference = cameraPosition - position;
             state->distance = difference.length();
             if (state->frustum)
@@ -379,6 +405,7 @@ public:
     PY_RO_ATTRIBUTE_SET( priority )
     PY_RO_ATTRIBUTE_SET( lodDistance )
     PY_RO_ATTRIBUTE_SET( lodStateLink )
+    PY_METHOD_DECLARE( py_setupPosition )
     PY_FACTORY_DECLARE()
 private:
     PyObject * missing() const
@@ -390,6 +417,25 @@ private:
 PyObject * LodState::wrap( bool owning )
 {
     return new LodCalculator( this->shared_from_this(), owning );
+}
+PyObject * LodCalculator::py_setupPosition( PyObject * args )
+{
+    PyObject * link;
+    if (!PyArg_ParseTuple( args, "O:setupPosition", &link ))
+        return NULL;
+    if (link != Py_None && !StockTranslationLink::Check( link ) && !PyCallable_Check( link ))
+    {
+        PyErr_SetString( PyExc_TypeError, "setupPosition requires a Vector3 DataLink, callable or None" );
+        return NULL;
+    }
+    std::shared_ptr<LodState> value = this->state();
+    if (!value)
+        return this->missing();
+    // 00763fc0 -> 007613f0 replaces the manager's position producer, rather
+    // than taking a one-time sample of the compound's current position.
+    value->positionLink = link == Py_None ? NULL : link;
+    value->cachedPosition = Vector3( 0.f, 0.f, 0.f );
+    Py_RETURN_NONE;
 }
 PyObject * LodCalculator::pyNew( PyObject * args )
 {
@@ -417,6 +463,7 @@ PyObject * LodCalculator::pyNew( PyObject * args )
 }
 PY_TYPEOBJECT( LodCalculator )
 PY_BEGIN_METHODS( LodCalculator )
+    PY_METHOD( setupPosition )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( LodCalculator )
     PY_ATTRIBUTE( priority )
@@ -672,6 +719,14 @@ public:
     PY_METHOD_DECLARE( py_setLodLink )
     PY_METHOD_DECLARE( py_setLodSettings )
     PY_METHOD_DECLARE( py_stopAnimating )
+    PyObject * pyGet_hasGroundNodes()
+    {
+        std::shared_ptr<SuspensionState> value = this->requireState();
+        // #1513 00768290 -> 00781650 compares the real node vector's
+        // begin/end, including the forward-renderer empty-node branch.
+        return value ? Script::getData( !value->nodes.empty() ) : NULL;
+    }
+    PY_RO_ATTRIBUTE_SET( hasGroundNodes )
     PY_FACTORY_DECLARE()
 private:
     std::shared_ptr<SuspensionState> requireState() const
@@ -817,6 +872,7 @@ PY_BEGIN_METHODS( Suspension )
     PY_METHOD( stopAnimating )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( Suspension )
+    PY_ATTRIBUTE( hasGroundNodes )
 PY_END_ATTRIBUTES()
 PY_FACTORY( Suspension, Vehicular )
 

@@ -22,6 +22,7 @@ HOST = r'''
 using uint32=std::uint32_t;
 struct Vector3 {
     float x=0,y=0,z=0;
+    Vector3(float a=0,float b=0,float c=0):x(a),y(b),z(c){}
     Vector3 operator-(const Vector3& other)const {return{x-other.x,y-other.y,z-other.z};}
     float length()const {return std::sqrt(x*x+y*y+z*z);}
 };
@@ -45,13 +46,22 @@ Context context;
 Context& rc() {return context;}
 }
 struct PositionLink {Vector3 position;};
-struct LinkPtr {PositionLink* value=nullptr;PositionLink* get()const{return value;}};
+struct LinkPtr {
+    PositionLink* value=nullptr;
+    LinkPtr(PositionLink* p=nullptr):value(p){}
+    PositionLink* get()const{return value;}
+};
+using PyObjectPtr=LinkPtr;
 bool sampleStockTranslationLink(PositionLink* link,Vector3& position) {
     if(!link)return false;position=link->position;return true;
+}
+bool sampleStockLodPositionLink(PositionLink* link,Vector3&,Vector3& position) {
+    return sampleStockTranslationLink(link,position);
 }
 struct LodState {
     bool live=true,active=true,frustum=true,ownVehicle=false;uint32 priority=0;
     float distance=0;LinkPtr positionLink;
+    Vector3 cachedPosition;
     bool valid()const {return live;}
 };
 struct LodGroup {
