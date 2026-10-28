@@ -3335,6 +3335,12 @@ component owner with strict zero-argument calls. The original base and vehicle
 factories create an empty component collection; activation does not gate garage
 materials or invent track components. The ordinary appearance activation,
 damaged-model replacement and subsequent battle consumers exercise this path.
+Vehicle traces use the shared LOD settings parser: the ordinary assembler's
+`LodSettings(distance, None)` keeps the unrestricted priority, and the native
+trace owner receives the converted settings only after successful conversion.
+Wheel, track-node and suspension consumers share the same one/two-item tuple
+contract; empty tuples are contained instead of reproducing the original
+out-of-bounds read. Focused tests execute the unchanged trace assembler PYC.
 Particle cloning uses the native deep-copy implementation.
 Background particle loads retain weak callbacks, continue loading when the
 callback is absent or retired, and deliver `None` to a live callback on a
@@ -3390,8 +3396,11 @@ through source BitmapData replacement, collection and movie shutdown; image
 payloads retire before their heap owner. Both Graphics fills and Bitmap render
 shapes use this ownership path. Static definition resources do not retain their
 own definition. A Windows SDK reproducer exposed the same PNG heap-release
-failure as the captured battle-to-lobby crash; full-cycle acceptance remains
-a separate check after the ownership repair.
+failure as the captured battle-to-lobby crash. After the repair, the actual
+player and worker both survived failed battle entry and returned to the lobby,
+and the player exited normally without an assertion or access-violation capture.
+Successful battle completion and repeated full-cycle acceptance remain separate
+checks.
 
 Ordinary battle calls into `WGReplayController` retain their original live-mode
 guards and presentation state: server aim, marker geometry, gun angles, reload

@@ -88,9 +88,10 @@ bool lodEligible( const WheelsSettings & settings, uint32 priority, float distan
 
 bool readStockLodSettings( PyObject * object, float & maxDistance, uint32 & maxPriority )
 {
-    // Exact 0077efe0: a tuple of at most two items. Missing items and a None
-    // priority keep the FLT_MAX / UINT32_MAX defaults.
-    if (!PyTuple_Check( object ))
+    // Exact 0077efe0 reads item zero even after setting defaults for an
+    // empty tuple. Contain that native out-of-bounds input, like the sensor
+    // adapters. A missing/None priority keeps the UINT32_MAX default.
+    if (!PyTuple_Check( object ) || PyTuple_GET_SIZE( object ) == 0)
     {
         PyErr_SetString( PyExc_TypeError, "LodSettings must be a tuple" );
         return false;

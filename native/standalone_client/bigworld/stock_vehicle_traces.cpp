@@ -2,6 +2,7 @@
 #include "stock_vehicle_traces.hpp"
 #include "stock_vehicle_components.hpp"
 #include "stock_vehicle_visuals.hpp"
+#include "stock_vehicle_wheels.hpp"
 #include "stock_decal_resources.hpp"
 #include "stock_deferred_buffers.hpp"
 #include "stock_dynamic_resolution.hpp"
@@ -463,8 +464,13 @@ PyObject* PyVehicleTraces::py_setLodLink(PyObject* args)
 }
 PyObject* PyVehicleTraces::py_setLodSettings(PyObject* args)
 {
-    float distance;unsigned priority;
-    if (!PyArg_ParseTuple(args,"(fI):setLodSettings",&distance,&priority)) return NULL;
+    PyObject* settings;
+    if (!PyArg_ParseTuple(args,"O:setLodSettings",&settings)) return NULL;
+    // 0077ebc0 delegates to 0077efe0, shared with the other LOD owners.
+    // The normal assembler supplies LodSettings(lodDist, None): None keeps
+    // UINT32_MAX rather than requiring an integer at the Python boundary.
+    float distance;uint32 priority;
+    if (!readStockLodSettings(settings,distance,priority)) return NULL;
     auto value=state();if (!value) return NULL;
     value->maxDistance=distance;value->maxPriority=priority;Py_RETURN_NONE;
 }
