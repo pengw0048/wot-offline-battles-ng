@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "stock_vehicle_fashions.hpp"
 #include "stock_vehicle_spline_tracks.hpp"
+#include "stock_vehicle_components.hpp"
 #include "app.hpp"
 
 #include "duplo/py_material_fashion.hpp"
@@ -223,6 +224,42 @@ struct VehicleMaterialBinding
     Moo::ComplexEffectMaterialPtr alpha;
     int trackSide;
     Vector4 authoredUV;
+};
+
+// WGBaseFashion embeds a Svarog ComponentSystem (#1513 native +0x0c).
+// Both fashion factories construct an empty list (00aecc98 -> 013f0240),
+// and their Python interface has no component insertion operation. Preserve
+// that empty-owner contract instead of treating activation as a material or
+// track-scroll switch: the garage also renders fashions without activating.
+struct VehicleFashionComponentOwner
+{
+    std::vector<std::shared_ptr<StockComponentState> > entries;
+
+    void activate()
+    {
+        // 013f0330 visits the owned children in insertion order.
+        for (const std::shared_ptr<StockComponentState> & entry : entries)
+            entry->activate();
+    }
+    void deactivate()
+    {
+        // 013f0410 has no container-level active flag or duplicate guard.
+        for (const std::shared_ptr<StockComponentState> & entry : entries)
+            entry->deactivate();
+    }
+    ~VehicleFashionComponentOwner()
+    {
+        // The embedded system's entry destructor (013efde0 -> 007697e0)
+        // deactivates and destroys each owned child. Publish the empty owner
+        // before cleanup, as with the other native Svarog owners.
+        std::vector<std::shared_ptr<StockComponentState> > removed;
+        removed.swap( entries );
+        for (const std::shared_ptr<StockComponentState> & entry : removed)
+        {
+            entry->deactivate();
+            entry->destroy();
+        }
+    }
 };
 
 struct VehicleFashionState
@@ -544,13 +581,31 @@ public:
     PY_METHOD_DECLARE( py_setCamouflage )
     PY_METHOD_DECLARE( py_removeCamouflage )
     PY_METHOD_DECLARE( py_addMaterialHandler )
+    PY_METHOD_DECLARE( py_activate )
+    PY_METHOD_DECLARE( py_deactivate )
     static WGBaseFashion * New() { return new WGBaseFashion(); }
     PY_AUTO_FACTORY_DECLARE( WGBaseFashion, END )
 protected:
     std::shared_ptr<VehicleFashionState> state_;
 private:
+    VehicleFashionComponentOwner components_;
     MaterialFashionPtr fashion_;
 };
+
+PyObject * WGBaseFashion::py_activate( PyObject * args )
+{
+    if (!PyArg_ParseTuple( args, ":activate" ))
+        return NULL;
+    components_.activate();
+    Py_RETURN_NONE;
+}
+PyObject * WGBaseFashion::py_deactivate( PyObject * args )
+{
+    if (!PyArg_ParseTuple( args, ":deactivate" ))
+        return NULL;
+    components_.deactivate();
+    Py_RETURN_NONE;
+}
 
 PyObject * WGBaseFashion::py_initAlphaMaterials( PyObject * args )
 {
@@ -617,6 +672,8 @@ PyObject * WGBaseFashion::py_addMaterialHandler( PyObject * args )
 }
 PY_TYPEOBJECT( WGBaseFashion )
 PY_BEGIN_METHODS( WGBaseFashion )
+    PY_METHOD( activate )
+    PY_METHOD( deactivate )
     PY_METHOD( initAlphaMaterials )
     PY_METHOD( setAlpha )
     PY_METHOD( setCamouflage )

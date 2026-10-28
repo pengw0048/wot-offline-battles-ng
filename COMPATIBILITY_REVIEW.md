@@ -3330,7 +3330,12 @@ The battle-entry adapters expose the existing native `Math.Vector4Basic`,
 retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
 rendering, trajectory drawing, the tree collision-body provider, water ripples,
 vehicle attachment decals, effect-light properties and taskbar notification
-ownership. Particle cloning uses the native deep-copy implementation.
+ownership. Fashion activation/deactivation dispatches the embedded native
+component owner with strict zero-argument calls. The original base and vehicle
+factories create an empty component collection; activation does not gate garage
+materials or invent track components. The ordinary appearance activation,
+damaged-model replacement and subsequent battle consumers exercise this path.
+Particle cloning uses the native deep-copy implementation.
 Background particle loads retain weak callbacks, continue loading when the
 callback is absent or retired, and deliver `None` to a live callback on a
 resource failure. Ordinary hit flash effects retain native vector providers in
