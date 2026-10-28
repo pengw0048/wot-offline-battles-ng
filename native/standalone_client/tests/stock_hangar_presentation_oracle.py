@@ -24,7 +24,9 @@ FUNCTIONS = {'SetDrawInflux': 0xaeb660, 'wg_enableGUIBackground': 0x633330,
              'syncMousePosition': 0xaa8290, 'wgSetEdgeDetectColors': 0x652ee0,
              'wgAddEdgeDetectEntity': 0x652ab0, 'wgDelEdgeDetectEntity': 0x652cf0,
              'getGammaCorrection': 0x6503c0, 'setGammaCorrection': 0x6522b0,
-             'getColorGradingStrength': 0x650140, 'setColorGradingStrength': 0x652020}
+             'getColorGradingStrength': 0x650140, 'setColorGradingStrength': 0x652020,
+             'wg_updateColorGrading': 0x654bc0}
+GRADING_UPDATE = 0xa20670
 SET_DATA = {0x690570: 'bool', 0x68fe20: 'BW::string', 0x68fba0: 'float', 0x8f46f0: 'BW::PyModelPtr',
             0x664990: 'PyEntityPtr', 0x68fad0: 'uint', 0x64e160: 'BW::vector<Vector4>'}
 ERR_FORMAT, PRINT_EX, FREE, WARNING_SLOT = 0xfc3720, 0xfc7680, 0x13d8019, 0x1a5db0c
@@ -80,6 +82,7 @@ class OriginalWrappers(object):
                       ERR_FORMAT: self._format, PRINT_EX: self._print_ex, FREE: lambda: self._return(0),
                       EDGE_COLORS: self._edge_colors, EDGE_ADD: self._edge_add, EDGE_DEL: self._edge_del,
                       GET_FLOAT: self._get_float, GRADING_LOOKUP: self._grading,
+                      GRADING_UPDATE: self._grading_update,
                       SENTINEL: lambda: u.emu_stop()}
         for address, kind in SET_DATA.items():
             self.hooks[address] = (lambda kind: lambda: self._set_data(kind))(kind)
@@ -145,6 +148,11 @@ class OriginalWrappers(object):
     def _grading(self):
         self.calls.append(['pipeline.colorGrading', self.u.reg_read(UC_X86_REG_ECX) == PIPELINE])
         self._return(GRADING if self.grading else 0)
+
+    def _grading_update(self):
+        # Observe entry without replacing the actual native owner method.
+        # Its random-LUT switch is off here; no host renderer is fabricated.
+        self.calls.append(['colorGrading.update', self.u.reg_read(UC_X86_REG_ECX) == GRADING])
 
     def _print_ex(self):
         self.calls.append(['PyErr_PrintEx', self._arg(1)])
@@ -217,6 +225,7 @@ class OriginalWrappers(object):
         u.mem_write(PIPELINE, struct.pack('<I', PIPELINE_VTABLE))
         u.mem_write(PIPELINE_VTABLE + 0x94, struct.pack('<I', GRADING_LOOKUP))
         u.mem_write(GRADING + 0x1c, struct.pack('<f', 0.75))
+        u.mem_write(GRADING + 0x21, b'\x00')
         # PyEntity +8 -> Entity: primary +0xe8, auxiliary vector +0xec/+0xf0; each
         # embodiment's key is the dword at +0x10 (00b4e280).
         u.mem_write(EDGE_SLOT, struct.pack('<I', DRAWER if drawer else 0))
@@ -322,6 +331,8 @@ def expected():
             # This client has no ColorGrading owner: the original absent branch.
             calls += [['pipeline.colorGrading', True], ['getData', 'float', 0.0]]
             outcome = 'float'
+        elif function == 'wg_updateColorGrading':
+            calls.append(['pipeline.colorGrading', True])
         elif function == 'setColorGradingStrength':
             calls.append(['pipeline.colorGrading', True])
         elif function == 'wgSetEdgeDetectColors':
@@ -378,3 +389,9 @@ def grading_owner(executable):
     original = OriginalWrappers(executable)
     return [original.run('getColorGradingStrength', 0, grading=True)[-3:],
             original.run('setColorGradingStrength', 1, values=(0.37, 0, 0, 0), grading=True)[-3:]]
+
+
+def grading_update_owner(executable):
+    """Retail's existing-owner dispatch, not a restored client rendering owner."""
+    original = OriginalWrappers(executable)
+    return original.run('wg_updateColorGrading', 0, grading=True)

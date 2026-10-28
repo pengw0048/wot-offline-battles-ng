@@ -597,6 +597,48 @@ bool StockStaticModelSceneLoader::itemIdentity( const SceneObject & object,
     return true;
 }
 
+bool StockStaticModelSceneLoader::collectStockDecalTriangles(const SceneObject& object,
+    const Vector3& center, const Vector3& first, const Vector3& second, const Vector3& third,
+    BW::vector<WorldTriangle>& output)
+{
+    if (!object.isType<State::Instance>()) return false;
+    const State::Instance* instance=object.getAs<State::Instance>();
+    if (!instance || !instance->owner) return true;
+    auto owner=instance->owner->shared_from_this();
+    if (!owner->bound || !State::available(*instance) ||
+        (owner->binary.instances.flags[instance->index].flags&0x80)) return true;
+    const auto& bsp=owner->colliders[owner->binary.instances.models[instance->index]];
+    if (!bsp) return true;
+    class Collector : public CollisionVisitor
+    {
+    public:
+        Collector(const Matrix& transform,BW::vector<WorldTriangle>& output) : transform_(transform),output_(output) {}
+        bool visit(const WorldTriangle& triangle,float) override
+        {
+            // f5fd80 sends destructibles to a separate output which the decal
+            // query never consumes. A null destruction context admits none.
+            const unsigned material=triangle.materialKind();
+            if ((triangle.flags()&0x50u) || (material>=0x47u && material<=0x64u)) return false;
+            Vector3 vertices[3];
+            D3DXVec3TransformCoord(&vertices[0],&triangle.v0(),&transform_);
+            D3DXVec3TransformCoord(&vertices[1],&triangle.v1(),&transform_);
+            D3DXVec3TransformCoord(&vertices[2],&triangle.v2(),&transform_);
+            output_.push_back(WorldTriangle(vertices[0],vertices[1],vertices[2],triangle.flags()));
+            return false;
+        }
+    private:
+        const Matrix transform_;
+        BW::vector<WorldTriangle>& output_;
+    } collector(instance->world,output);
+    Vector3 localCenter,localFirst,localSecond,localThird;
+    D3DXVec3TransformCoord(&localCenter,&center,&instance->inverse);
+    D3DXVec3TransformNormal(&localFirst,&first,&instance->inverse);
+    D3DXVec3TransformNormal(&localSecond,&second,&instance->inverse);
+    D3DXVec3TransformNormal(&localThird,&third,&instance->inverse);
+    bsp->visitStockDecalBox(localCenter,localFirst,localSecond,localThird,&collector);
+    return true;
+}
+
 bool StockStaticModelSceneLoader::doLoadFromSpace( ClientSpace * space, BinaryFormat & file,
     const DataSectionPtr &, const Matrix &, const StringTable & strings )
 {

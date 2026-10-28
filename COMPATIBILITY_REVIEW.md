@@ -3334,6 +3334,16 @@ device creation; both ordinary and D3D9Ex resets retire the previous pixels.
 Teardown releases Python owners before interpreter finalization; the Python
 console also detaches its output hooks at that boundary.
 
+Ground impacts submit their original eight-argument `wg_addDecal` operation
+through the native texture registry and dynamic-decal renderer. Aggregate
+projection uses collision-purpose static candidates, BSP triangles and actual
+terrain heightmaps; ordinary visual queries keep their existing bounds. The
+original provider-result rule is preserved: terrain contacts alone do not
+admit a decal, while qualifying BSP contacts can admit a mixed projection.
+Battle loading also exposes the original zero-argument color-grading refresh
+entry point. Like the existing strength accessors, it takes the original
+absent-owner branch because this pipeline has no color-grading LUT owner.
+
 Exact executable oracles and original Python consumers distinguish retained
 state from rendered behavior. The compiled-space light tick samples `bounds`
 and `shader`; `colorAnimator` and `multiplierAnimator` are retained properties

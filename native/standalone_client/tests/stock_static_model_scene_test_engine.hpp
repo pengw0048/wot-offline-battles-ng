@@ -21,11 +21,12 @@
 #define BW_GUARD
 namespace BW {
 using uint32=std::uint32_t;using int64=std::int64_t;using string=std::string;
+template<class T>using vector=std::vector<T>;
 template<class T> class SmartPointer:public std::shared_ptr<T> {
 public:using std::shared_ptr<T>::shared_ptr;SmartPointer(){}SmartPointer(T* p):std::shared_ptr<T>(p){}
  T* getObject()const{return this->get();}
 };
-struct Vector3 {float x=0,y=0,z=0;Vector3(){}Vector3(float a,float b,float c):x(a),y(b),z(c){}};
+class Vector3 {public:float x=0,y=0,z=0;Vector3(){}Vector3(float a,float b,float c):x(a),y(b),z(c){}};
 struct Vector4 {float x,y,z,w;float operator[](size_t n)const{return (&x)[n];}Vector4()=default;Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}};
 struct Matrix {
  float v[4][4]{};Matrix(){for(unsigned i=0;i<4;++i)v[i][i]=1;}
@@ -33,8 +34,12 @@ struct Matrix {
  const Vector4& row(int r)const{return *reinterpret_cast<const Vector4*>(v[r]);}
  float* operator[](size_t r){return v[r];}const float* operator[](size_t r)const{return v[r];}
  void multiply(const Matrix& a,const Matrix& b){Matrix out;for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c){out[r][c]=0;for(unsigned k=0;k<4;++k)out[r][c]+=a[r][k]*b[k][c];}*this=out;}
+ Vector3 applyVector(const Vector3& p)const{return {p.x*v[0][0]+p.y*v[1][0]+p.z*v[2][0],p.x*v[0][1]+p.y*v[1][1]+p.z*v[2][1],p.x*v[0][2]+p.y*v[1][2]+p.z*v[2][2]};}
+ Vector3 applyPoint(const Vector3& p)const{Vector3 r=applyVector(p);r.x+=v[3][0];r.y+=v[3][1];r.z+=v[3][2];return r;}
  bool invert(const Matrix& m){*this=Matrix();for(unsigned n=0;n<3;++n)v[3][n]=-m[3][n];return true;}
 };
+Vector3* D3DXVec3TransformCoord(Vector3* out,const Vector3* value,const Matrix* matrix){*out=matrix->applyPoint(*value);return out;}
+Vector3* D3DXVec3TransformNormal(Vector3* out,const Vector3* value,const Matrix* matrix){*out=matrix->applyVector(*value);return out;}
 Matrix* D3DXMatrixMultiply(Matrix* out,const Matrix* a,const Matrix* b){out->multiply(*a,*b);return out;}
 struct BoundingBox {
  Vector3 low{1,1,1},high{-1,-1,-1};static const BoundingBox s_insideOut_;
@@ -53,9 +58,15 @@ public:
  void* value=nullptr;const std::type_info* type_=nullptr;struct Flags{void isDynamic(bool){}void isReflectionVisible(bool){}void isCastingStaticShadow(bool){}void isCastingDynamicShadow(bool){}} bits;
  template<class T>void type(){type_=&typeid(T);}template<class T>bool isType()const{return type_&&*type_==typeid(T);}void handle(void* p){value=p;}Flags& flags(){return bits;}template<class T>T* getAs()const{return static_cast<T*>(value);}
 };
-struct WorldTriangle {using Flags=std::uint16_t;Flags value=0;Flags flags()const{return value;}void flags(Flags f){value=f;}};
+class WorldTriangle {public:using Flags=std::uint16_t;Flags value=0;Vector3 vertices[3];
+ WorldTriangle(Flags f=0):value(f){}WorldTriangle(Vector3 a,Vector3 b,Vector3 c,Flags f=0):value(f),vertices{a,b,c}{}
+ const Vector3& v0()const{return vertices[0];}const Vector3& v1()const{return vertices[1];}const Vector3& v2()const{return vertices[2];}
+ unsigned materialKind()const{return value>>8;}Flags flags()const{return value;}void flags(Flags f){value=f;}};
+struct CollisionVisitor {virtual ~CollisionVisitor(){}virtual bool visit(const WorldTriangle&,float)=0;};
 using RealWTriangleSet=std::vector<WorldTriangle>;
-struct BSPTree{RealWTriangleSet values;uint32 numTriangles()const{return uint32(values.size());}WorldTriangle* triangles(){return values.data();}BoundingBox boundingBox()const{return BoundingBox({-1,-1,-1},{1,1,1});}};
+static std::array<Vector3,4> lastDecalBox;
+struct BSPTree{RealWTriangleSet values;uint32 numTriangles()const{return uint32(values.size());}WorldTriangle* triangles(){return values.data();}BoundingBox boundingBox()const{return BoundingBox({-1,-1,-1},{1,1,1});}
+ void visitStockDecalBox(const Vector3& center,const Vector3& first,const Vector3& second,const Vector3& third,CollisionVisitor* visitor){lastDecalBox={{center,first,second,third}};for(const auto& triangle:values)visitor->visit(triangle,0.f);}};
 struct BSPTreeTool {
  static BSPTree* loadBSP(const BinaryPtr&){auto* p=new BSPTree;p->values={{1},{2}};return p;}
  static BSPTree* buildBSP(RealWTriangleSet& values){auto* p=new BSPTree;p->values=values;return p;}

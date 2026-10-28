@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_dynamic_decals.hpp"
+#include "stock_ground_decals.hpp"
 #include "stock_deferred_decal_draw.hpp"
 #include "stock_space_decals_texture.hpp"
 #include "wot/stock_dynamic_decals.hpp"
@@ -212,9 +213,6 @@ bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& e
     if (!owner) return dynamicFailure(error, "The original dynamic decal renderer is unavailable");
     owner->syncSpace();
     if (!owner->space) return dynamicFailure(error, "The dynamic decal has no current camera space");
-    // 8b4a40 explicitly passes true. Other native callers need their own
-    // completed aggregate-mesh projection, never an invented shallow box.
-    if (!useSimpleCollision) return dynamicFailure(error, "Aggregate dynamic decal projection is unavailable");
     ClientSpacePtr space = owner->space;
     DecalRayHit hit;
     const float distance = space->collide(start, end, hit);
@@ -224,7 +222,18 @@ bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& e
     D3DXVec3Normalize(&direction, &direction);
     Vector3 axis = -hit.hit.normal();
     D3DXVec3Normalize(&axis, &axis);
-    const Vector3 position = start + direction * distance;
+    Vector3 position = start + direction * distance;
+    float width=(hit.hit.flags()&TRIANGLE_TERRAIN)?1.f:DynamicDecalManager::instance().decalObjectImpactSizeCoefficient;
+    float depth=.5f;
+    if(!useSimpleCollision && (hit.hit.flags()&TRIANGLE_TERRAIN))
+    {
+        wot::GroundDecalMath::Projection projection;bool admitted=false;
+        if(!queryStockGroundDecalProjection(space,start,end,size,hit.hit,projection,admitted,error))return false;
+        if(!admitted) {error.clear();return true;}
+        axis=Vector3(projection.axis[0],projection.axis[1],projection.axis[2]);
+        position=start+direction*projection.distance;depth=projection.depth;
+        width=projection.object?DynamicDecalManager::instance().decalObjectImpactSizeCoefficient:1.f;
+    }
     Vector3 up(1.f, 0.f, 0.f);
     const float parallel = 1.f - std::abs(axis.x);
     if (-.01f < parallel && parallel < .01f) up = Vector3(0.f, 1.f, 0.f);
@@ -235,8 +244,7 @@ bool addStockDynamicDecal(float lifetime, const Vector3& start, const Vector3& e
     D3DXMatrixMultiply(&world, &world, &rotation);
     if (!D3DXMatrixInverse(&world, NULL, &world))
         return dynamicFailure(error, "The actual dynamic decal projection is singular");
-    const float width = (hit.hit.flags() & TRIANGLE_TERRAIN) ? 1.f : .5f;
-    D3DXMatrixScaling(&scale, size.x * width, size.y * width, .5f);
+    D3DXMatrixScaling(&scale, size.x * width, size.y * width, depth);
     D3DXMatrixMultiply(&world, &scale, &world);
     DynamicDecal candidate;
     candidate.textures = owner->loadTextures({diffuse, normal, specular}, error);

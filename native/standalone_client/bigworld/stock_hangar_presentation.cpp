@@ -499,6 +499,16 @@ void setColorGradingStrength( float )
 PY_AUTO_MODULE_FUNCTION( RETVOID, setColorGradingStrength, ARG( float, END ), BigWorld )
 
 /**
+ * #1513 00654bc0 accepts no arguments and calls 00a20670 only when the
+ * pipeline's ColorGrading owner exists. Like the strength accessors above,
+ * this pipeline takes its absent-owner branch; it has no LUT owner to update.
+ */
+void wg_updateColorGrading()
+{
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, wg_updateColorGrading, END, BigWorld )
+
+/**
  *	#1513 00aa8290: a zero-delta mouse event at the given cursor position,
  *	dispatched through SimpleGUI::handleMouseEvent (01d1fee0 vtable +0x10).
  */

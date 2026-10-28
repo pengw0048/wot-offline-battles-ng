@@ -424,6 +424,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-space-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_decals.py"),
         $EngineRoot) "stock-dynamic-decals-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ground_decals.py"),
+        $EngineRoot) "stock-ground-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_decals.py"),
         $EngineRoot) "stock-vehicle-decals-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_local_lighting.py"),

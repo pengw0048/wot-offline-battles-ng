@@ -214,6 +214,8 @@ class StockHangarPresentationTest(unittest.TestCase):
             result = subprocess.run([str(binary), str(ROOT / 'tests/stock_hangar_presentation_consumer.py'),
                                      str(package)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('colour grading: repeated original BattleLoading reaches the native absent-owner binding',
+                          result.stdout)
             print(result.stdout.strip())
 
     def test_production_material_binding_owns_presentation_parameters(self):
@@ -272,6 +274,13 @@ class StockHangarPresentationTest(unittest.TestCase):
         read, write = oracle.grading_owner(Path(client) / 'WorldOfTanks.exe')
         self.assertEqual(read[-1][-1], ['getData', 'float', 0.75])
         self.assertAlmostEqual(write[-2][-1], 0.37, places=6)
+        update = oracle.grading_update_owner(Path(client) / 'WorldOfTanks.exe')
+        self.assertEqual(update[-3], 'None')
+        self.assertEqual(update[-1], [['pipeline.colorGrading', True], ['pipeline.colorGrading', True],
+                                     ['colorGrading.update', True]])
+        # The existing-owner method ran original instructions with its random
+        # LUT option off. Production implements only the absent-owner branch;
+        # these dispatch observations do not establish a ColorGrading renderer.
         print('Original hangar presentation wrappers matched production: %d calls' % len(report))
 
 

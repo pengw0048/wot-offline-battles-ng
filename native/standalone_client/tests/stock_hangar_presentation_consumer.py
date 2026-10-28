@@ -52,6 +52,8 @@ def check(actual, expected):
 for function, args in ((BigWorld.SetDrawInflux, ()), (BigWorld.SetDrawInflux, (True, True)),
                        (BigWorld.wg_enableGUIBackground, (True,)),
                        (BigWorld.wg_setGUIBackground, ()), (BigWorld.wg_setPyModelTexture, (None, 'a')),
+                       (BigWorld.wg_updateColorGrading, (None,)),
+                       (BigWorld.wg_updateColorGrading, (1, 2)),
                        (GUI.syncMousePosition, (1.0,)), (GUI.syncMousePosition, (1.0, 'x'))):
     message = expect_type_error(function, *args)
     print 'contract:', message
@@ -140,7 +142,9 @@ BattleLoading = type('BattleLoading', (LoadingBase,), dict(
     (name, method('scripts/client/gui/Scaleform/daapi/view/battle/shared/battle_loading.pyc',
                   'BattleLoading', name, loading)) for name in names))
 loading['BattleLoading'] = BattleLoading
-BigWorld.wg_updateColorGrading = recorder('wg_updateColorGrading')
+assert isinstance(BigWorld.wg_updateColorGrading, types.BuiltinFunctionType)
+check(BigWorld.wg_updateColorGrading(), None)
+check(host.calls(), [])  # The production pipeline has no ColorGrading owner.
 
 
 def battle_loading(icon):
@@ -151,6 +155,28 @@ def battle_loading(icon):
     view.as_setMapIconS = recorder('as_setMapIconS')
     return view
 
+
+# The original PYC must reach the real binding, including on a later battle.
+# Removing it reproduces the actual missing-interface failure before the GUI
+# background is enabled or the arena's map texture is loaded.
+update_grading = BigWorld.wg_updateColorGrading
+del BigWorld.wg_updateColorGrading
+try:
+    battle_loading('map.dds')._populate()
+except AttributeError as error:
+    assert 'wg_updateColorGrading' in str(error)
+else:
+    raise AssertionError('BattleLoading passed without wg_updateColorGrading')
+check([call[0] for call in CALLS], ['super._populate', 'addArenaCtrl'])
+check(host.calls(), [])
+BigWorld.wg_updateColorGrading = update_grading
+del CALLS[:]
+unbound_view = battle_loading('map.dds')
+unbound_view._arenaVisitor = None
+unbound_view._populate()
+check([call[0] for call in CALLS], ['super._populate', 'addArenaCtrl'])
+check(host.calls(), [])
+del CALLS[:]
 
 check(host.drawBackground(), True)  # no GUIApp owner yet: a legitimate no-draw
 check(host.calls(), [])
@@ -215,10 +241,11 @@ check(host.drawBackground(), True)
 check(host.calls(), [])
 host.finalise()
 host.setEffectLoads(1)
-check([call[0] for call in CALLS][:4], ['super._populate', 'addArenaCtrl', 'wg_updateColorGrading',
-                                      'as_setMapIconS'])
+check([call[0] for call in CALLS][:3], ['super._populate', 'addArenaCtrl', 'as_setMapIconS'])
+assert BigWorld.wg_updateColorGrading is update_grading
 del CALLS[:]
 print 'background: BattleLoading enable/set/disable reaches the GUIApp draw owner'
+print 'colour grading: repeated original BattleLoading reaches the native absent-owner binding'
 
 # ---- wg_setPyModelTexture: ClientHangarSpace.modifyFakeShadowAsset ----
 modify = method('scripts/client/gui/ClientHangarSpace.pyc', 'ClientHangarSpace', 'modifyFakeShadowAsset',

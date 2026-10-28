@@ -78,6 +78,28 @@ int main(int argc,char** argv)
     drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
     assert(draw.items[5].packet->palette()[0].w==10&&draw.items[5].packet->palette()[3].w==11);
     draw.clear();missing.unload();assert(space.dynamic.nodes.empty()&&Moo::liveCaches.empty());
+    // The readonly ground-decal seam uses actual remapped BSP triangles and
+    // model transforms, and excludes the original collision/material groups.
+    size_t materialArray=0;
+    for(unsigned i=0;i<2;++i){uint32 stride,count;std::memcpy(&stride,file.sections[1].data()+materialArray,4);std::memcpy(&count,file.sections[1].data()+materialArray+4,4);materialArray+=8+size_t(stride)*count;}
+    const size_t materialFlags=materialArray+12;uint32 savedMaterial;
+    std::memcpy(&savedMaterial,file.sections[1].data()+materialFlags,4);
+    for(uint32 flags : {0x100u,0x150u,0x4700u,0x6400u,0x6500u})
+    {
+        std::memcpy(file.sections[1].data()+materialFlags,&flags,4);
+        StockStaticModelSceneLoader query(2);assert(query.loadFromSpace(&space,file,{},Matrix(),strings));assert(query.bind());
+        objects.clear();for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
+        BW::vector<WorldTriangle> triangles;
+        assert(!StockStaticModelSceneLoader::collectStockDecalTriangles(SceneObject(),{12,0,0},{2,0,0},{0,2,0},{0,0,2},triangles));
+        assert(StockStaticModelSceneLoader::collectStockDecalTriangles(objects[0],{12,0,0},{2,0,0},{0,2,0},{0,0,2},triangles));
+        const bool admitted=flags==0x100u||flags==0x6500u;assert(triangles.size()==unsigned(admitted));
+        if(admitted){assert(triangles[0].flags()==flags&&triangles[0].v0().x==10&&triangles[0].v1().x==10);}
+        assert(lastDecalBox[0].x==2&&lastDecalBox[1].x==2);
+        auto old=objects[0];triangles.clear();bool retiredObserved=false;
+        space.dynamic.onRemove=[&]{assert(StockStaticModelSceneLoader::collectStockDecalTriangles(old,{},{},{},{},triangles)&&triangles.empty());retiredObserved=true;};
+        query.unload();assert(retiredObserved);
+    }
+    std::memcpy(file.sections[1].data()+materialFlags,&savedMaterial,4);
     // Authored decoration is hidden only by the primary draw context. Its
     // authored collision choices and independently constructed passes remain.
     uint32 matrixCount;std::memcpy(&matrixCount,file.sections[0].data()+4,4);

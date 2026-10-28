@@ -1,11 +1,14 @@
 #pragma once
 
 #include "compiled_space/loader.hpp"
+#include "cstdmf/bw_vector.hpp"
 #include <memory>
 
 BW_BEGIN_NAMESPACE
 class Scene;
 class SceneObject;
+class Vector3;
+class WorldTriangle;
 namespace CompiledSpace
 {
 // The original mapping owns BSMI2 instances, BSMO1 definitions and BSMA1
@@ -19,6 +22,9 @@ public:
     static void registerHandlers( Scene & scene );
     // The WGDE1 (chunk id, row) of a compiled instance, as 006ba9b0 reads it.
     static bool itemIdentity( const SceneObject & object, uint32 & chunkID, uint32 & itemIndex );
+    static bool collectStockDecalTriangles(const SceneObject& object, const Vector3& center,
+        const Vector3& first, const Vector3& second, const Vector3& third,
+        BW::vector<WorldTriangle>& output);
 
 protected:
     virtual bool doLoadFromSpace( ClientSpace * space, BinaryFormat & file,
