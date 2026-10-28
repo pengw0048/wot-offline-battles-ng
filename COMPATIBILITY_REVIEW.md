@@ -3344,6 +3344,20 @@ Battle loading also exposes the original zero-argument color-grading refresh
 entry point. Like the existing strength accessors, it takes the original
 absent-owner branch because this pipeline has no color-grading LUT owner.
 
+Impact material lookup traverses every intersection and selects the surface
+nearest the requested point. It preserves the original destructible-material
+callback, identity, filename and damaged-material rules. Callback teardown,
+including destruction of a returned Python object, invalidates the result.
+Undefined miss fields are zero-initialized; invalid-space and callback-conversion
+failures report Python exceptions instead of returning a value with a pending
+exception.
+
+`WGTurretFilter` is a distinct Python/native subtype that applies the original
+gravity receipt and typed-copy behavior. Original `DetachedTurret` lifecycle
+bytecode exercises its construction and retirement. The pinned offline mod
+still owns the copied turret arc and presentation matrix; this restoration
+does not introduce a second presentation writer.
+
 Exact executable oracles and original Python consumers distinguish retained
 state from rendered behavior. The compiled-space light tick samples `bounds`
 and `shader`; `colorAnimator` and `multiplierAnimator` are retained properties
