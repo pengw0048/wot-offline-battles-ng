@@ -1,6 +1,7 @@
 import contextlib
 import io
 from pathlib import Path
+import struct
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -112,7 +113,13 @@ class NativeClientStartupDiagnostics(unittest.TestCase):
         schema = source / 'src/res/scripts/client/gui/mods/offline_lan_0922/navigation_graph_schema.py'
         schema.parent.mkdir(parents=True)
         schema.write_bytes(b'SUPPORTED_MAPS = ()\n')
-        (self.package / 'bwclient_h.exe').touch()
+        executable = bytearray(154)
+        executable[:2] = b'MZ'
+        struct.pack_into('<I', executable, 60, 128)
+        executable[128:132] = b'PE\0\0'
+        struct.pack_into('<H', executable, 132, 0x014c)
+        struct.pack_into('<HH', executable, 150, 0x0122, 0x010b)
+        (self.package / 'bwclient_h.exe').write_bytes(executable)
         runtime = io.BytesIO()
         with zipfile.ZipFile(runtime, 'w') as archive:
             archive.writestr('python.exe', b'fixture')
