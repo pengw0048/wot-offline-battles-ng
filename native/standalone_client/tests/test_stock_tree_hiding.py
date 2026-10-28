@@ -368,6 +368,7 @@ struct TreeRenderingOwner
 {
     bool active = true, gpuReady = true;
     float time = 0.f;
+    std::array<float, 16> collisionBodyMatrix = {};
     Matrix alphaPassView = Matrix::identity, alphaPassProjection = Matrix::identity;
     std::vector<TreeDrawItem> semitransparent;
     Setting * semitransparentLeaves = nullptr;
@@ -667,12 +668,14 @@ REOPEN = r"""
 
 def lifecycle_source(engine_root):
     scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
-    state = scene[scene.index('struct TreeHidingState'):]
+    state = scene[scene.index('struct TreeCollisionBodyState'):]
     state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
     tree = '\n'.join(function(scene, signature) for signature in (
         'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )',
         'void tickStockTreeSceneRendering( float dTime )',
         'void setStockTreeCameraTarget( MatrixProvider * target )',
+        'void setStockTreeCollisionBody( MatrixProvider * target )',
+        'void closeStockTreeCollisionBody()',
         'void closeStockTreeCameraTarget()', 'void openStockTreeCameraTarget()',
         'void drawStockTreeSemitransparent( bool skipDrawing )',
         'void StockTreeSceneHandler::unload()'))
@@ -983,7 +986,7 @@ def script_macros():
 
 def api_host_source():
     scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
-    state = scene[scene.index('struct TreeHidingState'):]
+    state = scene[scene.index('struct TreeCollisionBodyState'):]
     state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
     functions = scene[scene.index('void wg_enableTreeHiding( bool enable )'):]
     functions = functions[:functions.index('\n', functions.index('PY_AUTO_MODULE_FUNCTION( RETVOID, wg_enableTreeTransparency')) + 1]

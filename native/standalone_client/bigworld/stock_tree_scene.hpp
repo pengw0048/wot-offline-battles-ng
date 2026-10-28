@@ -14,6 +14,9 @@ class Scene;
 bool initialiseStockTreeSceneRendering();
 void tickStockTreeSceneRendering( float dTime );
 void finaliseStockTreeSceneRendering();
+// 00746d60/00748370 retain and sample this body even with zero SRT instances.
+// The exact client's old-ST4 resources do not render body deformation.
+void setStockTreeCollisionBody( MatrixProvider * target );
 // #1513 00b030b0: trees between the camera and this target fade in the
 // colour pass and are drawn by drawStockTreeSemitransparent (00afef30).
 void setStockTreeCameraTarget( MatrixProvider * target );

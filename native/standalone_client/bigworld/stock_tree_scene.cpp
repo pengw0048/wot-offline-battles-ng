@@ -669,6 +669,9 @@ public:
     ComObjectWrap<DX::Texture> atlas;
     std::atomic<bool> active{ true };
     float time = 0.f;
+    // 748370 samples the retained body even with zero SRT instances. The
+    // shipped old-ST4 shaders do not consume this new-renderer matrix.
+    std::array<float, 16> collisionBodyMatrix = {};
     uint32 adapterVendor = 0;
     bool gpuReady = false;
 
@@ -902,6 +905,20 @@ bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPas
 
 // #1513 SpeedTreeRenderer statics: s_pTarget 01d59f74, its b035a0 snapshot
 // and the transparency state the BigWorld tree-hiding functions write.
+struct TreeCollisionBodyState
+{
+    MatrixProviderPtr target;
+    uint32 generation = 0;
+    bool open = true;
+};
+
+TreeCollisionBodyState & treeCollisionBody()
+{
+    // Script/render teardown explicitly releases this Python-owned provider.
+    static TreeCollisionBodyState * state = new TreeCollisionBodyState;
+    return *state;
+}
+
 struct TreeHidingState
 {
     MatrixProviderPtr target;
@@ -1182,6 +1199,7 @@ bool initialiseStockTreeSceneRendering()
         std::lock_guard<std::mutex> lock( renderingOwnerMutex );
         renderingOwner = owner;
     }
+    treeCollisionBody().open = treeHiding().open;
     Moo::rc().effectVisualContext().registerAutoConstant(
         Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "SpeedTreeMaterials", new TreeAtlasConstant );
     return true;
@@ -1208,8 +1226,52 @@ void tickStockTreeSceneRendering( float dTime )
     }
     auto owner = currentRenderingOwner();
     if (owner && owner->active)
+    {
+        // 748370 -> 941a10 -> the active pipeline's renderer: sampling does
+        // not depend on SRT instance count or collision deformation settings.
+        TreeCollisionBodyState & body = treeCollisionBody();
+        if (body.open)
+        {
+            const uint32 generation = body.generation;
+            const MatrixProviderPtr source = body.target;
+            if (source)
+            {
+                Matrix sampled;
+                source->matrix( sampled );
+                if (body.open && body.generation == generation && owner->active &&
+                    currentRenderingOwner() == owner)
+                    std::memcpy( owner->collisionBodyMatrix.data(), &sampled, sizeof( sampled ) );
+            }
+            else
+                owner->collisionBodyMatrix[15] = 0.f;
+        }
+        // A provider callback may have retired or replaced the renderer.
+        if (!owner->active || currentRenderingOwner() != owner) return;
         owner->time = addTreeScalar( owner->time, std::min( dTime, .05f ) );
+    }
 }
+
+void setStockTreeCollisionBody( MatrixProvider * target )
+{
+    TreeCollisionBodyState & body = treeCollisionBody();
+    if (body.target.get() == target || (target && !body.open)) return;
+    MatrixProviderPtr previous( target );
+    std::swap( body.target, previous );
+    ++body.generation;
+}
+
+void closeStockTreeCollisionBody()
+{
+    treeCollisionBody().open = false;
+    setStockTreeCollisionBody( NULL );
+}
+
+void setSpeedTreeCollisionBody( MatrixProviderPtr target )
+{
+    setStockTreeCollisionBody( target.get() );
+}
+PY_AUTO_MODULE_FUNCTION( RETVOID, setSpeedTreeCollisionBody,
+    ARG( MatrixProviderPtr, END ), BigWorld )
 
 void setStockTreeCameraTarget( MatrixProvider * target )
 {
@@ -1227,12 +1289,14 @@ void closeStockTreeCameraTarget()
     // A release may run a destructor that publishes again; closing first
     // refuses it, so nothing stays retained across script teardown.
     treeHiding().open = false;
+    closeStockTreeCollisionBody();
     setStockTreeCameraTarget( NULL );
 }
 
 void openStockTreeCameraTarget()
 {
     treeHiding().open = true;
+    treeCollisionBody().open = true;
 }
 
 namespace
@@ -1469,6 +1533,7 @@ void drawStockTreeSemitransparent( bool skipDrawing )
 
 void finaliseStockTreeSceneRendering()
 {
+    closeStockTreeCollisionBody();
     auto owner = currentRenderingOwner();
     if (!owner) return;
     Moo::rc().effectVisualContext().unregisterAutoConstant(
