@@ -325,6 +325,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "vehicle-compound-rendering-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio.py"),
         $EngineRoot) "stock-audio-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_audio_space.py"),
+        $EngineRoot) "stock-audio-space-patch.log"
     # Keeps the simulation worker hidden; replaces its draw phase after audio.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_worker_runtime.py"),
         $EngineRoot) "stock-worker-runtime-patch.log"

@@ -414,6 +414,17 @@ bool selectStockAudioBankSet(const BW::string& section) {
     return accepted;
 }
 
+void setStockAudioSpaceBankSet(DataSectionPtr spaceSettings) {
+    if (!stockAudioReady()) return;
+    // #1513 1255d29..1255de8 tests the presence of gameplayTypes, not
+    // its value. The native camera-space notification selects these authored
+    // lists before publishing the new space to script callbacks.
+    const BW::string section = spaceSettings && spaceSettings->openSection("gameplayTypes") ?
+        "SFX_soundbanks_arena" : "SFX_soundbanks_hangar";
+    if (!selectStockAudioBankSet(section))
+        ERROR_MSG("StockAudio: camera-space bank selection failed: %s\n", section.c_str());
+}
+
 void tickStockAudio(const Matrix& cameraWorld, float elapsed) {
     using namespace StockAudioDetail;
     Manager& state = manager();

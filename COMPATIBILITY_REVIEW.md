@@ -3518,7 +3518,15 @@ before releasing their scene membership.
 Authored sound-zone UDOs register the native camera-driven zone owner. Its
 original first-match and enter/exit order feeds live Wwise events and auxiliary
 sends; mapping completion supplies the map's default reverb, and native space
-destruction clears the registry. Battle FPS sampling uses the actual frame
+destruction clears the registry. Camera-space changes select the authored
+arena or hangar sound-bank list before environment activation and the script
+notification; the presence of `gameplayTypes` selects the arena list. Login
+retains its explicit bank selection. A windowless Windows probe using the real
+Wwise SDK and original resources reproduces the missing weapon, reload and
+engine events with only login banks, accepts them in the arena, unloads them
+in the hangar and accepts them again in the second arena. Its emitters are
+muted; this proves event admission and bank lifetime, not audible gameplay.
+Battle FPS sampling uses the actual frame
 statistics task. Monitor changes notify the original settings callback, and
 the hardware profile queries retain the original cached-score classification
 and int64 preference fields. Startup and button detection have a separate
