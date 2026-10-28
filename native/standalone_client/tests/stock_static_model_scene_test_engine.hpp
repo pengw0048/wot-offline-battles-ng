@@ -53,10 +53,12 @@ struct DataSection {BinaryPtr readBinary(const char* name){assert(std::string(na
 using DataSectionPtr=SmartPointer<DataSection>;
 struct PrimitiveFile{static DataSectionPtr get(const char* name){assert(std::string(name)=="bsp.primitives");return new DataSection;}};
 struct FourCC{uint32 value;explicit FourCC(const char* n){std::memcpy(&value,n,4);}};
+struct SceneTypeSystem{using RuntimeTypeID=const std::type_info*;};
 class SceneObject {
 public:
  void* value=nullptr;const std::type_info* type_=nullptr;struct Flags{void isDynamic(bool){}void isReflectionVisible(bool){}void isCastingStaticShadow(bool){}void isCastingDynamicShadow(bool){}} bits;
  template<class T>void type(){type_=&typeid(T);}template<class T>bool isType()const{return type_&&*type_==typeid(T);}void handle(void* p){value=p;}Flags& flags(){return bits;}template<class T>T* getAs()const{return static_cast<T*>(value);}
+ SceneTypeSystem::RuntimeTypeID type()const{return type_;}
 };
 class WorldTriangle {public:using Flags=std::uint16_t;Flags value=0;Vector3 vertices[3];
  WorldTriangle(Flags f=0):value(f){}WorldTriangle(Vector3 a,Vector3 b,Vector3 c,Flags f=0):value(f),vertices{a,b,c}{}
@@ -103,9 +105,12 @@ struct StreamedDataCache {
  const EntryInfo* findEntryData(const char* n,unsigned version,unsigned){assert(version==6);static EntryInfo e;return valid&&std::string(n)=="source.animation"?&e:nullptr;}
 };
 struct StreamedAnimation {static StreamedDataCache* s_loadingAnimCache_;};StreamedDataCache* StreamedAnimation::s_loadingAnimCache_=nullptr;
+static std::vector<float> sampledFrames;
+static std::function<void()> onAnimation;
+static unsigned channelCalls=0;
 struct Channel {
  unsigned index;void nodeless(float,float)const{}
- void result(float frame,Matrix& out)const{out=Matrix();out[3][0]=index==0?frame:1;}
+ void result(float frame,Matrix& out)const{++channelCalls;auto callback=std::move(onAnimation);onAnimation=nullptr;if(callback)callback();out=Matrix();out[3][0]=index==0?frame:1;}
 };
 struct Binder {SmartPointer<Channel> value;const SmartPointer<Channel>& channel()const{return value;}};
 struct Animation {
@@ -113,7 +118,7 @@ struct Animation {
  ~Animation(){if(cache){assert(liveCaches.count(cache));destruction.push_back("animation");}}
  bool load(const char* n){assert(std::string(n)=="source.animation");cache=StreamedAnimation::s_loadingAnimCache_;if(!cache)return false;for(unsigned i=0;i<2;++i){auto* c=new Channel;c->index=i;binders.push_back({SmartPointer<Channel>(c)});}return true;}
  unsigned nChannelBinders()const{return unsigned(binders.size());}const Binder& channelBinder(unsigned n)const{return binders[n];}
- float totalTime()const{return 20;}void touchStockCompiledFrame(float)const{assert(cache&&liveCaches.count(cache));}
+ float totalTime()const{return 20;}void touchStockCompiledFrame(float frame)const{assert(cache&&liveCaches.count(cache));sampledFrames.push_back(frame);}
 };using AnimationPtr=SmartPointer<Animation>;
 enum ERenderingPassType{RENDERING_PASS_COLOR,RENDERING_PASS_REFLECTION,RENDERING_PASS_SHADOWS,RENDERING_PASS_DEPTH};
 struct DrawContext {
@@ -128,7 +133,7 @@ struct DrawContext {
  void drawRenderOp(ComplexEffectMaterial* m,Vertices* v,Primitive* p,uint32 group,InstanceData* packet,const BoundingBox&){assert(m&&v&&p);items.push_back({m,group,packet});}
  void clear(){items.clear();bytes.clear();}
 };
-struct RenderContext{Matrix projection_;const Matrix& projection()const{return projection_;}};RenderContext& rc(){static RenderContext r;return r;}
+struct RenderContext{uint32 frame=0;Matrix projection_;const Matrix& projection()const{return projection_;}uint32 frameTimestamp()const{return frame;}void nextFrame(){++frame;}};RenderContext& rc(){static RenderContext r;return r;}
 }
 struct LodSettings{static LodSettings& instance(){static LodSettings v;return v;}float stockCompiledLodScale()const{return 1;}float stockCompiledLodDefault(unsigned n)const{assert(n<5);return 1;}};
 static int decor=0;int stockDecorLevel(){return decor;}
@@ -138,7 +143,12 @@ struct ISpatialQueryOperationTypeHandler{virtual ~ISpatialQueryOperationTypeHand
 struct ICollisionTypeHandler{virtual ~ICollisionTypeHandler(){}virtual bool doCollide(const SceneObject&,const Vector3&,const Vector3&,const SweepParams&,CollisionState&)const=0;virtual bool doCollide(const SceneObject&,const WorldTriangle&,const Vector3&,const SweepParams&,CollisionState&)const=0;};
 struct ITickOperationTypeHandler{virtual ~ITickOperationTypeHandler(){}virtual void doTick(SceneObject*,size_t,float)=0;virtual void doUpdateAnimations(SceneObject*,size_t,float)=0;};
 template<class H>struct Operation {std::unique_ptr<H> handler;template<class T,class Handler>void addHandler(){handler.reset(new Handler);}};
-using DrawOperation=Operation<IDrawOperationTypeHandler>;using SpatialQueryOperation=Operation<ISpatialQueryOperationTypeHandler>;using CollisionOperation=Operation<ICollisionTypeHandler>;using TickOperation=Operation<ITickOperationTypeHandler>;
+using DrawOperation=Operation<IDrawOperationTypeHandler>;using SpatialQueryOperation=Operation<ISpatialQueryOperationTypeHandler>;using CollisionOperation=Operation<ICollisionTypeHandler>;
+struct TickOperation:Operation<ITickOperationTypeHandler> {
+ ITickOperationTypeHandler* getHandler(SceneTypeSystem::RuntimeTypeID type){return type?handler.get():nullptr;}
+ void tick(SceneObject*,size_t,float);void tick(SceneTypeSystem::RuntimeTypeID,SceneObject*,size_t,float);
+ void updateAnimations(SceneObject*,size_t,float);void updateAnimations(SceneTypeSystem::RuntimeTypeID,SceneObject*,size_t,float);
+};
 class Scene {public:std::map<size_t,std::shared_ptr<void>> operations;template<class T>T* getObjectOperation(){auto& p=operations[typeid(T).hash_code()];if(!p)p=std::make_shared<T>();return static_cast<T*>(p.get());}};
 struct DynamicObjectHandle {unsigned index;};
 struct DynamicSceneProvider {

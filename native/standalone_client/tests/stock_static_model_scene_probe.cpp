@@ -23,7 +23,7 @@ int main(int argc,char** argv)
     assert(!StockStaticModelSceneLoader::modelFilename(SceneObject(),modelName));
     Moo::DrawContext draw;SceneDrawContext context{draw,Matrix()};
     auto* drawer=space.scene().getObjectOperation<DrawOperation>()->handler.get();
-    auto* ticker=space.scene().getObjectOperation<TickOperation>()->handler.get();
+    auto* ticker=space.scene().getObjectOperation<TickOperation>();
     drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
     assert(draw.items[0].material->base->properties==6&&!draw.items[0].material->base->boolean);
     assert(draw.items[0].material->base->floating==1.5f&&draw.items[0].material->base->integer==-1);
@@ -31,7 +31,9 @@ int main(int argc,char** argv)
     assert(draw.items[5].packet->paletteSize_==4);
     // Initial current and previous poses are produced by the same actual frame.
     assert(draw.items[5].packet->palette()[0].w==10&&draw.items[5].packet->palette()[6].w==10);
-    draw.clear();ticker->doTick(objects.data(),objects.size(),.5f);ticker->doUpdateAnimations(objects.data(),objects.size(),.5f);
+    draw.clear();Moo::sampledFrames.clear();
+    ticker->tick(objects.data(),objects.size(),.5f);ticker->updateAnimations(objects.data(),objects.size(),.5f);
+    assert(Moo::sampledFrames==std::vector<float>{5.f});
     drawer->doDraw(context,objects.data(),objects.size());assert(draw.items.size()==6);
     auto* rigid=draw.items[4].packet;assert(rigid->stockAnimatedWorld_);
     assert(rigid->matrix()[0][3][0]==15&&rigid->matrix()[1][3][0]==10);
@@ -180,4 +182,93 @@ int main(int argc,char** argv)
     assert(!endpoint->destroy(0,true,false,true,error));assert(space.dynamic.nodes.empty()&&registeredDestructibles.expired());
     endpoint.reset();assert(Moo::liveCaches.empty());
 
+    // Exercise both actual SDK dispatch overloads. DynamicSceneProvider uses
+    // the per-object overload; the typed overload can supply a whole batch.
+    strings.values[102]="cache.anca";
+    std::vector<BinaryFormat> populations;
+    const unsigned counts[]={1,7,64,1763};
+    for(unsigned count:counts)
+    {
+        populations.push_back(readFixture());
+        auto& source=populations.back();StockStaticModelSceneLoader owner(2);
+        Moo::rc().frame=count==1?~uint32(0):0; // Initial frame and uint32 wrap are valid.
+        assert(owner.loadFromSpace(&space,source,{},Matrix(),strings)&&owner.bind());
+        assert(space.dynamic.nodes.size()==count);
+        objects.clear();for(const auto& entry:space.dynamic.nodes)objects.push_back(entry.second);
+        auto admission=registeredDestructibles.lock();assert(admission);
+        Moo::sampledFrames.clear();
+        ticker->tick(objects.data(),objects.size(),.25f);
+        ticker->updateAnimations(objects.data(),objects.size(),.25f);
+        assert(Moo::sampledFrames==std::vector<float>{2.5f});
+        // Repeated untyped, typed and direct handler calls share mapping state.
+        ticker->tick(objects.data(),objects.size(),.25f);
+        ticker->updateAnimations(objects.data(),objects.size(),.25f);
+        ticker->tick(objects[0].type(),objects.data(),objects.size(),.25f);
+        ticker->updateAnimations(objects[0].type(),objects.data(),objects.size(),.25f);
+        ticker->handler->doTick(objects.data(),objects.size(),.25f);
+        ticker->handler->doUpdateAnimations(objects.data(),objects.size(),.25f);
+        assert(Moo::sampledFrames==std::vector<float>{2.5f});
+        drawer->doDraw(context,objects.data(),objects.size());
+        auto* animated=draw.items.back().packet;
+        assert(animated->palette()[0].w==12.5f&&animated->palette()[6].w==10.f);draw.clear();
+        // Explicit same-frame geometry refresh remains a zero-time recompute.
+        Matrix moved;moved[3][0]=33;moved[3][2]=100;
+        assert(admission->transform(count-1,moved,0,error));
+        assert((Moo::sampledFrames==std::vector<float>{2.5f,2.5f}));
+        drawer->doDraw(context,objects.data(),objects.size());
+        assert(draw.items.back().packet->palette()[0].w==35.5f);draw.clear();
+        Moo::rc().nextFrame();ticker->tick(objects.data(),objects.size(),.5f);
+        ticker->updateAnimations(objects.data(),objects.size(),.5f);
+        assert(Moo::sampledFrames.size()==3&&Moo::sampledFrames.back()==7.5f);
+        // A paused frame still owns one palette advance/evaluation. A failed
+        // device frame can tick without animation, then recover independently.
+        Moo::rc().nextFrame();ticker->tick(objects.data(),objects.size(),0);
+        ticker->updateAnimations(objects.data(),objects.size(),0);
+        assert(Moo::sampledFrames.size()==4&&Moo::sampledFrames.back()==7.5f);
+        Moo::rc().nextFrame();ticker->tick(objects.data(),objects.size(),.25f);
+        assert(Moo::sampledFrames.size()==4);
+        Moo::rc().nextFrame();ticker->tick(objects.data(),objects.size(),.25f);
+        ticker->updateAnimations(objects.data(),objects.size(),.25f);
+        assert(Moo::sampledFrames.size()==5&&Moo::sampledFrames.back()==10.f);
+        // Admit before a channel can synchronously reenter the same owner.
+        Moo::rc().nextFrame();Moo::channelCalls=0;
+        Moo::onAnimation=[&]{ticker->tick(objects.data(),objects.size(),.125f);
+            ticker->updateAnimations(objects.data(),objects.size(),.125f);};
+        ticker->tick(objects.data(),objects.size(),.125f);
+        ticker->updateAnimations(objects.data(),objects.size(),.125f);
+        assert(Moo::sampledFrames.size()==6&&Moo::sampledFrames.back()==11.25f&&Moo::channelCalls==2);
+        // Retiring during a channel stops that evaluation and keeps resources
+        // alive through its callback. No stale scene array is used afterward.
+        const SceneObject selected=objects.back();SceneObject selectedCopy=selected;
+        Moo::rc().nextFrame();Moo::channelCalls=0;
+        Moo::onAnimation=[&]{owner.unload();assert(space.dynamic.nodes.empty());};
+        ticker->tick(&selectedCopy,1,.125f);ticker->updateAnimations(&selectedCopy,1,.125f);
+        assert(Moo::sampledFrames.size()==7&&Moo::sampledFrames.back()==12.5f&&Moo::channelCalls==1);
+        admission.reset();assert(Moo::liveCaches.empty());
+        // A newly bound mapping can run in the very same engine frame.
+        assert(owner.loadFromSpace(&space,source,{},Matrix(),strings)&&owner.bind());
+        objects.clear();for(const auto& entry:space.dynamic.nodes)objects.push_back(entry.second);
+        Moo::sampledFrames.clear();ticker->tick(objects.data(),objects.size(),.125f);
+        ticker->updateAnimations(objects.data(),objects.size(),.125f);
+        assert(Moo::sampledFrames==std::vector<float>{1.25f});owner.unload();assert(Moo::liveCaches.empty());
+    }
+    // Each mapping owns its frame tokens, including a late bind in a frame
+    // where another mapping has already advanced.
+    StockStaticModelSceneLoader small(2),large(2);Moo::rc().nextFrame();
+    assert(small.loadFromSpace(&space,populations[0],{},Matrix(),strings)&&small.bind());
+    objects.clear();for(const auto& entry:space.dynamic.nodes)objects.push_back(entry.second);
+    Moo::sampledFrames.clear();ticker->tick(objects.data(),objects.size(),.25f);
+    ticker->updateAnimations(objects.data(),objects.size(),.25f);
+    assert(Moo::sampledFrames==std::vector<float>{2.5f});
+    assert(large.loadFromSpace(&space,populations[2],{},Matrix(),strings)&&large.bind());
+    assert(space.dynamic.nodes.size()==65);Moo::sampledFrames.clear();
+    objects.clear();for(const auto& entry:space.dynamic.nodes)objects.push_back(entry.second);
+    ticker->tick(objects.data(),objects.size(),.25f);ticker->updateAnimations(objects.data(),objects.size(),.25f);
+    assert(Moo::sampledFrames==std::vector<float>{2.5f});
+    Moo::rc().nextFrame();Moo::sampledFrames.clear();
+    ticker->tick(objects[0].type(),objects.data(),objects.size(),.25f);
+    ticker->updateAnimations(objects[0].type(),objects.data(),objects.size(),.25f);
+    assert((Moo::sampledFrames==std::vector<float>{5.f,5.f}));
+    small.unload();large.unload();assert(space.dynamic.nodes.empty()&&Moo::liveCaches.empty());
+    std::puts("Static mapping frame ownership: 1, 7, 64, 1763 instances; batch, reentry, refresh, multi-mapping and rebind passed");
 }

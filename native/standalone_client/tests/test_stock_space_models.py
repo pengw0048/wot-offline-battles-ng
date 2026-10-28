@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = ['lib/moo/' + name for name in ('draw_context.hpp', 'draw_context.cpp',
          'effect_visual_context.hpp', 'effect_visual_context.cpp', 'animation.hpp',
          'animation.cpp', 'lod_settings.hpp', 'lod_settings.cpp')] + ['client/finale_app.cpp',
-         'lib/moo/fog_helper.hpp', 'lib/romp/enviro_minder.hpp', 'lib/romp/enviro_minder.cpp']
+         'lib/moo/fog_helper.hpp', 'lib/romp/enviro_minder.hpp', 'lib/romp/enviro_minder.cpp',
+         'lib/scene/tick_scene_view.cpp']
 
 
 def module(name):
@@ -333,16 +334,36 @@ int main(){Primitive primitive;Packet rigid;rigid.stockPreviousWorld_=true;
             debris=list(plain);debris[7]=array(12,struct.pack('<6I',0,0,0xffffffff,0xffffffff,0xffffffff,0xffffffff))
             debris[8]=array(4,struct.pack('<I',1))
             datasets.append((debris,fragile,a))
+            # One animated instance with varying real scene membership counts.
+            for count in (1, 7, 64, 1763):
+                population = list(i)
+                population[0] = array(64, struct.pack('<%df' % (16 * count), *(matrix * count)))
+                population[1] = array(8, b''.join(struct.pack('<2I', 97 if n == count - 1 else 35, 1)
+                                                  for n in range(count)))
+                population[2] = array(4, struct.pack('<%dI' % count, *([2] * count)))
+                population[3] = array(4, bytes(4 * count))
+                population[4] = array(4, struct.pack('<%di' % count, *([-1] * (count - 1) + [0])))
+                population[5] = array(16, struct.pack('<Iiff', count - 1, 0, 0, 1))
+                population[7] = array(12, bytes(12 * count))
+                population[9] = array(20, struct.pack('<%df' % (5 * count), *([-1.] * (5 * count))))
+                datasets.append((population, o, a))
             input_file.write_bytes(b''.join(struct.pack('<I',len(data))+data
                 for dataset in datasets for data in map(b''.join,dataset)))
             engine = (ROOT / 'tests/stock_static_model_scene_test_engine.hpp').read_text()
+            dispatch = self.original['lib/scene/tick_scene_view.cpp'].decode()
+            operations = '\n'.join(definition(dispatch, signature) for signature in (
+                'void TickOperation::tick( SceneObject*',
+                'void TickOperation::tick( SceneTypeSystem::RuntimeTypeID',
+                'void TickOperation::updateAnimations( SceneObject*',
+                'void TickOperation::updateAnimations( SceneTypeSystem::RuntimeTypeID'))
             header = (ROOT / 'bigworld/stock_static_model_scene.hpp').read_text()
             destructibles = (ROOT / 'bigworld/stock_destructibles.hpp').read_text()
             source = (ROOT / 'bigworld/stock_static_model_scene.cpp').read_text()
             without_includes = lambda value: '\n'.join(line for line in value.splitlines()
                 if not line.startswith(('#include', '#pragma once')))
             driver = root / 'scene.cpp'
-            driver.write_text(engine + '\n#include "wot/stock_static_model_binary.hpp"\n'
+            driver.write_text(engine + '\nnamespace BW {\n' + operations + '\n}\n'
+                '#include "wot/stock_static_model_binary.hpp"\n'
                 '#include "stock_scene_identity_data.hpp"\n#include "stock_destructibles_data.hpp"\n' +
                 without_includes(destructibles) + '\n' + (ROOT / 'tests/stock_destructibles_registration_host.hpp').read_text() + '\n' +
                 without_includes(header) + '\n' + without_includes(source) + '\n' +
@@ -357,6 +378,8 @@ int main(){Primitive primitive;Packet rigid;rigid.stockPreviousWorld_=true;
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(binary), str(input_file)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Static mapping frame ownership: 1, 7, 64, 1763 instances', result.stdout)
+            print(result.stdout.strip())
 
     def test_production_lod_option_payload_config_callback_and_animation_windows(self):
         with tempfile.TemporaryDirectory() as directory:

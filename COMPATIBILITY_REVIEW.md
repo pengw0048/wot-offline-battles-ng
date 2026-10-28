@@ -3353,6 +3353,14 @@ property objects otherwise alias across materials, allowing a later texture or
 scalar write to change an earlier model. Tests compile the original property
 loading, cloning and setter bodies and reproduce both ownership failures before
 applying the construction-boundary isolation.
+Compiled static-model ticks and animation updates advance each bound mapping
+once per native frame. The SDK's untyped TickOperation dispatches each instance
+separately; handler-local deduplication therefore repeated the entire mapping's
+animation update and palette-slot rotation for every member. The original fjord
+mapping initially admits 1,763 members. Focused tests execute both actual SDK
+dispatch overloads, including that member count, independent mappings, repeated
+callbacks and subsequent frames. Bind and refresh retain their immediate
+zero-time pose evaluation. Reduced calls are not a player frame-rate measurement.
 Compound bounds preserve the SDK's empty sentinel: disabled or unpopulated
 particle attachments contribute no geometry until their bounds become valid.
 Aggregation skips empty parts and attachments before transforming them, and
@@ -3385,8 +3393,12 @@ unload revokes the mapping before scene callbacks. Table tasks retain the water
 generation through background work and foreground completion, so delayed work
 cannot initialize a new water object that reuses the old address. Focused tests
 exercise the SDK producers, loader ownership, original miss, address reuse,
-disabled surfaces and unload/rebind. End-to-end drowning still requires the real
-worker and unchanged server to accept the observation and complete the countdown.
+disabled surfaces and unload/rebind. A paired Windows run with the real hidden
+worker and unchanged server accepted all 61 environment observations, including
+shallow and deep water, and completed the drowning countdown after 301 server
+ticks (10.03 seconds), ending with zero health and drowning as the death reason.
+That run replayed recorded player poses without query breakpoints; it does not
+establish physical player input, visible water effects or audible feedback.
 The Hybrid build's profiler checks optional callback metadata before string
 conversion and retains dynamic metadata until it has copied the profiling name.
 Native bound methods legitimately expose `__module__ = None`; profiling must

@@ -24,6 +24,7 @@
 #include "moo/texture_manager.hpp"
 #include "moo/animation.hpp"
 #include "moo/lod_settings.hpp"
+#include "moo/render_context.hpp"
 #include "moo/streamed_animation_channel.hpp"
 #include "stock_scene_settings.hpp"
 #include "resmgr/primitive_file.hpp"
@@ -60,6 +61,8 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>,
     std::vector<Animation> animations;
     std::vector<Matrix> localPoses, worldPoses[2];
     size_t currentPose = 0, previousPose = 0;
+    uint32 tickFrame = 0, animationFrame = 0;
+    bool hasTickFrame = false, hasAnimationFrame = false;
     struct Instance
     {
         State * owner = NULL;
@@ -699,29 +702,32 @@ struct StockStaticModelSceneLoader::State::TickHandler : ITickOperationTypeHandl
 {
     virtual void doTick( SceneObject * objects, size_t count, float )
     {
-        std::vector<State *> visited;
+        const uint32 frame = Moo::rc().frameTimestamp();
         for (size_t n = 0; n < count; ++n)
         {
             State * owner = objects[n].getAs<Instance>()->owner;
-            if (std::find( visited.begin(), visited.end(), owner ) != visited.end()) continue;
-            visited.push_back( owner );
-            if (!owner->bound) continue;
+            if (!owner->bound || (owner->hasTickFrame && owner->tickFrame == frame)) continue;
+            owner->hasTickFrame = true;
+            owner->tickFrame = frame;
             // 6c25d0 -> 6d1f70 changes the actual current/previous palette slot
-            // once per mapping tick, independently of animation evaluation.
+            // once per mapping tick. The SDK dispatches each instance separately.
             owner->previousPose = owner->currentPose;
             owner->currentPose = (owner->currentPose + 1) & 1;
         }
     }
     virtual void doUpdateAnimations( SceneObject * objects, size_t count, float dTime )
     {
-        std::vector<State *> visited;
+        const uint32 frame = Moo::rc().frameTimestamp();
         for (size_t n = 0; n < count; ++n)
         {
             State * owner = objects[n].getAs<Instance>()->owner;
-            if (std::find( visited.begin(), visited.end(), owner ) != visited.end()) continue;
-            visited.push_back( owner );
             auto live = owner->shared_from_this();
-            if (live->bound) live->updateAnimations( dTime );
+            if (!live->bound || (live->hasAnimationFrame && live->animationFrame == frame)) continue;
+            // Record before channels can reenter. Bind/refresh still recompute
+            // zero-time poses directly, independently of this frame admission.
+            live->hasAnimationFrame = true;
+            live->animationFrame = frame;
+            live->updateAnimations( dTime );
         }
     }
 };
