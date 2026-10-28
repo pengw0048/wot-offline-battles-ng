@@ -167,9 +167,16 @@ ORDERED_CONTRACTS = (
     (
         'compat.py',
         'OfflineCompatibility._discard_partial_account',
-        'partial Account cleanup releases spaces before repository ownership',
-        (('call', 'clear_all_spaces'), ('call', 'delete_repository'),
-         ('assign', 'runtime.account_module.g_accountRepository')),
+        'partial Account cleanup releases its owned space before repository ownership',
+        (('call', 'releaseSpace'), ('call', 'delete_repository'),
+         ('assign', 'module.g_accountRepository')),
+    ),
+    (
+        'compat.py',
+        'OfflineCompatibility._discard_partial_account',
+        'partial Account cleanup destroys its entity before repository ownership',
+        (('call', 'destroyEntity'), ('call', 'delete_repository'),
+         ('assign', 'module.g_accountRepository')),
     ),
     (
         'compat.py',
