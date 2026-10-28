@@ -109,7 +109,7 @@ bool simulate(Vector3 start,Vector3 velocity,Vector3 gravity,float step,float ep
     const SegmentQuery& scene,SimulatedHit& hit) {
     if (!std::isfinite(step) || step<=0.f)
         throw std::invalid_argument("trajectory step must be finite and positive");
-    Vector3 position=start,currentVelocity=velocity,point;
+    Vector3 position=start,currentVelocity=velocity,point{};
     float elapsed=0.f;
     bool found=false;
     while (elapsed<5.f) {
