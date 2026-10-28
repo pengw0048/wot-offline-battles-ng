@@ -11,6 +11,7 @@
 #endif
 #include "pch.hpp"
 #include "stock_audio.hpp"
+#include "stock_sound_zones.hpp"
 #include "stock_audio_source.hpp"
 #include "stock_audio_io.hpp"
 #include "stock_audio_plugins.hpp"
@@ -423,6 +424,7 @@ void tickStockAudio(const Matrix& cameraWorld, float elapsed) {
     }
     const auto epoch = state.epoch;
     state.camera = cameraWorld;
+    tickStockSoundZones(cameraWorld, double(timestamp()) / stampsPerSecondD());
     const AkTransform camera = transform(cameraWorld);
     AK::SoundEngine::SetPosition(state.listener, camera);
     AK::SoundEngine::SetPosition(state.global, camera);
@@ -1537,6 +1539,15 @@ PyObject* py_setLanguage(PyObject* args) {
     Py_RETURN_TRUE;
 }
 PY_MODULE_FUNCTION(setLanguage, _WWISE)
+
+unsigned stockSoundZoneNameID(const BW::string& name) {
+    // Native 124b9b0 preserves empty names as the zero-ID sentinel.
+    return name.empty() ? 0u : AK::SoundEngine::GetIDFromString(name.c_str());
+}
+void postStockSoundZoneEvent(unsigned event) {
+    auto& state = StockAudioDetail::manager();
+    if (state.ready && event) AK::SoundEngine::PostEvent(event, state.global);
+}
 
 bool setStockAudioAuxiliarySend(unsigned busID, float gain) {
     using namespace StockAudioDetail;

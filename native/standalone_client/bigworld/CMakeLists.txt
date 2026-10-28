@@ -111,6 +111,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_filter_helper.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_vector_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_sound_zones.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_audio_io.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bigworld_ipc.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_glyph_cache.cpp"

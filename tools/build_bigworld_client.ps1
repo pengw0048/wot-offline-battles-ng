@@ -333,6 +333,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # Edits the ClientSpace::clear body the two space patchers above changed.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_geometry_retirement.py"),
         $EngineRoot) "stock-geometry-retirement-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_sound_zones.py"),
+        $EngineRoot) "stock-sound-zones-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_display_modes.py"),
         $EngineRoot) "stock-display-modes-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_graphics_settings_consumers.py"),
