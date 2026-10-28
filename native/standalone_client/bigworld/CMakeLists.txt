@@ -179,6 +179,9 @@ target_sources(bwclient PRIVATE
 # These sources are appended after the legacy client's PCH source enumeration.
 # Keep its C++14/PCH contract intact; the recovered numerical core uses C++17.
 if(MSVC)
+    # Match the original x86 client's address-space contract. Map loading plus
+    # the lobby/battle UI exceeds the default 2 GiB process address space.
+    target_link_options(bwclient PRIVATE /LARGEADDRESSAWARE)
     set_source_files_properties(${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/std:c++17;/fp:strict;/arch:SSE2")
     # The recovered flock output lives in the original SDK translation unit.

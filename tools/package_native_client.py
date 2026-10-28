@@ -5,6 +5,7 @@ import argparse
 import io
 from pathlib import Path
 import shutil
+import struct
 from urllib.request import urlopen
 import zipfile
 
@@ -21,9 +22,26 @@ TOOL_FILES = (
 )
 
 
+def validate_native_executable(executable):
+    """Require the original client's x86, large-address-aware PE contract."""
+    with executable.open('rb') as stream:
+        dos = stream.read(64)
+        if len(dos) != 64 or dos[:2] != b'MZ':
+            raise ValueError('bwclient_h.exe has no valid DOS header')
+        stream.seek(struct.unpack_from('<I', dos, 60)[0])
+        pe = stream.read(26)
+    if len(pe) != 26 or pe[:4] != b'PE\0\0':
+        raise ValueError('bwclient_h.exe has no valid PE header')
+    machine = struct.unpack_from('<H', pe, 4)[0]
+    characteristics, magic = struct.unpack_from('<HH', pe, 22)
+    if machine != 0x014c or magic != 0x010b or not characteristics & 0x0002:
+        raise ValueError('bwclient_h.exe must be a 32-bit x86 PE executable')
+    if not characteristics & 0x0020:
+        raise ValueError('bwclient_h.exe must be linked with /LARGEADDRESSAWARE')
+
+
 def package(client):
-    if not (client / 'bwclient_h.exe').is_file():
-        raise ValueError('client output does not contain bwclient_h.exe')
+    validate_native_executable(client / 'bwclient_h.exe')
     target = client / 'tools'
     target.mkdir(exist_ok=True)
     for name in TOOL_FILES:
