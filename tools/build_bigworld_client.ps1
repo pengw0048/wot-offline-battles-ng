@@ -431,6 +431,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
     # MouseCursor.inFocus and GUIApp's background/edge presentation owners.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_hangar_presentation.py"),
         $EngineRoot) "stock-hangar-presentation-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_mouse_targeting.py"),
+        $EngineRoot) "stock-mouse-targeting-patch.log"
     # Starts the generated offline mod at the original guiModsInit seam.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_offline_entry.py"),
         $EngineRoot) "stock-offline-entry-patch.log"
@@ -463,6 +465,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-space-geometry-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_terrain.py"),
         $EngineRoot) "stock-space-terrain-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_terrain_vertices.py"),
+        $EngineRoot) "stock-terrain-vertices-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_trees.py"),
         $EngineRoot) "stock-space-trees-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_models.py"),

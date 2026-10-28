@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VehicleFashionsTest(unittest.TestCase):
+    def test_original_native_optional_material_binding(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('Set WOT_0922_CLIENT for exact #1513 native evidence')
+        executable = Path(client) / 'WorldOfTanks.exe'
+        self.assertTrue(executable.is_file(), 'Configured exact client is missing')
+        try:
+            import pefile  # noqa: F401
+            import unicorn  # noqa: F401
+        except ImportError:
+            self.skipTest('pefile and unicorn are required for original native instructions')
+        from stock_vehicle_material_binding_oracle import audit
+        self.assertEqual(audit(executable), 12)
+
     def test_original_handler_shader_receipts(self):
         source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()
         begin = source.index('Vector4 packedVehicleColour(')
@@ -35,21 +49,40 @@ struct Vector4 {
 };
 namespace Moo {
 using BaseTexturePtr=std::shared_ptr<int>;
+struct EffectMaterial;
 struct Property {
+    EffectMaterial* owner;
+    std::string name;
     BaseTexturePtr texture;
+    Property(EffectMaterial* o,const std::string& n):owner(o),name(n) {}
     bool getTexture(BaseTexturePtr& out) { out=texture;return true; }
+    bool be(const Vector4& value);
+    bool be(bool value);
+    bool be(const BaseTexturePtr& value);
 };
 using EffectPropertyPtr=std::shared_ptr<Property>;
 struct EffectMaterial {
     std::map<std::string,Vector4> vectors;
     std::map<std::string,bool> booleans;
     std::map<std::string,BaseTexturePtr> textures;
-    EffectPropertyPtr id;
-    void setProperty(const std::string& n,const Vector4& v,bool) { vectors[n]=v; }
-    void setProperty(const std::string& n,bool v,bool) { booleans[n]=v; }
-    void setProperty(const std::string& n,const BaseTexturePtr& v,bool) { textures[n]=v; }
-    EffectPropertyPtr getProperty(const std::string&) { return id; }
+    std::map<std::string,EffectPropertyPtr> properties;
+    unsigned missingWrites=0;
+    EffectPropertyPtr expose(const std::string& n) {
+        return properties[n]=std::make_shared<Property>(this,n);
+    }
+    template<class Value> bool setProperty(const std::string& n,const Value& v,bool) {
+        auto property=getProperty(n);
+        if(property) return property->be(v);
+        ++missingWrites;return false;
+    }
+    EffectPropertyPtr getProperty(const std::string& n) {
+        auto found=properties.find(n);
+        return found==properties.end()?EffectPropertyPtr():found->second;
+    }
 };
+bool Property::be(const Vector4& v) { owner->vectors[name]=v;return true; }
+bool Property::be(bool v) { owner->booleans[name]=v;return true; }
+bool Property::be(const BaseTexturePtr& v) { owner->textures[name]=v;return true; }
 }
 '''
         cases = r'''
@@ -61,18 +94,22 @@ int main() {
     camo.colours[0]=0x00332211U;
     camo.tint=std::make_shared<int>(1);
     Moo::EffectMaterial legacy;
+    for(const char* name:{"tintMap","exclusionMap","tintTiling","colorTint1",
+        "colorTint2","colorTint3","colorTint4","g_useOldCamoDetail"}) legacy.expose(name);
     camo.apply(legacy);
     assert(legacy.textures.at("tintMap")==camo.tint);
     assert(legacy.vectors.at("tintTiling").w==5.f);
     assert(legacy.vectors.at("colorTint1").w==0.1f);
     assert(legacy.booleans.at("g_useOldCamoDetail"));
-    legacy.id=std::make_shared<Moo::Property>();
-    legacy.id->texture=std::make_shared<int>(2);
+    legacy.expose("colorIdMap")->texture=std::make_shared<int>(2);
     camo.apply(legacy);
     assert(!legacy.booleans.at("g_useOldCamoDetail"));
     VehicleRepaintState repaint;
     repaint.base=packedVehicleColour(0xff0000ffU);
     Moo::EffectMaterial disabled;
+    for(const char* name:{"g_useRepaint","g_baseColor","g_repaintColor1",
+        "g_repaintColor2","g_repaintColor3","g_repaintMetallic","g_repaintGloss"})
+        disabled.expose(name);
     repaint.apply(disabled);
     assert(!disabled.booleans.at("g_useRepaint"));
     assert(disabled.vectors.size()==1);
@@ -82,6 +119,32 @@ int main() {
     assert(disabled.booleans.at("g_useRepaint"));
     assert(disabled.vectors.at("g_repaintMetallic").w==0.75f);
     assert(disabled.vectors.at("g_repaintGloss").w==0.25f);
+
+    // Track, non-colourised and partial effects share the same handlers.
+    // An absent parameter is not an asset error and must not be created.
+    Moo::EffectMaterial track,partial,unrelated;
+    track.expose("g_useRepaint");
+    partial.expose("colorTint2");partial.expose("g_repaintGloss");
+    unrelated.expose("diffuseMap");
+    const auto unrelatedProperty=unrelated.getProperty("diffuseMap");
+    for(unsigned frame=0;frame<200;++frame) {
+        for(auto* material:{&track,&partial,&unrelated}) {
+            camo.apply(*material);repaint.apply(*material);
+        }
+    }
+    if(track.missingWrites || partial.missingWrites || unrelated.missingWrites) return 11;
+    assert(track.properties.size()==1 && track.vectors.empty() && track.textures.empty());
+    assert(track.booleans.at("g_useRepaint"));
+    assert(partial.properties.size()==2 && partial.vectors.size()==2);
+    assert(partial.vectors.at("colorTint2").w==0.2f);
+    assert(partial.vectors.at("g_repaintGloss").w==0.25f);
+    assert(unrelated.properties.size()==1 && unrelated.vectors.empty() &&
+        unrelated.booleans.empty() && unrelated.textures.empty());
+    assert(unrelated.getProperty("diffuseMap")==unrelatedProperty);
+    // A later material binding can expose a previously absent property.
+    track.expose("g_baseColor");repaint.apply(track);
+    assert(track.vectors.at("g_baseColor").x==1.f);
+    assert(!legacy.missingWrites && !disabled.missingWrites);
 }
 '''
         with tempfile.TemporaryDirectory(prefix='stock-handler-') as directory:
@@ -92,6 +155,19 @@ int main() {
                 '-Wextra', '-Werror', '-ffp-contract=off', str(path / 'probe.cpp'),
                 '-o', str(path / 'probe')], check=True)
             subprocess.run([str(path / 'probe')], check=True)
+            # Restore the former unconditional writer in the actual handler
+            # path. The realistic missing-property guard must reject it.
+            body = source[begin:end]
+            old = ('Moo::EffectPropertyPtr property = material.getProperty( name );\n'
+                   '    if (property)\n        property->be( value );')
+            self.assertEqual(body.count(old), 1)
+            body = body.replace(old, 'material.setProperty( name, value, false );')
+            (path / 'probe.cpp').write_text(host + body + cases)
+            subprocess.run([
+                os.environ.get('CXX', 'clang++'), '-std=c++17', '-Wall',
+                '-Wextra', '-Werror', str(path / 'probe.cpp'),
+                '-o', str(path / 'before')], check=True)
+            self.assertEqual(subprocess.run([str(path / 'before')]).returncode, 11)
 
     def test_track_receipts_and_property_isolation(self):
         source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()

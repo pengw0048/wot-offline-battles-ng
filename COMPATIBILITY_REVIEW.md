@@ -3341,6 +3341,12 @@ component owner with strict zero-argument calls. The original base and vehicle
 factories create an empty component collection; activation does not gate garage
 materials or invent track components. The ordinary appearance activation,
 damaged-model replacement and subsequent battle consumers exercise this path.
+Camouflage and repaint handlers update only properties exposed by each effect,
+matching the original material binder. Track, partial and non-colourised
+materials may omit those optional parameters. The adapter preserves existing
+property values and types without creating missing shader parameters or emitting
+an asset error on every draw. Required track and alpha-property handling is
+unchanged; Windows frame pacing remains a separate measurement.
 Compound bounds preserve the SDK's empty sentinel: disabled or unpopulated
 particle attachments contribute no geometry until their bounds become valid.
 Aggregation skips empty parts and attachments before transforming them, and
@@ -3409,6 +3415,13 @@ fixed-view or matrix-provider branch, and destruction clears that target
 before releasing the provider. `resetKeys` clears the native camera controls.
 These calls are required by the ordinary control-mode create/disable sequence,
 even when the player never selects the video camera.
+
+`MouseTargetingMatrix.detach(bool)` freezes the last sampled screen coordinate
+while the GUI owns the cursor. Sampling resumes only with focus and an in-window
+cursor; the ray still uses the current camera on every matrix read. The stock
+forced-GUI enable, disable and subsequent control-owner bytecode exercises the
+paired detach/re-attach calls. Original native instructions and SDK bindings
+cover the argument and cache contract, independently of visible input testing.
 
 `GUI.Flash` inherits `drawWithRestrictedViewPort` from the native GUI component.
 It defaults to true; the stock battle markers constructor sets it to false.
@@ -3553,6 +3566,15 @@ successful x86 compilation do not establish final pixels, device-loss behavior,
 frame pacing or complete gameplay. Those remain Windows runtime acceptance.
 
 ### Compiled-space metadata
+
+The terrain render adapter packs the final height pair as `HALF2` on stream 1
+and the shared grid as `HALF4` on stream 0, matching the original declaration and
+forward/deferred vertex shaders. Grid components retain the original four-period
+geomorph phase, and the public CPU height interpolation and 0.007 offset remain
+unchanged. Tests compare uploaded bytes against the original native grid
+producer, exercise original shader inputs, and cover failed buffer creation,
+lock, upload and subsequent recovery. Correct final terrain pixels still require
+Windows rendering acceptance.
 
 The public engine's BWT2 and BWSG readers expect section version 1. The exact
 #1513 numeric map packages examined contain BWTB version 1 containers with

@@ -154,6 +154,17 @@ public:
     virtual void apply( Moo::EffectMaterial & material ) const = 0;
 };
 
+template<class Value>
+void setVehicleMaterialProperty( Moo::EffectMaterial & material,
+    const char * name, const Value & value )
+{
+    // #1513's handler binder (96d8d0) only replaces properties exposed by
+    // this effect. A handler also visits track and non-colourised materials.
+    Moo::EffectPropertyPtr property = material.getProperty( name );
+    if (property)
+        property->be( value );
+}
+
 struct VehicleCamoState : public VehicleMaterialHandlerState
 {
     Moo::BaseTexturePtr tint;
@@ -165,21 +176,21 @@ struct VehicleCamoState : public VehicleMaterialHandlerState
     virtual void apply( Moo::EffectMaterial & material ) const
     {
         if (tint)
-            material.setProperty( "tintMap", tint, false );
+            setVehicleMaterialProperty( material, "tintMap", tint );
         if (exclusion)
-            material.setProperty( "exclusionMap", exclusion, false );
-        material.setProperty( "tintTiling", tiling, false );
+            setVehicleMaterialProperty( material, "exclusionMap", exclusion );
+        setVehicleMaterialProperty( material, "tintTiling", tiling );
         Moo::BaseTexturePtr ids;
         Moo::EffectPropertyPtr idProperty = material.getProperty( "colorIdMap" );
         if (idProperty)
             idProperty->getTexture( ids );
-        material.setProperty( "g_useOldCamoDetail", !ids, false );
+        setVehicleMaterialProperty( material, "g_useOldCamoDetail", !ids );
         static const char * names[] = { "colorTint1", "colorTint2", "colorTint3", "colorTint4" };
         for (size_t index = 0; index < 4; ++index)
         {
             Vector4 colour = packedVehicleColour( colours[index] );
             colour.w = weights[index];
-            material.setProperty( names[index], colour, false );
+            setVehicleMaterialProperty( material, names[index], colour );
         }
     }
 };
@@ -196,17 +207,17 @@ struct VehicleRepaintState : public VehicleMaterialHandlerState
 
     virtual void apply( Moo::EffectMaterial & material ) const
     {
-        material.setProperty( "g_useRepaint", enabled, false );
-        material.setProperty( "g_baseColor", base, false );
+        setVehicleMaterialProperty( material, "g_useRepaint", enabled );
+        setVehicleMaterialProperty( material, "g_baseColor", base );
         if (!enabled)
             return;
         static const char * names[] = { "g_repaintColor1", "g_repaintColor2", "g_repaintColor3" };
         for (size_t index = 0; index < 3; ++index)
-            material.setProperty( names[index], colours[index], false );
-        material.setProperty( "g_repaintMetallic",
-            Vector4( metallic.x, metallic.y, metallic.z, quality ), false );
-        material.setProperty( "g_repaintGloss",
-            Vector4( gloss.x, gloss.y, gloss.z, fading ), false );
+            setVehicleMaterialProperty( material, names[index], colours[index] );
+        setVehicleMaterialProperty( material, "g_repaintMetallic",
+            Vector4( metallic.x, metallic.y, metallic.z, quality ) );
+        setVehicleMaterialProperty( material, "g_repaintGloss",
+            Vector4( gloss.x, gloss.y, gloss.z, fading ) );
     }
 };
 
