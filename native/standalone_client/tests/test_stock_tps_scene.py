@@ -24,15 +24,25 @@ def make_probe():
 #include <utility>
 #include <vector>
 #include <thread>
+#include "stock_tps_parameters.hpp"
+#define SUCCEEDED(value) ((value)>=0)
+using D3DXHANDLE=const char*;
+struct ID3DXEffect {int SetValue(D3DXHANDLE,const void*,unsigned){return 0;}};
 namespace Moo { namespace DrawContext {
 struct UserDrawItem { virtual ~UserDrawItem() = default;virtual void draw()=0; };
-} }
+}
+struct EffectConstantValue {virtual ~EffectConstantValue()=default;virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
+struct EffectVisualContext {enum{AUTO_CONSTANT_TYPE_PER_FRAME};void unregisterAutoConstant(int,const char*){}};
+struct Context {EffectVisualContext& effectVisualContext(){static EffectVisualContext value;return value;}};
+Context& rc(){static Context value;return value;}
+}
 std::vector<unsigned> events;
 unsigned destroyed=0;
 struct Runtime {
     std::uint64_t generation=1;
     bool closed=false;
     std::atomic<float> time{0.f};
+    float fov=1.0471975f;bool sniper=false;struct{int render_quality=4;} quality;
     ~Runtime(){++destroyed;}
     bool draw(unsigned bucket){events.push_back(bucket);return true;}
     bool drawVisuals(){events.push_back(9);return true;}
@@ -104,6 +114,7 @@ class StockTPSSceneTests(unittest.TestCase):
             (work / 'probe.cpp').write_text(make_probe())
             subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++17',
                             '-Wall', '-Wextra', '-Werror', str(work / 'probe.cpp'),
+                            '-I'+str(ROOT/'bigworld'),
                             '-o', str(work / 'probe')], check=True)
             subprocess.run([str(work / 'probe')], check=True)
 

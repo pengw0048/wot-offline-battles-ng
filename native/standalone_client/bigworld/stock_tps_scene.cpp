@@ -7,6 +7,7 @@
 #include "stock_tps_visual.hpp"
 #include "stock_tps_wind.hpp"
 #include "stock_tps_quality.hpp"
+#include "stock_tps_parameters.hpp"
 #include "stock_tps_random.hpp"
 #include "stock_particle_quality.hpp"
 #include "stock_graphics_settings_consumers.hpp"
@@ -16,6 +17,7 @@
 #include "resmgr/bwresource.hpp"
 #include "resmgr/multi_file_system.hpp"
 #include "moo/render_context.hpp"
+#include "moo/effect_visual_context.hpp"
 #include "moo/renderer.hpp"
 #include "romp/enviro_minder.hpp"
 #include "romp/weather.hpp"
@@ -307,8 +309,10 @@ struct Runtime
 {
     Runtime() : random( []() { return std::rand(); } ), normalQuads( false ), verticalQuads( true )
     {
-        quality = stockParticleQuality().project( stockBinocularsEnabled(),
+        sniper = stockBinocularsEnabled();
+        quality = stockParticleQuality().project( sniper,
             Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING, false );
+        quality.render_quality = wot::stockTPSShaderQuality( quality.render_quality, sniper );
     }
     wot::StockTPSRandom random;
     wot::StockTPSQuadCache normalQuads, verticalQuads;
@@ -327,6 +331,7 @@ struct Runtime
     std::atomic<float> time{0.f};
     float density = 1.f, lastStep = 0.f;
     float fov = 1.0471975f;
+    bool sniper = false;
     std::uint64_t generation = 0, submitted = 0;
     std::uint64_t visualGeneration = 0;
     std::atomic<bool> closed{false};
@@ -353,6 +358,21 @@ float currentRuntimeTime()
     const auto owner = currentRuntime();
     return owner ? owner->time.load(std::memory_order_relaxed) : 0.f;
 }
+
+class TPSParticleParametersConstant : public Moo::EffectConstantValue
+{
+public:
+    bool operator()( ID3DXEffect * effect, D3DXHANDLE handle ) override
+    {
+        const auto owner = currentRuntime();
+        if (!owner || owner->closed) return false;
+        // Runtime::draw submits to the main scene (g_offscreenMode == 0).
+        const auto values = wot::stockTPSParticleParameters(
+            owner->fov, owner->sniper, owner->quality.render_quality, false );
+        return SUCCEEDED( effect->SetValue( handle, values.data(), sizeof(values) ) );
+    }
+};
+bool particleParametersRegistered = false;
 
 struct SceneSource
 {
@@ -990,8 +1010,10 @@ void Runtime::tick( float elapsed )
     if (!drawEnabled.load( std::memory_order_relaxed )) return;
     fov = Moo::rc().camera().fov();
     camera = vector( Moo::rc().invView().applyToOrigin() );
-    quality = stockParticleQuality().project( stockBinocularsEnabled(),
+    sniper = stockBinocularsEnabled();
+    quality = stockParticleQuality().project( sniper,
         Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING, false );
+    quality.render_quality = wot::stockTPSShaderQuality( quality.render_quality, sniper );
     auto * performer = stockTPSPerformer();
     float simulationTime = quality.time_multiplier;
     if (performer)
@@ -1274,6 +1296,13 @@ bool initialiseStockTPSRuntime()
     const auto owner = currentRuntime();
     if (!owner || owner->closed)
         std::atomic_store_explicit(&runtime,std::make_shared<Runtime>(),std::memory_order_release);
+    if (!particleParametersRegistered)
+    {
+        Moo::rc().effectVisualContext().registerAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME,
+            "ParticlesParams", new TPSParticleParametersConstant );
+        particleParametersRegistered = true;
+    }
     return true;
 }
 void tickStockTPSRuntime( float elapsed ) { if (const auto owner = currentRuntime()) owner->tick( elapsed ); }
@@ -1303,6 +1332,12 @@ void finishStockTPSParticleItems()
 }
 void finiStockTPSRuntime()
 {
+    if (particleParametersRegistered)
+    {
+        Moo::rc().effectVisualContext().unregisterAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "ParticlesParams" );
+        particleParametersRegistered = false;
+    }
     const auto owner = std::atomic_exchange_explicit(&runtime,std::shared_ptr<Runtime>{},std::memory_order_acq_rel);
     if (owner) owner->close();
     deferredDraws.clear();finiStockTPSQuality();
