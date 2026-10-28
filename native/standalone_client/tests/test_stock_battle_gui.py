@@ -197,6 +197,11 @@ class CoreTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if sys.platform == 'win32':
+            # Windows keeps an imported DLL locked until its final module handle closes.
+            from _ctypes import FreeLibrary
+            FreeLibrary(cls.core._handle)
+            cls.core = None
         cls.directory.cleanup()
 
     def oracle(self):

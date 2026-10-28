@@ -47,7 +47,13 @@ class StockTrajectoryDrawerTest(unittest.TestCase):
         cls.core.trajectory_simulate.argtypes=[pointer,pointer]
 
     @classmethod
-    def tearDownClass(cls):cls.directory.cleanup()
+    def tearDownClass(cls):
+        if sys.platform == 'win32':
+            # Windows keeps an imported DLL locked until its final module handle closes.
+            from _ctypes import FreeLibrary
+            FreeLibrary(cls.core._handle)
+            cls.core = None
+        cls.directory.cleanup()
 
     def floats(self,values):return (ctypes.c_float*len(values))(*values)
     def original(self):

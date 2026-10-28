@@ -1,6 +1,7 @@
 #pragma once
 
 #include "py_filter.hpp"
+#include "py_entity.hpp"
 #include "filter.hpp"
 #include "stock_avatar_filter_helper.hpp"
 #include "pyscript/script_math.hpp"
@@ -10,7 +11,6 @@
 
 BW_BEGIN_NAMESPACE
 class Entity;
-class PyEntity;
 class StockEntityFilter;
 
 struct StockEntityFilterGlobals
