@@ -1186,7 +1186,7 @@ PyObject * PyInfluxPSA::py_MultRate( PyObject * args )
         PyErr_SetString( PyExc_TypeError, "MultRate expects one float" );return NULL;
     }
     float value;
-    if (!Script::setData( PyTuple_GET_ITEM(args, 0), value, "MultRate argument 1" )) return NULL;
+    if (Script::setData( PyTuple_GET_ITEM(args, 0), value, "MultRate argument 1" ) != 0) return NULL;
     auto * action = dynamic_cast<InfluxPSA *>( pAction().getObject() );
     if (!action) { PyErr_SetString( PyExc_RuntimeError, "Invalid native Influx action owner" );return NULL; }
     action->multRate( value );Py_RETURN_NONE;
