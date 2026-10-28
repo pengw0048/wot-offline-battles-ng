@@ -374,6 +374,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-antialiasing-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_traces.py"),
         $EngineRoot) "stock-vehicle-traces-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flock_manager.py"),
+        $EngineRoot) "stock-flock-manager-patch.log"
 
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_space_settings.py"),
         $EngineRoot) "stock-space-settings-patch.log"
