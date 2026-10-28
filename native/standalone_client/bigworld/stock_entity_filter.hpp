@@ -148,7 +148,7 @@ public:
 protected:
     void retire();
     virtual bool tryCopyState( const MovementFilter & source );
-    void updateVelocityReceipts( const StockAvatarFilterHelper::Waypoint & current,
+    virtual void updateVelocityReceipts( const StockAvatarFilterHelper::Waypoint & current,
         const StockAvatarFilterHelper::Waypoint & next );
     bool updateGeometry( const StockAvatarFilterHelper::Waypoint & current,
         const StockAvatarFilterHelper::Waypoint & next );
