@@ -75,7 +75,7 @@ BW_BEGIN_NAMESPACE
 extern int StockBattlegroundElements_token;
 class ParticleSystemRenderer;
 bool drawStockBattlegroundParticles( ParticleSystemRenderer * renderer, const Matrix & world,
-    Particles::iterator begin, Particles::iterator end );
+    Particles::iterator begin, Particles::iterator end, float scale = 1.f );
 void tickStockBattlegroundElements();
 void beginStockBattlegroundParticles( const Moo::DrawContext * context );
 bool stockBattlegroundParticlePhase( const Moo::DrawContext * context );

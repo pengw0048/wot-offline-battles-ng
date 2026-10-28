@@ -257,10 +257,12 @@ The gameplay integration target is
 [the colorfulmeans fork's v0.10.1 release](https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v0.10.1),
 fixed at commit `144619f6eb2925f8da4b13637bf65b8550fc898f`. Its mod version is
 separate from the unchanged #1513 game resource and native interface contract.
-Each player's visible client will advance that player's projectiles, with the
-LAN server confirming shared damage and destruction. A mandatory hidden native
-worker will own Bot movement and Bot projectiles. This integration is pending;
-the current independent runtime does not yet provide a complete offline battle.
+Each player's visible client advances that player's projectiles, with the LAN
+server confirming shared damage and destruction. A mandatory hidden native
+worker owns Bot movement and Bot projectiles. Windows sessions have exercised
+movement, projectile completion, Bot damage, player death, battle results and
+repeated returns to the garage. Rendering remains incomplete, and these lifecycle
+checks do not establish visual correctness or gameplay acceptance.
 The fork's native extensions must be rebuilt or adapted from source because
 their original executable addresses are not valid in the rebuilt client.
 

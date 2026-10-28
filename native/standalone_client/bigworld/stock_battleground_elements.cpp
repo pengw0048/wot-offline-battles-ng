@@ -472,6 +472,7 @@ struct DeferredCloudParticles
     ParticleSystemRendererPtr renderer;
     Matrix world;
     ParticlesPtr particles;
+    float scale = 1.f;
 };
 std::vector<DeferredCloudParticles> deferredParticles;
 const Moo::DrawContext * mainParticlePhase = NULL;
@@ -479,7 +480,7 @@ const Moo::DrawContext * mainParticlePhase = NULL;
 }
 
 bool drawStockBattlegroundParticles( ParticleSystemRenderer * renderer, const Matrix & world,
-    Particles::iterator begin, Particles::iterator end )
+    Particles::iterator begin, Particles::iterator end, float scale )
 {
     const auto state = fogOwner.lock();
     // The recovered #1513 splitter is in the generated sprite-quad path. Mesh
@@ -499,13 +500,14 @@ bool drawStockBattlegroundParticles( ParticleSystemRenderer * renderer, const Ma
         const bool bucket = state->splitter.classify( point.x, point.y, point.z );
         (bucket ? second : first)->addParticle( *particle, false );
     }
-    if (first->size()) renderer->realDraw( world, first->begin(), first->end() );
+    if (first->size()) renderer->realDraw( world, first->begin(), first->end(), scale );
     if (second->size())
     {
         DeferredCloudParticles draw;
         draw.renderer = renderer;
         draw.world = world;
         draw.particles = second;
+        draw.scale = scale;
         deferredParticles.push_back( draw );
     }
     return true;
@@ -538,7 +540,7 @@ void finishStockBattlegroundParticles()
     std::vector<DeferredCloudParticles> pending;
     pending.swap( deferredParticles );
     for (const auto & draw : pending)
-        draw.renderer->realDraw( draw.world, draw.particles->begin(), draw.particles->end() );
+        draw.renderer->realDraw( draw.world, draw.particles->begin(), draw.particles->end(), draw.scale );
     finishStockTPSParticleItems();
 }
 

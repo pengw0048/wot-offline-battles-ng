@@ -3368,6 +3368,12 @@ Wheel, track-node and suspension consumers share the same one/two-item tuple
 contract; empty tuples are contained instead of reproducing the original
 out-of-bounds read. Focused tests execute the unchanged trace assembler PYC.
 Particle cloning uses the native deep-copy implementation.
+Particle and meta-particle wrappers retain the original render-only `scale`
+float, defaulting to one. The draw path applies it before the world transform
+and local offset, and carries it explicitly through deferred draw items and
+battleground layers to sprite-quad sizes. Other renderers retain their original
+matrix rules without invented width or size multipliers. Simulation, emission
+actions, definitions and bounds do not change when the wrapper scale changes.
 Background particle loads retain weak callbacks, continue loading when the
 callback is absent or retired, and deliver `None` to a live callback on a
 resource failure. Ordinary hit flash effects retain native vector providers in
