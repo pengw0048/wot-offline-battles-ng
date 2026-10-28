@@ -40,14 +40,21 @@ struct DataSection {
 };
 DataSectionPtr presetResource,boundsResource;
 bool resourceAvailable=true,deviceAvailable=true,initialized=true;
-unsigned initCalls=0,measurementCalls=0;
+unsigned initCalls=0,measurementCalls=0,commitCalls=0; int appliedGroup=-1;
 void configureStockGraphicsDetection(DataSectionPtr,DataSectionPtr);
 namespace Moo {
-struct GraphicsSettingsAutoDetector {bool init(){++initCalls;configureStockGraphicsDetection(presetResource,boundsResource);return resourceAvailable;}};
+struct GraphicsSetting {
+    using SettingsVector = std::vector<std::pair<std::string,int>>;
+    static void commitSettings(SettingsVector&) {++commitCalls;} static void commitPending() {}
+};
+struct GraphicsSettingsAutoDetector {bool init(){++initCalls;configureStockGraphicsDetection(presetResource,boundsResource);return resourceAvailable;}
+    bool getSettings(GraphicsSetting::SettingsVector&, int selected){appliedGroup=selected;return true;}};
 bool isInitialised(){return initialized;}
 struct RenderContext {unsigned ps=0x300,vs=0x300;void* device(){return deviceAvailable?this:nullptr;}unsigned psVersion(){return ps;}unsigned vsVersion(){return vs;}};
 RenderContext& rc(){assert(initialized);static RenderContext owner;return owner;}
 }
+void publishStockGraphicsPreferences(const Moo::GraphicsSetting::SettingsVector&) {}
+bool stockMeasureGraphicsHardware(int64 (&scores)[5]) { ++measurementCalls; for(auto & score:scores) score=1000; return true; }
 #include "stock_graphics_detection.cpp"
 
 PyObject* hostConfigure(PyObject*,PyObject* args){
@@ -88,12 +95,16 @@ PyObject* hostExport(PyObject*,PyObject*){
 }
 PyObject* hostState(PyObject*,PyObject*){return Py_BuildValue("(II)",initCalls,measurementCalls);}
 PyObject* hostDevice(PyObject*,PyObject* args){int ready;unsigned ps,vs;if(!PyArg_ParseTuple(args,"iII",&ready,&ps,&vs))return nullptr;deviceAvailable=ready!=0;Moo::rc().ps=ps;Moo::rc().vs=vs;Py_RETURN_NONE;}
+PyObject* hostSchedule(PyObject*,PyObject* args){int apply, group;if(!PyArg_ParseTuple(args,"ii",&apply,&group))return nullptr;scheduleStockGraphicsDetection(apply!=0,group);Py_RETURN_NONE;}
+PyObject* hostFinish(PyObject*,PyObject*){finishStockGraphicsDetectionStartup();Py_RETURN_NONE;}
+PyObject* hostMeasured(PyObject*,PyObject*){return Py_BuildValue("(Ii)",commitCalls,appliedGroup);}
+PyObject* hostMeasure(PyObject*,PyObject*){return PyInt_FromLong(measureStockGraphicsDetection());}
 PyObject* hostMissing(PyObject*,PyObject*){presetResource.reset();configured=false;resourceAvailable=false;Py_RETURN_NONE;}
 PyMethodDef methods[]={{"configure",hostConfigure,METH_VARARGS,nullptr},{"importScores",hostImport,METH_VARARGS,nullptr},
     {"exportScores",hostExport,METH_NOARGS,nullptr},{"state",hostState,METH_NOARGS,nullptr},
-    {"device",hostDevice,METH_VARARGS,nullptr},{"missingResource",hostMissing,METH_NOARGS,nullptr},{nullptr,nullptr,0,nullptr}};
+    {"device",hostDevice,METH_VARARGS,nullptr},{"schedule",hostSchedule,METH_VARARGS,nullptr},{"finish",hostFinish,METH_NOARGS,nullptr},{"applied",hostMeasured,METH_NOARGS,nullptr},{"measure",hostMeasure,METH_NOARGS,nullptr},{"missingResource",hostMissing,METH_NOARGS,nullptr},{nullptr,nullptr,0,nullptr}};
 int main(int argc,char** argv){
-    assert(argc>=2);Py_SetProgramName(argv[0]);Py_Initialize();PySys_SetArgv(argc-1,argv+1);
+    assert(argc>=2); resourceAvailable=false; assert(measureStockGraphicsDetection()==2); assert(!Py_IsInitialized()); initCalls=0; resourceAvailable=true; Py_SetProgramName(argv[0]);Py_Initialize();PySys_SetArgv(argc-1,argv+1);
     assert(Py_InitModule("_graphics_detection_host",methods));assert(hostMethodLinks().size()==3);
     for(auto& link:hostMethodLinks()){
         PyObject* module=PyImport_AddModule(link.module.c_str());PyObject* fn=PyCFunction_NewEx(&link.def,nullptr,nullptr);

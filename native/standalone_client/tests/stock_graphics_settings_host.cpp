@@ -52,6 +52,7 @@ PyObjectPtr& operator=(const PyObjectPtr& p){Py_XINCREF(p.value);Py_XDECREF(valu
 namespace Script{int setData(PyObject* value,std::string& output){
 char* data;Py_ssize_t size;if(PyString_AsStringAndSize(value,&data,&size)<0)return -1;output.assign(data,size);return 0;}}
 namespace Moo{
+struct FakeRC {void* device(){return this;}}; FakeRC& rc(){static FakeRC x;return x;} bool isInitialised(){return true;}
 struct GraphicsSetting{
 using GraphicsSettingPtr=Ptr<GraphicsSetting>;using GraphicsSettingVector=std::vector<GraphicsSettingPtr>;
 using Setting=std::pair<std::string,uint32>;using SettingsVector=std::vector<Setting>;using StringIntMap=std::map<std::string,int>;
@@ -76,6 +77,7 @@ static bool isPending(GraphicsSettingPtr,int&){return false;}static bool addPend
 static void add(GraphicsSettingPtr);bool selectOption(int,bool=false);bool selectOptionPriv(int,bool=false);
 static SettingsVector stockCurrentSettings();static void applyStockPreset(const SettingsVector&);
 static void captureStockPresetBaseline();static bool needsRestart();
+static void commitSettings(SettingsVector&);static void commitPending(){}
 };
 struct GraphicsSettingsAutoDetector{
 static int invalidations,queries;static bool valid;static GraphicsSetting::SettingsVector detected;
@@ -124,6 +126,8 @@ const char* label;int value;if(!p||!PyArg_ParseTuple(p.get(),"si",&label,&value)
 BWResource::content=content;bool result=prepareStockGraphicsPreferences(section,entries,-1);
 if(!result){PyErr_SetString(PyExc_RuntimeError,"Detector initialization failed");return NULL;}
 return dictionary(toStock(entries));}
+static PyObject* deferred(PyObject*,PyObject* args){const char* name;int value;if(!PyArg_ParseTuple(args,"si",&name,&value))return NULL;
+Moo::GraphicsSettingsAutoDetector::detected={{name,uint32(value)}};pendingApply=true;finishStockGraphicsDetectionStartup();Py_RETURN_NONE;}
 static PyObject* metadata(PyObject*,PyObject*){DataSectionPtr section=new DataSection;writeStockGraphicsPreferencesMetadata(section);
 PyObject* result=PyDict_New();for(const auto& pair:section->integers){PyObjectPtr value(PyInt_FromLong(pair.second),PyObjectPtr::STEAL_REFERENCE);
 if(PyDict_SetItemString(result,pair.first.c_str(),value.get())<0){Py_DECREF(result);return NULL;}}return result;}
@@ -140,7 +144,7 @@ static PyMethodDef methods[]={
 @METHODS@
 {"_seed",seed,METH_VARARGS,NULL},{"_register",add,METH_VARARGS,NULL},{"_flags",flags,METH_VARARGS,NULL},
 {"_supported",supported,METH_VARARGS,NULL},{"_initialise",initialise,METH_NOARGS,NULL},{"_calls",getCalls,METH_NOARGS,NULL},
-{"_prepare",prepare,METH_VARARGS,NULL},{"_metadata",metadata,METH_NOARGS,NULL},{"_detector",detector,METH_VARARGS,NULL},
+{"_deferred",deferred,METH_VARARGS,NULL},{"_prepare",prepare,METH_VARARGS,NULL},{"_metadata",metadata,METH_NOARGS,NULL},{"_detector",detector,METH_VARARGS,NULL},
 {"_detectorCalls",detectorCalls,METH_NOARGS,NULL},{"graphicsSettings",settingList,METH_NOARGS,NULL},
 {"setGraphicsSetting",probeSet,METH_VARARGS,NULL},{"getGraphicsSetting",probeGet,METH_VARARGS,NULL},{NULL,NULL,0,NULL}};
 Py_InitModule("graphics_settings_probe",methods);}

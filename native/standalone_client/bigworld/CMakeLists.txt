@@ -78,6 +78,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_detection.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_cpu_detection.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_gpu_detection.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_display_modes.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_math_providers.cpp"

@@ -79,7 +79,8 @@ class GraphicsDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='graphics-detection-bindings-') as folder:
             path = Path(folder)
             for name in ('pch.hpp', 'resmgr/datasection.hpp', 'moo/graphics_settings_picker.hpp',
-                         'moo/init.hpp', 'moo/render_context.hpp', 'pyscript/script.hpp'):
+                         'moo/init.hpp', 'moo/render_context.hpp', 'pyscript/script.hpp', 'cstdmf/stdmf.hpp', 'cstdmf/bw_namespace.hpp',
+                         'cstdmf/bw_string.hpp', 'moo/graphics_settings.hpp'):
                 destination = path / 'include' / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text('#pragma once\n')
@@ -107,10 +108,14 @@ class GraphicsDetectionTests(unittest.TestCase):
         with tarfile.open(archive) as source:
             member = next(item for item in source if item.name.endswith('/programming/bigworld/lib/moo/graphics_settings_picker.cpp'))
             picker = source.extractfile(member).read()
+            device_member = next(item for item in source if item.name.endswith('/programming/bigworld/client/device_app.cpp'))
+            device = source.extractfile(device_member).read()
         for order in ((detector.patch, graphics.patch), (graphics.patch, detector.patch)):
             with self.subTest(order=[patch.__module__ for patch in order]), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 fresh_engine(root)
+                (root / 'client').mkdir(exist_ok=True)
+                (root / 'client/device_app.cpp').write_bytes(device)
                 path = root / 'lib/moo/graphics_settings_picker.cpp'
                 path.write_bytes(picker)
                 for patch in order:

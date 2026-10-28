@@ -2,6 +2,7 @@
 #include "stock_graphics_settings.hpp"
 #include "stock_graphics_presets.hpp"
 #include "stock_graphics_detection.hpp"
+#include "stock_gpu_detection.hpp"
 #include "wot/stock_graphics_settings.hpp"
 #include "moo/graphics_settings_picker.hpp"
 #include "pyscript/script.hpp"
@@ -63,6 +64,13 @@ PyObject* settingView(const Moo::GraphicsSetting::GraphicsSettingPtr& setting)
 }
 }
 
+int autoDetectStockGraphicsSettings()
+{
+    const int result = measureStockGraphicsDetection();
+    if (result != 0) stockAdjustDetectedResolution(preferencesVersion.status);
+    return result;
+}
+
 bool prepareStockGraphicsPreferences(DataSectionPtr section,
     Moo::GraphicsSetting::SettingsVector& settings, int overrideGroup)
 {
@@ -81,14 +89,16 @@ bool prepareStockGraphicsPreferences(DataSectionPtr section,
             if (setting.first == "SHADOWS_QUALITY")
                 setting.second = wot::stockMigrateShadowOption(setting.second);
 
-    // The public detector owns actual hardware queries and authored quality
-    // profiles. Its scoring algorithm remains a separate #1513 audit boundary.
+    // The device does not exist during preference initialization. The original
+    // owner chooses MEDIUM and defers hardware measurement until device startup.
     if (migration.refreshDetector)
-        Moo::GraphicsSettingsAutoDetector::invalidateStockDetection();
+        scheduleStockGraphicsDetection(false, overrideGroup);
     if (migration.detect)
     {
         Moo::GraphicsSettingsAutoDetector detector;
-        if (!detector.init() || !detector.getSettings(settings, overrideGroup)) return false;
+        scheduleStockGraphicsDetection(true, overrideGroup);
+        const int earlyGroup = overrideGroup >= 0 && overrideGroup < 5 ? overrideGroup : 2;
+        if (!detector.init() || !detector.getSettings(settings, earlyGroup)) return false;
     }
 
     readStockGraphicsDetectionPreferences(section);

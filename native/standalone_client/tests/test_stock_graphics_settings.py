@@ -160,7 +160,7 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
                 'bool GraphicsSetting::selectOption(', 'bool GraphicsSetting::selectOptionPriv(',
                 'void GraphicsSetting::add(', 'GraphicsSetting::SettingsVector GraphicsSetting::stockCurrentSettings()',
                 'void GraphicsSetting::captureStockPresetBaseline()', 'void GraphicsSetting::applyStockPreset(',
-                'bool GraphicsSetting::needsRestart()'))
+                'bool GraphicsSetting::needsRestart()', 'void GraphicsSetting::commitSettings('))
             production = '\n'.join(line for name in ('stock_graphics_presets.cpp', 'stock_graphics_settings.cpp')
                                    for line in (ROOT / 'bigworld' / name).read_text().splitlines() if not line.startswith('#include'))
             interface = '\n'.join(line for name in ('stock_graphics_presets.hpp', 'stock_graphics_settings.hpp', 'stock_graphics_detection.hpp')
@@ -169,10 +169,10 @@ assert(stockMigrateShadowOption(3)==3&&stockMigrateShadowOption(UINT32_MAX)==UIN
             # Compile the real new preference hooks into the existing registry
             # owner fixture; hardware/profile queries have their own host.
             state = detector_source[detector_source.index('wot::StockGraphicsDetection detection;'):
-                                    detector_source.index('bool ensureConfiguration()')]
-            production = 'namespace {\n' + state + '\n}\n' + '\n'.join(
+                                    detector_source.index('bool ensureConfiguration(')]
+            production = 'void scheduleStockGraphicsDetection(bool, int) {}\nint measureStockGraphicsDetection() { return 2; }\nvoid stockAdjustDetectedResolution(int) {}\nnamespace {\n' + state + '\n}\n' + '\n'.join(
                 graphics.function(detector_source, marker) for marker in
-                ('void readStockGraphicsDetectionPreferences(', 'void writeStockGraphicsDetectionPreferences(')) + '\n' + production
+                ('void readStockGraphicsDetectionPreferences(', 'void writeStockGraphicsDetectionPreferences(', 'void finishStockGraphicsDetectionStartup(')) + '\n' + production
             view = (root / 'lib/romp/py_graphics_setting.cpp').read_text()
             production += '\n' + '\n'.join(graphics.function(view, marker) for marker in (
                 'static PyObject * graphicsSettings()', 'static bool setGraphicsSetting(', 'static int getGraphicsSetting('))
@@ -323,7 +323,12 @@ assert p.graphicsSettingsStatus()==2 and get_status().isShowWarning() is True
 metadata=p._metadata();assert metadata['graphicsSettingsVersion']==4 and metadata['graphicsSettingsVersionMinor']==2 and metadata['graphicsSettingsVersionMaintainance']==2
 status.markProcessed();assert p.graphicsSettingsStatus()==0 and get_status().isReset() is False
 p._prepare(dict(base,graphicsSettingsVersion=3),0,[]);assert get_status().isReset() is True
-assert p._detectorCalls()==(1,1)
+assert p._detectorCalls()==(0,1)
+# The early desired value must be replaced before a later setting registers.
+p._seed([('LATE_GPU_OPTION',1)])
+p._deferred('LATE_GPU_OPTION',4)
+p._register('LATE_GPU_OPTION',0,0)
+assert p.getGraphicsSetting('LATE_GPU_OPTION')==4
 p._prepare(None,2,[]);assert p.graphicsSettingsStatus()==3 and p._metadata()['distributionLevel']==2
 p._detector(0)
 try:p._prepare(None,2,[])

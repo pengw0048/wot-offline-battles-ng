@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "stock_graphics_detection.hpp"
+#include "stock_gpu_detection.hpp"
+#include "stock_graphics_presets.hpp"
 #include "wot/stock_graphics_detection.hpp"
 #include "moo/graphics_settings_picker.hpp"
 #include "moo/init.hpp"
@@ -12,17 +14,20 @@ namespace
 {
 wot::StockGraphicsDetection detection;
 bool configured = false;
+bool pendingApply = false;
+bool pendingMeasure = false;
 const char * scoreFields[] = { "gpuMemory", "gpuScore", "ram", "virtualMemory", "cpuFrequency" };
 const char * thresholdFields[] = { "GPUMemory", "GPUScore", "RAM", "AvailableVirtualMemory", "CPUFrequency" };
 
-bool ensureConfiguration()
+bool ensureConfiguration( bool reportError = true )
 {
     if (configured) return true;
     // init loads groups and bounds only. Neither of the three queries starts
     // a measurement; that producer has a separate startup/button lifecycle.
     Moo::GraphicsSettingsAutoDetector owner;
     if (owner.init() && configured) return true;
-    PyErr_SetString( PyExc_RuntimeError, "The graphics detection profiles are unavailable" );
+    if (reportError && Py_IsInitialized())
+        PyErr_SetString( PyExc_RuntimeError, "The graphics detection profiles are unavailable" );
     return false;
 }
 }
@@ -83,6 +88,40 @@ void writeStockGraphicsDetectionPreferences( DataSectionPtr preferences )
     if (!target) return;
     for (unsigned index = 0; index < 5; ++index)
         target->writeInt64( scoreFields[index], detection.score( index ) );
+}
+
+
+int measureStockGraphicsDetection()
+{
+    if (!ensureConfiguration(false)) return 2;
+    int64 measured[5];
+    if (!stockMeasureGraphicsHardware(measured)) return 2;
+    for (unsigned i = 0; i < 7; ++i) detection.store(i, i < 5 ? measured[i] : 0);
+    const unsigned shader = std::min(unsigned(Moo::rc().psVersion()), unsigned(Moo::rc().vsVersion()));
+    return detection.classify(shader);
+}
+
+void scheduleStockGraphicsDetection(bool apply, int overrideGroup)
+{
+    if (apply && (overrideGroup < 0 || overrideGroup >= 5)) pendingApply = true;
+    else if (!apply) pendingMeasure = true;
+}
+
+void finishStockGraphicsDetectionStartup()
+{
+    if ((!pendingApply && !pendingMeasure) || !Moo::isInitialised() || !Moo::rc().device()) return;
+    const bool apply = pendingApply;
+    pendingApply = pendingMeasure = false;
+    const int selected = measureStockGraphicsDetection();
+    if (!apply) return;
+    Moo::GraphicsSettingsAutoDetector owner;
+    Moo::GraphicsSetting::SettingsVector settings;
+    if (owner.init() && owner.getSettings(settings, selected))
+    {
+        publishStockGraphicsPreferences(settings);
+        Moo::GraphicsSetting::commitSettings(settings);
+        Moo::GraphicsSetting::commitPending();
+    }
 }
 
 static int64 getAutoDetectGraphicsSettingsScore( int parameter )

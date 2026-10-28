@@ -5,6 +5,7 @@
 struct _object;
 
 BW_BEGIN_NAMESPACE
+int autoDetectStockGraphicsSettings();
 extern int StockGraphicsSettings_token;
 
 // These hooks retain the public device/renderer owners while restoring the

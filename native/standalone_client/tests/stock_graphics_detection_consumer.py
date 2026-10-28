@@ -110,6 +110,27 @@ except RuntimeError:
     pass
 else:
     raise AssertionError('Queried shader capabilities without an active device')
+# Device absence preserves the previous cache and pending work; it never uses
+# the fake producer or applies an early result. A valid explicit preset is not
+# auto-detected. The deferred full path applies exactly once when ready.
+host.schedule(1, 2)
+host.finish()
+assert host.state()[1] == 0 and host.applied() == (0, -1)
+host.schedule(1, -1)
+host.schedule(0, -1)
+host.finish()
+assert host.state()[1] == 0 and host.exportScores()['virtualMemory'] == 2000
+host.device(1, 0x300, 0x300)
+host.finish()
+assert host.state()[1] == 1 and host.applied()[0] == 1
+assert host.exportScores() == dict((key, 1000) for key in saved)
+host.finish()
+assert host.state()[1] == 1 and host.applied()[0] == 1
+host.schedule(0, -1)
+host.finish()
+assert host.state()[1] == 2 and host.applied()[0] == 1
+host.measure()
+assert host.state()[1] == 3
 host.missingResource()
 try:
     B.getSystemPerformancePresetIdFromName('MIN')
@@ -117,4 +138,4 @@ except RuntimeError:
     pass
 else:
     raise AssertionError('Accepted missing authored profiles')
-assert host.exportScores()['virtualMemory'] == 2000
+assert host.exportScores()['virtualMemory'] == 1000
