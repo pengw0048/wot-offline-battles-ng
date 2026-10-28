@@ -4,11 +4,15 @@ The input tree is never modified. The offline package is staged complete under
 offline-res with only the reviewed independent-client seams adapted.
 """
 import argparse
+import ast
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import shutil
 import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 
 _spec = importlib.util.spec_from_file_location(
     'offline_math_bindings', Path(__file__).with_name('patch_offline_math_bindings.py'))
@@ -32,6 +36,10 @@ COMPAT_PATH = NATIVE_MATH_PATH.with_name('compat.py')
 WORKER_PRESENTATION_PATH = NATIVE_MATH_PATH.with_name('worker_presentation.py')
 PINNED_RESOURCES = Path('src/res')
 RUNTIME_ROOT = Path('offline-res')
+REPLAY_PACKAGE_NAME = 'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod'
+REPLAY_PACKAGE_INPUT = Path('dist') / REPLAY_PACKAGE_NAME
+REPLAY_PACKAGE_OUTPUT = Path('mods/0.9.22.0.1') / REPLAY_PACKAGE_NAME
+REPLAY_PROCESS_PATH = Path('res/scripts/client/gui/mods/offline_lan_0922/replay_process.py')
 ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.py'
 ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
 SERVICES_SOURCE = ENTRY_SOURCE.with_name('OfflineOptionalServices.py')
@@ -232,6 +240,71 @@ def stage_runtime(source, staged):
     }, indent=2, sort_keys=True) + '\n')
 
 
+def stage_replay_package(source, staged):
+    """Keep the original release archive for the recorder's physical ZIP reader.
+
+    It is deliberately absent from paths.xml. The adapted offline-res tree
+    remains the only executable gameplay payload; this archive is an unchanged
+    output of the pinned fork's build_wotmod.py, including its recorder runtime.
+    """
+    source, staged = Path(source), Path(staged)
+    package = source / REPLAY_PACKAGE_INPUT
+    if not package.is_file():
+        raise ValueError('Pinned v0.10.1 release wotmod input is missing: ' + str(package))
+    constants = {}
+    for node in ast.parse((source / 'src' / REPLAY_PROCESS_PATH).read_text(encoding='utf-8')).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in ('PACKAGE_NAME', 'RUNTIME_RESOURCE', 'RUNTIME_DIGEST'):
+                if name in constants:
+                    raise ValueError('Duplicated pinned replay consumer constant: ' + name)
+                constants[name] = ast.literal_eval(node.value)
+    runtime = 'res/offline_replay/recorder-runtime.zip'
+    if (constants.get('PACKAGE_NAME') != REPLAY_PACKAGE_NAME or
+            constants.get('RUNTIME_RESOURCE') != runtime or
+            not isinstance(constants.get('RUNTIME_DIGEST'), str) or
+            len(constants['RUNTIME_DIGEST']) != 64):
+        raise ValueError('The pinned replay package consumer changed')
+    try:
+        with zipfile.ZipFile(package) as archive:
+            names = archive.namelist()
+            if len(set(names)) != len(names) or any(
+                    info.compress_type != zipfile.ZIP_STORED for info in archive.infolist()):
+                raise ValueError('The pinned wotmod has duplicate entries or changed archive format')
+            meta = ET.fromstring(archive.read('meta.xml'))
+            if meta.findtext('id') != 'org.colorfulmeans.offline_lan_0922' or meta.findtext('version') != '0.10.1':
+                raise ValueError('The replay sidecar is not the pinned v0.10.1 mod')
+            # Require the actual complete mod payload, not a runtime-only ZIP
+            # renamed to its filename. Python remains original CPython 2.7 PYC;
+            # every non-Python source resource must remain byte-for-byte intact.
+            for path in (source / 'src').rglob('*'):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(source / 'src')
+                member = relative.with_suffix('.pyc') if path.suffix == '.py' else relative
+                payload = archive.read(member.as_posix())
+                if path.suffix == '.py':
+                    if payload[:4] != b'\x03\xf3\r\n':
+                        raise ValueError('The replay sidecar has changed Python bytecode: ' + str(member))
+                elif payload != path.read_bytes():
+                    raise ValueError('The replay sidecar has changed source resources: ' + str(member))
+            for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'licenses/Boost-1.0.txt',
+                         'res/offline_replay/replay_reader_process.py'):
+                if not archive.read(name):
+                    raise ValueError('The replay sidecar is missing its original package member: ' + name)
+            if archive.read('LICENSE') != (source / 'LICENSE').read_bytes():
+                raise ValueError('The replay sidecar license differs from the pinned source')
+            if hashlib.sha256(archive.read(runtime)).hexdigest() != constants['RUNTIME_DIGEST']:
+                raise ValueError('The replay sidecar recorder runtime differs from its pinned consumer')
+            if archive.testzip() is not None:
+                raise ValueError('The replay sidecar has a corrupt archive member')
+    except (KeyError, zipfile.BadZipFile, ET.ParseError) as error:
+        raise ValueError('The pinned replay package is incomplete or invalid: ' + str(error)) from error
+    output = staged / REPLAY_PACKAGE_OUTPUT
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(package, output)
+
+
 def prepare(source, destination):
     source, destination = Path(source), Path(destination)
     identity = json.loads((source / 'fork-source.json').read_text(encoding='utf-8-sig'))
@@ -249,6 +322,7 @@ def prepare(source, destination):
                 raise ValueError('Missing pinned numerical source: ' + name)
         patch(staged)
         stage_runtime(source, staged)
+        stage_replay_package(source, staged)
         # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().
         stock_catalog_identity.stage(source, staged)
         names = '\n'.join('    "' + name + '",' for name in METHODS)

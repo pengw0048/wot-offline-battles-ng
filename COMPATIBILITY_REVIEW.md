@@ -3317,6 +3317,12 @@ current pose; admitted shots retain their original state.
 The gameplay integration remains pinned to offline mod `v0.10.1` at
 `144619f6eb2925f8da4b13637bf65b8550fc898f` and Chinese HD
 `0.9.22.0.1 #1513` resources. The Windows executable target is x86 (Win32).
+The package also retains that release's complete original wotmod at its physical
+`mods/0.9.22.0.1` path. The unchanged replay recorder opens it directly to obtain
+its bundled Python process runtime; resource mounts cannot replace that file.
+Preparation validates the package against the pinned source and recorder's
+existing integrity contract. It remains outside the resource search paths, so
+the adapted `offline-res` payload is the sole gameplay module owner.
 `Hybrid` names the engine's optimized build configuration with debug symbols;
 it is independent of the target architecture and deployment environment.
 The executable also retains the original PE large-address-aware flag. Without
