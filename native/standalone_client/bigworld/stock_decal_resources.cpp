@@ -68,6 +68,13 @@ static PyObject *py_wg_traceTextureIndex(PyObject *args)
 }
 PY_MODULE_FUNCTION(wg_traceTextureIndex, BigWorld)
 
+bool isForwardPipeline()
+{
+    // 650970 returns PyBool(Renderer m_type == TYPE_FORWARD_SHADING).
+    return Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING;
+}
+PY_AUTO_MODULE_FUNCTION(RETDATA, isForwardPipeline, END, BigWorld)
+
 void wg_addDecalGroup(const BW::string &name, float lifeTime, int trianglesCount)
 {
     if (Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING)
