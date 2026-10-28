@@ -507,6 +507,12 @@ def body(source, signature):
     return source[start:end + 1]
 
 
+def load_module(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'bigworld' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
+
+
 def load_patch(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / 'bigworld' / (name + '.py'))
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -526,7 +532,10 @@ class SpaceLifecycleTests(unittest.TestCase):
         with tarfile.open(cls.archive) as archive:
             cls.pristine = {}
             for name in ('client/script_bigworld.cpp', 'client/connection_control.hpp', 'client/connection_control.cpp',
-                         'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp',
+                         'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp', 'lib/space/client_space.hpp',
+                         'lib/compiled_space/compiled_space_mapping.hpp', 'lib/compiled_space/compiled_space_mapping.cpp',
+                         'lib/compiled_space/compiled_space.cpp', 'lib/compiled_space/compiled_space.hpp',
+                         'lib/compiled_space/loader.cpp', 'lib/compiled_space/loader.hpp',
                          'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp', 'lib/pyscript/script.ipp',
                          'client/script_player.cpp', 'client/py_entity.cpp', 'client/entity.cpp', 'client/entity_manager.cpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
                 member = next(m for m in archive.getmembers() if m.name.endswith('/programming/bigworld/' + name))
@@ -585,12 +594,19 @@ class SpaceLifecycleTests(unittest.TestCase):
         support=(ROOT/'tests/stock_space_sounds_host.hpp').read_text().replace(
             '#include WOT_SOUND_PRODUCTION_FILE', '#include "'+str(ROOT/'bigworld/stock_space_sounds.cpp')+'"')
         host=host.replace('@SOUND_TEST_SUPPORT@',support)
+        legacy = cls.compiled_space(host, cls.pristine['lib/compiled_space/compiled_space_mapping.cpp'].decode('utf-8-sig'),
+                                    cls.pristine['lib/compiled_space/compiled_space.cpp'].decode('utf-8-sig'))
+        host = cls.compiled_space(host, (cls.engine / 'lib/compiled_space/compiled_space_mapping.cpp').read_text(),
+                                  (cls.engine / 'lib/compiled_space/compiled_space.cpp').read_text())
         (cls.directory / 'host.cpp').write_text(host)
         cls.probe = cls.directory / 'probe'
+        (cls.directory / 'legacy.cpp').write_text(legacy)
+        cls.legacy_probe = cls.directory / 'legacy-probe'
         flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True)) if flag != '-DNDEBUG']
         libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
-        subprocess.run(['c++', '-std=c++14', '-Wno-deprecated-register', '-UNDEBUG', str(cls.directory / 'host.cpp'),
-                        *flags, *libs, '-o', str(cls.probe)], check=True)
+        for source, binary in (('host.cpp', cls.probe), ('legacy.cpp', cls.legacy_probe)):
+            subprocess.run(['c++', '-std=c++14', '-Wno-deprecated-register', '-UNDEBUG', str(cls.directory / source),
+                            *flags, *libs, '-o', str(binary)], check=True)
         destination = os.environ.get('WOT_SPACE_LIFECYCLE_FIXTURE_OUT')
         if destination:
             destination = Path(destination); destination.mkdir(parents=True, exist_ok=True)
@@ -598,11 +614,31 @@ class SpaceLifecycleTests(unittest.TestCase):
             (destination/'stock_space_sounds.cpp').write_bytes((ROOT/'bigworld/stock_space_sounds.cpp').read_bytes())
             (destination/'stock_space_sounds_data.hpp').write_bytes((ROOT/'bigworld/stock_space_sounds_data.hpp').read_bytes())
             (destination / 'stock_space_lifecycle.cpp').write_bytes((ROOT / 'bigworld/stock_space_lifecycle.cpp').read_bytes())
+            (destination / 'legacy.cpp').write_text(legacy.replace(str(ROOT / 'bigworld/stock_space_lifecycle.cpp'), 'stock_space_lifecycle.cpp').replace(str(ROOT/'bigworld/stock_space_sounds.cpp'),'stock_space_sounds.cpp'))
             (destination / 'case.py').write_text(BOUNDARY)
             (destination / 'client.py').write_text(CLIENT_BOUNDARY)
             (destination / 'pyc.py').write_text(PYC_SEQUENCES)
             (destination / 'entity.py').write_text(ENTITY_SEQUENCES)
             (destination / 'compat.py').write_bytes((ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py').read_bytes())
+
+    @staticmethod
+    def compiled_space(host, mapping, space):
+        # The real (patched or pristine) mapping, loader-task and space bodies.
+        task = body(mapping, 'class CompiledSpaceMapping::LoaderTask : public BackgroundTask')
+        host = host.replace('@MAPPING_LOADER_TASK@', task)
+        for marker, signature in (('@MAPPING_DTOR@', 'CompiledSpaceMapping::~CompiledSpaceMapping()'),
+                                  ('@MAPPING_LOAD_ASYNC@', 'bool CompiledSpaceMapping::loadAsync( TaskManager& taskMgr )'),
+                                  ('@MAPPING_FINISHED@', 'void CompiledSpaceMapping::loadBGFinished()'),
+                                  ('@MAPPING_UNLOAD@', 'void CompiledSpaceMapping::unloadSync()'),
+                                  ('@MAPPING_SPAWN@', 'void CompiledSpaceMapping::spawnEntities()'),
+                                  ('@MAPPING_REMOVE@', 'void CompiledSpaceMapping::removeEntities()'),
+                                  ('@MAPPING_SPAWN_UDOS@', 'void CompiledSpaceMapping::spawnUserDataObjects()'),
+                                  ('@MAPPING_REMOVE_UDOS@', 'void CompiledSpaceMapping::removeUserDataObjects()')):
+            host = host.replace(marker, body(mapping, signature))
+        host = host.replace('@SPACE_MAPPING_LOADED@', body(space, 'void CompiledSpace::mappingLoaded( CompiledSpaceMapping* pLoader )'))
+        host = host.replace('@SPACE_UPDATE_BOUNDS@', body(space, 'void CompiledSpace::updateSpaceBounds()'))
+        host = host.replace('@SPACE_DO_CLEAR@', body(space, 'void CompiledSpace::doClear()'))
+        return host.replace('@SPACE_DEL_MAPPING@', body(space, 'void CompiledSpace::doDelMapping( GeometryMappingID mappingID )'))
 
     @classmethod
     def populate(cls, directory):
@@ -616,6 +652,9 @@ class SpaceLifecycleTests(unittest.TestCase):
     def execute(self, code):
         script = self.directory / 'case.py'; script.write_text(code)
         subprocess.run([str(self.probe), str(script)], check=True)
+
+    def test_pristine_compiled_space_unload_publishes_into_retired_owners(self):
+        subprocess.run([str(self.legacy_probe), '--legacy-unload'], check=True)
 
     def test_pristine_main_clear_reproduces_reentrant_replacement_destruction(self):
         subprocess.run([str(self.probe), '--legacy'], check=True)
@@ -736,6 +775,30 @@ print('Original LoginState _clearEntitiesAndSpaces PYC + actual CPython/native w
                 self.assertLess(value.index('retireStockSpaceSounds( this );'),value.index('retireStockSpaceData( id_, this );'))
 
 
+    def test_unload_patch_composes_with_mapping_and_geometry_owners(self):
+        # The other owners keep their build-script order; this patcher is
+        # inserted at every position among them.
+        names = ('patch_stock_space_data', 'patch_stock_space_sounds', 'patch_stock_geometry_retirement',
+                 'patch_stock_compiled_space_mapping')
+        others = [load_patch(name) if name != 'patch_stock_geometry_retirement' else load_module(name).apply for name in names]
+        lifecycle = load_patch('patch_stock_space_lifecycle')
+        orders = [others[:index] + [lifecycle] + others[index:] for index in range(len(others) + 1)]
+        markers = {'lib/compiled_space/compiled_space_mapping.cpp': ('\tstockPublicationRevoked_ = true;',
+                       'space_.stockLoadPublicationRevoked())', 'completedLoadStages_.store( 0'),
+                   'lib/compiled_space/compiled_space.cpp': ('\tretired.swap( mappings_ );',
+                       'CompiledSpaceMapping * pRetired = mappings_[i].pLoader_;', 'createStockCompiledSpaceMapping'),
+                   'lib/space/client_space.hpp': ('void stockRevokeLoadPublication()',
+                       'bool stockLoadPublicationRevoked_ = false;', 'static void retireDeferredGeometry();')}
+        for number, order in enumerate(orders):
+            directory = self.directory / ('unload-order-%d' % number); self.populate(directory)
+            for patch in order: patch(directory)
+            before = {path.relative_to(directory): path.read_bytes() for path in directory.rglob('*') if path.is_file()}
+            lifecycle(directory)
+            self.assertEqual(before, {path.relative_to(directory): path.read_bytes() for path in directory.rglob('*') if path.is_file()})
+            for name, expected in markers.items():
+                text = (directory / name).read_text()
+                for marker in expected: self.assertEqual(text.count(marker), 1, (number, name, marker))
+
     def test_sound_patch_failure_does_not_publish_other_mutations(self):
         directory=self.directory/'bad-sound';self.populate(directory)
         path=directory/'lib/compiled_space/particle_system_loader.cpp'
@@ -746,7 +809,9 @@ print('Original LoginState _clearEntitiesAndSpaces PYC + actual CPython/native w
 
     def test_pristine_patch_idempotence_and_failed_transaction(self):
         paths = ['client/script_bigworld.cpp', 'client/connection_control.hpp', 'client/connection_control.cpp',
-                 'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp', 'lib/stock_space_lifecycle.hpp']
+                 'lib/space/space_manager.hpp', 'lib/space/space_manager.cpp', 'lib/space/client_space.hpp',
+                 'lib/compiled_space/compiled_space_mapping.hpp', 'lib/compiled_space/compiled_space_mapping.cpp',
+                 'lib/compiled_space/compiled_space.cpp', 'lib/stock_space_lifecycle.hpp']
         before = {p:(self.engine / p).read_bytes() for p in paths}
         self.patch(self.engine)
         self.assertEqual(before, {p:(self.engine / p).read_bytes() for p in paths})

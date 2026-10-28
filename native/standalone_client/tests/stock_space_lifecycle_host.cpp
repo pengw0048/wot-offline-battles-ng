@@ -4,6 +4,11 @@
 #endif
 #include <Python.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cassert>
 #include <cstdarg>
 #include <cstring>
@@ -34,18 +39,23 @@
 #define IF_NOT_MF_ASSERT_DEV(EXPR) if(!(EXPR)&&(BW::testError("IF_NOT_MF_ASSERT_DEV"),true))
 #define MF_VERIFY(EXPR) do{if(!(EXPR))BW::testError("MF_VERIFY");}while(0)
 #define MEMTRACKER_SCOPED(NAME)
+#define PROFILER_SCOPED(NAME)
+#define TRACE_MSG(...) BW::traceMessage(__VA_ARGS__)
+#define ASSET_MSG(...) BW::traceMessage(__VA_ARGS__)
 #define INLINE inline
 
 namespace BW
 {
 using SpaceID=int;
 using uint=unsigned int;
+using uint32=std::uint32_t;
 using string=std::string;
 const SpaceID NULL_SPACE_ID=0;
 using uint64=std::uint64_t;
 template<class T>using vector=std::vector<T>;
 static unsigned errors=0;
 static void testError(const char*,...){++errors;}
+static void traceMessage(const char*,...){}
 static std::vector<std::string> events;
 static std::vector<PyMethodDef>& moduleMethods(){static std::vector<PyMethodDef> methods;return methods;}
 struct PyModuleMethodLink
@@ -55,13 +65,23 @@ struct PyModuleMethodLink
 };
 struct ClientSpace
 {
+    typedef uint64_t GeometryMappingID;
     int identifier; unsigned references=0,clears=0; bool retired=false,repeatable=false; std::function<void()> onClear;
+    bool stockLoadPublicationRevoked_=false;
     explicit ClientSpace(int id):identifier(id){}
-    ~ClientSpace();
+    virtual ~ClientSpace();
     int id()const{return identifier;}
     bool cleared()const{return retired;}
+    void stockRevokeLoadPublication(){stockLoadPublicationRevoked_=true;}
+    bool stockLoadPublicationRevoked()const{return stockLoadPublicationRevoked_;}
+    // The patched ClientSpace::clear sets the cleared state, then doClear.
     void clear()
-    {assert(repeatable||!retired);retired=true;++clears;events.push_back("space:"+std::to_string(id()));if(onClear)onClear();}
+    {
+        assert(repeatable||!retired);retired=true;++clears;events.push_back("space:"+std::to_string(id()));
+        if(onClear)onClear();
+        doClear();
+    }
+    virtual void doClear(){}
 };
 struct ClientSpacePtr
 {
@@ -166,13 +186,14 @@ struct SpaceManager
     SpaceMap spaces_,localSpaces_;
     static SpaceManager& instance(){static SpaceManager owner;return owner;}
     std::function<void(ClientSpace*)> onCreate;
+    ClientSpace* (*spaceFactory)(SpaceID)=NULL;
     unsigned stockInitGeneration_=0;void init();
     ClientSpace* space(int id){const auto& map=id>=LOCAL_SPACE_START?localSpaces_:spaces_;auto p=map.find(id);return p==map.end()?NULL:p->second;}
     bool isLocalSpace(SpaceID id)const{return id>=LOCAL_SPACE_START;}
     // Public SpaceManager::createSpace publishes a raw pointer, then notifies.
     ClientSpace* createSpace(SpaceID id)
     {
-        assert(!space(id));auto* result=new ClientSpace(id);
+        assert(!space(id));auto* result=spaceFactory?spaceFactory(id):new ClientSpace(id);
         (isLocalSpace(id)?localSpaces_:spaces_)[id]=result;events.push_back("create:"+std::to_string(id));
         if(onCreate)onCreate(result);return result;
     }
@@ -391,6 +412,174 @@ using BWEntityPtr=Entity*;
 static PyObject* entitySpaceID(PyObject* object,void*)
 {return PyInt_FromLong(static_cast<PyEntity*>(object)->pEntity_->spaceID());}
 static PyGetSetDef entityAttributes[]={{const_cast<char*>("spaceID"),entitySpaceID,NULL,NULL,NULL},{NULL,NULL,NULL,NULL,NULL}};
+// Compiled-space layer: fakes around the extracted CompiledSpaceMapping,
+// LoaderTask and CompiledSpace bodies. The background stage runs on a real
+// thread; LoaderTask::wait really pulls the semaphore and ticks the manager.
+inline uint64 timestamp(){return 0;}
+inline double stampsPerSecondD(){return 1.;}
+static std::thread::id mainThread;
+struct MainThreadTracker{static bool isCurrentThreadMain(){return std::this_thread::get_id()==mainThread;}};
+struct SimpleSemaphore
+{
+    std::mutex m;std::condition_variable c;int n=0;
+    void push(){std::lock_guard<std::mutex> lock(m);++n;c.notify_one();}
+    void pull(){std::unique_lock<std::mutex> lock(m);c.wait(lock,[&]{return n>0;});--n;}
+};
+struct TaskManager;
+struct BackgroundTask
+{
+    explicit BackgroundTask(const char*){}
+    virtual ~BackgroundTask(){}
+    virtual void doBackgroundTask(TaskManager&)=0;
+    virtual void doMainThreadTask(TaskManager&){}
+};
+// The engine manager owns tasks; finished ones are freed only at reset.
+struct TaskManager
+{
+    std::mutex m;std::vector<BackgroundTask*> background,main,finished;unsigned ticks=0;
+    void addBackgroundTask(BackgroundTask* task){background.push_back(task);}
+    void addMainThreadTask(BackgroundTask* task){std::lock_guard<std::mutex> lock(m);main.push_back(task);}
+    void tick()
+    {
+        std::vector<BackgroundTask*> run;{std::lock_guard<std::mutex> lock(m);run.swap(main);}
+        ++ticks;for(BackgroundTask* task:run){task->doMainThreadTask(*this);finished.push_back(task);}
+    }
+    BackgroundTask* takeBackground(){BackgroundTask* task=background.back();background.pop_back();return task;}
+    void reset(){assert(main.empty()&&background.empty());for(auto* task:finished)delete task;finished.clear();ticks=0;}
+};
+static TaskManager taskManager;
+struct DataSection
+{
+    int children=0;
+    int countChildren(){return children;}
+    std::shared_ptr<DataSection> openChild(int){return std::make_shared<DataSection>();}
+};
+using DataSectionPtr=std::shared_ptr<DataSection>;
+struct EntityList
+{
+    bool valid=false;int count=0;
+    bool isValid()const{return valid;}
+    DataSectionPtr dataSection(){auto section=std::make_shared<DataSection>();section->children=count;return section;}
+    void close(){valid=false;}
+};
+struct Closable{void close(){}};
+static std::vector<std::string> loaderLog;
+struct ILoader
+{
+    float status=0.f;
+    bool bind(){loaderLog.push_back("bind");status=1.f;return true;}
+    bool loadMustSucceed(){return true;}
+    float loadStatus()const{return status;}
+    void unload(){loaderLog.push_back("unload");status=0.f;}
+};
+// Scene-side records for the real mappingLoaded/updateSpaceBounds bodies.
+struct AABB
+{
+    bool empty=true;float low=0.f,high=0.f;
+    bool insideOut()const{return empty;}
+    void addBounds(const AABB& other)
+    {if(other.empty)return;if(empty){*this=other;return;}low=std::min(low,other.low);high=std::max(high,other.high);}
+    bool operator==(const AABB& other)const{return empty==other.empty&&low==other.low&&high==other.high;}
+};
+struct SceneRecord{unsigned areaLoaded=0,configures=0,insideOut=0,resizes=0;};
+static SceneRecord sceneRecord;
+struct ChangeSceneView{void notifyAreaLoaded(const AABB&){++sceneRecord.areaLoaded;}};
+struct FakeScene{template<class T>T* getView(){static T view;return &view;}};
+namespace CompiledSpace
+{
+class CompiledSpaceMapping;
+struct IEntityUDOFactory
+{
+    typedef int UDOHandle;
+    virtual ~IEntityUDOFactory(){}
+    virtual EntityID createEntity(SpaceID,const DataSectionPtr&)=0;
+    virtual void destroyEntity(EntityID)=0;
+    virtual UDOHandle createUDO(const DataSectionPtr&)=0;
+    virtual void destroyUDO(UDOHandle)=0;
+};
+class CompiledSpace:public ClientSpace
+{
+public:
+    struct Mapping{GeometryMappingID mappingID_;CompiledSpaceMapping* pLoader_;};
+    typedef BW::vector<Mapping> Mappings;
+    Mappings mappings_;
+    struct LightScene{void clear(){}}dynamicLightScene_;
+    AABB bounds_;FakeScene scene_;
+    struct ShadowScene{void configure(const AABB& box,float){++sceneRecord.configures;sceneRecord.insideOut+=box.insideOut();}}shadowScene_;
+    struct DynamicScene{void resizeScene(const AABB&){++sceneRecord.resizes;}}dynamicScene_;
+    explicit CompiledSpace(SpaceID id):ClientSpace(id){}
+    FakeScene& scene(){return scene_;}
+    void mappingLoaded(CompiledSpaceMapping* pLoader);void updateSpaceBounds();
+    void doClear() override;
+    void doDelMapping(GeometryMappingID mappingID);
+    static IEntityUDOFactory* entityUDOFactory(){return factory;}
+    static IEntityUDOFactory* factory;
+};
+IEntityUDOFactory* CompiledSpace::factory=NULL;
+class CompiledSpaceMapping
+{
+public:
+    enum State{STATE_UNLOADED,STATE_LOADING,STATE_LOADED,STATE_FAILED_TO_LOAD};
+    CompiledSpaceMapping(const BW::string& path,CompiledSpace& space):path_(path),space_(space)
+    {loaders_.push_back(&loader);}
+    virtual ~CompiledSpaceMapping();
+    bool loadAsync(TaskManager& taskMgr);
+    void loadBGFinished();void unloadSync();
+    void spawnEntities();void removeEntities();void spawnUserDataObjects();void removeUserDataObjects();
+    // Fixture of loadBG: reading the binary is outside this family.
+    void loadBG()
+    {
+        if(delayMs)std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        if(fail)++numFailures_;
+        entities_.valid=true;entities_.count=2;userDataObjects_.valid=true;userDataObjects_.count=1;
+    }
+    class LoaderTask;friend class LoaderTask;
+    BW::string path_;CompiledSpace& space_;State state_=STATE_UNLOADED;LoaderTask* pTask_=NULL;uint32 numFailures_=0;
+    bool stockPublicationRevoked_=false;uint64 loadStartTimestamp_=0;std::atomic<size_t> completedLoadStages_{0};
+    typedef BW::vector<ILoader*> Loaders;Loaders loaders_;ILoader loader;
+    Closable staticGeometry_,assetList_,stringTable_,settings_,reader_;EntityList entities_,userDataObjects_;
+    BW::vector<EntityID> entityInstances_;BW::vector<IEntityUDOFactory::UDOHandle> userDataObjectInstances_;
+    int delayMs=0;bool fail=false;AABB box{false,0.f,float(1+space_.mappings_.size())};
+    const AABB& boundingBox()const{return box;}
+};
+template<class T>void bw_safe_delete(T*& value){delete value;value=NULL;}
+@MAPPING_LOADER_TASK@;
+@MAPPING_DTOR@
+@MAPPING_LOAD_ASYNC@
+@MAPPING_FINISHED@
+@MAPPING_UNLOAD@
+@MAPPING_SPAWN@
+@MAPPING_REMOVE@
+@MAPPING_SPAWN_UDOS@
+@MAPPING_REMOVE_UDOS@
+@SPACE_MAPPING_LOADED@
+@SPACE_UPDATE_BOUNDS@
+@SPACE_DO_CLEAR@
+@SPACE_DEL_MAPPING@
+}
+// Mirrors EntityUDOFactory::createEntity's owner lookup; the real factory
+// asserts when the space has no connection, this one counts it.
+struct SpawnFactory:CompiledSpace::IEntityUDOFactory
+{
+    std::vector<std::pair<SpaceID,unsigned>> spawned;unsigned missingOwner=0,destroyed=0,udos=0,udosDestroyed=0;
+    EntityID next=9000;std::function<void(SpaceID)> onSpawn;
+    EntityID createEntity(SpaceID space,const DataSectionPtr&) override
+    {
+        ConnectionControl& control=ConnectionControl::instance();
+        BWConnection* owner=SpaceManager::instance().isLocalSpace(space)?control.pSpaceConnection(space):control.pConnection();
+        if(!owner){++missingOwner;return NULL_ENTITY_ID;}
+        ++owner->entities;spawned.push_back({space,taskManager.ticks});
+        if(onSpawn)onSpawn(space);
+        return ++next;
+    }
+    void destroyEntity(EntityID) override{++destroyed;}
+    UDOHandle createUDO(const DataSectionPtr&) override{return ++udos;}
+    void destroyUDO(UDOHandle) override{++udosDestroyed;}
+    unsigned count(SpaceID space)const{unsigned total=0;for(const auto& item:spawned)total+=item.first==space;return total;}
+};
+static SpawnFactory spawnFactory;
+static ClientSpace* createCompiledSpace(SpaceID id){return new CompiledSpace::CompiledSpace(id);}
+
 BWConnection::~BWConnection()
 {
     events.push_back("delete:"+std::to_string(id));if(onDelete)onDelete();
@@ -723,6 +912,171 @@ static void finiTests()
     reset();
     std::puts("Production ConnectionControl::fini: retire-first, once-only, terminal fence and init reopen PASS");
 }
+
+// Unload waits pump real completions: retiring mappings/spaces publish no
+// entities, a live mapping completed in the same tick still does.
+using Mapping=BW::CompiledSpace::CompiledSpaceMapping;
+static BW::CompiledSpace::CompiledSpace* compiled(BW::SpaceID id)
+{return static_cast<BW::CompiledSpace::CompiledSpace*>(BW::SpaceManager::instance().space(id));}
+static Mapping* mapSpace(BW::SpaceID id,BW::ClientSpace::GeometryMappingID mappingID,int delayMs=0,bool fail=false)
+{
+    auto* space=compiled(id);auto* mapping=new Mapping("spaces/test",*space);mapping->delayMs=delayMs;mapping->fail=fail;
+    space->mappings_.push_back({mappingID,mapping});assert(mapping->loadAsync(BW::taskManager));return mapping;
+}
+static BW::BackgroundTask* takeTask(Mapping* mapping)
+{
+    auto* task=reinterpret_cast<BW::BackgroundTask*>(mapping->pTask_);auto& queue=BW::taskManager.background;
+    queue.erase(std::find(queue.begin(),queue.end(),task));return task;
+}
+static void finishBackground(Mapping* mapping){takeTask(mapping)->doBackgroundTask(BW::taskManager);}
+static std::thread backgroundLater(Mapping* mapping)
+{BW::BackgroundTask* task=takeTask(mapping);return std::thread([task](){task->doBackgroundTask(BW::taskManager);});}
+static BW::ClientSpacePtr addCompiled(BW::SpaceID id)
+{
+    BW::ClientSpacePtr result(new BW::CompiledSpace::CompiledSpace(id));
+    auto& manager=BW::SpaceManager::instance();
+    (id>=BW::SpaceManager::LOCAL_SPACE_START?manager.localSpaces_:manager.spaces_)[id]=result.get();return result;
+}
+static void settle()
+{
+    reset();BW::taskManager.reset();BW::loaderLog.clear();BW::sceneRecord=BW::SceneRecord();
+    BW::spawnFactory.spawned.clear();BW::spawnFactory.onSpawn={};
+    BW::spawnFactory.missingOwner=BW::spawnFactory.destroyed=BW::spawnFactory.udos=BW::spawnFactory.udosDestroyed=0;
+}
+static void compiledSpaceTests(bool legacy)
+{
+    using namespace BW;
+    auto& owner=ConnectionControl::instance();auto& manager=SpaceManager::instance();auto& factory=spawnFactory;
+    manager.spaceFactory=createCompiledSpace;CompiledSpace::CompiledSpace::factory=&factory;
+    const std::vector<std::string> loadedThenUnloaded{"bind","unload"};
+    // The crash: clearEntitiesAndSpaces retires a client space whose mapping
+    // completion is queued; its unload wait pumps that same completion.
+    {
+        const SpaceID a=create();Mapping* mapping=mapSpace(a,1);finishBackground(mapping);
+        clearStockEntitiesAndSpaces(false);
+        assert(taskManager.main.empty()&&taskManager.ticks==1&&loaderLog==loadedThenUnloaded);
+        if(legacy)assert(factory.missingOwner==2);else assert(factory.missingOwner==0&&factory.count(a)==0);
+        settle();
+    }
+    // Background stage still running when the unload waits on it.
+    {
+        const SpaceID a=create();Mapping* mapping=mapSpace(a,1,60);std::thread worker=backgroundLater(mapping);
+        clearStockEntitiesAndSpaces(false);worker.join();
+        assert(taskManager.ticks==1&&loaderLog==loadedThenUnloaded);
+        if(legacy)assert(factory.missingOwner==2);else assert(factory.missingOwner==0&&factory.count(a)==0);
+        settle();
+    }
+    // Already finished while live: entities published, then removed once.
+    {
+        const SpaceID a=create();Mapping* mapping=mapSpace(a,1);finishBackground(mapping);taskManager.tick();
+        assert(factory.count(a)==2&&factory.udos==1);
+        clearStockEntitiesAndSpaces(false);
+        assert(factory.missingOwner==0&&factory.destroyed==2&&factory.udosDestroyed==1&&loaderLog==loadedThenUnloaded);
+        settle();
+    }
+    // A failed load publishes nothing and has nothing bound to unload.
+    {
+        const SpaceID a=create();Mapping* mapping=mapSpace(a,1,0,true);finishBackground(mapping);
+        clearStockEntitiesAndSpaces(false);
+        assert(factory.missingOwner==0&&factory.spawned.empty()&&loaderLog.empty());
+        settle();
+    }
+    // clearSpace on one space while a live sibling completes in the same
+    // tick; repeated clear and a later fini are harmless.
+    {
+        const SpaceID a=create(),b=create();Mapping* retiring=mapSpace(a,1);Mapping* live=mapSpace(b,2);
+        finishBackground(retiring);finishBackground(live);compiled(a)->repeatable=true;
+        assert(clearSpace(a));
+        assert(taskManager.ticks==1&&factory.count(b)==2&&factory.spawned.back().second==1);
+        if(legacy)assert(factory.count(a)==2);else assert(factory.count(a)==0);
+        assert(clearSpace(a)&&clearSpace(a));owner.fini();owner.fini();
+        assert(factory.missingOwner==0&&std::count(loaderLog.begin(),loaderLog.end(),std::string("unload"))==2);
+        settle();
+    }
+    // Deleting one mapping of a live space: it publishes nothing, while the
+    // space's other mapping completed in the same tick still publishes.
+    {
+        const SpaceID a=create();Mapping* deleted=mapSpace(a,1);Mapping* kept=mapSpace(a,2);
+        finishBackground(deleted);finishBackground(kept);
+        compiled(a)->doDelMapping(1);
+        assert(taskManager.ticks==1&&compiled(a)->mappings_.size()==1);
+        assert(factory.count(a)==(legacy?4u:2u)&&factory.missingOwner==0);
+        settle();
+    }
+    // releaseSpace keeps a pinned space; its completion arrives in a later
+    // ordinary frame and has no entity owner to publish into.
+    {
+        const SpaceID a=create();ClientSpacePtr pinned(manager.space(a));Mapping* mapping=mapSpace(a,1);finishBackground(mapping);
+        assert(releaseSpace(a));taskManager.tick();
+        if(legacy)assert(factory.missingOwner==2);else assert(factory.missingOwner==0&&factory.count(a)==0);
+        pinned->repeatable=true;pinned->clear();pinned=ClientSpacePtr();
+        assert(loaderLog==loadedThenUnloaded);
+        settle();
+    }
+    // Normal shutdown: fini retires a client space with a queued completion.
+    {
+        const SpaceID a=create();Mapping* mapping=mapSpace(a,1);finishBackground(mapping);
+        owner.fini();
+        if(legacy)assert(factory.missingOwner==2);else assert(factory.missingOwner==0&&factory.count(a)==0);
+        settle();
+    }
+    // Main connection already cleared: a server space's completion pumped by
+    // a client space's unload wait (mainConnection=NULL in the dump).
+    {
+        ClientSpacePtr server=addCompiled(7);Mapping* serverMapping=mapSpace(7,1);
+        owner.pConnection_=new BWNullConnection(91,7);owner.mode_=ConnectionControl::OFFLINE;
+        const SpaceID c=create();Mapping* client=mapSpace(c,2);finishBackground(serverMapping);finishBackground(client);
+        clearStockEntitiesAndSpaces(false);
+        if(legacy)assert(factory.missingOwner==4);else assert(factory.missingOwner==0&&factory.spawned.empty());
+        server=ClientSpacePtr();settle();
+    }
+    if(!legacy)
+    {
+        // A previously loaded mapping plus a pending one: the retired
+        // completion publishes no loaded area or bounds from the emptied list.
+        const SpaceID a=create();Mapping* loaded=mapSpace(a,1);finishBackground(loaded);taskManager.tick();
+        assert(sceneRecord.areaLoaded==1&&sceneRecord.configures==1&&sceneRecord.insideOut==0);
+        Mapping* pending=mapSpace(a,2);finishBackground(pending);
+        clearStockEntitiesAndSpaces(false);
+        assert(sceneRecord.areaLoaded==1&&sceneRecord.configures==1&&sceneRecord.insideOut==0&&sceneRecord.resizes==1);
+        assert(factory.count(a)==2&&factory.missingOwner==0);
+        assert(std::count(loaderLog.begin(),loaderLog.end(),std::string("unload"))==2);
+        settle();
+    }
+    if(!legacy)
+    {
+        // A callback during the old clear creates a replacement space and
+        // mapping. The old clear retires only its captured owners; the
+        // replacement's completion, pumped by the old unload in the same
+        // tick, publishes into the new live connection and survives.
+        const SpaceID old=create();Mapping* retiring=mapSpace(old,1);finishBackground(retiring);
+        SpaceID replacement=NULL_SPACE_ID;Mapping* fresh=NULL;
+        held(old)->onClear=[&](){replacement=create();fresh=mapSpace(replacement,2);finishBackground(fresh);};
+        clearStockEntitiesAndSpaces(false);
+        assert(replacement!=NULL_SPACE_ID&&isClientSpace(replacement)&&!manager.space(old));
+        assert(taskManager.ticks==1&&factory.count(old)==0&&factory.count(replacement)==2);
+        assert(factory.spawned.back().second==1&&held(replacement)->entities==2&&factory.missingOwner==0);
+        assert(compiled(replacement)->mappings_.size()==1&&compiled(replacement)->mappings_[0].pLoader_==fresh);
+        assert(fresh->state_==Mapping::STATE_LOADED&&sceneRecord.areaLoaded==1);
+        settle();
+    }
+    if(!legacy)
+    {
+        // A live sibling's spawn callback re-enters clear/unmap of the space
+        // being cleared; detached mappings are deleted exactly once.
+        const SpaceID a=create(),b=create();Mapping* first=mapSpace(a,1);Mapping* second=mapSpace(a,3);Mapping* live=mapSpace(b,2);
+        finishBackground(first);finishBackground(second);finishBackground(live);compiled(a)->repeatable=true;
+        unsigned reentered=0;
+        factory.onSpawn=[&](SpaceID space){if(space!=b||reentered++)return;assert(clearSpace(a));compiled(a)->doDelMapping(3);};
+        assert(clearSpace(a));
+        assert(reentered==2&&factory.count(a)==0&&factory.count(b)==2&&compiled(a)->mappings_.empty());
+        assert(std::count(loaderLog.begin(),loaderLog.end(),std::string("unload"))==2);
+        settle();
+    }
+    manager.spaceFactory=NULL;
+    std::puts(legacy?"Pristine compiled-space unload publishes into retired owners: reproduced"
+        :"Compiled-space unload: retiring completions publish nothing, live completions in the same tick do PASS");
+}
 static PyObject* clear(PyObject*,PyObject* args){return BW::py_clearEntitiesAndSpaces(args);}
 static PyObject* prepare(PyObject*,PyObject*){reset();addSpace(1);addSpace((1<<30)+1);Py_RETURN_NONE;}
 static PyObject* state(PyObject*,PyObject*)
@@ -807,6 +1161,14 @@ int main(int argc,char** argv)
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
     _set_error_mode(_OUT_TO_STDERR);_set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
+    BW::mainThread=std::this_thread::get_id();
+    if(argc==2&&std::string(argv[1])=="--legacy-unload")
+    {
+        Py_NoSiteFlag=1;Py_Initialize();
+        BW::PyEntity::s_type_.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE;BW::PyEntity::s_type_.tp_new=PyType_GenericNew;
+        assert(PyType_Ready(&BW::PyEntity::s_type_)==0);
+        compiledSpaceTests(true);reset();Py_Finalize();return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--legacy")
     {
         auto& owner=BW::ConnectionControl::instance();auto* old=new BW::BWNullConnection(100);
@@ -821,7 +1183,7 @@ int main(int argc,char** argv)
     assert(argc==2);Py_NoSiteFlag=1;Py_Initialize();
     BW::PyEntity::s_type_.tp_flags=Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE;BW::PyEntity::s_type_.tp_new=PyType_GenericNew;BW::PyEntity::s_type_.tp_dealloc=BW::deallocEntity;BW::PyEntity::s_type_.tp_getset=BW::entityAttributes;
     assert(PyType_Ready(&BW::PyEntity::s_type_)==0);
-    ownerTests();clientSpaceTests();finiTests();
+    ownerTests();clientSpaceTests();finiTests();compiledSpaceTests(false);
     std::vector<PyMethodDef> methods=BW::moduleMethods();
     methods.insert(methods.end(),{
         {"clearEntitiesAndSpaces",clear,METH_VARARGS,NULL},{"_prepare",prepare,METH_NOARGS,NULL},

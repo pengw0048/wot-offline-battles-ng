@@ -57,6 +57,13 @@ public:
         return spaces;
     }
 
+    // Unload waits pump every pending geometry completion. Revoke entity/UDO
+    // publication for every space this operation retires before any wait.
+    static void revokeLoadPublication(const BW::vector<ClientSpacePtr>& spaces)
+    {
+        for (const auto& space : spaces) space->stockRevokeLoadPublication();
+    }
+
     // 63ff90 clears entities, deletes the local connection and drops the held
     // space. Retire both identities first so leave callbacks cannot release
     // this connection again; the caller still pins the ClientSpace.
@@ -75,6 +82,7 @@ public:
         {
             held = space->second;
             control.clientSpaces_.erase(space);
+            held->stockRevokeLoadPublication();
         }
         const bool deferDeletion = control.isInTick_;
         if (deferDeletion) control.condemnedConnections_.push_back(retired);
@@ -102,6 +110,7 @@ public:
         Detached detached;
         detached.connections.swap(control.clientSpaceConnections_);
         detached.spaces.swap(control.clientSpaces_);
+        for (const auto& entry : detached.spaces) entry.second->stockRevokeLoadPublication();
         detached.deferDeletion = control.isInTick_;
         if (detached.deferDeletion)
             for (const auto& entry : detached.connections) control.condemnedConnections_.push_back(entry.second);
@@ -192,6 +201,7 @@ void clearStockEntitiesAndSpaces(bool keepClientOnlySpaces)
     // create another connection/space. ac2f90's keep branch selects these maps;
     // callbacks must not cause this retiring operation to clear a replacement.
     const BW::vector<ClientSpacePtr> spaces = StockSpaceLifecycle::selectSpaces(keepClientOnlySpaces);
+    StockSpaceLifecycle::revokeLoadPublication(spaces);
     ConnectionControl& control = ConnectionControl::instance();
     BWConnection* const mainConnection = control.pConnection_;
     const uint64 mainRevision = control.stockMainSpaceRevision_;
@@ -267,6 +277,7 @@ static void clearAllSpaces(bool keepClientOnlySpaces)
 {
     {
         const BW::vector<ClientSpacePtr> spaces = StockSpaceLifecycle::selectSpaces(keepClientOnlySpaces);
+        StockSpaceLifecycle::revokeLoadPublication(spaces);
         SpaceManager& manager = SpaceManager::instance();
         for (const auto& space : spaces)
             if (manager.space(space->id()) == space.get()) space->clear();

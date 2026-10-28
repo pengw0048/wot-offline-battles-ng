@@ -98,6 +98,58 @@ def patch(root):
     # A new initialisation phase reopens client-space creation after fini.
     source = replace(source, 'void SpaceManager::init()\n{\n\n}', 'void SpaceManager::init()\n{\n\t++stockInitGeneration_;\n}')
     files[path] = source
+    path = root / 'lib/space/client_space.hpp'
+    source = path.read_text(encoding='utf-8-sig')
+    source = replace(source, '\tbool cleared() const;\n',
+        '\tbool cleared() const;\n\n'
+        '\t// A retiring owner stops async geometry completion from publishing\n'
+        '\t// entities or UDOs into this space; terminal like clear().\n'
+        '\tvoid stockRevokeLoadPublication() { stockLoadPublicationRevoked_ = true; }\n'
+        '\tbool stockLoadPublicationRevoked() const { return stockLoadPublicationRevoked_; }\n',
+        '\tvoid stockRevokeLoadPublication()')
+    source = replace(source, '\tbool isCleared_;\n', '\tbool isCleared_;\n\tbool stockLoadPublicationRevoked_ = false;\n',
+        '\tbool stockLoadPublicationRevoked_ = false;')
+    files[path] = source
+    path = root / 'lib/compiled_space/compiled_space_mapping.hpp'
+    source = path.read_text(encoding='utf-8-sig')
+    source = replace(source, '\tLoaderTask* pTask_;\n\tuint32 numFailures_;\n',
+        '\tLoaderTask* pTask_;\n\tuint32 numFailures_;\n\tbool stockPublicationRevoked_ = false;\n',
+        '\tbool stockPublicationRevoked_ = false;')
+    files[path] = source
+    path = root / 'lib/compiled_space/compiled_space_mapping.cpp'
+    source = path.read_text(encoding='utf-8-sig')
+    source = replace(source, '\tif (state_ == STATE_UNLOADED)\n\t{\n\t\treturn;\n\t}\n\n\tif (pTask_)\n\t{\n\t\tpTask_->wait();\n\t}\n',
+        '\tif (state_ == STATE_UNLOADED)\n\t{\n\t\treturn;\n\t}\n\n'
+        '\t// wait() pumps this mapping\'s own completion through TaskManager::tick.\n'
+        '\t// A mapping being unloaded must not publish entities or UDOs from it.\n'
+        '\tstockPublicationRevoked_ = true;\n'
+        '\tif (pTask_)\n\t{\n\t\tpTask_->wait();\n\t}\n',
+        '\tstockPublicationRevoked_ = true;')
+    source = replace(source, '\t\tspace_.mappingLoaded( this );\n\n\t\tthis->spawnEntities();\n\t\tthis->spawnUserDataObjects();\n',
+        '\t\t// Loaders stay bound so unloadSync unloads them symmetrically. A\n'
+        '\t\t// retired mapping or space publishes no loaded area/bounds, entities\n'
+        '\t\t// or UDOs: its owner is detached and mappings_ may already be empty.\n'
+        '\t\tif (stockPublicationRevoked_ || space_.cleared() ||\n'
+        '\t\t\tspace_.stockLoadPublicationRevoked())\n\t\t{\n'
+        '\t\t\tTRACE_MSG( "Compiled space \'%s\' completed while retiring; "\n'
+        '\t\t\t\t"not published\\n", path_.c_str() );\n\t\t}\n'
+        '\t\telse\n\t\t{\n\t\t\tspace_.mappingLoaded( this );\n\n'
+        '\t\t\tthis->spawnEntities();\n\t\t\tthis->spawnUserDataObjects();\n\t\t}\n',
+        'space_.stockLoadPublicationRevoked())')
+    files[path] = source
+    path = root / 'lib/compiled_space/compiled_space.cpp'
+    source = path.read_text(encoding='utf-8-sig')
+    # Unloading waits pump other completions; detach before deleting so a
+    # re-entrant clear/unmap never sees a half-deleted mapping.
+    source = replace(source, '\tfor (size_t i = 0; i < mappings_.size(); ++i)\n\t{\n\t\tbw_safe_delete( mappings_[i].pLoader_ );\n\t}\n\n\tmappings_.clear();\n',
+        '\tMappings retired;\n\tretired.swap( mappings_ );\n'
+        '\tfor (size_t i = 0; i < retired.size(); ++i)\n\t{\n\t\tbw_safe_delete( retired[i].pLoader_ );\n\t}\n',
+        '\tretired.swap( mappings_ );')
+    source = replace(source, '\t\t\tbw_safe_delete( mappings_[i].pLoader_ );\n\t\t\tmappings_.erase( mappings_.begin() + i );\n\t\t\tbreak;\n',
+        '\t\t\tCompiledSpaceMapping * pRetired = mappings_[i].pLoader_;\n'
+        '\t\t\tmappings_.erase( mappings_.begin() + i );\n\t\t\tbw_safe_delete( pRetired );\n\t\t\tbreak;\n',
+        '\t\t\tCompiledSpaceMapping * pRetired = mappings_[i].pLoader_;')
+    files[path] = source
     path = root / 'client/connection_control.cpp'
     source = path.read_text(encoding='utf-8-sig')
     source = replace(source, '#include "connection_control.hpp"\n', '#include "connection_control.hpp"\n#include "stock_space_lifecycle.hpp"\n', '#include "stock_space_lifecycle.hpp"')
