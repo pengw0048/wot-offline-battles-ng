@@ -13,6 +13,7 @@ include("${WOT_OFFLINE_FORK_GENERATED}/offline_fork_sources.cmake")
 add_library(WotOfflineMath STATIC ${WOT_OFFLINE_MATH_SOURCES})
 target_compile_definitions(WotOfflineMath PRIVATE WOT_PYTHON_C_API Py_BUILD_CORE NOMINMAX)
 target_include_directories(WotOfflineMath PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}"
     "${BW_SOURCE_DIR}/third_party/python/Include"
     "${BW_SOURCE_DIR}/third_party/python/PC")
 target_compile_options(WotOfflineMath PRIVATE /std:c++17 /arch:SSE2 /fp:strict
@@ -20,7 +21,8 @@ target_compile_options(WotOfflineMath PRIVATE /std:c++17 /arch:SSE2 /fp:strict
 set_target_properties(WotOfflineMath PROPERTIES CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES DISABLE_PRECOMPILE_HEADERS YES)
 target_link_libraries(bwclient WotOfflineMath)
-target_include_directories(bwclient PRIVATE "${WOT_OFFLINE_FORK_GENERATED}")
+target_include_directories(bwclient PRIVATE "${WOT_OFFLINE_FORK_GENERATED}"
+    "${WOT_OFFLINE_FORK_GENERATED}/native")
 
 # The platform bridge uses the same interpreter and Win32 services, without
 # inheriting BigWorld's precompiled header or the original PE-address adapter.
