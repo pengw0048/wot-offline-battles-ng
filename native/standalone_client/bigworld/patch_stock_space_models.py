@@ -211,17 +211,38 @@ def patch(root):
     lh = replace(lh, '\tBW::vector<float> lodOptions_;',
         '\tfloat stockCompiledLods_[5] = {1.f, 1.f, 1.f, 1.f, 1.f};\n'
         '\tBW::vector<float> lodOptions_;', 'authored five native LOD multipliers')
+    lh = replace(lh, '\tBW::vector<float> lodOptions_;',
+        '\tBW::vector<float> lodOptions_;\n'
+        '\tBW::vector<int> stockLodOptionPayloads_;', 'separate LOD option payloads')
     if COMPILED_LOD not in lc:
         lc = replace(lc, 'float LodSettings::applyLodBias(float distance)',
                      COMPILED_LOD + 'float LodSettings::applyLodBias(float distance)',
                      'compiled LOD values and option payload')
-    lc = replace(lc, 'void LodSettings::setLodOption(int optionIdx)\n{}',
-        '''void LodSettings::setLodOption(int optionIdx)
+    lc = replace(lc, '\t\t\t\tthis->lodOptions_.push_back(value);',
+        '\t\t\t\t// #1513 a3700b: FloatOption carries a separate zero integer payload.\n'
+        '\t\t\t\tthis->stockLodOptionPayloads_.push_back(0);\n'
+        '\t\t\t\tthis->lodOptions_.push_back(value);', 'authored LOD option payload')
+    lc = replace(lc, '\t\tthis->lodOptions_.push_back(1.0f);',
+        '\t\t// #1513 a3714b: the fallback HIGH option has the same payload.\n'
+        '\t\tthis->stockLodOptionPayloads_.push_back(0);\n'
+        '\t\tthis->lodOptions_.push_back(1.0f);', 'fallback LOD option payload')
+    decor_callback = '''void LodSettings::setLodOption(int optionIdx)
+{
+    // #1513 a360b0 passes FloatOption's payload, not its registry index.
+    MF_ASSERT(optionIdx >= 0 && static_cast<size_t>(optionIdx) < stockLodOptionPayloads_.size());
+    const int payload = stockLodOptionPayloads_[optionIdx];
+    auto decor = Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL");
+    if (decor) decor->selectOption(std::min(2, 3 - payload));
+}'''
+    previous_decor_callback = '''void LodSettings::setLodOption(int optionIdx)
 {
     // #1513 a374f0: the OBJECT_LOD callback selects the shared decor owner.
     auto decor = Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL");
     if (decor) decor->selectOption(std::min(2, 3 - optionIdx));
-}''', 'original shared decor callback')
+}'''
+    callback_before = previous_decor_callback if previous_decor_callback in lc else \
+        'void LodSettings::setLodOption(int optionIdx)\n{}'
+    lc = replace(lc, callback_before, decor_callback, 'original shared decor callback')
     # Insert before the stable original line, preserving the independent decor
     # patch's complete after-line hook in either order and on repeated runs.
     lod_hook = '    LodSettings::instance().initStockCompiled(configSection);'

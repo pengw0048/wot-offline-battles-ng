@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ['lib/moo/' + name for name in ('draw_context.hpp', 'draw_context.cpp',
@@ -143,21 +144,74 @@ int main(){
 LOD_PRELUDE = r'''
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 #define BW_GUARD
+#define BW_BEGIN_NAMESPACE
+#define BW_END_NAMESPACE
 #define MF_ASSERT(x) assert(x)
-namespace BW {using string=std::string;}
-struct DataSection {std::map<std::string,float> values;float readFloat(const std::string& key,float fallback){auto p=values.find(key);return p==values.end()?fallback:p->second;}};
-using DataSectionPtr=std::shared_ptr<DataSection>;
-struct Setting {int active=0;int activeOption(){return active;}void selectOption(int index){active=index;}};
-std::shared_ptr<Setting> sharedDecor;
-namespace Moo {struct GraphicsSetting {static std::shared_ptr<Setting> getFromLabel(const char* name){assert(std::string(name)=="DECOR_LEVEL");return sharedDecor;}};}
+namespace BW {using string=std::string;template<class T>using vector=std::vector<T>;}
+template<class T>struct Pointer:std::shared_ptr<T>{
+ Pointer()=default;Pointer(T* p):std::shared_ptr<T>(p){};
+ bool exists()const{return bool(*this);}T* getObject()const{return this->get();}
+};
+struct DataSection;
+using DataSectionPtr=Pointer<DataSection>;
+using DataSectionIterator=std::vector<DataSectionPtr>::iterator;
+struct DataSection {
+ std::map<std::string,float> values;std::map<std::string,std::string> strings;
+ std::vector<DataSectionPtr> children;
+ float readFloat(const std::string& key,float fallback){auto p=values.find(key);return p==values.end()?fallback:p->second;}
+ std::string readString(const std::string& key){return strings[key];}
+ DataSectionIterator begin(){return children.begin();}DataSectionIterator end(){return children.end();}
+};
+namespace Moo {
+struct GraphicsSetting {
+ using GraphicsSettingPtr=Pointer<GraphicsSetting>;
+ std::string name;int active;std::vector<std::string> labels;
+ static std::map<std::string,GraphicsSettingPtr> registry;
+ GraphicsSetting(const std::string& n,const std::string&,int a,bool,bool):name(n),active(a){}
+ virtual ~GraphicsSetting()=default;virtual void onOptionSelected(int)=0;
+ void addOption(const std::string& label,const std::string&,bool){labels.push_back(label);}
+ int activeOption()const{return active;}
+ void selectOption(int index,bool force=false){
+  assert(!labels.empty());index=std::max(0,std::min(index,int(labels.size())-1));
+  if(index!=active||force){active=index;onOptionSelected(index);}
+ }
+ static GraphicsSettingPtr getFromLabel(const std::string& name){auto p=registry.find(name);return p==registry.end()?GraphicsSettingPtr():p->second;}
+ static void add(GraphicsSettingPtr setting){
+  // Public GraphicsSetting::add selects a negative default before publication,
+  // but does not call an unchanged nonnegative default's callback.
+  assert(!getFromLabel(setting->name));
+  if(setting->active<0)setting->selectOption(0);
+  registry.emplace(setting->name,setting);
+ }
+};
+std::map<std::string,GraphicsSetting::GraphicsSettingPtr> GraphicsSetting::registry;
+template<class T>struct CallbackSetting:GraphicsSetting {
+ T& owner;void(T::*callback)(int);
+ CallbackSetting(const std::string& n,const std::string& d,T& o,void(T::*cb)(int),int a,bool b,bool c):
+  GraphicsSetting(n,d,a,b,c),owner(o),callback(cb){}
+ void onOptionSelected(int index)override{(owner.*callback)(index);}
+};
+template<class T>GraphicsSetting::GraphicsSettingPtr makeCallbackGraphicsSetting(
+ const std::string& n,const std::string& d,T& owner,void(T::*callback)(int),int a,bool b,bool c){
+ return GraphicsSetting::GraphicsSettingPtr(new CallbackSetting<T>(n,d,owner,callback,a,b,c));
+}
+}
+struct IRendererPipeline{enum{TYPE_FORWARD_SHADING=1};};
+struct Renderer{int pipeline=0;int pipelineType()const{return pipeline;}static Renderer& instance(){static Renderer r;return r;}};
+const char* PyExc_RuntimeError="RuntimeError";
+void PyErr_SetString(const char*,const char*){assert(false);}
+@DECOR_OWNER@
 struct LodSettings {
  float stockCompiledLods_[5]={1,1,1,1,1};std::vector<float> lodOptions_;
- std::shared_ptr<Setting> lodSettings_;
+ @PAYLOAD_DECLARATION@
+ Moo::GraphicsSetting::GraphicsSettingPtr lodSettings_;
+ void init(DataSectionPtr);
  void initStockCompiled(DataSectionPtr);float stockCompiledLodScale()const;float stockCompiledLodDefault(unsigned)const;
  void setLodOption(int);
 };
@@ -167,13 +221,46 @@ struct Animation {std::shared_ptr<Streamer> pStreamer_;float totalTime_=20;void 
 @TOUCH@
 int main(){
  LodSettings lod;assert(lod.stockCompiledLodScale()==1);
- auto config=std::make_shared<DataSection>();config->values["lod/default/staticModel/lod0"]=2;
+ DataSectionPtr config(new DataSection);config->values["lod/default/staticModel/lod0"]=2;
  config->values["lod/default/staticModel/lod4"]=.25f;lod.initStockCompiled(config);
  assert(lod.stockCompiledLodDefault(0)==2&&lod.stockCompiledLodDefault(1)==1&&lod.stockCompiledLodDefault(4)==.25f);
- lod.lodOptions_={1,.8f,.6f,.4f};lod.lodSettings_=std::make_shared<Setting>();
- for(int n=0;n<4;++n){lod.lodSettings_->active=n;assert(lod.stockCompiledLodScale()==lod.lodOptions_[n]);}
- lod.setLodOption(1);assert(!sharedDecor);
- sharedDecor=std::make_shared<Setting>();for(int n=0;n<4;++n){lod.setLodOption(n);assert(sharedDecor->active==std::min(2,3-n));}
+ DataSectionPtr options(new DataSection);
+ const float scales[]={1,.8f,.6f,.4f};const char* labels[]={"MAX","HIGH","MEDIUM","LOW"};
+ for(int n=0;n<4;++n){DataSectionPtr option(new DataSection);option->values["value"]=scales[n];option->strings["label"]=labels[n];options->children.push_back(option);}
+ // Both original admission guards must keep registry indices and payloads aligned.
+ DataSectionPtr missingLabel(new DataSection);missingLabel->values["value"]=.9f;options->children.insert(options->children.begin()+1,missingLabel);
+ DataSectionPtr missingValue(new DataSection);missingValue->strings["label"]="INVALID";options->children.insert(options->children.begin()+3,missingValue);
+ lod.init(options);
+ assert(lod.lodOptions_.size()==4&&lod.stockLodOptionPayloads_.size()==4);
+ assert(!Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL"));
+ assert(initialiseStockSceneSettings()&&initialiseStockSceneSettings());
+ auto decor=Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL");
+ assert(decor->activeOption()==0&&configuredDecorLevel==0&&overrideDecorLevel==-1);
+ for(int pipeline=0;pipeline<2;++pipeline){
+  Renderer::instance().pipeline=pipeline;
+  for(int n=0;n<4;++n){
+   decor->selectOption(0,true);lod.lodSettings_->selectOption(n,true);
+   assert(lod.stockCompiledLodScale()==scales[n]&&lod.stockLodOptionPayloads_[n]==0);
+   // Original a3700b/a360b0/a374f0 yield 2 for every authored option, including LOW.
+   assert(decor->activeOption()==2&&configuredDecorLevel==2);
+   for(int overrideValue=-1;overrideValue<3;++overrideValue){
+    overrideDecorLevel=overrideValue;
+    const int expected=overrideValue>=0?overrideValue:(pipeline==1?0:2);
+    assert(stockDecorLevel()==expected);
+   }
+   overrideDecorLevel=-1;
+  }
+ }
+ // Artificial private state checks forwarding rather than a constant decor=2;
+ // the shipping original has no discovered runtime payload mutation entry point.
+ const int requested[]={2,2,1,0};
+ for(int first=0;first<4;++first){lod.stockLodOptionPayloads_[3]=first;lod.setLodOption(3);assert(decor->activeOption()==requested[first]);}
+ lod.stockLodOptionPayloads_[3]=0;
+ Moo::GraphicsSetting::registry.clear();configuredDecorLevel=0;overrideDecorLevel=-1;
+ LodSettings fallback;fallback.init(DataSectionPtr());
+ assert(fallback.lodOptions_==std::vector<float>{1}&&fallback.stockLodOptionPayloads_==std::vector<int>{0});
+ assert(initialiseStockSceneSettings());fallback.lodSettings_->selectOption(0,true);
+ assert(Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL")->activeOption()==2);
  Animation animation;animation.touchStockCompiledFrame(3);
  animation.pStreamer_=std::make_shared<Streamer>();animation.touchStockCompiledFrame(3);
  animation.touchStockCompiledFrame(18);
@@ -198,7 +285,7 @@ class StockSpaceModelsTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
 
-    def compile(self, root, source):
+    def compile(self, root, source, expect_success=True):
         path, binary = root / 'probe.cpp', root / 'probe'
         path.write_text(source)
         command = ['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-UNDEBUG', str(path), '-o', str(binary)]
@@ -207,7 +294,10 @@ class StockSpaceModelsTests(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         result = subprocess.run([str(binary)], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        if expect_success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, 'The previous index-based callback unexpectedly passed')
 
     def test_related_patches_apply_twice_in_all_six_orders(self):
         for order in itertools.permutations((patch.patch, effect_publication, decor.patch)):
@@ -232,6 +322,30 @@ class StockSpaceModelsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 patch.patch(root)
             self.assertEqual(original, {p: p.read_bytes() for p in root.rglob('*') if p.is_file()})
+
+    def test_previous_lod_callback_patch_upgrades_without_duplicate_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            patch.patch(root)
+            expected = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            header = root / 'lib/moo/lod_settings.hpp'
+            header.write_text(header.read_text().replace('\n\tBW::vector<int> stockLodOptionPayloads_;', ''))
+            source = root / 'lib/moo/lod_settings.cpp'
+            text = source.read_text()
+            for line in text.splitlines():
+                if 'stockLodOptionPayloads_.push_back(0)' in line or \
+                        '// #1513 a3700b:' in line or '// #1513 a3714b:' in line:
+                    text = text.replace(line + '\n', '')
+            previous = '''void LodSettings::setLodOption(int optionIdx)
+{
+    // #1513 a374f0: the OBJECT_LOD callback selects the shared decor owner.
+    auto decor = Moo::GraphicsSetting::getFromLabel("DECOR_LEVEL");
+    if (decor) decor->selectOption(std::min(2, 3 - optionIdx));
+}'''
+            source.write_text(text.replace(definition(text, 'void LodSettings::setLodOption('), previous))
+            patch.patch(root)
+            self.assertEqual(expected, {p: p.read_bytes() for p in root.rglob('*') if p.is_file()})
 
     def test_production_pose_allocator_publication_semantics_and_clear(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -387,9 +501,72 @@ int main(){Primitive primitive;Packet rigid;rigid.stockPreviousWorld_=true;
             self.fixture(root)
             patch.patch(root)
             lod = (root / 'lib/moo/lod_settings.cpp').read_text()
-            source = LOD_PRELUDE.replace('@METHODS@', patch.COMPILED_LOD + definition(lod, 'void LodSettings::setLodOption('))
+            header = (root / 'lib/moo/lod_settings.hpp').read_text()
+            # The public SDK retains an unused local typedef; omit only that
+            # declaration so the extracted production method builds with -Werror.
+            initialise = definition(lod, 'void LodSettings::init(').replace(
+                '\ttypedef Moo::GraphicsSetting::GraphicsSettingPtr GraphicsSettingPtr;\n', '')
+            source = LOD_PRELUDE.replace('@METHODS@', patch.COMPILED_LOD + initialise +
+                '\n' + definition(lod, 'void LodSettings::setLodOption('))
+            source = source.replace('@PAYLOAD_DECLARATION@', next(line for line in header.splitlines()
+                if 'BW::vector<int> stockLodOptionPayloads_;' in line))
+            owner = (ROOT / 'bigworld/stock_scene_settings.cpp').read_text()
+            source = source.replace('@DECOR_OWNER@', '\n'.join(line for line in owner.splitlines()
+                if not line.startswith('#include')))
             source = source.replace('@TOUCH@', patch.TOUCH)
             self.compile(root, source)
+            previous = source.replace('const int payload = stockLodOptionPayloads_[optionIdx];',
+                                      'const int payload = optionIdx;')
+            self.assertNotEqual(previous, source)
+            self.compile(root, previous, expect_success=False)
+
+    def test_original_float_option_producer_callback_and_effective_decor(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT required for exact original instructions')
+        executable = Path(client) / 'WorldOfTanks.exe'
+        self.assertTrue(executable.is_file(), 'Invalid explicit WOT_0922_CLIENT')
+        try:
+            import pefile, unicorn
+        except ImportError:
+            self.skipTest('pefile and Unicorn required for original instruction execution')
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from stock_decor_option_oracle import DecorOracle
+        sys.path.insert(0, str(ROOT.parents[1] / 'tools'))
+        from packed_xml import read_packed_xml, TYPE_ELEMENT
+        with zipfile.ZipFile(Path(client) / 'res/packages/misc.pkg') as archive:
+            resource = read_packed_xml(archive.read('system/data/graphics_settings.xml'))
+        section = next(value.value for name, value in resource.children if name == b'objectLOD')
+        scales = []
+        for unused, option in section.children:
+            self.assertEqual(option.value_type, TYPE_ELEMENT)
+            fields = dict(option.value.children)
+            scales.append(float(fields[b'value'].value))
+        self.assertEqual(scales, [1., .8, .6, .4])
+        oracle = DecorOracle(executable)
+        for scale in scales:
+            with self.subTest(scale=scale):
+                payload = oracle.producer(scale)
+                self.assertEqual(payload, [(0, struct.unpack('<f', struct.pack('<f', scale))[0])])
+                self.assertEqual(oracle.callback(*payload[0]), [2])
+        self.assertEqual(oracle.producer(-1), [])
+        self.assertEqual(oracle.producer(.4, label_length=0), [])
+        self.assertEqual(oracle.producer(9, fallback=True), [(0, 1.)])
+        self.assertEqual(oracle.callback(0, .4, registered=False), [])
+        for first, expected in ((-1, 2), (0, 2), (1, 2), (2, 1), (3, 0), (4, -1)):
+            self.assertEqual(oracle.callback(first, .4), [expected])
+        for pipeline in (0, 1):
+            for configured in (0, 1, 2):
+                for override in (-1, 0, 1, 2):
+                    expected = override if override >= 0 else (0 if pipeline == 1 else configured)
+                    self.assertEqual(oracle.effective(configured, override, pipeline), expected)
+            for override in (-1, 0, 2):
+                for selected in (-1, 0, 1, 2):
+                    before = override if override >= 0 else (0 if pipeline == 1 else 1)
+                    after = override if override >= 0 else (0 if pipeline == 1 else max(0, selected))
+                    fields, notifications = oracle.configure(1, override, pipeline, selected)
+                    self.assertEqual(fields, (max(0, selected), override))
+                    self.assertEqual(notifications, int(before != after))
 
 
 if __name__ == '__main__':
