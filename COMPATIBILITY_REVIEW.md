@@ -3431,6 +3431,17 @@ not manufacture a Python error before Svarog invokes them. The real SDK
 resolver and callback dispatch run with CPython 2.7 in focused tests, including
 the original failure, dynamic attributes and preservation of actual callback
 exceptions. This does not change component activation or teardown ordering.
+Engine initialization and native thread entry do not automatically install the
+SDK's Python profile hook, matching the original consumer client. The hook did
+Python stack and line-table work on every traced call even when profiler
+collection was disabled. A paired Windows 15-versus-15 sample, changing only
+those two installations, reduced the observed slow Bot updates from 1.5–2.5
+seconds to 0.31–0.36 seconds; the remaining worker latency is still excessive.
+C++ profiling, native stack guards, thread registration and teardown remain
+available. Explicit CPython profiling remains available, but enabling the native
+profiler alone no longer implicitly traces Python calls. Focused tests execute
+the SDK thread functions and initialization/cleanup statements before and after
+the change. This worker result does not establish visible-client frame rate.
 GPU timing queries are opt-in with the existing profiler switch. Disabled
 profiling submits no timestamp queries and performs no query readback. A Windows
 dump reproduced a GPU parent interval ending before its children, which failed

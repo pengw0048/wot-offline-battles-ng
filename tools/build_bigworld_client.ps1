@@ -293,6 +293,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
     # BigWorld.*Watcher Python functions keep #1513's consumer-build contract.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_watchers.py"),
         $EngineRoot) "stock-python-watchers-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_profile_hook.py"),
+        $EngineRoot) "stock-python-profile-hook-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),
