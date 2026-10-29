@@ -3462,6 +3462,13 @@ whether they started, so activation during an inactive scope cannot emit an
 unmatched end event. Focused tests execute the SDK callback and scope with
 CPython 2.7, including pending activation, capture cutoff, retained names and
 callback errors. Windows frame-time savings have not yet been measured.
+The SDK's scoped frame-behind warning guard restores its previous state on
+exit. Previously, an inner attachment or model scope disabled the enclosing
+script-tick scope's allowance for reading the last published transform.
+The transform-validation setting, update scheduling and warnings outside the
+allowed scopes remain unchanged. Focused tests execute the original and fixed
+SDK guard across nested scopes and exception unwinding; this establishes
+state restoration, not the contribution of those warnings to Windows frame time.
 Hybrid allocation diagnostics are also opt-in. The unchanged SDK default
 created a `MemoryDebug` owner that records allocations and frees through a
 global mutex, call-stack bookkeeping and a live-allocation table. The inspected
