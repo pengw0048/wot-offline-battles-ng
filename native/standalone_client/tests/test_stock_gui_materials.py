@@ -49,6 +49,45 @@ class StockGUIMaterialTests(unittest.TestCase):
                               if n.endswith('/programming/bigworld/lib/ashes/' + name))
                 (self.ashes / name).write_bytes(original.extractfile(member).read())
 
+    def test_gui_profiler_patch_is_only_four_scopes_and_is_transactional(self):
+        spec = importlib.util.spec_from_file_location(
+            'gui_profiler_patch', ROOT / 'bigworld/patch_stock_gui_profiler.py')
+        profiler = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(profiler)
+        archive = Path(os.environ.get(
+            'WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        with tarfile.open(archive) as original:
+            for name in profiler.TOKENS:
+                member = next(n for n in original.getnames()
+                              if n.endswith('/programming/bigworld/' + name))
+                path = self.root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original.extractfile(member).read())
+        pristine = {name: (self.root / name).read_text() for name in profiler.TOKENS}
+        profiler.patch(self.root)
+        final = {name: (self.root / name).read_text() for name in profiler.TOKENS}
+        profiler.patch(self.root)
+        self.assertEqual(final, {name: (self.root / name).read_text() for name in final})
+        self.assertEqual(sum(text.count('PROFILER_SCOPED(') for text in final.values()), 4)
+        for name in final:
+            reverted = final[name]
+            for relative, before, after in profiler.SEAMS:
+                if relative == name:
+                    reverted = reverted.replace(after, before, 1)
+            self.assertEqual(reverted, pristine[name])
+        # A partial or duplicated insertion never writes any companion file.
+        for name, before, after in profiler.SEAMS:
+            for damaged in (final[name].replace(after, before, 1), final[name] + after,
+                            final[name] + before, pristine[name].replace(before, '', 1)):
+                for relative, source in pristine.items():
+                    (self.root / relative).write_text(source)
+                (self.root / name).write_text(damaged)
+                snapshot = {relative: (self.root / relative).read_bytes() for relative in pristine}
+                with self.assertRaises(ValueError):
+                    profiler.patch(self.root)
+                self.assertEqual(snapshot, {relative: (self.root / relative).read_bytes()
+                                            for relative in pristine})
+
     def test_fresh_and_cached_preparations_are_identical(self):
         PATCH.patch_gui_materials(self.root)
         first = {name: (self.ashes / name).read_bytes() for name in FILES}

@@ -17,6 +17,7 @@
 #define BW_BEGIN_NAMESPACE namespace BW {
 #define BW_END_NAMESPACE }
 #define BW_GUARD
+#define PROFILER_SCOPED(name)
 #define BW_STATIC_ASSERT(expression, message) static_assert(expression, #message)
 #define MF_WATCH(...)
 #define MF_VERIFY(expression) do { bool ok = (expression); assert(ok); (void)ok; } while (0)

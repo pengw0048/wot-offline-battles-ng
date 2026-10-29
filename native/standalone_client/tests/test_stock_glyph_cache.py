@@ -112,8 +112,15 @@ def build_host(test, directory, sources, patched):
         (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
         (directory / 'include' / fake).write_text('#pragma once\n')
     source = directory / 'host.cpp'
-    source.write_text(generated_source('stock_glyph_cache_host.cpp', sources,
-                                       patched_sources(sources) if patched else sources))
+    manager = patched_sources(sources) if patched else sources
+    if patched:
+        spec = importlib.util.spec_from_file_location(
+            'gui_profiler_patch', ROOT / 'bigworld/patch_stock_gui_profiler.py')
+        profiler = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(profiler)
+        manager['lib/scaleform/manager.cpp'] = profiler.patch_source(
+            profiler.MANAGER, manager['lib/scaleform/manager.cpp'])
+    source.write_text(generated_source('stock_glyph_cache_host.cpp', sources, manager))
     flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
              if flag != '-DNDEBUG']
     libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))

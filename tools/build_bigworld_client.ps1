@@ -193,6 +193,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-flash-input-mode-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_glyph_cache.py"),
         $EngineRoot) "stock-glyph-cache-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_gui_profiler.py"),
+        $EngineRoot) "stock-gui-profiler-patch.log"
     # Installs the LangBar input-language owner and guards the SDK IME focus
     # members it activates; both seams are separate from the SDK patch.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ime_lifecycle.py"),
