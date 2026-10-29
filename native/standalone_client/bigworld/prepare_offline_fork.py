@@ -37,6 +37,10 @@ _spec = importlib.util.spec_from_file_location(
 tree_registration = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tree_registration)
 _spec = importlib.util.spec_from_file_location(
+    'stock_catalog_stream_bindings', Path(__file__).with_name('stock_catalog_stream_bindings.py'))
+catalog_stream = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(catalog_stream)
+_spec = importlib.util.spec_from_file_location(
     'stock_motion_rotation_bindings', Path(__file__).with_name('stock_motion_rotation_bindings.py'))
 rotation_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rotation_bindings)
@@ -221,7 +225,8 @@ ADAPTERS.update((NATIVE_MATH_PATH.with_name(name), query_bindings.ADAPTERS[name]
                 for name in ('native_engine_query.py', 'destructibles_sensor.py',
                              'destructibles_authority.py', 'world_collision.py'))
 ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
-    lambda source: tree_registration.sensor(query_bindings.sensor(source)))
+    lambda source: catalog_stream.sensor(
+        tree_registration.sensor(query_bindings.sensor(source))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = rotation_bindings.runtime
 
 

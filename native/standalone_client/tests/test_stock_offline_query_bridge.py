@@ -15,7 +15,7 @@ import unittest
 
 from native_test_compile_flags import native_test_compile_flags
 from test_stock_battle_scene_queries import ROOT, FAKE_HEADERS, engine_includes, ground_water_query
-from test_stock_offline_query_skin import FUNCTIONS
+from test_stock_offline_query_skin import FUNCTIONS, fixtures
 
 
 def selected(source, names):
@@ -49,7 +49,20 @@ def consumer_source(fork):
         '\nexec(%r, sensor.__dict__)' % sensor_suffix,
         'exec(%r, world.__dict__)' % world_suffix,
         'exec(%r, engine.__dict__)\n' % engine_source,
-    )) + CONSUMER_CASES
+    )) + '\nSPARSE_FIXTURES = %r\n' % sparse_fixtures() + CONSUMER_CASES
+
+
+def sparse_fixtures():
+    names = {
+        'anonymous accepted fragile', 'registered anonymous wire in instances',
+        'registered anonymous wire in baked_instances', 'real tree wire',
+        'overlapping intact owner veto', 'unstreamed stacked baked owner veto',
+        'streamed stacked unanimous owner', 'spatially proved repaired slot remap',
+        'broken component owns stale different material',
+    }
+    result = [case for case in fixtures() if case['name'] in names]
+    assert len(result) == len(names)
+    return result
 
 
 CONSUMER_SETUP = r'''
@@ -169,6 +182,62 @@ def check(keep,q,ctx):
     assert actual==expected,(actual,expected)
     assert Bridge.before(ctx)
     q.raise_failure()
+
+# Full membership remains independent of sparse loaded geometry. Every case
+# uses the unchanged pinned Python skin law as its preparation oracle.
+def sparse_preparation():
+    import copy
+    for original in SPARSE_FIXTURES:
+        case=copy.deepcopy(original);reset()
+        sensor.g_offh_destr_instances=case['instances']
+        sensor.g_offh_destr_contact_bins=case['contact_bins']
+        sensor.g_offh_destr_isolated_chunks=case['isolated_chunks']
+        sensor.g_offh_destr_isolated_slots=case['isolated_slots']
+        sensor.g_offh_destr_speculative=case['speculative']
+        sensor._destructible_catalog=dict((name,case[name]) for name in
+            ('baked_instances','baked_shot_bins','layout_repairs','layout_generations','excluded_instances'))
+        sensor._destructible_catalog['tree_instances']=dict.fromkeys(case['tree_instances'])
+        authority._state={'chunks':{}}
+        for chunk,idx,material in case['destroyed']:
+            authority._state['chunks'].setdefault(chunk,{'keys':set()})['keys'].add((idx,material))
+        # Distant identities have malformed, unused geometry. Neither owner
+        # should convert them; the native view must not allocate placeholders.
+        for collection in (sensor.g_offh_destr_instances,sensor._destructible_catalog['baked_instances']):
+            for idx in range(64):collection[(300,idx)]={'kind':'other','boxes':None}
+        q,ctx=query()
+        def check_prepared():
+            vectors=[Vector3(*case[name]) for name in ('point','start','end')]
+            normal=None if case['normal'] is None else Vector3(*case['normal'])
+            expected=sensor._compiled_motion_skin_1513(vectors[0],vectors[1],vectors[2],set(case['surfaces']),normal)
+            value=Bridge.preparedSkin(ctx,case['point'],case['start'],case['end'],case['normal'],case['surfaces'])
+            actual=None if not value[0] else (value[1],set(value[2]))
+            assert actual==expected,(case['name'],actual,expected)
+            assert value[4]==[sensor._anonymous_original_surface_1513(surface) is None for surface in case['surfaces']],(case['name'],value[4])
+            rows_live,rows_baked,loaded_live,loaded_baked=value[3]
+            assert rows_live==len(sensor.g_offh_destr_instances) and rows_baked==len(sensor._destructible_catalog['baked_instances'])
+            assert loaded_live<rows_live and loaded_baked<rows_baked,(case['name'],value[3])
+            return actual
+        before=check_prepared()
+        # Repeated calls retain the same loaded geometry. An effect must
+        # invalidate it even when the identity and container length stay equal.
+        assert check_prepared()==before
+        assert Bridge.before(ctx)
+        for collection in (sensor.g_offh_destr_instances,sensor._destructible_catalog['baked_instances']):
+            for row in collection.values():row['kind']='other';row['boxes']=()
+        assert Bridge.after(ctx)
+        assert check_prepared() is None
+        assert Bridge.before(ctx)
+        sensor.g_offh_destr_instances.clear()
+        sensor._destructible_catalog['baked_instances'].clear()
+        assert Bridge.after(ctx)
+        expected=sensor._compiled_motion_skin_1513(Vector3(*case['point']),Vector3(*case['start']),
+            Vector3(*case['end']),set(case['surfaces']),None if case['normal'] is None else Vector3(*case['normal']))
+        value=Bridge.preparedSkin(ctx,case['point'],case['start'],case['end'],case['normal'],case['surfaces'])
+        assert (None if not value[0] else (value[1],set(value[2])))==expected,(case['name'],value,expected)
+        assert value[3]==(0,0,0,0),(case['name'],value)
+        assert Bridge.before(ctx);q.raise_failure()
+    print('sparse production preparation:',len(SPARSE_FIXTURES),'fixed-law cases with repeated and post-effect checks')
+sparse_preparation()
 
 reset(); surface(4,3.)
 q,ctx=query();check(None,q,ctx)

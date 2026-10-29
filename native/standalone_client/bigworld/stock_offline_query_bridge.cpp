@@ -201,7 +201,6 @@ struct Context {
     SkinView view;
     Ref instanceDictionary,bakedDictionary;
     std::map<Key,PyObject *> instanceRows,bakedRows;
-    std::set<Key> loadedInstances,loadedBaked;
     std::map<PyObject *,Filter> filters;
     std::map<GroundKey,Filter> groundFilters;
     std::map<Cell,std::set<Key>> groundMembers;
@@ -325,15 +324,15 @@ struct Context {
         const bool measured=diagnostic.get()!=Py_None;
         const auto started=measured?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point();
         view.instances.clear();view.baked_instances.clear();view.tree_instances.clear();view.contact_bins.clear();view.baked_shot_bins.clear();view.excluded_instances.clear();view.layout_repairs.clear();view.layout_generations.clear();
-        instanceRows.clear();bakedRows.clear();loadedInstances.clear();loadedBaked.clear();
+        instanceRows.clear();bakedRows.clear();
         view.isolated_slots=keys(field(sensor.get(),"g_offh_destr_isolated_slots"));view.isolated_chunks.clear();
         each(field(sensor.get(),"g_offh_destr_isolated_chunks"),[&](PyObject * v){view.isolated_chunks.insert(u32(v));});
         auto catalog=field(sensor.get(),"_destructible_catalog");if(catalog==Py_None)catalog=NULL;
         auto instances=field(sensor.get(),"g_offh_destr_instances");instanceDictionary=Ref::borrow(instances);
-        mapping(instances,[&](PyObject * k,PyObject * v){const auto id=key(k);view.instances.emplace(id,SkinInstance{});instanceRows.emplace(id,v);});
+        mapping(instances,[&](PyObject * k,PyObject * v){instanceRows.emplace(key(k),v);});
         if(catalog){
             auto baked=field(catalog,"baked_instances");bakedDictionary=Ref::borrow(baked);
-            mapping(baked,[&](PyObject * k,PyObject * v){const auto id=key(k);view.baked_instances.emplace(id,SkinInstance{});bakedRows.emplace(id,v);});
+            mapping(baked,[&](PyObject * k,PyObject * v){bakedRows.emplace(key(k),v);});
             mapping(field(catalog,"tree_instances"),[&](PyObject * k,PyObject *){view.tree_instances.insert(key(k));});
             view.excluded_instances=keys(field(catalog,"excluded_instances"));
             each(field(catalog,"layout_repairs"),[&](PyObject * v){view.layout_repairs.insert(u32(v));});
@@ -357,8 +356,12 @@ struct Context {
         auto catalog=field(sensor.get(),"_destructible_catalog");
         if(catalog && catalog!=Py_None)select(field(catalog,"baked_shot_bins"),view.baked_shot_bins);
         for(const auto & surface:surfaces)wanted.insert(surface.key());
-        for(const auto & id:wanted){auto live=instanceRows.find(id);if(live!=instanceRows.end() && loadedInstances.insert(id).second)view.instances[id]=instance(live->second);
-            auto baked=bakedRows.find(id);if(baked!=bakedRows.end() && loadedBaked.insert(id).second)view.baked_instances[id]=instance(baked->second);}
+        // Skin only reads these candidates and bin members. Keep full identity
+        // membership in the row indexes, without allocating empty instances for
+        // every unrelated catalog key. Presence in the sparse maps is also the
+        // loaded marker; all candidate surfaces are included before motionSkin.
+        for(const auto & id:wanted){auto live=instanceRows.find(id);if(live!=instanceRows.end() && !view.instances.count(id))view.instances.emplace(id,instance(live->second));
+            auto baked=bakedRows.find(id);if(baked!=bakedRows.end() && !view.baked_instances.count(id))view.baked_instances.emplace(id,instance(baked->second));}
         if(diagnostic.get()!=Py_None)++counters["native_query_skin"];
     }
     Filter parseFilter(PyObject * object) {
@@ -489,7 +492,7 @@ struct Context {
         // Alias classification is evaluated even for a rejected live surface.
         bool alias=false;
         if(surface.material>=71 && surface.material<=86 && (surface.flags&0x80)){
-            identities();alias=anonymousOriginal(view,surface);
+            identities();alias=!instanceRows.count(identity) && !bakedRows.count(identity) && !view.tree_instances.count(identity);
         }
         bool result=accepted && !excluded.count(surface);
         if(result && alias)for(const auto & other:excluded)if(other.material==surface.material && other.flags==surface.flags){result=false;break;}

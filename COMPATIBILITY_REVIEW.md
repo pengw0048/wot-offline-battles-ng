@@ -3394,6 +3394,17 @@ time, while overlapping inclusive totals must not be added. Snapshots require
 depth zero and expose timing errors; bounded empty-scope calibration estimates
 observer cost without subtracting it from measured stages.
 
+Native skin preparation keeps complete identity indexes but materializes only
+the geometric candidates and their spatial-bin neighbours. It no longer builds
+an empty instance map for every catalog key or a second loaded-key set. Each
+world still owns its query state and refreshes it after Python effects.
+
+Catalog streaming skips contact-priority geometry and sorting when every baked
+candidate is already registered. Candidate counts and unresolved-cache cleanup
+remain, and live registered-instance collision checks still run. Any missing
+candidate retains the original ordering, repair, publication and proof budget;
+unused malformed baked geometry no longer blocks the all-registered path.
+
 Tree registration no longer prepares the hull sweep or proximity receipt that
 its registration-only branch never reads. Space changes, publication retries,
 neighbourhood priority and fresh chunk readiness checks retain their original

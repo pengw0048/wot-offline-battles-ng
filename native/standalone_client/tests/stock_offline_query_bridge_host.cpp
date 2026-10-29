@@ -66,12 +66,55 @@ PyObject * identityError(PyObject *, PyObject * exception)
     BW::hostIdentityException = exception == Py_None ? NULL : exception;
     Py_RETURN_NONE;
 }
+// Exercise the real preparation owner independently of the fixture BSP's
+// triangle geometry, and expose allocation cardinality only in this host.
+PyObject * preparedSkin(PyObject *, PyObject * args)
+{
+    PyObject * owner, * p, * a, * b, * n, * surfaces;
+    if (!PyArg_ParseTuple(args, "OOOOOO", &owner, &p, &a, &b, &n, &surfaces)) return NULL;
+    auto * value = context(owner); if (!value) return NULL;
+    using namespace stock_offline_query;
+    try {
+        const auto hit = point(vector(point(p))), start = point(vector(point(a))), end = point(vector(point(b)));
+        Point normal{}; if (n != Py_None) normal = point(vector(point(n)));
+        std::vector<Surface> candidates;
+        each(surfaces, [&](PyObject * row) {
+            tuple(row, 4); candidates.push_back({u32(at(row,0)),u32(at(row,1)),u32(at(row,2)),u32(at(row,3))});
+        });
+        value->live();
+        // Alias exclusions run inside traversal, before geometry is loaded.
+        // A real wire identity must not inherit an anonymous material wildcard.
+        Ref keeps(required(PyList_New(0))); Filter filter;
+        for (const auto & surface : candidates) {
+            Surface other = surface; other.item ^= 0x80000000u;
+            const std::set<Surface> excluded{other}; std::vector<Surface> observed;
+            const bool accepted = value->keep(filter, surface, excluded, observed, true);
+            Ref keep(required(PyBool_FromLong(accepted)));
+            if (PyList_Append(keeps.get(), keep.get()) < 0) throw Error();
+        }
+        value->geometry(hit, start, end, candidates);
+        const auto result = motionSkin(value->view, hit, start, end, n == Py_None ? NULL : &normal,
+            candidates, value->tuning, SkinMath{NULL,distance,bound});
+        Ref excluded(required(PyList_New(0)));
+        for (const auto & surface : result.excluded) {
+            auto row = surfaceTuple(surface);
+            if (PyList_Append(excluded.get(), row.get()) < 0) throw Error();
+        }
+        return Py_BuildValue("(idN(kkkk)N)", int(result.found), result.distance, excluded.release(),
+            static_cast<unsigned long>(value->instanceRows.size()), static_cast<unsigned long>(value->bakedRows.size()),
+            static_cast<unsigned long>(value->view.instances.size()), static_cast<unsigned long>(value->view.baked_instances.size()), keeps.release());
+    } catch (...) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, "Host skin preparation failed");
+        return NULL;
+    }
+}
 PyMethodDef methods[] = {
     {"open", openQuery, METH_O, NULL}, {"ray", rayQuery, METH_VARARGS, NULL},
     {"before", beforeEffect, METH_O, NULL}, {"after", afterEffect, METH_O, NULL},
     {"groundAvailable", groundAvailable, METH_O, NULL},
     {"motionWorld", stockTestMotionWorld, METH_VARARGS, NULL},
-    {"identityError", identityError, METH_O, NULL}, {NULL, NULL, 0, NULL}};
+    {"identityError", identityError, METH_O, NULL},
+    {"preparedSkin", preparedSkin, METH_VARARGS, NULL}, {NULL, NULL, 0, NULL}};
 }
 int main(int argc, char ** argv)
 {
