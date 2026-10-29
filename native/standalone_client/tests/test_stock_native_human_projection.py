@@ -8,6 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 FIXTURE=r'''
 import ast,copy,imp,math,os,random,sys,types
 import human_projection_test as native
+static=imp.load_source('projection_static_inputs',os.path.join(sys.argv[2],'stock_snapshot_static.py'))
 base=os.path.join(sys.argv[1],'src/res/scripts/client/gui/mods/offline_lan_0922')
 class Box(object):
     def __init__(self,**kw):self.__dict__.update(kw)
@@ -62,6 +63,7 @@ for crew_count in range(1,7):
         if state==2:critical['destroyed']=['surveyingDeviceHealth']
         expected.append(oracle._project_actor_config(dict(raw,kind='human',network_id=7,critical=critical),None))
     actual=native.project(raw,snapshot,descriptor)
+    assert native.project(dict(raw,effective_params=static.freeze(snapshot)),static.freeze(snapshot),descriptor)==actual
     assert len(actual)==len(expected)
     for a,b in zip(actual,expected):
         assert a[1:]==b[1:],(a,b)
@@ -120,6 +122,7 @@ for index in range(60):
     snapshot['ramming']=dict(spall_coefficient=1.,ramming_bonus=.1);snapshot['version']=1
     raw['effective_params']=snapshot
     actual=native.descriptor(raw,d)
+    assert native.descriptor(dict(raw,effective_params=static.freeze(snapshot)),d)==actual
     minimum,maximum,unused=sensor['_vehicle_body_bbox'](d)
     assert actual['minimum']==list(minimum) and actual['maximum']==list(maximum)
     expected_shape=[max(abs(lo[0]),abs(hi[0]),.8),max(abs(lo[2]),abs(hi[2]),1.),lo[1],max(hi[1],1.1+hull.hitTester.bbox[1][1])]
@@ -150,5 +153,5 @@ class HumanProjection(unittest.TestCase):
             (folder/'offline_release_drive_law.hpp').write_text('#pragma once\n#include <algorithm>\n#include <cmath>\n'+law)
             command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),str(ROOT/'bigworld/stock_native_bot_human_snapshot.cpp'),str(ROOT/'bigworld/stock_native_bot_descriptor.cpp'),str(ROOT/'tests/stock_native_human_projection_host.cpp'),'-o',str(folder/'human_projection_test.so')]
             result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
-            result=subprocess.run([py27,'-B',str(script),source],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr);self.assertIn('human projection source rows passed',result.stdout)
+            result=subprocess.run([py27,'-B',str(script),source,str(ROOT/'bigworld')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr);self.assertIn('human projection source rows passed',result.stdout)
 if __name__=='__main__':unittest.main()

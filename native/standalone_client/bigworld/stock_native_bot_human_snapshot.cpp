@@ -18,7 +18,8 @@ PyObject* need(PyObject*p,const char*label){if(!p)throw Error(label);return p;}
 PyObject* field(PyObject*p,const char*name){if(!p||!PyDict_Check(p))throw Error("human input is not a dictionary");return PyDict_GetItemString(p,name);}
 Ref attr(PyObject*p,const char*name){return Ref(need(PyObject_GetAttrString(p,name),name));}
 Ref value(PyObject*p,const char*name){if(PyDict_Check(p)){auto v=field(p,name);if(!v)v=Py_None;Py_INCREF(v);return Ref(v);}auto v=PyObject_GetAttrString(p,name);if(!v&&PyErr_ExceptionMatches(PyExc_AttributeError)){PyErr_Clear();Py_INCREF(Py_None);return Ref(Py_None);}return Ref(need(v,name));}
-Py_ssize_t size(PyObject*p){if(!p || !(PyTuple_CheckExact(p)||PyList_CheckExact(p)))throw Error("human sequence shape");return PySequence_Size(p);}
+// Canonical snapshot static arrays are read-only list subclasses.
+Py_ssize_t size(PyObject*p){if(!p || !(PyTuple_Check(p)||PyList_Check(p)))throw Error("human sequence shape");return PySequence_Size(p);}
 Ref item(PyObject*p,Py_ssize_t i){return Ref(need(PySequence_GetItem(p,i),"human sequence index"));}
 double number(PyObject*p){if(!p||p==Py_None||PyBool_Check(p))throw Error("human numeric field missing");
 #if PY_MAJOR_VERSION>=3

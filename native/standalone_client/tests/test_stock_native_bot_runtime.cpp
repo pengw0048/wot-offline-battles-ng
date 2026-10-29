@@ -112,6 +112,23 @@ int main() {
     assert(runtime.statistics().refresh_ns>0&&runtime.statistics().reuse_ns>0);
     assert(runtime.statistics().refresh_actors==4&&runtime.statistics().reuse_actors==6);
     assert(std::abs(runtime.equipmentTime()-.7)<1.e-9);assert(runtime.contactActor(1)&&!runtime.contactActor(99));
+    // Opt-in stage accounting partitions work without altering a slice or
+    // leaving clocks active after the diagnostic ends.
+    {
+        Service timed_service,plain_service;w::Registry timed_registry,plain_registry;
+        Runtime timed(fixture(d),timed_registry,scene,timed_service);
+        Runtime plain(fixture(d),plain_registry,scene,plain_service);
+        timed.stageTiming(true);
+        auto measured=timed.update(.1,.1,100.);auto expected=plain.update(.1,.1,100.);
+        assert(measured.size()==expected.size());
+        for(std::size_t i=0;i<measured.size();++i)assert(measured[i].state.rows==expected[i].state.rows);
+        std::uint64_t accounted=0;for(auto value:timed.statistics().stage_ns)accounted+=value;
+        assert(accounted>0&&accounted<=timed.statistics().refresh_ns+timed.statistics().reuse_ns);
+        assert(timed.statistics().detailed_slices==timed.statistics().slices);
+        assert(plain.statistics().detailed_slices==0);
+        const auto before=timed.statistics().stage_ns;timed.stageTiming(false);
+        timed.update(.05,.15,150.);assert(timed.statistics().stage_ns==before);
+    }
     // Equal orders preserve leases; changed routes invalidate only their actor.
     auto orders=runtime.planning().decisions().orders;
     const auto token=runtime.planning().decisions().tokens.at(1);

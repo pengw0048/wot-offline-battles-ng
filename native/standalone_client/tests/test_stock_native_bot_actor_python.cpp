@@ -8,4 +8,21 @@ int main(){Py_DontWriteBytecodeFlag=1;Py_Initialize();Actor actor;actor.motion.i
  auto previous=PyDict_New();auto list=PyList_New(0);auto row=PyDict_New();auto identity=PyString_FromString("medkit");PyDict_SetItemString(row,"equipment",identity);Py_DECREF(identity);PyList_Append(list,row);Py_DECREF(row);PyDict_SetItemString(previous,"equipment_states",list);Py_DECREF(list);PyDict_SetItemString(previous,"ground_height",Py_True);
  auto result=packNativeActor(actor,weapon,nullptr,previous,10.);if(!result)PyErr_Print();assert(result);assert(!PyDict_GetItemString(previous,"ground_height"));assert(PyFloat_AsDouble(PyDict_GetItemString(result,"shot_yaw"))==.4);assert(PyInt_AsLong(PyDict_GetItemString(result,"health"))==90);
  auto item=PyList_GetItem(PyDict_GetItemString(result,"equipment_states"),0);assert(PyFloat_AsDouble(PyDict_GetItemString(item,"cooldownTimeLeft"))==7.);assert(PyFloat_AsDouble(PyDict_GetItemString(item,"autoPendingElapsed"))==2.);assert(PyFloat_AsDouble(PyDict_GetItemString(item,"aiPendingElapsed"))==1.);assert(PyDict_GetItemString(item,"active")==Py_True);assert(PyString_Check(PyDict_GetItemString(item,"equipment")));
- Py_DECREF(result);Py_DECREF(previous);Py_Finalize();}
+ assert(PyDict_Update(previous,result)==0);
+ auto critical=PyDict_GetItemString(previous,"critical");
+ auto equipment_rows=PyDict_GetItemString(previous,"equipment_states");
+ actor.ledger.revision=9;actor.ledger.base_revision=4;actor.ledger.acknowledged_sequence=7;actor.ledger.next_sequence=8;
+ actor.combat.stun_until_equipment_time=12.5;
+ auto receipt=packNativeSnapshotActor(actor,weapon,nullptr,previous,10.,false);
+ assert(receipt&&PyDict_Size(receipt)==5);assert(!PyDict_GetItemString(receipt,"x"));
+ assert(PyDict_Update(previous,receipt)==0);
+ assert(PyDict_GetItemString(previous,"critical")==critical);
+ assert(PyDict_GetItemString(previous,"equipment_states")==equipment_rows);
+ assert(PyLong_AsLongLong(PyDict_GetItemString(previous,"combat_ack_seq"))==7);
+ assert(PyFloat_AsDouble(PyDict_GetItemString(previous,"_stun_until_equipment_time"))==12.5);
+ actor.combat.health=0;actor.combat.alive=false;actor.motion.alive=false;
+ auto changed=packNativeSnapshotActor(actor,weapon,nullptr,previous,10.,true);
+ assert(changed&&PyInt_AsLong(PyDict_GetItemString(changed,"health"))==0);
+ assert(PyDict_GetItemString(changed,"alive")==Py_False);
+ assert(PyDict_GetItemString(changed,"x"));
+ Py_DECREF(changed);Py_DECREF(receipt);Py_DECREF(result);Py_DECREF(previous);Py_Finalize();}

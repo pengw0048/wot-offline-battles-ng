@@ -120,12 +120,21 @@ struct ServerSnapshot {
     std::optional<offline_simulation::weapons::AmmoState> ammunition;
 };
 struct ExternalContactsSnapshot {std::map<ID,std::array<double,5>> actors;};
+enum class Stage:std::size_t {
+    prepare,combat,decision,weapon_prepare,motion_plan,motion,weapon_finish,
+    observation,suspension,contacts,support_recheck,slope,publication,count
+};
 struct Statistics {
     std::uint64_t callbacks=0,slices=0,refreshes=0,actors=0;
     std::uint64_t refresh_slices=0,reuse_slices=0,refresh_ns=0,reuse_ns=0,refresh_actors=0,reuse_actors=0;
     // No interpreter/API object exists in the physical owner. Resource
     // presentation exceptions are counted separately by NativeBackend.
     std::uint64_t python_business_callbacks=0;
+    // Opt-in, exclusive intervals inside complete physical slices. These
+    // counters never include Python publication or snapshot ingress.
+    bool stage_timing=false;
+    std::uint64_t detailed_slices=0;
+    std::array<std::uint64_t,std::size_t(Stage::count)> stage_ns{};
 };
 class Runtime final:public planning::PlanningHost,public physics::ImpactTransactions,
     public contacts::World,public step::CombatWorld {
@@ -212,6 +221,7 @@ public:
     double equipmentTime()const{return equipment_time_;}
     const contacts::Actor* contactActor(ID id)const{const auto i=contact_actors_.find(id);return i==contact_actors_.end()?nullptr:&i->second;}
     const Statistics& statistics()const{return statistics_;}
+    void stageTiming(bool enabled){statistics_.stage_timing=enabled;}
     physics::NativeHost& physics(){return physics_;}
     planning::PlanningRuntime& planning(){return planning_;}
     step::WeaponRuntime& weaponRuntime(){return weapons_runtime_;}

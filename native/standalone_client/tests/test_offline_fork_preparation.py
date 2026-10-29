@@ -129,6 +129,9 @@ class OfflineForkPreparationTests(unittest.TestCase):
             'native_bot_runtime.py': 'stock_native_bot_consumer.py',
             'stock_native_world_snapshot.py': 'stock_native_world_snapshot.py',
             'stock_native_destructible_present.py': 'stock_native_destructible_present.py',
+            'stock_snapshot_static.py': 'stock_snapshot_static.py',
+            'native_client_replica.py': 'stock_native_client_replica.py',
+            'native_client_drive.py': 'stock_native_client_drive_facade.py',
         }
         self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH, ROTATION_PATH} |
                          {ROTATION_PATH.with_name(name) for name in native_modules})

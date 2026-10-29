@@ -3985,8 +3985,8 @@ It retains actor, navigation, contact, weapon, projectile and destructible
 state across callbacks. The native owner preserves sequential actor updates,
 the original elapsed-time bank and burst edges, followed by vertical/contact
 settlement and publication. It does not increase the original control rate.
-The visible client's own simulation and the LAN server retain their existing
-owners.
+The LAN server retains its existing shared-outcome owner. The visible client's
+native integration is described below.
 
 The prepared `native_bot_runtime.py` is a lifecycle and transport boundary.
 The worker's planning, motion/rotation proofs, vertical integration, spotting,
@@ -4016,3 +4016,32 @@ resource-dependent comparisons ran. Windows build and live-profile evidence
 remain separate from these host checks. Neither the port nor its fixtures
 establish unexercised vehicle/map behavior or reconstruct the complete retail
 native physics engine.
+
+### Native visible-client hot paths and snapshot ownership
+
+The matching snapshot decoder owns immutable versions of `outfits` and
+`effective_params`. Delta delivery reuses those versions and their canonical
+results; dynamic fields remain detached per delivery. Memoization belongs to
+the value version, so queue coalescing or rejected snapshots cannot discard a
+static change. Explicit deep copies still produce writable JSON containers.
+Native readers accept the read-only dictionary/list subclasses as data.
+Worker snapshot receipts mirror only changed combat state or acknowledgement
+fields; simulation publication retains the complete actor mirror.
+
+`offline_client_replica_native` owns accepted remote pose histories and their
+render-time interpolation, matrix/aim publication and track feed. Snapshot
+health, visibility and asynchronous entity creation keep their existing
+lifecycle boundary. Native presentation checks current engine/entity identity,
+and round changes discard the previous history. Stock track and engine effects
+remain explicit callbacks; synchronous retirement cannot destroy an entry in
+the middle of its native call.
+
+`offline_client_drive_native` owns the visible player's ground-column queries,
+support memory and vertical/suspension integration. It retains the fixed local
+player laws, including rollback and landing witnesses. Its query scene follows
+the existing accepted/speculative destruction ledger; it does not create a
+second destruction or animation owner. Horizontal controls, player projectile
+integration, damage presentation and transport retain their existing owners.
+The native replica and suspension differential fixtures exercise the fixed
+Python laws; only a Windows run establishes the corresponding engine lifecycle
+and frame-time behavior.

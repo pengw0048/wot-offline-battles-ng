@@ -6,4 +6,8 @@ namespace stock_native_bot {
 _object* packNativeOutputs(const std::vector<Output>&,std::int64_t horizon);
 _object* packNativeActor(const Actor&,const offline_simulation::weapons::ActorState&,
     const contacts::Actor*,_object* previous,double equipment_time);
+// An unchanged server combat base only acknowledges a ledger receipt and
+// reanchors stun time. Preserve the existing motion/equipment mirror.
+_object* packNativeSnapshotActor(const Actor&,const offline_simulation::weapons::ActorState&,
+    const contacts::Actor*,_object* previous,double equipment_time,bool changed);
 }

@@ -159,9 +159,15 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_camera.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_bsp_collision_model.cpp")
 
-# Persistent native worker owners and their cold/event Python value boundary.
+# Persistent native gameplay owners and their cold/event Python value boundary.
 list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_bot_actor_python.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_replica.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_replica_module.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_geometry.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_python.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_scene.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_bot_armor_geometry.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_bot_armor_law.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_bot_artillery.cpp"

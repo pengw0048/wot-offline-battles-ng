@@ -48,6 +48,18 @@ _spec = importlib.util.spec_from_file_location(
     'stock_native_bot_bindings', Path(__file__).with_name('stock_native_bot_bindings.py'))
 bot_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bot_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_snapshot_bindings', Path(__file__).with_name('stock_snapshot_bindings.py'))
+snapshot_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(snapshot_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_replica_bindings', Path(__file__).with_name('stock_native_client_replica_bindings.py'))
+replica_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(replica_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_drive_bindings', Path(__file__).with_name('stock_native_client_drive_bindings.py'))
+drive_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(drive_bindings)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -229,11 +241,18 @@ ADAPTERS.update((NATIVE_MATH_PATH.with_name(name), query_bindings.ADAPTERS[name]
                 for name in ('native_engine_query.py', 'destructibles_sensor.py',
                              'destructibles_authority.py', 'world_collision.py'))
 ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
-    lambda source: catalog_stream.sensor(
-        tree_registration.sensor(query_bindings.sensor(source))))
+    lambda source: drive_bindings.sensor(catalog_stream.sensor(
+        tree_registration.sensor(query_bindings.sensor(source)))))
+ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
+    lambda source: drive_bindings.authority(
+        query_bindings.ADAPTERS['destructibles_authority.py'](source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = (
-    lambda source: bot_bindings.battle(rotation_bindings.runtime(source)))
+    lambda source: replica_bindings.battle(drive_bindings.battle(
+        bot_bindings.battle(rotation_bindings.runtime(source)))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
+ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = snapshot_bindings.delta
+ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = snapshot_bindings.client
+ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snapshot
 
 
 def stage_runtime(source, staged):
@@ -265,6 +284,9 @@ def stage_runtime(source, staged):
     native_modules = (
         ('stock_native_bot_consumer.py', 'native_bot_runtime.py'),
         ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
+        ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
+        ('stock_native_client_replica.py', 'native_client_replica.py'),
+        ('stock_native_client_drive_facade.py', 'native_client_drive.py'),
         ('stock_native_destructible_present.py', 'stock_native_destructible_present.py'),
     )
     for source_name, module_name in native_modules:

@@ -114,6 +114,7 @@ struct Owner {
     std::map<ID,HumanDescriptor> humans;
     std::map<ID,std::unique_ptr<p::Ref>> human_descriptors;
     std::uint64_t record_serial=0,cold_installs=0,ingress_ns=0,step_ns=0,publication_ns=0,contact_rejected=0;
+    std::uint64_t snapshot_read_ns=0,snapshot_mirror_ns=0,snapshot_full_mirrors=0,snapshot_receipt_mirrors=0;
     ID server_tick=-1;
     double server_time_ms=0.;
     std::optional<double> last_tree_time;
@@ -443,6 +444,7 @@ PyObject* snapshot(PyObject*,PyObject*args){try{
     PyObject*object=nullptr,*raw=nullptr,*message=nullptr;if(!PyArg_ParseTuple(args,"OOO",&object,&raw,&message))return nullptr;
     auto owner=holder(object)->owner;if(!owner||!owner->current(raw))Py_RETURN_NONE;
     if(!PyDict_Check(message))Py_RETURN_NONE;
+    auto started=Time::now();std::vector<std::pair<ID,bool>> mirrors;
     auto orders=p::value(message,"bot_orders"),revision=p::value(message,"bot_order_revision");
     if(orders.get()!=Py_None&&revision.get()!=Py_None)try{
         auto mapping=p::dict();const auto count=std::min<Py_ssize_t>(30,p::size(orders.get()));
@@ -458,10 +460,22 @@ PyObject* snapshot(PyObject*,PyObject*args){try{
         try{
             const ID id=p::integral(row.get(),"id");const auto actor=owner->runtime->actors().find(id);if(actor==owner->runtime->actors().end())continue;
             ServerSnapshot value;require(readNativeServerSnapshot(row.get(),tick.get(),time.get(),actor->second,owner->runtime->weapons().at(botKey(id)),value));
-            owner->runtime->serverSnapshot(id,value);
+            mirrors.emplace_back(id,owner->runtime->serverSnapshot(id,value));
         }catch(const std::exception&e){localError(raw,e);}
     }
-    owner->sync(raw);Py_RETURN_NONE;
+    owner->snapshot_read_ns+=nanos(started);started=Time::now();
+    auto states=p::value(raw,"states");
+    for(const auto&mirror:mirrors){
+        auto key=p::integer(mirror.first);auto*state=PyDict_GetItem(states.get(),key.get());
+        if(!state||!PyDict_Check(state))continue;
+        const auto&actor=owner->runtime->actors().at(mirror.first);
+        p::Ref value(packNativeSnapshotActor(actor,owner->runtime->weapons().at(botKey(mirror.first)),
+            owner->runtime->contactActor(mirror.first),state,owner->runtime->equipmentTime(),mirror.second));
+        if(PyDict_Update(state,value.get())<0)throw p::Error("Native snapshot mirror update failed");
+        if(mirror.second)++owner->snapshot_full_mirrors;else ++owner->snapshot_receipt_mirrors;
+    }
+    attribute(raw,"_control_refresh_accumulator",p::number(owner->runtime->clock().refresh_bank));
+    owner->snapshot_mirror_ns+=nanos(started);Py_RETURN_NONE;
 }catch(const std::exception&e){return fail(e);}}
 void detachedErrors(Owner&owner,PyObject*raw){
     p::Ref errors(owner.detached_runtime->takeErrors());
@@ -579,6 +593,11 @@ PyObject* ackRam(PyObject*,PyObject*args){try{PyObject*object=nullptr;PY_LONG_LO
     if(!PyArg_ParseTuple(args,"OLL",&object,&id,&sequence))return nullptr;auto owner=holder(object)->owner;
     if(owner)owner->runtime->acknowledgeRam(id,sequence);return PyBool_FromLong(owner!=nullptr);
 }catch(const std::exception&e){return fail(e);}}
+PyObject* stageTiming(PyObject*,PyObject*args){try{PyObject*object=nullptr;int enabled=0;
+    if(!PyArg_ParseTuple(args,"Oi",&object,&enabled))return nullptr;
+    auto owner=holder(object)->owner;if(owner)owner->runtime->stageTiming(enabled!=0);
+    return PyBool_FromLong(owner!=nullptr);
+}catch(const std::exception&e){return fail(e);}}
 PyObject* statistics(PyObject*,PyObject*args){try{PyObject*object=nullptr;if(!PyArg_ParseTuple(args,"O",&object))return nullptr;
     auto out=p::dict();auto owner=holder(object)->owner;if(!owner)return out.release();
     const auto&s=owner->runtime->statistics();const auto&d=owner->backend.presentation_counters();
@@ -590,6 +609,14 @@ PyObject* statistics(PyObject*,PyObject*args){try{PyObject*object=nullptr;if(!Py
     p::set(out.get(),"python_business_callbacks",p::integer(s.python_business_callbacks));p::set(out.get(),"stock_presentation_callbacks",p::integer(d.python_boundary_calls));
     p::set(out.get(),"cold_installs",p::integer(owner->cold_installs));p::set(out.get(),"ingress_ns",p::integer(owner->ingress_ns));
     p::set(out.get(),"step_ns",p::integer(owner->step_ns));p::set(out.get(),"publication_ns",p::integer(owner->publication_ns));
+    p::set(out.get(),"snapshot_read_ns",p::integer(owner->snapshot_read_ns));p::set(out.get(),"snapshot_mirror_ns",p::integer(owner->snapshot_mirror_ns));
+    p::set(out.get(),"snapshot_full_mirrors",p::integer(owner->snapshot_full_mirrors));p::set(out.get(),"snapshot_receipt_mirrors",p::integer(owner->snapshot_receipt_mirrors));
+    p::set(out.get(),"stage_timing",p::boolean(s.stage_timing));p::set(out.get(),"detailed_slices",p::integer(s.detailed_slices));
+    const char*stage_names[]={"prepare","combat","decision","weapon_prepare","motion_plan","motion","weapon_finish",
+        "observation","suspension","contacts","support_recheck","slope","publication"};
+    static_assert(sizeof(stage_names)/sizeof(*stage_names)==std::size_t(Stage::count),"Native stage name count differs");
+    for(std::size_t index=0;index<std::size_t(Stage::count);++index)
+        p::set(out.get(),(std::string("stage_")+stage_names[index]+"_ns").c_str(),p::integer(s.stage_ns[index]));
     p::set(out.get(),"rejected_player_contacts",p::integer(owner->contact_rejected));
     std::size_t ready_bots=0,live_bots=0;
     for(const auto&entry:owner->runtime->actors())if(entry.second.motion.alive){
@@ -636,6 +663,7 @@ PyMethodDef methods[]={
     {"ack_launch",ackLaunch,METH_VARARGS,"Acknowledge a frozen launch."},
     {"ack_ram",ackRam,METH_VARARGS,"Acknowledge a human ram receipt."},
     {"statistics",statistics,METH_VARARGS,"Read cumulative native boundary timings."},
+    {"stage_timing",stageTiming,METH_VARARGS,"Enable exclusive native slice stage timing for a bounded diagnostic."},
     {nullptr,nullptr,0,nullptr}
 };
 class Module final:public BW::Script::InitTimeJob {

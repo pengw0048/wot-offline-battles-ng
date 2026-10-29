@@ -12,6 +12,22 @@ bool destroyed(const step::CriticalState&c,const char* name)
 {const auto i=c.devices.find(name);return i!=c.devices.end()&&i->second.destroyed;}
 template<class T> std::optional<T> optional(const plan::Optional<T>& value)
 {return value.present?std::optional<T>(value.value):std::nullopt;}
+class StageTimer {
+    Statistics& statistics_;
+    const bool enabled_;
+    std::chrono::steady_clock::time_point previous_;
+public:
+    explicit StageTimer(Statistics& statistics):statistics_(statistics),enabled_(statistics.stage_timing){
+        if(enabled_){previous_=std::chrono::steady_clock::now();++statistics_.detailed_slices;}
+    }
+    void finish(Stage stage){
+        if(!enabled_)return;
+        const auto now=std::chrono::steady_clock::now();
+        statistics_.stage_ns[std::size_t(stage)]+=std::uint64_t(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now-previous_).count());
+        previous_=now;
+    }
+};
 }
 Runtime::Runtime(Snapshot snapshot,stock_native_world::Registry&registry,stock_native_world::Scene&scene,Services&services):
     services_(services),pipeline_(registry,scene,128),perception_(control_,registry,scene,std::move(snapshot.foliage)),
@@ -366,6 +382,7 @@ bool Runtime::externalContact(ID id,const motion::ContactResponse& response,doub
 }
 std::optional<Output> Runtime::advance(const Slice&s)
 {
+    StageTimer timing(statistics_);
     ++statistics_.slices;statistics_.refreshes+=s.refresh;equipment_time_+=s.elapsed;
     physics_context_.now=s.now;physics_context_.elapsed=s.elapsed;
     physics_context_.invalidated_decisions.clear();physics_context_.observations.clear();
@@ -415,17 +432,19 @@ std::optional<Output> Runtime::advance(const Slice&s)
             if(found!=traffic_snapshot->end())for(const auto&row:found->second)if(row.id!=a.motion.id)result.push_back(row);}
         return result;
     };
+    timing.finish(Stage::prepare);
     for(ID id:dictionary_order_) {
         auto&a=actors_.at(id);auto&m=a.motion;
-        if(!m.alive){a.selected_target.reset();weapons_.cancel(key(id));publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;continue;}
+        if(!m.alive){a.selected_target.reset();weapons_.cancel(key(id));publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;timing.finish(Stage::combat);continue;}
         ++statistics_.actors;control_.note_source_stillness(key(id),s.now,m.speed);updateCombatPose(a);
         step::CombatSlice combat{s.elapsed,s.now,equipment_time_,a.combat.stun_until_equipment_time>equipment_time_+1.e-9};
         const auto prep=step::prepare_combat_actor(combatRefs(a),combatDescriptor(a),combat,*this);applyCombatPose(a);
         if(prep.siege_descriptor_changed)adoptMode(a);
-        if(!prep.alive){a.selected_target.reset();publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;continue;}
+        if(!prep.alive){a.selected_target.reset();publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;timing.finish(Stage::combat);continue;}
         Tick tick;tick.start=m.position;tick.suspension={m,vertical_memory_.at(id),host_memory_.at(id).pose_sample};
         tick.safe=bool(planning_.grid().index(planning_.grid().cellFor(m.position),false))&&!planning_.grid().pointHazard(m.position,9);
         const double siege_yaw=m.yaw;planningActor(a,s);
+        timing.finish(Stage::combat);
         auto decision=planning_.prepare(id,metadata,plannerNeighbours(a));auto command=decision.command;
         a.route_wreck_blocked=planning_.navigation().actors.at(id).route_wreck_blocked;
         observations_.observeActor(id,decision.contacts,command);
@@ -442,6 +461,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
             }
         }
         decision::Decisions::overlay(command,selected,m.position);
+        timing.finish(Stage::decision);
         a.combat.has_target=bool(chosen);
         a.selected_target=chosen&&selected?std::optional<decision::Identity>(selected->identity):std::nullopt;
         step::SiegeCommand siege; siege.throttle=command.throttle;siege.turn=command.turn;siege.brake=command.brake;
@@ -462,6 +482,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
         }
         if(a.combat.overturned||destroyed(a.combat.critical,"engineHealth")||destroyed(a.combat.critical,"leftTrackHealth")||destroyed(a.combat.critical,"rightTrackHealth"))command.throttle=command.turn=0.;
         else if(std::abs(command.throttle)>.01)command.throttle*=step::critical_factor(a.combat.critical,step::CriticalStat::mobility);
+        timing.finish(Stage::weapon_prepare);
         nav::MotionPlanInput input;input.id=id;input.position=m.position;input.yaw=m.yaw;input.speed=m.speed;input.turn_speed=m.turn_speed;
         input.throttle=command.throttle;input.turn=command.turn;input.step=s.elapsed;input.now=s.now;input.half_length=a.descriptor.half_length;
         input.terrain_pitch=m.terrain_pitch;input.grounded=m.grounded_once;input.airborne=m.airborne;input.decision_due=decision.due;
@@ -474,16 +495,21 @@ std::optional<Output> Runtime::advance(const Slice&s)
         drive.wet_escape=planning_.grid().pointHazard(m.position,4)||a.combat.water_depth>.90;
         drive.shallow_admitted=planning_.navigator().controlledShallowStep(id,m.position,probe.travel_yaw)||planning_.navigator().controlledShallowCommitted(id,m.position,probe.travel_yaw);
         drive.maximum_probe_distance=probe.maximum_distance;drive.move_target=command.move;
+        timing.finish(Stage::motion_plan);
         makeWorld(a);const auto trace=motion::advance(m,a.descriptor,drive,*worlds_.at(id));tick.yaw=trace.attempted_yaw;tick.passive=trace.passive_forward;
         if(command.movement_intent)tick.goal=command.move;
         for(ID invalid:physics_context_.invalidated_decisions)planning_.invalidate(invalid);
         physics_context_.invalidated_decisions.clear();
+        timing.finish(Stage::motion);
         updateCombatPose(a);weapons_runtime_.postMotion(a.weapon,combatRefs(a),a.modes[a.mode].combat,m,decisionInput(a,s),command,chosen,
             combat,s.publish,s.refresh,s.start_us,s.end_us,planning_.decisions(),services_.weaponWorld());
         for(auto launch=weapons_.pending().rbegin();launch!=weapons_.pending().rend();++launch)if(launch->actor==key(id)&&launch->edge.shot_seq==weapons_.at(key(id)).fire_seq){a.shot_angles=std::array<double,2>{{launch->yaw,launch->pitch}};break;}
+        timing.finish(Stage::weapon_finish);
         observations_.update(observationActor(a));observations_.queueCover(id,selected,command);publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;ticks[id]=tick;
+        timing.finish(Stage::observation);
     }
     Output result;result.observation=observations_.finish();if(s.refresh)repair_budget_=1;
+    timing.finish(Stage::observation);
     std::vector<ID> slope;std::map<ID,Point> starts;
     for(ID id:publication_order_) {
         auto&a=actors_.at(id);auto found=ticks.find(id);if(found==ticks.end())continue;
@@ -494,6 +520,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
             a.modes[a.mode].motion.detailed_suspension?std::optional<physics::SuspensionSnapshot>(t.suspension):std::nullopt,true,driven);
         t.settled=m.position;slope.push_back(id);
     }
+    timing.finish(Stage::suspension);
     contacts_.translations(contact_actors_,contact_humans_,starts,s.end_us,publication_order_);
     for(ID id:dictionary_order_)if(ticks.count(id)&&ticks.at(id).passive!=0.&&!locked.count(id)) {
         auto&a=actors_.at(id);if(!a.motion.alive)continue;motion::ContactResponse response;
@@ -507,6 +534,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
     reports_.insert(reports_.end(),reports.begin(),reports.end());bool publish=s.publish||reports_.size()>previous;
     for(const auto&entry:locked){auto&m=actors_.at(entry.first).motion;const auto&p=entry.second;
         m.position[0]=p[0];m.position[2]=p[1];m.yaw=p[2];m.speed=m.turn_speed=m.push_x=m.push_z=0.;m.movement_direction=m.rotation_direction=0;}
+    timing.finish(Stage::contacts);
     for(ID id:slope) {
         auto&a=actors_.at(id);auto&m=a.motion;auto&t=ticks.at(id);
         if(std::abs(m.position[0]-t.settled[0])>1.e-6||std::abs(m.position[2]-t.settled[2])>1.e-6) {
@@ -518,6 +546,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
         if(t.blocked&&t.goal){planning_.navigator().reportHardContact(id,t.start,*t.goal,t.yaw,s.now);physics_.invalidate(id,t.yaw,true);}
         else if(!t.rollback&&!t.ballistic&&distance(t.start,t.settled)>1.e-6)planning_.navigator().clearBlockedContact(id);
     }
+    timing.finish(Stage::support_recheck);
     if(s.refresh&&!slope.empty()) {
         const auto start=slope_cursor_%slope.size();std::size_t visited=0,sampled=0;
         while(visited<slope.size()&&sampled<5) {
@@ -530,14 +559,16 @@ std::optional<Output> Runtime::advance(const Slice&s)
     }
     for(ID id:physics_context_.invalidated_decisions)planning_.invalidate(id);
     for(auto&entry:actors_)publishPose(entry.second,s,false);
-    if(!publish)return {};
+    timing.finish(Stage::slope);
+    if(!publish){timing.finish(Stage::publication);return {};}
     std::vector<publication::Input> rows;for(ID id:publication_order_){auto&a=actors_.at(id);a.ledger.mark_publication(a.combat);rows.push_back(publicationActor(a));}
     result.state=publisher_.publish(rows,equipment_time_,s.end_us,weapons_.pending(),reports_);
     for(const auto&p:contacts_.push_proofs())result.pushes.push_back(p.second);
     for(const auto&p:environment_.fall_damage)result.falls.push_back({{p.first,p.second}});
     for(const auto&p:environment_.critical)result.critical.push_back({std::get<0>(p.first),std::get<1>(p.first),std::get<2>(p.first),p.second});
     for(ID id:publication_order_){const auto&a=actors_.at(id);if(a.motion.airborne||a.combat.drowning)result.hazards.push_back(id);
-        if(environment_.fire_provenance.count(id))result.environment_fires.push_back(id);}return result;
+        if(environment_.fire_provenance.count(id))result.environment_fires.push_back(id);}
+    timing.finish(Stage::publication);return result;
 }
 std::vector<Output> Runtime::update(double elapsed,double now,double server_time_ms)
 {

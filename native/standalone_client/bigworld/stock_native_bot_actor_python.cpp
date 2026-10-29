@@ -6,6 +6,19 @@
 
 namespace stock_native_bot {
 namespace p=stock_native_bot_python;
+PyObject* packNativeSnapshotActor(const Actor&a,const offline_simulation::weapons::ActorState&w,
+    const contacts::Actor*contact,PyObject*previous,double equipment_time,bool changed){
+    if(changed)return packNativeActor(a,w,contact,previous,equipment_time);
+    try{
+        auto out=p::dict();
+        p::set(out.get(),"combat_revision",p::integer(a.ledger.revision));
+        p::set(out.get(),"combat_base_revision",p::integer(a.ledger.base_revision));
+        p::set(out.get(),"combat_ack_seq",p::integer(a.ledger.acknowledged_sequence));
+        p::set(out.get(),"combat_seq",p::integer(a.ledger.next_sequence));
+        p::set(out.get(),"_stun_until_equipment_time",p::number(a.combat.stun_until_equipment_time));
+        return out.release();
+    }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}
+}
 PyObject* packNativeActor(const Actor&a,const offline_simulation::weapons::ActorState&w,
     const contacts::Actor* contact,PyObject* previous,double equipment_time){try{
     p::Ref out(step::combat_snapshot_value(a.combat,a.siege,w,{}));auto*d=out.get();const auto&m=a.motion;
