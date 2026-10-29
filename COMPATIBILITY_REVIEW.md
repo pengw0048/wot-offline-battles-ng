@@ -3455,6 +3455,13 @@ available. Explicit CPython profiling remains available, but enabling the native
 profiler alone no longer implicitly traces Python calls. Focused tests execute
 the SDK thread functions and initialization/cleanup statements before and after
 the change. This worker result does not establish visible-client frame rate.
+Inactive native profiling also skips callback-name resolution and dynamic-scope
+string interning. The SDK previously acquired the string-table mutex before
+`addEntry` checked whether recording was active. Dynamic scopes now remember
+whether they started, so activation during an inactive scope cannot emit an
+unmatched end event. Focused tests execute the SDK callback and scope with
+CPython 2.7, including pending activation, capture cutoff, retained names and
+callback errors. Windows frame-time savings have not yet been measured.
 Hybrid allocation diagnostics are also opt-in. The unchanged SDK default
 created a `MemoryDebug` owner that records allocations and frees through a
 global mutex, call-stack bookkeeping and a live-allocation table. The inspected

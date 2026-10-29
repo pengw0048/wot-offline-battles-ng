@@ -344,6 +344,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-texture-streaming-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_script_callback_metadata.py"),
         $EngineRoot) "stock-script-callback-metadata-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_inactive_profiler.py"),
+        $EngineRoot) "stock-inactive-profiler-patch.log"
     # Ticks BigWorld.PyBallisticsSimulator tracer owners once per world frame.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_ballistics.py"),
         $EngineRoot) "stock-ballistics-patch.log"
