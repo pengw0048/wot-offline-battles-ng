@@ -42,6 +42,7 @@ native_math=module(PREFIX+'.native_math')
 native_math.report_world_failure=reports.append
 # The C entry is imported from the real original numerical module initializer.
 assert callable(rotation.run)
+assert not rotation.profile_snapshot()['active']
 HOT=set(('_ray','_segment','_skin','_filter','_alias','_can_recast','_skipped','_scale','_normalise',
     'reject_broken_skin','_compiled_motion_skin_1513','_owned_component_skin_1513','_anonymous_original_surface_1513'))
 def values(yaw=0.,end=.04,translation=(0.,0.)):
@@ -146,6 +147,29 @@ finally:sys.setprofile(None)
 q.raise_failure();assert status==0 and seen,(status,seen)
 print('rotation-only macro preserves generic ordinary world:',len(seen),'hot callbacks')
 print('rotation production frontier parity passed')
+# Same production entry while profiling: fixed counters, independent root
+# spans, nested child worlds, and no non-rotation/off-window clock activity.
+generation=rotation.profile_start()
+profiled=rotation_case(wall=True,yaw=1.2,end=1.4,angle=.04)
+measured=rotation.profile_snapshot()
+assert measured['active'] and measured['generation']==generation and measured['depth']==0
+assert measured['valid'] and measured['root_count']==1 and measured['conservation_error_ns']==0,measured
+assert measured['root_ns']==sum(row['self_ns'] for row in measured['stages'].values())
+c=measured['counters']
+assert c['world_main']==1 and c['world_previous']==2,c
+assert c['context_attempt']==c['context_accepted']+c['context_unbound'],c
+assert c['native_ray']==sum(c[name] for name in ('native_miss','native_found','native_unbound','native_failed')),c
+assert c['scene_query']==sum(c[name] for name in ('scene_hit','scene_miss','scene_failed')),c
+assert c['native_ray']>0 and c['scene_query']>0 and c['generic_ray']==0,c
+assert measured['stages']['life_guard']['calls']>0 and measured['stages']['binding_validation']['calls']>0
+assert rotation.profile_stop()==generation
+frozen=rotation.profile_snapshot()
+rotation_case()
+assert rotation.profile_snapshot()==frozen,'off rotation changed timing state'
+calibration=rotation.profile_calibrate(1000)
+assert calibration['measured']['valid'] and calibration['measured']['clock_calls']==2002,calibration
+print('production rotation timer counters/conservation/off/calibration passed')
+
 '''
 
 def prepared_consumer_cases(fork):

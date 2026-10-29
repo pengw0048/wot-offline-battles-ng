@@ -190,7 +190,8 @@ class StockBallisticsTest(unittest.TestCase):
                             '-Wno-unused-function', '-Wno-writable-strings',
                             '-I', str(directory / 'include'), '-I', str(owner), '-I', str(ROOT / 'bigworld'),
                             '-I', str(ROOT / 'include'), '-I', str(ROOT / 'tests'),
-                            str(ROOT / 'tests/stock_ballistics_scene_cross.cpp'), str(core), *libs,
+                            str(ROOT / 'tests/stock_ballistics_scene_cross.cpp'),
+                            str(ROOT / 'bigworld/stock_rotation_stage_timing.cpp'), str(core), *libs,
                             '-o', str(binary)], check=True)
             result = subprocess.run([str(binary)], capture_output=True, text=True,
                                     env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))

@@ -1,6 +1,10 @@
 // Included by the adapted numerical TU after its real WorldFrontier owner.
 // One rotation owns independent, synchronously reentrant world frontiers.
+#include "stock_rotation_stage_timing.hpp"
+#include "stock_rotation_stage_timing_python.inc"
+
 namespace stock_rotation_binding {
+namespace timing = stock_rotation_timing;
 namespace r = stock_motion_rotation;
 using Object = engine_query::Object;
 Object takeError()
@@ -14,6 +18,7 @@ Object takeError()
 }
 r::Snapshot snapshot(PyObject *object)
 {
+    timing::Scope measured(timing::Stage::Marshal);
     double a[22];world_array(object,a,22);r::Snapshot s{};
     std::copy(a,a+3,s.position.begin());std::copy(a+3,a+6,s.body.minimum.begin());
     std::copy(a+6,a+9,s.body.maximum.begin());
@@ -27,6 +32,7 @@ r::Snapshot snapshot(PyObject *object)
 }
 Object worldRow(const WorldSnapshot &s)
 {
+    timing::Scope measured(timing::Stage::Marshal);
     OwnedTuple row(19);
     const double a[19]={s.position[0],s.position[1],s.position[2],s.yaw,s.speed,s.dt,s.pitch,s.roll,s.motion_yaw,
         s.bounds[0],s.bounds[1],s.bounds[2],s.bounds[3],s.heights[0],s.heights[1],double(s.passive),
@@ -36,6 +42,7 @@ Object worldRow(const WorldSnapshot &s)
 }
 Object bodyRow(const WorldSnapshot &s)
 {
+    timing::Scope measured(timing::Stage::Marshal);
     return Object(Py_BuildValue("((ddd)(ddd))",s.bounds[0],s.heights[0],-s.bounds[2],s.bounds[1],s.heights[1],s.bounds[3]));
 }
 class Engine final:public r::WorldEngine {
@@ -48,10 +55,13 @@ public:
         query_(Object::borrow(PyMethod_GET_SELF(items(caps)[7]))),report_(Object::borrow(report)) {}
     r::WorldResult run(const WorldSnapshot &s,r::DeparturePolicy *policy)override
     {
+        timing::count(policy?timing::Counter::WorldMain:timing::Counter::WorldPrevious);
         Object trace(PyDict_New());r::WorldResult result;Object error;
         try {
             auto row=worldRow(s),bbox=bodyRow(s);
-            Object prepared(PyObject_CallFunctionObjArgs(factory_,row.get(),bbox.get(),NULL));
+            Object prepared;{timing::Scope measured(timing::Stage::Factory);
+                timing::count(timing::Counter::FactoryCall);
+                prepared=Object(PyObject_CallFunctionObjArgs(factory_,row.get(),bbox.get(),NULL));}
             require_sequence(prepared.get(),2,true);
             if(!PyCallable_Check(items(prepared.get())[0]) || !PyDict_CheckExact(items(prepared.get())[1]))throw Unsupported();
             trace=Object::borrow(items(prepared.get())[1]);
@@ -63,13 +73,17 @@ public:
         } catch(...) {result.status=-2;error=takeError();}
         // Same per-world failure consumption as native_math.world_run, before
         // the fixed wrapper reports/contains that one world. Do not replay it.
-        PyObject *checked=PyObject_CallMethod(query_.get(),const_cast<char *>("raise_failure"),NULL);
+        PyObject *checked=nullptr;{timing::Scope measured(timing::Stage::Business);
+            timing::count(timing::Counter::CallbackRaiseFailure);
+            checked=PyObject_CallMethod(query_.get(),const_cast<char *>("raise_failure"),NULL);}
         if(checked)Py_DECREF(checked);
         else {auto remembered=takeError();if(!error.get())error=std::move(remembered);}
         if(error.get() || result.status<0) {
             result.status=-2;
             if(!error.get())error=Object(PyObject_CallFunction(PyExc_RuntimeError,const_cast<char *>("s"),"Native world stage failed after engine dispatch"));
-            PyObject *reported=PyObject_CallFunctionObjArgs(report_.get(),error.get(),NULL);
+            PyObject *reported=nullptr;{timing::Scope measured(timing::Stage::Business);
+                timing::count(timing::Counter::CallbackFailureReport);
+                reported=PyObject_CallFunctionObjArgs(report_.get(),error.get(),NULL);}
             if(reported)Py_DECREF(reported);else PyErr_Clear();
             PyObject *rawText=PyObject_Str(error.get());
             if(!rawText) {PyErr_Clear();rawText=PyString_FromString("Native world error");}
@@ -91,6 +105,7 @@ public:
 };
 PyObject *run(PyObject *,PyObject *args)
 {
+    timing::EntryScope measured_entry;
     bool entered=false;
     try {
         require_sequence(args,4,true);auto **a=items(args);const auto input=snapshot(a[0]);
@@ -109,6 +124,7 @@ PyObject *run(PyObject *,PyObject *args)
         Engine engine(a[1],a[2],a[3],report.get());entered=true;
         const auto value=r::run(input,engine);
         PyObject *trace=value.clear || !engine.blocking_trace.get()?Py_None:engine.blocking_trace.get();
+        timing::Scope measured_result(timing::Stage::Marshal);
         return Py_BuildValue("(NiiO)",PyBool_FromLong(value.clear),int(value.query_failures),int(value.blocking_failure),trace);
     } catch(const PythonAllocationFailed &) {return NULL;}
       catch(...) {
@@ -117,7 +133,13 @@ PyObject *run(PyObject *,PyObject *args)
         return NULL;
     }
 }
-PyMethodDef methods[]={{"run",run,METH_VARARGS,"Run one complete prepared rotation; no operation replay after entry."},{NULL,NULL,0,NULL}};
+PyMethodDef methods[]={
+    {"run",run,METH_VARARGS,"Run one complete prepared rotation; no operation replay after entry."},
+    {"profile_start",stock_rotation_profile_binding::start,METH_NOARGS,"Start a bounded current-thread rotation timing capture."},
+    {"profile_snapshot",stock_rotation_profile_binding::snapshot,METH_NOARGS,"Read fixed rotation stage totals at depth zero."},
+    {"profile_stop",stock_rotation_profile_binding::stop,METH_NOARGS,"Stop the current-thread rotation timing capture."},
+    {"profile_calibrate",stock_rotation_profile_binding::calibrate,METH_O,"Measure bounded empty-scope overhead outside capture."},
+    {NULL,NULL,0,NULL}};
 bool initialize()
 {
     PyObject *old=PyDict_GetItemString(PyImport_GetModuleDict(),"offline_rotation_world_native");

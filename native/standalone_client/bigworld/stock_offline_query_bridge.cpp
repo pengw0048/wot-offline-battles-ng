@@ -2,6 +2,7 @@
 #include "stock_offline_query_bridge.hpp"
 #include "stock_offline_query_skin.hpp"
 #include "stock_battle_scene_queries.hpp"
+#include "stock_rotation_stage_timing.hpp"
 #include "pyscript/script_math.hpp"
 
 #include <algorithm>
@@ -19,9 +20,19 @@
 #include <vector>
 
 namespace stock_offline_query {
+namespace timing = stock_rotation_timing;
 namespace {
 struct Unsupported { const char * reason; explicit Unsupported(const char * r="unsupported_schema"):reason(r){} };
 struct Error {};
+Result countedRayResult(Result result) noexcept {
+    switch(result) {
+    case Unbound: timing::count(timing::Counter::NativeUnbound); break;
+    case Miss: timing::count(timing::Counter::NativeMiss); break;
+    case Found: timing::count(timing::Counter::NativeFound); break;
+    case Failed: timing::count(timing::Counter::NativeFailed); break;
+    }
+    return result;
+}
 class Ref {
     PyObject * p_;
 public:
@@ -152,13 +163,18 @@ struct Kept {Ref callback;Surface surface;};
 struct Traced {Ref list;Surface surface;bool keep;};
 struct RayEvent {bool ground;Point start,end;double seconds;};
 void status(PyObject * query,const char * mode,const char * reason) {
+    timing::Scope timingScope(timing::Stage::Marshal);
     // One bounded observation per synchronous binding, never a per-ray log.
     Ref value(Py_BuildValue("(ss)",mode,reason));
-    if(value.get() && PyObject_SetAttrString(query,"_native_query_status",value.get())<0)PyErr_Clear();
+    if(value.get()) {
+        timing::Scope callbackTiming(timing::Stage::Business);
+        if(PyObject_SetAttrString(query,"_native_query_status",value.get())<0)PyErr_Clear();
+    }
     Ref diagnostic(PyObject_GetAttrString(query,"_native_query_diagnostic"));
     if(!diagnostic.get()){PyErr_Clear();return;}
     if(diagnostic.get()==Py_None)return;
     const std::string name=std::string("native_query_")+mode+"_"+reason;
+    timing::Scope callbackTiming(timing::Stage::Business);
     Ref count(PyObject_CallMethod(diagnostic.get(),const_cast<char *>("count"),const_cast<char *>("s"),name.c_str()));
     if(!count.get())PyErr_Clear();
 }
@@ -241,6 +257,7 @@ struct Context {
         }
     }
     void validate() {
+        timing::Scope timingScope(timing::Stage::BindingValidation);
         if(field(sensor.get(),"_DIAGNOSTICS_ENABLED")==Py_True) {
             auto pending=field(sensor.get(),"g_offh_destr_pending");
             if(pending && PyObject_IsTrue(pending))throw Unsupported();
@@ -272,6 +289,7 @@ struct Context {
         if(attr(math.get(),"Vector3").get()!=vectorType.get() || attr(bw.get(),"wg_collideSegment").get()!=nativeRay.get())throw Unsupported();
     }
     void live() {
+        timing::Scope timingScope(timing::Stage::LifeGuard);
         bool equal=true;
         auto eq=[&](PyObject * a,PyObject * b){if(a==b)return true;const int result=PyObject_RichCompareBool(a,b,Py_EQ);if(result<0)throw Error();return result!=0;};
         equal=PyThread_get_thread_ident()==thread && attr(owner.get(),"_avatar").get()==avatar.get() && attr(owner.get(),"_runtime").get()==runtime.get();
@@ -284,6 +302,7 @@ struct Context {
             PyErr_SetString(PyExc_RuntimeError,"Native engine query owner changed");throw Error();}
     }
     void ledger() {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         if(viewReady)return;
         view.destroyed.clear();filterBroken.clear();replacements.clear();
         auto state=field(authority.get(),"_state");auto chunks=state?field(state,"chunks"):NULL;
@@ -301,6 +320,7 @@ struct Context {
         viewReady=true;
     }
     void identities() {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         if(skinReady)return;ledger();
         const bool measured=diagnostic.get()!=Py_None;
         const auto started=measured?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point();
@@ -323,6 +343,7 @@ struct Context {
         if(measured){counters["native_query_identity_rows"]+=instanceRows.size()+bakedRows.size()+view.tree_instances.size();counters["native_query_identity_microseconds"]+=static_cast<std::uint64_t>(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-started).count());}
     }
     void geometry(const Point & hit,const Point & start,const Point & end,const std::vector<Surface> & surfaces) {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         identities();
         const double x0=std::min(hit[0],std::min(start[0],end[0])),x1=std::max(hit[0],std::max(start[0],end[0]));
         const double z0=std::min(hit[2],std::min(start[2],end[2])),z1=std::max(hit[2],std::max(start[2],end[2]));
@@ -341,6 +362,7 @@ struct Context {
         if(diagnostic.get()!=Py_None)++counters["native_query_skin"];
     }
     Filter parseFilter(PyObject * object) {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         Filter out;out.owner=Ref::borrow(object);
         if(object==Py_None)return out;
         Ref tag(PyObject_GetAttrString(object,"_native_query_filter"));
@@ -383,6 +405,7 @@ struct Context {
         out.diagnostic=Ref::borrow(at(tag.get(),4));out.enabled=true;return out;
     }
     Filter & getFilter(PyObject * object) {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         auto found=filters.find(object);if(found!=filters.end())return found->second;
         Filter value=parseFilter(object);return filters.emplace(object,std::move(value)).first->second;
     }
@@ -395,6 +418,7 @@ struct Context {
             c,reinterpret_cast<std::uintptr_t>(groundTrees.get()),unknown};
     }
     void prepareGround() {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         if(groundReady)return;
         groundMembers.clear();cellGenerations.clear();dirtyCells.clear();
         mapping(field(sensor.get(),"g_offh_destr_contact_bins"),[&](PyObject * k,PyObject * v){groundMembers.emplace(cell(k),keys(v));});
@@ -426,6 +450,7 @@ struct Context {
         groundReady=true;
     }
     Filter & getGround(const double * start) {
+        timing::Scope timingScope(timing::Stage::FilterSkin);
         prepareGround();const auto c=bin(start[0],start[2],tuning.bin_metres);const auto cacheKey=groundKey(c);
         const bool dirty=globalDirty || dirtyCells.count(c)!=0;
         if(dirty && diagnostic.get()!=Py_None)++counters["destructible_ground_filter_batch_dirty"];
@@ -472,6 +497,7 @@ struct Context {
         return result;
     }
     bool remember(bool groundQuery) {
+        timing::Scope timingScope(timing::Stage::Business);
         if(!PyErr_Occurred())PyErr_SetString(PyExc_RuntimeError,"Native engine query failed");
         const bool recovered=groundQuery && (PyErr_ExceptionMatches(PyExc_AttributeError)||PyErr_ExceptionMatches(PyExc_IndexError)||PyErr_ExceptionMatches(PyExc_TypeError)||PyErr_ExceptionMatches(PyExc_ValueError));
         if(recovered){PyErr_Clear();return true;}
@@ -496,12 +522,12 @@ struct Context {
             const auto result=BW::collideStockSegmentFiltered(static_cast<BW::SpaceID>(space),segment.start,segment.end,static_cast<BW::WorldTriangle::Flags>(skip),callback,found);
             if(diagnostic.get()!=Py_None){const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-before).count();rays.push_back({groundQuery,point(segment.start),point(segment.end),elapsed});++counters["native_query_ray"];}
             live();if(callbackError)std::rethrow_exception(callbackError);
-            if(result==BW::STOCK_SEGMENT_NO_SPACE){PyErr_Format(PyExc_ValueError,"No space ID %d",static_cast<int>(space));PyErr_PrintEx(0);continue;}
+            if(result==BW::STOCK_SEGMENT_NO_SPACE){timing::Scope callbackTiming(timing::Stage::Business);PyErr_Format(PyExc_ValueError,"No space ID %d",static_cast<int>(space));PyErr_PrintEx(0);continue;}
             if(result==BW::STOCK_SEGMENT_FAILED)throw Error();
             if(result!=BW::STOCK_SEGMENT_HIT)continue;
             SkinResult skin;
             if(filter.enabled && canRecast){bool relevant=false;for(const auto & s:candidates)if(s.material>=71 && s.material<=86 && (s.flags==0 || (s.flags&0x80))){relevant=true;break;}
-                if(relevant){geometry(point(found.point),point(segment.start),point(segment.end),candidates);const auto normal=point(found.normal);skin=motionSkin(view,point(found.point),point(segment.start),point(segment.end),&normal,candidates,tuning,SkinMath{NULL,distance,bound});}}
+                if(relevant){timing::Scope skinTiming(timing::Stage::FilterSkin);geometry(point(found.point),point(segment.start),point(segment.end),candidates);const auto normal=point(found.normal);skin=motionSkin(view,point(found.point),point(segment.start),point(segment.end),&normal,candidates,tuning,SkinMath{NULL,distance,bound});}}
             if(!skin.found || !remaining){copy(found.point,output.point);copy(found.normal,output.normal);copy(found.translation,output.translation);output.material=found.materialKind;output.item=found.itemIndex;output.chunk=found.chunkID;return Found;}
             BW::Vector3 direction=segment.end-segment.start;const double length=direction.length();
             if(length<=epsilon){copy(found.point,output.point);copy(found.normal,output.normal);copy(found.translation,output.translation);output.material=found.materialKind;output.item=found.itemIndex;output.chunk=found.chunkID;return Found;}
@@ -514,6 +540,7 @@ struct Context {
         return Miss;
     }
     bool flush() {
+        timing::Scope timingScope(timing::Stage::Marshal);
         if(!skips && kept.empty() && traces.empty() && rays.empty() && counters.empty())return true;
         try{
             Ref keptRows(required(PyTuple_New(static_cast<Py_ssize_t>(kept.size()))));
@@ -527,23 +554,31 @@ struct Context {
             for(const auto & c:counters){PyTuple_SET_ITEM(countRows.get(),static_cast<Py_ssize_t>(index++),required(Py_BuildValue("(sK)",c.first.c_str(),c.second)));}
             Ref args(required(PyTuple_New(6)));PyTuple_SET_ITEM(args.get(),0,Ref::borrow(query.get()).release());PyTuple_SET_ITEM(args.get(),1,required(PyLong_FromUnsignedLongLong(skips)));PyTuple_SET_ITEM(args.get(),2,keptRows.release());PyTuple_SET_ITEM(args.get(),3,traceRows.release());PyTuple_SET_ITEM(args.get(),4,rayRows.release());PyTuple_SET_ITEM(args.get(),5,countRows.release());
             skips=0;kept.clear();traces.clear();rays.clear();counters.clear();
-            Ref result(PyObject_CallObject(at(binding.get(),6),args.get()));if(!result.get())throw Error();live();return true;
+            Ref result;
+            {
+                timing::Scope callbackTiming(timing::Stage::Business);
+                timing::count(timing::Counter::CallbackFlush);
+                result=Ref(PyObject_CallObject(at(binding.get(),6),args.get()));
+            }
+            if(!result.get())throw Error();live();return true;
         }catch(...){remember(false);return false;}
     }
 };
 
 Context * begin(PyObject * capabilities) {
+    timing::Scope timingScope(timing::Stage::ContextSetup);
+    timing::count(timing::Counter::ContextAttempt);
     PyObject * query=NULL;
     try{
-        tuple(capabilities,21);auto method=at(capabilities,7);if(!PyMethod_Check(method))return NULL;
-        query=PyMethod_GET_SELF(method);if(!query)return NULL;
-        auto binding=attr(query,"_native_query_binding");if(binding.get()==Py_None){status(query,"generic","custom_binding");return NULL;}tuple(binding.get(),9);
+        tuple(capabilities,21);auto method=at(capabilities,7);if(!PyMethod_Check(method)){timing::count(timing::Counter::ContextUnbound);return NULL;}
+        query=PyMethod_GET_SELF(method);if(!query){timing::count(timing::Counter::ContextUnbound);return NULL;}
+        auto binding=attr(query,"_native_query_binding");if(binding.get()==Py_None){status(query,"generic","custom_binding");timing::count(timing::Counter::ContextUnbound);return NULL;}tuple(binding.get(),9);
         std::unique_ptr<Context> result(new Context(capabilities,query,binding.get()));
-        status(query,"native","canonical");return result.release();
-    }catch(const Unsupported & error){PyErr_Clear();if(query)status(query,"generic",error.reason);return NULL;}
-    catch(...){PyErr_Clear();if(query)status(query,"generic","binding_unavailable");return NULL;}
+        status(query,"native","canonical");timing::count(timing::Counter::ContextAccepted);return result.release();
+    }catch(const Unsupported & error){PyErr_Clear();if(query)status(query,"generic",error.reason);timing::count(timing::Counter::ContextUnbound);return NULL;}
+    catch(...){PyErr_Clear();if(query)status(query,"generic","binding_unavailable");timing::count(timing::Counter::ContextUnbound);return NULL;}
 }
-void end(Context * c) {if(c){c->flush();delete c;}}
+void end(Context * c) {timing::Scope timingScope(timing::Stage::ContextTeardown);if(c){c->flush();delete c;}}
 bool beforeEffect(Context * c) {return !c || c->flush();}
 bool afterEffect(Context * c) {
     if(!c)return true;
@@ -570,22 +605,25 @@ void departureStep(const double * end,const double * hit,double epsilon,double *
     if(length>epsilon)copy(vector(hit)+remaining*static_cast<float>(epsilon/length),out);
 }
 Result ray(Context * c,PyObject * filter,bool groundQuery,const double * start,const double * endPoint,Hit & hit) {
-    if(!c || !c->usable)return Unbound;
+    timing::count(timing::Counter::NativeRay);
+    if(!c || !c->usable)return countedRayResult(Unbound);
     if(!c->outerRay)c->markRay();
     try{
         c->live();c->ledger();Filter * selected;
-        if(!filter){if(!c->ground)return Unbound;if(c->diagnostic.get()!=Py_None)++c->counters["destructible_ground_filter_queries"];selected=&c->getGround(start);}
+        if(!filter){if(!c->ground)return countedRayResult(Unbound);if(c->diagnostic.get()!=Py_None)++c->counters["destructible_ground_filter_queries"];selected=&c->getGround(start);}
         else selected=&c->getFilter(filter);
-        return c->collide(*selected,groundQuery,start,endPoint,hit);
+        return countedRayResult(c->collide(*selected,groundQuery,start,endPoint,hit));
     }catch(const Unsupported & error){
         // A typed traversal cannot call Python or perform gameplay effects.
         // Discard its staged observations and retry only this query through
         // the generic capabilities. Earlier effect operations are not replayed.
-        c->restoreRay();c->usable=false;status(c->query.get(),"generic",error.reason);return Unbound;
-    }catch(const std::bad_alloc &){PyErr_NoMemory();return c->remember(groundQuery)?Miss:Failed;}
-    catch(...){return c->remember(groundQuery)?Miss:Failed;}
+        c->restoreRay();c->usable=false;status(c->query.get(),"generic",error.reason);return countedRayResult(Unbound);
+    }catch(const std::bad_alloc &){PyErr_NoMemory();return countedRayResult(c->remember(groundQuery)?Miss:Failed);}
+    catch(...){return countedRayResult(c->remember(groundQuery)?Miss:Failed);}
 }
 PyObject * materialize(const Hit & hit) {
+    timing::Scope timingScope(timing::Stage::Marshal);
+    timing::count(timing::Counter::Materialize);
     try{
         Ref result(required(PyTuple_New(6)));
         PyTuple_SET_ITEM(result.get(),0,required(BW::Script::getData(vector(hit.point))));

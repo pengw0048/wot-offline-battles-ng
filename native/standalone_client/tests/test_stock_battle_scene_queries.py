@@ -199,6 +199,7 @@ def build_host(test, path, retirement=True):
                     '-Wno-unused-function', '-UNDEBUG', '-ffp-contract=off',
                     '-I', str(path / 'include'), '-I', str(ROOT / 'bigworld'),
                     str(ROOT / 'tests/stock_battle_scene_queries_host.cpp'),
+                    str(ROOT / 'bigworld/stock_rotation_stage_timing.cpp'),
                     *flags, *libs, '-o', str(binary)], check=True)
     return binary
 

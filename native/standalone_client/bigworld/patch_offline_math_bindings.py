@@ -346,6 +346,38 @@ def patch_rotation_chain(root, pending):
     pending[path] = once(pending[path], '#include "stock_offline_query_bridge.hpp"',
         '#include "stock_offline_query_bridge.hpp"\n#include "stock_motion_rotation_batch.hpp"')
 
+    # Fixed diagnostic stages wrap only the owned rotation tree. Runtime-off
+    # scopes perform no clocks; ordinary numerical/module APIs stay unchanged.
+    path = root/'offline_math_batch_native.cpp'
+    pending[path] = once(pending[path], '#include "stock_motion_rotation_batch.hpp"',
+        '#include "stock_motion_rotation_batch.hpp"\n#include "stock_rotation_stage_timing.hpp"')
+    path = root/'offline_world_query_python.inc'
+    source = pending[path]
+    source = once(source,
+        '        OwnedTuple args(2);args.set(0,int_new(op));args.set(1,rows.release());\n'
+        '        WorldObject owned(args.release());\n'
+        '        return engine_query::Object(profiled_object_call(\n'
+        '            NativeCallback::World,"world",static_cast<int>(op),count,dispatcher,owned.get()));',
+        '''        engine_query::Object arguments;
+        {stock_rotation_timing::Scope measured(stock_rotation_timing::Stage::Marshal);
+            OwnedTuple args(2);args.set(0,int_new(op));args.set(1,rows.release());
+            arguments=engine_query::Object(args.release());}
+        stock_rotation_timing::Scope measured(stock_rotation_timing::Stage::Business);
+        using C=stock_rotation_timing::Counter;
+        switch(op){case 1:stock_rotation_timing::count(C::CallbackFilter);break;
+            case 5:stock_rotation_timing::count(C::CallbackResolve);break;
+            case 6:stock_rotation_timing::count(C::CallbackTrace);break;
+            case 7:stock_rotation_timing::count(C::CallbackGround);break;default:break;}
+        return engine_query::Object(profiled_object_call(
+            NativeCallback::World,"world",static_cast<int>(op),count,dispatcher,arguments.get()));''')
+    source = once(source, '        OwnedTuple rows(count);\n',
+        '        stock_rotation_timing::Scope marshal_rows(stock_rotation_timing::Stage::Marshal);\n'
+        '        OwnedTuple rows(count);\n')
+    source = once(source, '        auto result=invoke(op,rows,count);frontier->effect_returned();bridge.input();',
+        '        marshal_rows.finish();\n'
+        '        auto result=invoke(op,rows,count);frontier->effect_returned();bridge.input();')
+    pending[path] = source
+
 def patch(root, native_query=False, rotation_query=False):
     root = Path(root)/'native'
     pending = {}

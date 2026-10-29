@@ -3385,6 +3385,15 @@ without a query failure. It observed context status assignments, not individual
 ray counts. The migration is active, but a substantial end-to-end speedup remains
 unproved.
 
+The rotation module also exposes an opt-in, current-thread stage timer. Fixed
+arrays record nested elapsed and exclusive time only inside rotation entries;
+disabled scopes read no clock and allocate nothing. Context preparation,
+lifecycle and binding checks, filtering, scene traversal, conversion and Python
+callbacks have separate buckets. Exclusive totals reconcile with outer-entry
+time, while overlapping inclusive totals must not be added. Snapshots require
+depth zero and expose timing errors; bounded empty-scope calibration estimates
+observer cost without subtracting it from measured stages.
+
 Tree registration no longer prepares the hull sweep or proximity receipt that
 its registration-only branch never reads. Space changes, publication retries,
 neighbourhood priority and fresh chunk readiness checks retain their original

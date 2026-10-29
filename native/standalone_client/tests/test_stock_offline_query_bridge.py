@@ -404,6 +404,7 @@ def build_bridge(test, path, fork, rotation_query=False):
                     '-I' + str(path / 'include'), '-I' + str(ROOT / 'bigworld'), '-I' + str(fork / 'native'),
                     str(ROOT / 'tests/stock_offline_query_bridge_host.cpp'),
                     str(ROOT / 'bigworld/stock_offline_query_skin.cpp'),
+                    str(ROOT / 'bigworld/stock_rotation_stage_timing.cpp'),
                     *([str(ROOT / 'bigworld/stock_motion_rotation_batch.cpp')] if rotation_query else []),
                     *[str(generated / 'native' / name) for name in adapter.SOURCES],
                     *flags, *libs, '-o', str(binary)], check=True)

@@ -2,6 +2,7 @@
 #include "stock_battle_scene_queries.hpp"
 #include "stock_battle_scene_queries_data.hpp"
 #include "stock_scene_identity.hpp"
+#include "stock_rotation_stage_timing.hpp"
 
 #include "physics2/collision_callback.hpp"
 #include "physics2/collision_obstacle.hpp"
@@ -147,6 +148,8 @@ private:
 
     bool consultNative( const CollisionObstacle & obstacle, const WorldTriangle & triangle )
     {
+        stock_rotation_timing::Scope timingScope( stock_rotation_timing::Stage::FilterSkin );
+        stock_rotation_timing::count( stock_rotation_timing::Counter::FilterCandidate );
         bool known;
         uint32 chunkID;
         uint16 itemIndex;
@@ -166,11 +169,14 @@ private:
     // zero rejects; a raised error is printed and the surface is accepted.
     bool consult( const CollisionObstacle & obstacle, const WorldTriangle & triangle )
     {
+        stock_rotation_timing::Scope timingScope( stock_rotation_timing::Stage::FilterSkin );
+        stock_rotation_timing::count( stock_rotation_timing::Counter::FilterCandidate );
         bool known;
         uint32 chunkID;
         uint16 itemIndex;
         if (!this->identity( obstacle, known, chunkID, itemIndex ))
             return false;
+        stock_rotation_timing::Scope marshalTiming( stock_rotation_timing::Stage::Marshal );
         PyObjectPtr args( PyTuple_New( 4 ), PyObjectPtr::STEAL_REFERENCE );
         if (!args)
         {
@@ -191,14 +197,17 @@ private:
         }
         // The callable may replace its owner or release the last space reference.
         PyObjectPtr callable = callable_;
-        PyObject * result = PyObject_Call( callable.get(), args.get(), NULL );
         bool accepted = true;
-        if (!result)
-            PyErr_PrintEx( 0 );
-        else
         {
-            accepted = !(PyInt_Check( result ) && PyInt_AS_LONG( result ) == 0);
-            Py_DECREF( result );
+            stock_rotation_timing::Scope callbackTiming( stock_rotation_timing::Stage::Business );
+            PyObject * result = PyObject_Call( callable.get(), args.get(), NULL );
+            if (!result)
+                PyErr_PrintEx( 0 );
+            else
+            {
+                accepted = !(PyInt_Check( result ) && PyInt_AS_LONG( result ) == 0);
+                Py_DECREF( result );
+            }
         }
         // Geometry it retired outlives this traversal; its result does not.
         if (space_->cleared())
@@ -400,26 +409,41 @@ StockSegmentResult collideSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, const Filter & filter,
     StockSegmentHit & hit )
 {
+    stock_rotation_timing::Scope timingScope( stock_rotation_timing::Stage::Scene );
+    stock_rotation_timing::count( stock_rotation_timing::Counter::SceneQuery );
     // f640d0/f642b0 resolve the space by ID and keep it for the whole traversal.
     ClientSpacePtr space = SpaceManager::instance().space( spaceID );
     if (!space)
+    {
+        stock_rotation_timing::count( stock_rotation_timing::Counter::SceneFailed );
         return STOCK_SEGMENT_NO_SPACE;
+    }
     // 01172190 rejects |(end-start) x e2 . e1| < 1e-6 before any position test,
     // so #1513 reports no surface for a zero-length segment, present or not.
     if (space->cleared() || start == end)
+    {
+        stock_rotation_timing::count( stock_rotation_timing::Counter::SceneMiss );
         return STOCK_SEGMENT_MISS;
+    }
     SegmentQuery query( space, skipFlags, filter );
     space->collide( start, end, query );
     if (query.failed())
+    {
+        stock_rotation_timing::count( stock_rotation_timing::Counter::SceneFailed );
         return STOCK_SEGMENT_FAILED;
+    }
     // A filter that tore the space down ends the query without a surface.
     if (query.interrupted() || !query.found())
+    {
+        stock_rotation_timing::count( stock_rotation_timing::Counter::SceneMiss );
         return STOCK_SEGMENT_MISS;
+    }
     hit = query.hit();
     Vector3 direction = end - start;
     D3DXVec3Normalize( &direction, &direction );
     hit.point = Vector3( start.x + hit.distance * direction.x,
         start.y + hit.distance * direction.y, start.z + hit.distance * direction.z );
+    stock_rotation_timing::count( stock_rotation_timing::Counter::SceneHit );
     return STOCK_SEGMENT_HIT;
 }
 } // namespace
@@ -428,6 +452,7 @@ StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,
     StockSegmentHit & hit )
 {
+    stock_rotation_timing::count( stock_rotation_timing::Counter::GenericRay );
     return collideSegment( spaceID, start, end, skipFlags, filter, hit );
 }
 
@@ -508,6 +533,7 @@ namespace
 PyObject * wg_collideSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags flags, PyObjectPtr filter )
 {
+    stock_rotation_timing::Scope timingScope( stock_rotation_timing::Stage::Marshal );
     StockSegmentHit hit;
     switch (collideStockSegment( spaceID, start, end, flags, filter.get(), hit ))
     {
@@ -515,14 +541,18 @@ PyObject * wg_collideSegment( SpaceID spaceID, const Vector3 & start,
         return NULL;
     case STOCK_SEGMENT_NO_SPACE:
         // The original returns None with this error still pending; report it here.
-        PyErr_Format( PyExc_ValueError, "No space ID %d", spaceID );
-        PyErr_PrintEx( 0 );
+        {
+            stock_rotation_timing::Scope callbackTiming( stock_rotation_timing::Stage::Business );
+            PyErr_Format( PyExc_ValueError, "No space ID %d", spaceID );
+            PyErr_PrintEx( 0 );
+        }
         Py_RETURN_NONE;
     case STOCK_SEGMENT_MISS:
         Py_RETURN_NONE;
     case STOCK_SEGMENT_HIT:
         break;
     }
+    stock_rotation_timing::count( stock_rotation_timing::Counter::Materialize );
     PyObject * result = PyTuple_New( 6 );
     if (!result)
         return NULL;
