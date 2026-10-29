@@ -3370,6 +3370,11 @@ mapping initially admits 1,763 members. Focused tests execute both actual SDK
 dispatch overloads, including that member count, independent mappings, repeated
 callbacks and subsequent frames. Bind and refresh retain their immediate
 zero-time pose evaluation. Reduced calls are not a player frame-rate measurement.
+Object LOD callbacks retain each original float option's separate integer
+payload. The decor selection consumes that payload rather than the registry
+index; authored and fallback options both follow the original producer. Exact
+instructions and the actual initialization/selection owners cover this contract.
+Forward rendering retains its existing effective decor override.
 Compound bounds preserve the SDK's empty sentinel: disabled or unpopulated
 particle attachments contribute no geometry until their bounds become valid.
 Aggregation skips empty parts and attachments before transforming them, and
@@ -3648,6 +3653,13 @@ language changes. The original default sound mode does not call `setLanguage`,
 so waiting for that callback omitted crew voices. The Windows SDK probe accepts
 the original start, hit and victory voice events across startup, space changes
 and reinitialization; audible playback still requires a listening check.
+Speaker preference saves reload the existing preferences document and update
+only the authored sound field, matching both original native savers. Calling
+the full application save during early audio initialization discarded graphics
+options whose owners had not registered yet. Original instruction tests and
+the SDK resource lifecycle reproduce that loss and preserve the complete saved
+document; failed loads do not create or overwrite it. Windows startup and
+interrupted-start persistence remain separate acceptance checks.
 Battle FPS sampling uses the actual frame
 statistics task. Monitor changes notify the original settings callback, and
 the hardware profile queries retain the original cached-score classification
