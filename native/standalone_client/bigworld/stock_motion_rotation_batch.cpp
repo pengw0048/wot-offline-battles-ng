@@ -177,6 +177,8 @@ WorldResult WorldStageEngine::run(const WorldSnapshot & snapshot, DeparturePolic
     return result;
 }
 
+void validateSnapshot(const Snapshot &input) { validate(input); }
+
 double angleDelta(double current, double target)
 {
     double wrapped=std::fmod(target-current+PI,2.*PI);

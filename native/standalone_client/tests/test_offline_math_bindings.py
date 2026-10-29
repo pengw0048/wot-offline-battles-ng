@@ -68,6 +68,31 @@ class OfflineMathBindingTests(unittest.TestCase):
         adapter.patch(self.root)
         self.assertEqual(before, self.contents())
 
+    def test_rotation_repeat_keeps_independent_activation(self):
+        adapter.patch(self.root, rotation_query=True)
+        before = self.contents()
+        adapter.patch(self.root, rotation_query=True)
+        self.assertEqual(before, self.contents())
+        cpp = before['offline_math_batch_native.cpp'].decode()
+        self.assertEqual(adapter.expanded_methods(self.root/'native', cpp), adapter.METHODS)
+        self.assertIn('#ifdef WOT_NATIVE_ROTATION_QUERY', cpp)
+        self.assertNotIn('#define WOT_NATIVE_ENGINE_QUERY', cpp)
+        motion = before['offline_simulation_motion_python.inc'].decode()
+        self.assertIn('#ifdef WOT_NATIVE_ENGINE_QUERY\n            if(!snapshot.supplied_departing)', motion)
+        self.assertIn('if(rotation_world && !native_)', motion)
+
+    def test_rotation_partial_initialization_is_rejected_without_mutation(self):
+        adapter.patch(self.root, rotation_query=True)
+        path = self.root/'native/offline_math_batch_native.cpp'
+        complete = path.read_text()
+        for seam in ('    if (!stock_rotation_binding::initialize()) return;\n',
+                     '#include "stock_motion_rotation_python.inc"\n'):
+            path.write_text(complete.replace(seam, '', 1))
+            before = self.contents()
+            with self.assertRaises(ValueError):
+                adapter.patch(self.root, rotation_query=True)
+            self.assertEqual(before, self.contents())
+
     def test_changed_method_table_is_rejected_without_mutation(self):
         path = self.root/'native/offline_math_batch_native.cpp'
         path.write_text(path.read_text().replace('{"driver_aim",', '{"changed_driver_aim",', 1))

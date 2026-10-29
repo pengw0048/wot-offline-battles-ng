@@ -28,6 +28,18 @@ _spec = importlib.util.spec_from_file_location(
     'patch_stock_worker_runtime', Path(__file__).with_name('patch_stock_worker_runtime.py'))
 worker_runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker_runtime)
+_spec = importlib.util.spec_from_file_location(
+    'stock_offline_query_bindings', Path(__file__).with_name('stock_offline_query_bindings.py'))
+query_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(query_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_tree_registration_bindings', Path(__file__).with_name('stock_tree_registration_bindings.py'))
+tree_registration = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tree_registration)
+_spec = importlib.util.spec_from_file_location(
+    'stock_motion_rotation_bindings', Path(__file__).with_name('stock_motion_rotation_bindings.py'))
+rotation_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rotation_bindings)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -44,6 +56,8 @@ ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.p
 ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
 SERVICES_SOURCE = ENTRY_SOURCE.with_name('OfflineOptionalServices.py')
 SERVICES_PATH = ENTRY_PATH.with_name(SERVICES_SOURCE.name)
+ROTATION_SOURCE = Path(__file__).with_name('stock_motion_rotation_consumer.py')
+ROTATION_PATH = Path('scripts/client/gui/mods/offline_lan_0922/native_rotation_world.py')
 ACCOUNT_ATTEMPT = (Path(__file__).with_name('offline_entry') /
                    'compat_account_attempt.txt')
 OLD_LOADER = '''    path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
@@ -203,6 +217,12 @@ ADAPTERS = {
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
+ADAPTERS.update((NATIVE_MATH_PATH.with_name(name), query_bindings.ADAPTERS[name])
+                for name in ('native_engine_query.py', 'destructibles_sensor.py',
+                             'destructibles_authority.py', 'world_collision.py'))
+ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
+    lambda source: tree_registration.sensor(query_bindings.sensor(source)))
+ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = rotation_bindings.runtime
 
 
 def stage_runtime(source, staged):
@@ -226,7 +246,8 @@ def stage_runtime(source, staged):
             shutil.copyfile(path, output)
     if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
         raise ValueError('The pinned payload is missing an adapted consumer')
-    for source_path, path in ((ENTRY_SOURCE, ENTRY_PATH), (SERVICES_SOURCE, SERVICES_PATH)):
+    for source_path, path in ((ENTRY_SOURCE, ENTRY_PATH), (SERVICES_SOURCE, SERVICES_PATH),
+                              (ROTATION_SOURCE, ROTATION_PATH)):
         if (runtime / path).exists():
             raise ValueError('The pinned payload already owns the independent entry')
         shutil.copyfile(source_path, runtime / path)
@@ -236,7 +257,8 @@ def stage_runtime(source, staged):
         'adapted': sorted(adapted),
         'entry': ENTRY_PATH.as_posix(),
         'services': SERVICES_PATH.as_posix(),
-        'files': len(files) + 2,
+        'rotation': ROTATION_PATH.as_posix(),
+        'files': len(files) + 3,
     }, indent=2, sort_keys=True) + '\n')
 
 
@@ -320,7 +342,7 @@ def prepare(source, destination):
         for name in SOURCES:
             if not (native / name).is_file():
                 raise ValueError('Missing pinned numerical source: ' + name)
-        patch(staged)
+        patch(staged, rotation_query=True)
         stage_runtime(source, staged)
         stage_replay_package(source, staged)
         # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().

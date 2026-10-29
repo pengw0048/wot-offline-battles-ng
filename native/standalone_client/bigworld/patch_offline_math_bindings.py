@@ -127,13 +127,14 @@ def patch_query_chain(root, pending):
     path = root/'offline_math_batch_native.cpp'
     pending[path] = once(pending[path], '#include "offline_simulation_diagnostics.h"',
         '#include "offline_simulation_diagnostics.h"\n'
-        '#ifdef WOT_NATIVE_ENGINE_QUERY\n'
+        '#if defined(WOT_NATIVE_ENGINE_QUERY) || defined(WOT_NATIVE_ROTATION_QUERY)\n'
+        '#define WOT_NATIVE_QUERY_BRIDGE\n'
         '#include "stock_offline_query_bridge.hpp"\n'
         '#endif')
     path = root/'offline_simulation_motion_python.inc'
     source = pending[path]
     source = once(source, '        bool departing(PyObject *hit) {\n',
-        '''        #ifdef WOT_NATIVE_ENGINE_QUERY
+        '''        #ifdef WOT_NATIVE_QUERY_BRIDGE
         stock_offline_query::Context *native_ = nullptr;
         std::map<std::uint64_t, stock_offline_query::Hit> native_hits_;
         #endif
@@ -147,7 +148,7 @@ def patch_query_chain(root, pending):
         bool departing_point(const double *point, const double *normal) {
             if (normal[1] < -.2)''')
     source = once(source, '            auto position=session.vector(snapshot.position);\n',
-        '''            #ifdef WOT_NATIVE_ENGINE_QUERY
+        '''            #ifdef WOT_NATIVE_QUERY_BRIDGE
             if(!snapshot.supplied_departing)native_=stock_offline_query::begin(capabilities);
             if(native_) {stock_offline_query::rounded(snapshot.position,position_);return;}
             #endif
@@ -155,24 +156,24 @@ def patch_query_chain(root, pending):
 ''')
     source = once(source, '        void departure(const WorldRequest &request) {\n',
         '''        ~WorldFrontier() {
-            #ifdef WOT_NATIVE_ENGINE_QUERY
+            #ifdef WOT_NATIVE_QUERY_BRIDGE
             stock_offline_query::end(native_);
             #endif
         }
         bool finish() {
-            #ifdef WOT_NATIVE_ENGINE_QUERY
+            #ifdef WOT_NATIVE_QUERY_BRIDGE
             return stock_offline_query::beforeEffect(native_);
             #else
             return true;
             #endif
         }
         void effect_returned() {
-            #ifdef WOT_NATIVE_ENGINE_QUERY
+            #ifdef WOT_NATIVE_QUERY_BRIDGE
             if(!stock_offline_query::afterEffect(native_))throw engine_query::Failed();
             #endif
         }
         bool native_ground(const WorldRequest &request, WorldResponse &response) {
-            #ifdef WOT_NATIVE_ENGINE_QUERY
+            #ifdef WOT_NATIVE_QUERY_BRIDGE
             if(stock_offline_query::groundAvailable(native_)) {
                 ray(WORLD_GROUND,request,response,nullptr);return stock_offline_query::groundAvailable(native_);
             }
@@ -183,7 +184,7 @@ def patch_query_chain(root, pending):
 ''')
     source = once(source, '            return hits_[static_cast<unsigned>(handle-1)].get();',
         '''            auto &cached=hits_[static_cast<unsigned>(handle-1)];
-            #ifdef WOT_NATIVE_ENGINE_QUERY
+            #ifdef WOT_NATIVE_QUERY_BRIDGE
             if(!cached.get()) {
                 const auto found=native_hits_.find(handle);
                 if(found==native_hits_.end())throw Unsupported();
@@ -192,7 +193,7 @@ def patch_query_chain(root, pending):
             #endif
             return cached.get();''')
     source = once(source, '            engine_query::Object start,end;\n            session.segment(request.start,request.end,start,end,response.start,response.end);',
-        '''            #ifdef WOT_NATIVE_ENGINE_QUERY
+        '''            #ifdef WOT_NATIVE_QUERY_BRIDGE
             if(native_ && !external_departing) {
                 stock_offline_query::beginRay(native_);
                 const auto old_planes=planes_.size();
@@ -270,13 +271,109 @@ def patch_query_chain(root, pending):
     pending[path] = source
 
 
-def patch(root, native_query=False):
+def patch_rotation_chain(root, pending):
+    path = root/'offline_math_batch_native.cpp'
+    pending[path] = once(pending[path], '#include "offline_world_query_python.inc"',
+        '#include "offline_world_query_python.inc"\n'
+        '#ifdef WOT_NATIVE_ROTATION_QUERY\n'
+        '#include "stock_motion_rotation_python.inc"\n'
+        '#endif')
+    pending[path] = once(pending[path],
+        '    if (!initialize_api() || !initialize_keys()) return;\n',
+        '    if (!initialize_api() || !initialize_keys()) return;\n'
+        '#ifdef WOT_NATIVE_ROTATION_QUERY\n'
+        '    if (!stock_rotation_binding::initialize()) return;\n'
+        '#endif\n')
+    path = root/'offline_simulation_motion_python.inc'
+    source = pending[path]
+    source = once(source, '        WorldSnapshot snapshot_;\n',
+        '        WorldSnapshot snapshot_;\n'
+        '        stock_motion_rotation::DeparturePolicy *rotation_policy_ = nullptr;\n'
+        '        PyObject *rotation_query_ = nullptr;\n'
+        '        bool rotationAccepts(const double *p,const double *n) {\n'
+        '            stock_motion_rotation::Contact hit;\n'
+        '            std::copy(p,p+3,hit.point.begin());std::copy(n,n+3,hit.normal.begin());\n'
+        '            if(native_ && !stock_offline_query::beforeEffect(native_))throw engine_query::Failed();\n'
+        '            const bool accepted=rotation_policy_->accepts(hit);\n'
+        '            if(native_) {if(!stock_offline_query::afterDeparture(native_))throw engine_query::Failed();}\n'
+        '            else {engine_query::Object live(PyObject_CallMethod(rotation_query_,const_cast<char *>("_live"),NULL));}\n'
+        '            return accepted;\n'
+        '        }\n')
+    source = once(source,
+        '        WorldFrontier(PyObject *capabilities, PyObject *tuning, const WorldSnapshot &snapshot):\n'
+        '            snapshot_(snapshot), session(capabilities) {',
+        '        WorldFrontier(PyObject *capabilities, PyObject *tuning, const WorldSnapshot &snapshot,\n'
+        '                stock_motion_rotation::DeparturePolicy *rotation_policy=nullptr,bool rotation_world=false):\n'
+        '            snapshot_(snapshot), rotation_policy_(rotation_policy), session(capabilities) {\n'
+        '            if(rotation_world)rotation_query_=PyMethod_GET_SELF(items(capabilities)[7]);')
+    source = once(source,
+        '            if(!snapshot.supplied_departing)native_=stock_offline_query::begin(capabilities);',
+        '#ifdef WOT_NATIVE_ENGINE_QUERY\n'
+        '            if(!snapshot.supplied_departing)native_=stock_offline_query::begin(capabilities);\n'
+        '#endif\n'
+        '#ifdef WOT_NATIVE_ROTATION_QUERY\n'
+        '            if(rotation_world && !native_)native_=stock_offline_query::begin(capabilities);\n'
+        '#endif')
+    source = once(source,
+        'result!=stock_offline_query::Found || op!=WORLD_HORIZONTAL || !has_departing_ ||\n'
+        '                       !(request.flags&1) || !departing_point(hit.point,hit.normal)',
+        'result!=stock_offline_query::Found || op!=WORLD_HORIZONTAL || (!has_departing_ && !rotation_policy_) ||\n'
+        '                       !(request.flags&1) || !(rotation_policy_?rotationAccepts(hit.point,hit.normal):departing_point(hit.point,hit.normal))')
+    source = once(source,
+        '(!has_departing_ && !external_departing) ||\n'
+        '                   !(request.flags&1) || !(external_departing?external_departing(result.get()):departing(result.get()))',
+        '(!has_departing_ && !external_departing && !rotation_policy_) ||\n'
+        '                   !(request.flags&1) || !rotationHit(result.get(),external_departing)')
+    source = once(source, '        bool departing(PyObject *hit) {\n',
+        '        bool rotationHit(PyObject *hit,const std::function<bool(PyObject *)> &external) {\n'
+        '            if(!rotation_policy_)return external?external(hit):departing(hit);\n'
+        '            require_sequence(hit,2);double p[3],n[3];\n'
+        '            session.point(items(hit)[0],p);session.point(items(hit)[1],n);\n'
+        '            return rotationAccepts(p,n);\n'
+        '        }\n'
+        '        bool departing(PyObject *hit) {\n')
+    source = once(source, '                const auto old_planes=planes_.size();\n',
+        '                const auto old_planes=planes_.size();bool rotation_crossed=false;\n')
+    source = once(source, '                       !(request.flags&1) || !(rotation_policy_?rotationAccepts(hit.point,hit.normal):departing_point(hit.point,hit.normal)))break;',
+        '                       !(request.flags&1) || !(rotation_policy_?(rotation_crossed=true,rotationAccepts(hit.point,hit.normal)):departing_point(hit.point,hit.normal)))break;')
+    source = once(source, '                stock_offline_query::finishRay(native_,result!=stock_offline_query::Unbound);',
+        '                if(result==stock_offline_query::Unbound && rotation_crossed) {\n'
+        '                    PyErr_SetString(PyExc_RuntimeError,"Native rotation ray changed after departure; no replay is permitted");throw engine_query::Failed();\n'
+        '                }\n'
+        '                stock_offline_query::finishRay(native_,result!=stock_offline_query::Unbound);')
+    pending[path] = source
+    path = root/'offline_math_batch_native.cpp'
+    pending[path] = once(pending[path], '#include "stock_offline_query_bridge.hpp"',
+        '#include "stock_offline_query_bridge.hpp"\n#include "stock_motion_rotation_batch.hpp"')
+
+def patch(root, native_query=False, rotation_query=False):
     root = Path(root)/'native'
     pending = {}
     path = root/'offline_math_batch_native.cpp'
     original = path.read_text()
     if expanded_methods(root, original) != METHODS:
         raise ValueError('Pinned v0.10.1 module method table changed')
+    prepared_motion = (root/'offline_simulation_motion_python.inc').read_text() if rotation_query else ''
+    if rotation_query and ('stock_motion_rotation_python.inc' in original or
+            'stock_rotation_binding::initialize' in original or
+            'stock_motion_rotation::DeparturePolicy' in prepared_motion):
+        # Rotation extends several already-adapted common seams. Validate its
+        # final owner rather than nesting those common wrappers on reapply.
+        motion = prepared_motion
+        world = (root/'offline_world_query_python.inc').read_text()
+        expected = ('stock_motion_rotation::DeparturePolicy *rotation_policy=nullptr',
+                    'stock_offline_query::afterDeparture(native_)',
+                    'rotation_crossed=true,rotationAccepts',
+                    'if(rotation_world && !native_)')
+        include = '#ifdef WOT_NATIVE_ROTATION_QUERY\n#include "stock_motion_rotation_python.inc"\n#endif'
+        initialize = '#ifdef WOT_NATIVE_ROTATION_QUERY\n    if (!stock_rotation_binding::initialize()) return;\n#endif'
+        if (any(value not in motion for value in expected) or
+                'frontier->effect_returned();' not in world or
+                original.count(include) != 1 or original.count(initialize) != 1 or
+                original.count('#include "stock_motion_rotation_python.inc"') != 1 or
+                original.count('stock_rotation_binding::initialize()') != 1):
+            raise ValueError('Incomplete prepared rotation binding')
+        return
     source = once(original, HEADER_BEFORE, HEADER_AFTER)
     source = once(source, EXPORT_BEFORE, EXPORT_AFTER)
     source = once(source, '#ifdef WOT_HOST_PYTHON\n#include <time.h>',
@@ -309,10 +406,12 @@ def patch(root, native_query=False):
     # The preceding guard bounds the index by the owned list's unsigned size.
     # Make its existing conversion explicit for MSVC /WX, without changing it.
     pending[path] = source
-    # The native-query prototype is exercised by its contract harness only.
-    # The real 15v15 run regressed; ordinary builds retain the existing path.
-    if native_query:
+    # Ordinary translation remains default-off after the earlier regression.
+    # Rotation is compiled independently and has its own runtime admission guard.
+    if native_query or rotation_query:
         patch_query_chain(root, pending)
+    if rotation_query:
+        patch_rotation_chain(root, pending)
     # Validate the complete transaction before publishing any adapted source.
     for path, source in pending.items():
         path.write_text(source, encoding='utf-8', newline='')

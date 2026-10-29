@@ -359,7 +359,7 @@ print('native query provider contract passed')
 '''
 
 
-def build_bridge(test, path, fork):
+def build_bridge(test, path, fork, rotation_query=False):
     python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
     config = python.with_name('python2.7-config')
     if not config.exists(): test.skipTest('Pinned CPython 2.7 development files unavailable')
@@ -393,16 +393,18 @@ def build_bridge(test, path, fork):
     spec.loader.exec_module(adapter)
     generated = path / 'fork'
     shutil.copytree(fork / 'native', generated / 'native')
-    adapter.patch(generated, native_query=True)
+    adapter.patch(generated, native_query=not rotation_query, rotation_query=rotation_query)
     binding_cpp = generated / 'native/offline_math_batch_native.cpp'
     binding_cpp.write_text(binding_cpp.read_text() + MOTION_ENTRY)
     subprocess.run([cxx, *native_test_compile_flags(cxx), '-std=c++17', '-g', '-fno-omit-frame-pointer',
                     '-O0',
                     '-Wno-register', '-Wno-deprecated-register', '-Wno-writable-strings', '-Wno-unused-function', '-UNDEBUG', '-ffp-contract=off',
-                    '-DWOT_PYTHON_C_API', '-DWOT_NATIVE_ENGINE_QUERY',
+                    '-DWOT_PYTHON_C_API',
+                    '-DWOT_NATIVE_ROTATION_QUERY' if rotation_query else '-DWOT_NATIVE_ENGINE_QUERY',
                     '-I' + str(path / 'include'), '-I' + str(ROOT / 'bigworld'), '-I' + str(fork / 'native'),
                     str(ROOT / 'tests/stock_offline_query_bridge_host.cpp'),
                     str(ROOT / 'bigworld/stock_offline_query_skin.cpp'),
+                    *([str(ROOT / 'bigworld/stock_motion_rotation_batch.cpp')] if rotation_query else []),
                     *[str(generated / 'native' / name) for name in adapter.SOURCES],
                     *flags, *libs, '-o', str(binary)], check=True)
     return binary

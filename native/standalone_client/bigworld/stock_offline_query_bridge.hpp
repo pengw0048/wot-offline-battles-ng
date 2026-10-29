@@ -16,6 +16,8 @@ void end(Context *);
 // Flush observational state before Python effects, then refresh after them.
 bool beforeEffect(Context *);
 bool afterEffect(Context *);
+// Resume after a policy barrier without restoring already committed journals.
+bool afterDeparture(Context *);
 bool groundAvailable(Context *);
 void beginRay(Context *);
 void finishRay(Context *, bool committed);

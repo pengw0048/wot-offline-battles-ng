@@ -246,6 +246,7 @@ struct Context {
             if(pending && PyObject_IsTrue(pending))throw Unsupported();
         }
         if(groundOwner.get() && groundOwner.get()!=Py_None && attr(groundOwner.get(),"ground_collision_filter").get()!=groundProvider.get())ground=false;
+        if(attr(query.get(),"_native_query_binding").get()!=binding.get())throw Unsupported("changed_query_binding");
         if(attr(query.get(),"capabilities").get()!=capabilities.get() || at(binding.get(),0)!=capabilities.get())throw Unsupported();
         auto laws=at(binding.get(),3);if(!PyTuple_CheckExact(laws))throw Unsupported();
         for(Py_ssize_t i=0;i<size(laws);++i){auto row=tuple(at(laws,i),4);dict(at(row,0));
@@ -549,6 +550,16 @@ bool afterEffect(Context * c) {
     try{c->live();c->validate();c->viewReady=false;c->skinReady=false;c->groundReady=false;c->filters.clear();return true;}
     catch(const Unsupported & error){c->usable=false;status(c->query.get(),"generic",error.reason);return true;}
     catch(...){c->remember(false);return false;}
+}
+bool afterDeparture(Context * c) {
+    if(!c)return true;
+    if(!afterEffect(c))return false;
+    if(!c->usable) {
+        PyErr_SetString(PyExc_RuntimeError,"Native rotation binding changed after departure; no replay is permitted");
+        c->remember(false);return false;
+    }
+    // beforeEffect committed and cleared the earlier observations.
+    c->markRay();return true;
 }
 bool groundAvailable(Context * c) {return c && c->usable && c->ground;}
 void beginRay(Context * c) {if(c){c->markRay();c->outerRay=true;}}

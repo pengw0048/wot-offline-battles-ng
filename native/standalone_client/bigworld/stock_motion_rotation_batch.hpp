@@ -90,6 +90,7 @@ struct DepartureProof { bool improves, inside; };
 
 // The current fixed-release laws, exposed as typed primitives. The older
 // extension only exposes these numerical bodies inside Python bindings.
+void validateSnapshot(const Snapshot &);
 double angleDelta(double current, double target);
 Bounds intervalEnvelope(const Bounds &, double half_angle, double pivot);
 DepartureProof departureProof(const Snapshot &, const Contact &);

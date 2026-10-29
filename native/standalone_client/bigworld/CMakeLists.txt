@@ -108,6 +108,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_identity.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_scene_prediction.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_scene_queries.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_offline_query_bridge.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_offline_query_skin.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_entity_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_turret_filter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_avatar_filter_helper.cpp"

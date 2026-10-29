@@ -3357,18 +3357,32 @@ but tactical routes remained random. This is insufficient evidence to enable
 it. Native identity-view preparation still copies metadata per synchronous
 sweep; its end-to-end cost needs further work before another activation trial.
 
-A separate, inactive typed rotation experiment ports the pinned angle-slice
-loop, departure rule and lazy previous-contact proof. Equal-angle slices reuse
-one analytical envelope; world-query order, float32 position/contact boundaries,
-backing-wall rejection and local query failures remain explicit. Its host test
-compares the fixed-release Python laws and separately links the real
-`world_stage` kernel to native miss and failure frontiers. It requires
-`WOT_FORK_0101_SOURCE`; hosted CI without that source skips this oracle.
-The experiment does not yet provide the live BigWorld frame factory, complete
-catalog/tree/translation resolvers or an ordinary build entry point.
-Scripted host timings only measure orchestration and departure, excluding real
-scene queries, descriptor acquisition and the future C API boundary; they are
-not evidence of Windows frame-time savings.
+A separate typed rotation entry ports the pinned angle-slice loop, departure
+rule and lazy previous-contact proof into the real native query frontier.
+Equal-angle slices reuse one analytical envelope. Every reentrant world query
+owns its own context, hits and trace; returning from a departure callback checks
+the live owner and rebases already-published observations. A changed binding
+after that barrier fails the current operation without replay. World-query
+order, float32 position/contact boundaries, backing-wall rejection and local
+query failures remain explicit. Per-world preparation and ordered filter,
+resolve and trace callbacks remain Python-owned; this is not the complete
+catalog/tree/translation resolver migration.
+
+The generated numerical module registers `offline_rotation_world_native`
+without changing the pinned numerical method table. Its separate rotation-only
+build flag leaves ordinary translation queries generic, and the prepared
+consumer's activation guard is initially disabled. Fixed-source host tests
+compare the original rotation consumer and the actual native frontier, including
+hit, recast and failure paths. These tests require `WOT_FORK_0101_SOURCE`; hosted
+CI without that source skips the oracle. Host timings are not evidence of
+Windows frame-time savings.
+
+Tree registration no longer prepares the hull sweep or proximity receipt that
+its registration-only branch never reads. Space changes, publication retries,
+neighbourhood priority and fresh chunk readiness checks retain their original
+order. Actual collision queries still validate their geometry; registration
+alone no longer rejects an unused malformed hull descriptor. The normal
+destruction path keeps its existing preparation and receipt behavior.
 
 A subsequent Windows workload capture attributed 26.2% of worker frame time to
 complete rotation and 17.3% to translation. The rotation world loop was 14.3%

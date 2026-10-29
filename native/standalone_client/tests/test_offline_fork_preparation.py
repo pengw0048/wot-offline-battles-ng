@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 from prepare_offline_fork import (
     ACCOUNT_ATTEMPT, ADAPTERS, BOOTSTRAP_PATH, COMPAT_PATH, ENTRY_PATH, ENTRY_SOURCE,
     INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT, PINNED_RESOURCES,
-    REPLAY_PACKAGE_INPUT, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
+    REPLAY_PACKAGE_INPUT, ROTATION_PATH, ROTATION_SOURCE, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
     prepare)
 
 PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
@@ -114,7 +114,7 @@ class OfflineForkPreparationTests(unittest.TestCase):
         resources = self.source / PINNED_RESOURCES
         pinned = {p.relative_to(resources) for p in resources.rglob('*') if p.is_file()}
         shipped = {p.relative_to(runtime) for p in runtime.rglob('*') if p.is_file()}
-        self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH})
+        self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH, ROTATION_PATH})
         self.assertFalse([p for p in shipped if p.suffix in ('.pyc', '.pyo', '.pyd', '.dll')])
         adapted = {relative.relative_to(PINNED_RESOURCES) for relative in ADAPTERS}
         for relative in pinned:
@@ -128,6 +128,7 @@ class OfflineForkPreparationTests(unittest.TestCase):
                 self.assertEqual(output, original, relative)
         self.assertEqual((runtime / ENTRY_PATH).read_bytes(), ENTRY_SOURCE.read_bytes())
         self.assertEqual((runtime / SERVICES_PATH).read_bytes(), SERVICES_SOURCE.read_bytes())
+        self.assertEqual((runtime / ROTATION_PATH).read_bytes(), ROTATION_SOURCE.read_bytes())
         manifest = json.loads((self.output / 'offline-res.json').read_text())
         self.assertEqual(manifest['revision'], PINNED_COMMIT)
         self.assertEqual(manifest['files'], len(shipped))

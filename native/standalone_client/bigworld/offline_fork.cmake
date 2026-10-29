@@ -10,10 +10,13 @@ if(NOT WOT_OFFLINE_FORK_PREPARE_RESULT EQUAL 0)
     message(FATAL_ERROR "The pinned gameplay numerical source could not be prepared")
 endif()
 include("${WOT_OFFLINE_FORK_GENERATED}/offline_fork_sources.cmake")
-add_library(WotOfflineMath STATIC ${WOT_OFFLINE_MATH_SOURCES})
-target_compile_definitions(WotOfflineMath PRIVATE WOT_PYTHON_C_API Py_BUILD_CORE NOMINMAX)
+add_library(WotOfflineMath STATIC ${WOT_OFFLINE_MATH_SOURCES}
+    "${CMAKE_CURRENT_LIST_DIR}/stock_motion_rotation_batch.cpp")
+target_compile_definitions(WotOfflineMath PRIVATE WOT_PYTHON_C_API Py_BUILD_CORE NOMINMAX
+    WOT_NATIVE_ROTATION_QUERY)
 target_include_directories(WotOfflineMath PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
+    "${WOT_OFFLINE_FORK_GENERATED}/native"
     "${BW_SOURCE_DIR}/third_party/python/Include"
     "${BW_SOURCE_DIR}/third_party/python/PC")
 target_compile_options(WotOfflineMath PRIVATE /std:c++17 /arch:SSE2 /fp:strict
