@@ -1,5 +1,12 @@
 """Optional prepared-copy seam for the synchronous rotation experiment."""
-from stock_offline_query_bindings import once
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location(
+    'stock_offline_query_bindings', Path(__file__).with_name('stock_offline_query_bindings.py'))
+_query_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_query_bindings)
+once = _query_bindings.once
 
 
 def runtime(source):

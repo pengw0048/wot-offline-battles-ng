@@ -23,6 +23,17 @@ PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/
 ROOT_COMPAT = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
 
 
+class OfflineForkCommandTests(unittest.TestCase):
+    def test_isolated_help_from_unrelated_directory(self):
+        with tempfile.TemporaryDirectory(prefix='wot-fork-command-') as directory:
+            completed = subprocess.run([
+                sys.executable, '-I', '-B',
+                str(ROOT/'bigworld/prepare_offline_fork.py'), '--help'],
+                cwd=directory, text=True, capture_output=True, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn('usage:', completed.stdout)
+
+
 class OfflineForkPreparationTests(unittest.TestCase):
     def setUp(self):
         source = os.environ.get('WOT_FORK_0101_SOURCE')
