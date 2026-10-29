@@ -18,19 +18,21 @@
 
 static bool countAllocations = false;
 static std::size_t allocations = 0;
-void * operator new(std::size_t size)
+// Keep replacement hooks opaque so GCC does not diagnose an inlined free as
+// mismatched with the corresponding standard operator new call.
+[[gnu::noinline]] void * operator new(std::size_t size)
 {
     if (countAllocations) ++allocations;
     if (void * value = std::malloc(size ? size : 1)) return value;
     throw std::bad_alloc();
 }
-void operator delete(void * value) noexcept { std::free(value); }
-void operator delete(void * value, std::size_t) noexcept { std::free(value); }
-void * operator new(std::size_t size, const std::nothrow_t &) noexcept
+[[gnu::noinline]] void operator delete(void * value) noexcept { std::free(value); }
+[[gnu::noinline]] void operator delete(void * value, std::size_t) noexcept { std::free(value); }
+[[gnu::noinline]] void * operator new(std::size_t size, const std::nothrow_t &) noexcept
 {
     try { return ::operator new(size); } catch (...) { return nullptr; }
 }
-void operator delete(void * value, const std::nothrow_t &) noexcept { std::free(value); }
+[[gnu::noinline]] void operator delete(void * value, const std::nothrow_t &) noexcept { std::free(value); }
 
 using uint32 = std::uint32_t;
 namespace wot { struct StockTreeGeometry {}; struct StockTreeMaterials {}; struct StockTreeLodConfiguration {}; }
