@@ -29,6 +29,8 @@ ENGINE = r'''
 #define ERROR_MSG(...) std::fprintf(stderr,__VA_ARGS__)
 namespace BW {
 using uint32=std::uint32_t;
+using uint64=std::uint64_t;
+using SpaceID=std::uint32_t;
 using string=std::string;
 struct StockDestructibleSnapshot;
 struct Matrix { float x=0;void setZero(){x=0;} };

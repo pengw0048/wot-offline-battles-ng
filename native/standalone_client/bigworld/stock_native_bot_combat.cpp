@@ -280,7 +280,8 @@ bool CombatLedger::reconcile(CombatState& state,const ServerCombat& incoming,dou
             authority_handoff_pending=false;
         }
         server_combat=record;acknowledged_sequence=incoming.acknowledged_sequence;revision=incoming.revision;
-        if (incoming.server_tick)server_tick=*incoming.server_tick;return false;
+        if (incoming.server_tick)server_tick=*incoming.server_tick;
+        return false;
     }
     if (incoming.revision<incoming.base_revision || incoming.revision<=revision)
         throw std::invalid_argument("New combat base has no canonical revision");
@@ -298,7 +299,8 @@ bool CombatLedger::reconcile(CombatState& state,const ServerCombat& incoming,dou
         advance_critical(state,step.elapsed,step.now,repair_factor,repair_speed,step.advance_fire);
     }
     if (!same_combat(combat_record(state),record)) unpublished_steps=std::move(replay);
-    if (incoming.server_tick)server_tick=*incoming.server_tick;return true;
+    if (incoming.server_tick)server_tick=*incoming.server_tick;
+    return true;
 }
 CriticalTickResult advance_critical(CombatState& s,double dt,double now,
                                     double repair_factor,double repair_speed_factor,bool advance_fire) {

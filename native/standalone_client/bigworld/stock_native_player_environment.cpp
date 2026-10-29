@@ -13,9 +13,11 @@ bool finite(double v){return std::isfinite(v);}
 }
 std::optional<std::pair<Point,double>> hullSample(const Metadata& d,const Pose& pose){
  for(int i=0;i<3;++i)if(!finite(d.minimum[i])||!finite(d.maximum[i])||!finite(d.mount[i])||!finite(pose.position[i])||d.maximum[i]<=d.minimum[i])return {};
- if(!finite(pose.yaw)||!finite(pose.pitch)||!finite(pose.roll))return {};Point center{};double bottom=std::numeric_limits<double>::infinity(),top=-bottom;
+ if(!finite(pose.yaw)||!finite(pose.pitch)||!finite(pose.roll))return {};
+ Point center{};double bottom=std::numeric_limits<double>::infinity(),top=-bottom;
  for(int mask=0;mask<8;++mask){Point p;for(int i=0;i<3;++i)p[i]=((mask>>i)&1?d.maximum[i]:d.minimum[i])+d.mount[i];p=transform(p,pose);for(int i=0;i<3;++i)center[i]+=p[i]/8.;bottom=std::min(bottom,p[1]);top=std::max(top,p[1]);}
- if(!finite(top-bottom)||top<=bottom)return {};center[1]=bottom;return std::make_pair(center,top-bottom);
+ if(!finite(top-bottom)||top<=bottom)return {};
+ center[1]=bottom;return std::make_pair(center,top-bottom);
 }
 std::optional<Proposal> drowningProposal(const Critical& before,const Metadata& meta){
  auto after=before;for(auto& item:after.devices)item.second.critical=false;
@@ -24,11 +26,13 @@ std::optional<Proposal> drowningProposal(const Critical& before,const Metadata& 
  after.crew_ko.insert(meta.crew.begin(),meta.crew.end());auto events=s::critical_events(before,after,"drowning");
  bool changed=!events.empty()||before.crew_ko!=after.crew_ko;
  if(!changed)for(const auto& item:after.devices){auto old=before.devices.find(item.first);if(old==before.devices.end()||old->second.hp!=item.second.hp||old->second.destroyed!=item.second.destroyed||old->second.critical!=item.second.critical){changed=true;break;}}
- if(!changed)return {};return Proposal{std::move(after),std::move(events)};
+ if(!changed)return {};
+ return Proposal{std::move(after),std::move(events)};
 }
 bool Owner::willSample(double dt,bool authority)const{return authority&&finite(dt)&&dt>0.&&elapsed_+dt>=.3;}
 std::optional<Batch> Owner::advance(double dt,bool authority,const std::vector<Player>& players,World& world){
- if(!authority||!finite(dt)||dt<=0.)return {};elapsed_+=dt;if(elapsed_<.3)return {};elapsed_=std::fmod(elapsed_,.3);
+ if(!authority||!finite(dt)||dt<=0.)return {};
+ elapsed_+=dt;if(elapsed_<.3)return {};elapsed_=std::fmod(elapsed_,.3);
  Batch result;result.sequence=sequence_+1;std::vector<const Player*> ordered;for(const auto& player:players)ordered.push_back(&player);
  std::sort(ordered.begin(),ordered.end(),[](const Player*a,const Player*b){return std::to_string(a->id)<std::to_string(b->id);});
  for(const Player* player:ordered){if(player->id<=0)continue;Pose pose=player->pose;
@@ -36,7 +40,8 @@ std::optional<Batch> Owner::advance(double dt,bool authority,const std::vector<P
   const auto sample=hullSample(player->descriptor,pose);if(!sample)continue;
   double depth=-1.;try{depth=world.waterDepth(sample->first);}catch(const std::exception&){}if(!finite(depth))continue;const int level=depth>sample->second?2:depth>sample->second*.5?1:0;
   Observation observation;observation.id=player->id;observation.input_sequence=std::max<std::int64_t>(0,player->input_sequence);observation.level=level;
-  if(level==2)observation.drowning=drowningProposal(player->critical,player->descriptor);result.observations.push_back(std::move(observation));}
+  if(level==2)observation.drowning=drowningProposal(player->critical,player->descriptor);
+  result.observations.push_back(std::move(observation));}
  return result;
 }
 }
