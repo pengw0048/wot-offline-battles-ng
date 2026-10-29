@@ -6,6 +6,7 @@
 #include "stock_space_sounds_data.hpp"
 #include "stock_scene_identity_data.hpp"
 #include "wot/stock_static_model_binary.hpp"
+#include "cstdmf/profiler.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/compiled_space.hpp"
 #include "compiled_space/collision_helpers.hpp"
@@ -578,6 +579,7 @@ struct StockStaticModelSceneLoader::State::DrawHandler : IDrawOperationTypeHandl
 {
     virtual void doDraw( const SceneDrawContext & context, const SceneObject * objects, size_t count )
     {
+        PROFILER_SCOPED( StockStaticModels_draw );
         Moo::DrawContext & draw = context.drawContext();
         const auto pass = draw.renderingPassType();
         const auto view = values( context.lodCameraView() );

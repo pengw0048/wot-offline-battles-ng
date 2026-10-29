@@ -11,6 +11,7 @@
 #include "stock_tree_materials.hpp"
 #include "stock_tree_wind.hpp"
 
+#include "cstdmf/profiler.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "compiled_space/collision_helpers.hpp"
 #include "compiled_space/static_scene_types.hpp"
@@ -1275,6 +1276,7 @@ class TreeDrawHandler : public IDrawOperationTypeHandler
 public:
     virtual void doDraw( const SceneDrawContext & context, const SceneObject * objects, size_t count )
     {
+        PROFILER_SCOPED( StockTrees_draw );
         auto owner = currentRenderingOwner();
         if (!owner || !owner->beginFrame()) return;
         ClientSpacePtr space = DeprecatedSpaceHelpers::cameraSpace();

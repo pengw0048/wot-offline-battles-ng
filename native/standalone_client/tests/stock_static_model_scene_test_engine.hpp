@@ -19,6 +19,7 @@
 #define ERROR_MSG(...) std::fprintf(stderr,__VA_ARGS__)
 #define MF_ASSERT(x) assert(x)
 #define BW_GUARD
+#define PROFILER_SCOPED(name)
 namespace BW {
 using uint32=std::uint32_t;using int64=std::int64_t;using string=std::string;
 template<class T>using vector=std::vector<T>;
