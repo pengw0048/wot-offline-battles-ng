@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('texture_quality_patch', ROOT/'bigworld/patch_stock_texture_quality.py')
 PATCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PATCH)
-EXTRA = ('lib/moo/base_texture.cpp', 'lib/moo/streaming_texture.cpp')
+EXTRA = ('lib/moo/base_texture.cpp', 'lib/moo/streaming_texture.cpp',
+         'lib/resmgr/zip_file_system.cpp', 'lib/resmgr/multi_file_system.cpp',
+         'lib/cstdmf/concurrency.hpp')
 
 
 def sources(test):
@@ -68,9 +70,22 @@ def generated(values, original=None, negative=None):
     owners = '\n\n'.join(entries)
     if negative == 'locked_reload':
         owners = owners.replace('    reloadDirtyTextures();', '    RecursiveMutexHolder retainedLock(texturesLock_);\n    reloadDirtyTextures();')
+    if negative == 'retained_stream':
+        owners = owners.replace('\t\tpStream = NULL;', '')
+    if negative == 'retained_base':
+        owners = owners.replace('        stream = NULL;', '')
     owners = owners.replace('newTexture_ = new ManagedTexture(', 'newTexture_.reset(new ManagedTexture(')
     owners = owners.replace(', stockSplit_ );', ', stockSplit_ ));')
-    return (ROOT/'tests/stock_texture_quality_host.cpp').read_text().replace('@OWNERS@', owners)
+    filesystem = (ROOT/'tests/stock_texture_archive_host.hpp').read_text()
+    for marker, name, signature in (
+            ('@MUTEX@', 'lib/cstdmf/concurrency.hpp', 'class SimpleMutex\n'),
+            ('@STREAMER@', 'lib/resmgr/zip_file_system.cpp', 'class ZipFileStreamer : public IFileStreamer'),
+            ('@ZIP_STREAM@', 'lib/resmgr/zip_file_system.cpp', 'FileStreamerPtr ZipFileSystem::streamFile('),
+            ('@MULTI_STREAM@', 'lib/resmgr/multi_file_system.cpp', 'FileStreamerPtr MultiFileSystem::streamFile(')):
+        body = f(values[name], signature)
+        filesystem = filesystem.replace(marker, body + (';' if signature.startswith('class ') else ''))
+    return ((ROOT/'tests/stock_texture_quality_host.cpp').read_text()
+            .replace('@FILESYSTEM@', filesystem).replace('@OWNERS@', owners))
 
 
 class TextureQualityTests(unittest.TestCase):
@@ -86,7 +101,8 @@ class TextureQualityTests(unittest.TestCase):
         if not compiler:
             raise unittest.SkipTest('Host C++ compiler is required')
         cls.binaries = {}
-        for mode in ('after', 'without_counters', 'managed', 'streaming', 'locked_reload'):
+        for mode in ('after', 'without_counters', 'managed', 'streaming', 'locked_reload',
+                     'retained_stream', 'retained_base'):
             source, binary = cls.root/(mode+'.cpp'), cls.root/mode
             source.write_text(generated(cls.patched, cls.original, mode))
             result = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror',
@@ -110,6 +126,15 @@ class TextureQualityTests(unittest.TestCase):
                 self.assertIn('Actual SDK texture quality consumers passed', result.stdout)
             else:
                 self.assertNotEqual(result.returncode, 0, mode+' original owner unexpectedly passed')
+
+    def test_archive_streams_release_before_followup_header_queries(self):
+        for mode in ('after', 'retained_stream', 'retained_base'):
+            result = subprocess.run([str(self.binaries[mode])], capture_output=True, text=True)
+            if mode == 'after':
+                self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0, mode+' retained archive stream unexpectedly passed')
+                self.assertIn('!gone_', result.stderr)
 
     def test_exact_pe_quality_records_and_varied_mip_chains(self):
         client = os.environ.get('WOT_0922_CLIENT')

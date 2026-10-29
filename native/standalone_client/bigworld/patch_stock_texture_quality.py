@@ -37,6 +37,8 @@ BASE_SKIP = '''uint32 TextureManager::stockBaseMipSkip(const BW::StringRef& reso
     uint32 logicalMips = 0;
     if (stream && StreamingTextureLoader::loadHeaderFromStream(stream.get(), base))
     {
+        // Archive streams retain their file-system lock until destruction.
+        stream = NULL;
         logicalMips = std::max(base.numMipLevels_, 1u);
         if (splitCount && logicalSkip >= logicalMips)
         {
@@ -141,7 +143,9 @@ def patch(root):
         after = before.replace('this->filterSettings_->activeOption()',
                                'wot::stockTextureQuality(qualitySettings_->activeOption(), Moo::rc().maxAnisotropy()).filter')
         pending[MANAGER] = pending[MANAGER].replace(before, after, 1)
-    if BASE_SKIP not in pending[MANAGER]:
+    if 'uint32 TextureManager::stockBaseMipSkip(' in pending[MANAGER]:
+        replace_function(MANAGER, 'uint32 TextureManager::stockBaseMipSkip(', BASE_SKIP)
+    else:
         edit(MANAGER, SET_QUALITY, BASE_SKIP + '\n\n' + SET_QUALITY)
     edit(HEADER, '\tint configurableMipFilter() const;',
          '\tstatic uint32 stockBaseMipSkip(const BW::StringRef& resourceID, uint32 logicalSkip, bool split);\n\n'
@@ -188,6 +192,10 @@ def patch(root):
     after = before.replace('input.mipSkip_ = mipSkip_;',
                            'input.mipSkip_ = TextureManager::stockBaseMipSkip(qualifiedResourceID_, mipSkip_, stockSplit_);')
     pending[MANAGED] = pending[MANAGED].replace(before, after, 1)
+    edit(STREAMING, '\t\tMF_ASSERT( header.isFlatTexture_ );',
+         '\t\t// Quality selection may open another stream from this archive.\n'
+         '\t\tpStream = NULL;\n\n'
+         '\t\tMF_ASSERT( header.isFlatTexture_ );')
     edit(STREAMING, '\tpEntry->maxAvailableStreamingMip = pEntry->maxAvailableMip - mipSkip;',
          '\tpEntry->maxAvailableStreamingMip = pEntry->maxAvailableMip -\n'
          '\t\tTextureManager::stockBaseMipSkip(pTex->resourceID(), mipSkip,\n'

@@ -43,20 +43,7 @@ struct DDS_HEADER {
     DWORD reserved1[11]; DDS_PIXELFORMAT ddspf; DWORD dwCaps,dwCaps2,dwCaps3,dwCaps4,reserved2;
 };
 static_assert(sizeof(DDS_HEADER)==124,"DDS header layout");
-struct IFileStreamer {
-    std::vector<unsigned char> bytes; size_t offset=0;
-    size_t read(size_t n,void* out) { n=std::min(n,bytes.size()-offset);std::memcpy(out,bytes.data()+offset,n);offset+=n;return n; }
-    size_t getOffset() const {return offset;}
-    bool setOffset(size_t value) {offset=value;return true;}
-};
-using FileStreamerPtr=std::shared_ptr<IFileStreamer>;
-static std::map<std::string,std::vector<unsigned char>> files;
-struct FileSystem {
-    FileStreamerPtr streamFile(const BW::StringRef& name) {
-        auto i=files.find(name);if(i==files.end())return {};
-        auto out=std::make_shared<IFileStreamer>();out->bytes=i->second;return out;
-    }
-};
+@FILESYSTEM@
 struct BWResource {
     static BWResource& instance(){static BWResource v;return v;}
     FileSystem* fileSystem(){static FileSystem v;return &v;}
@@ -267,7 +254,8 @@ static PyObject* settingView(Setting* setting){auto* out=new PyObject;out->label
 
 static void dds(const std::string& name,unsigned width,unsigned height,unsigned mips,unsigned format=D3DFMT_A8R8G8B8) {
     DDS_HEADER h={};h.dwSize=124;h.dwWidth=width;h.dwHeight=height;h.dwMipMapCount=mips;h.ddspf.dwFourCC=format==21?0:format;
-    auto& bytes=files[name];bytes.resize(128);std::memcpy(bytes.data(),&DDS_MAGIC,4);std::memcpy(bytes.data()+4,&h,124);
+    std::vector<unsigned char> bytes(128);std::memcpy(bytes.data(),&DDS_MAGIC,4);std::memcpy(bytes.data()+4,&h,124);
+    BWResource::instance().fileSystem()->add(name,bytes);
 }
 static TextureDetailLevelPtr detail(TextureManager& m,const std::string& name,unsigned lod,bool split,bool compressed=false){
     auto value=std::make_shared<TextureDetailLevel>();auto section=std::make_shared<DataSection>();
@@ -350,6 +338,16 @@ int main(int argc,char** argv){
     detail(m,"absent.dds",1,true);assert(m.stockBaseMipSkip("absent.dds",2,true)==1);
     detail(m,"short.c.dds",1,true);dds("short.c.dds",2,2,2,D3DFMT_DXT1);dds("short_hd.c.dds",4,4,1,D3DFMT_DXT1);
     assert(m.stockBaseMipSkip("short.c.dds",2,true)==1);
+    // A failed header read also relinquishes its archive stream, so later
+    // texture requests in the same package can still open and read normally.
+    BWResource::instance().fileSystem()->add("broken.dds",std::vector<unsigned char>(16));
+    assert(m.stockBaseMipSkip("broken.dds",2,false)==2);
+    StreamingTexture broken("broken.dds",2);broken.detail_=detail(m,"broken.dds",1,false);
+    TextureStreamingManager brokenManager;
+    TextureStreamingManager::StreamingTextureLoadTask brokenTask;
+    brokenTask.pManager_=&brokenManager;brokenTask.requestEntry_.pTexture=&broken;
+    assert(!brokenTask.createTargetTexture());
+    assert(m.stockBaseMipSkip("plain.dds",2,false)==1);
     // Medium/low share mipSkip=2. Compression still requires a reload, with
     // lookup through the canonical cache key in both directions.
     auto compressed=detail(m,"compressed.dds",1,false,true);detail(m,"ordinary.dds",1,false);

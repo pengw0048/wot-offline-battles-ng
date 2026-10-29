@@ -3466,6 +3466,12 @@ texture-quality owner retains the original four option indices and couples
 HIGH/MEDIUM/LOW to their authored mip, compression and filtering rules. Managed
 and streamed loads account for the authored split HD slot; reload tasks retain
 that resource policy without querying the detail cache from background threads.
+Header-only reads release their archive streams before querying another mip
+chain. The SDK ZIP streamer owns its archive mutex until destruction; retaining
+the base stream while reopening that archive triggered `!gone_` during minimum-
+quality hangar loading. A first-chance Windows dump identified the streaming
+texture creation path. Tests execute the actual ZIP-stream and mutex owners and
+reproduce both retained-stream failures independently.
 Independent SDK compression/filter controls are excluded from the original
 settings view because this client owns both through texture quality. MAX remains
 unsupported until HD top-mip assembly is implemented, including forced saved or
