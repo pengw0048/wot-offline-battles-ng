@@ -125,7 +125,16 @@ class OfflineForkPreparationTests(unittest.TestCase):
         resources = self.source / PINNED_RESOURCES
         pinned = {p.relative_to(resources) for p in resources.rglob('*') if p.is_file()}
         shipped = {p.relative_to(runtime) for p in runtime.rglob('*') if p.is_file()}
-        self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH, ROTATION_PATH})
+        native_modules = {
+            'native_bot_runtime.py': 'stock_native_bot_consumer.py',
+            'stock_native_world_snapshot.py': 'stock_native_world_snapshot.py',
+            'stock_native_destructible_present.py': 'stock_native_destructible_present.py',
+        }
+        self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH, ROTATION_PATH} |
+                         {ROTATION_PATH.with_name(name) for name in native_modules})
+        for name, source_name in native_modules.items():
+            self.assertEqual((runtime / ROTATION_PATH.with_name(name)).read_bytes(),
+                             (ROOT / 'bigworld' / source_name).read_bytes())
         self.assertFalse([p for p in shipped if p.suffix in ('.pyc', '.pyo', '.pyd', '.dll')])
         adapted = {relative.relative_to(PINNED_RESOURCES) for relative in ADAPTERS}
         for relative in pinned:

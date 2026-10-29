@@ -29,6 +29,8 @@ struct StockTreeSceneLoader::State : StockDestructibleObjects
     bool transform(uint32 index,const Matrix& world,float wind,std::string& error)override;
     // The original compiled-tree destroy/restore type-handler slots are empty.
     bool destroy(uint32,bool,bool,bool,std::string&)override{return bound;}
+    bool destroyNative(uint32,bool,bool,bool,std::string&,
+        const std::function<bool(uint32)>&)override{return bound;}
     bool restore(std::string&)override{return bound;}
 };
 

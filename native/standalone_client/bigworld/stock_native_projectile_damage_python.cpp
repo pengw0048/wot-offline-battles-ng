@@ -1,0 +1,148 @@
+#include "stock_native_projectile_damage_python.hpp"
+#include "stock_native_bot_python.hpp"
+#include "stock_native_bot_descriptor.hpp"
+#include "stock_native_bot_resource_lifecycle.hpp"
+#include <algorithm>
+namespace stock_native_projectile_damage {
+namespace p=stock_native_bot_python;
+namespace {
+const char* devices[]={"engineHealth","ammoBayHealth","fuelTankHealth","radioHealth","gunHealth","turretRotatorHealth","surveyingDeviceHealth","leftTrackHealth","rightTrackHealth"};
+const char* stun_factors[]={"stunFactorEnginePower","stunFactorVehicleRotationSpeed","stunFactorTurretTraverse","stunFactorViewDistance","stunFactorMaxSpeed","stunFactorReloadTime","stunFactorAimingTime","stunFactorVehicleMovementShotDispersion","stunFactorVehicleRotationShotDispersion","stunFactorTurretRotationShotDispersion","stunFactorMinShotDispersion"};
+p::Ref call1(PyObject* callable,PyObject* arg){return p::Ref(PyObject_CallFunctionObjArgs(callable,arg,nullptr));}
+const char* stun_fields[]={"stunRadius","stunDuration","stunFactor","guaranteedStunDuration","damageDurationCoeff","guaranteedStunEffect","damageEffectCoeff"};
+p::Ref fallbackValue(PyObject* source,PyObject* fallback,const char* name){auto value=p::value(source,name);return value.get()==Py_None?p::value(fallback,name):std::move(value);}
+void copyField(PyObject* source,PyObject* target,const char* name){auto v=p::value(source,name);if(v.get()!=Py_None)p::set(target,name,v);}
+p::Ref legacyShot(PyObject* source){
+ if(PyDict_Check(source))return p::retain(source);
+ auto shot=p::dict(),source_shell=p::value(source,"shell");
+ auto shell=PyDict_Check(source_shell.get())?p::retain(source_shell.get()):p::dict();
+ if(!PyDict_Check(source_shell.get())) {
+  auto type=p::value(source_shell.get(),"type");
+  const char* fields[]={"kind","caliber","damage","explosionRadius","explosionDamageFactor","explosionDamageAbsorptionFactor","explosionEdgeDamageFactor","compactDescr","name"};
+  for(const char* name:fields){auto v=fallbackValue(source_shell.get(),type.get(),name);if(v.get()!=Py_None)p::set(shell.get(),name,v);}
+  if(!p::field(shell.get(),"kind")){auto kind=p::value(type.get(),"name");if(kind.get()!=Py_None)p::set(shell.get(),"kind",kind);}
+  copyField(source_shell.get(),shell.get(),"stun");
+ }
+ p::set(shot.get(),"shell",shell);
+ PyObject* raw_power=PyObject_GetAttrString(source,"piercingPower");
+ if(!raw_power){if(!PyErr_ExceptionMatches(PyExc_AttributeError))throw p::Error("Projectile power read failed");PyErr_Clear();p::Ref pair(Py_BuildValue("(dd)",100.,100.));p::set(shot.get(),"piercingPower",pair);}else{p::Ref power(raw_power);p::set(shot.get(),"piercingPower",power);}
+ PyObject* raw_maximum=PyObject_GetAttrString(source,"maxDistance");
+ if(!raw_maximum){if(!PyErr_ExceptionMatches(PyExc_AttributeError))throw p::Error("Projectile range read failed");PyErr_Clear();p::set(shot.get(),"maxDistance",p::number(0.));}else{p::Ref maximum(raw_maximum);p::set(shot.get(),"maxDistance",maximum);}
+ return shot;
+}
+double relaxedNumber(PyObject* value){p::Ref numeric(PyNumber_Float(value));return p::scalar(numeric.get());}
+double heFactor(PyObject* shell,const char* name,double fallback,double maximum=0.){
+ try{auto value=p::value(shell,name);if(value.get()==Py_None)return fallback;double n=relaxedNumber(value.get());return n>0.&&(!maximum||n<=maximum)?n:fallback;}catch(const std::exception&){PyErr_Clear();return fallback;}
+}
+double roundSix(double value){
+ if(value==0.)return value;
+ int exponent=0;const double fraction=std::frexp(value,&exponent);
+ const std::uint64_t significand=std::uint64_t(std::ldexp(fraction,53));
+ const std::uint64_t lower=(significand&0xffffffffu)*15625u;
+ const std::uint64_t upper=(significand>>32)*15625u;
+ const std::uint64_t low=lower+(upper<<32),high=(upper>>32)+(low<lower?1u:0u);
+ const int shift=47-exponent;std::uint64_t integer=0;
+ if(shift>0&&shift<64){integer=(low>>shift)|(high<<(64-shift));if((low&((std::uint64_t(1)<<shift)-1))>=(std::uint64_t(1)<<(shift-1)))++integer;}
+ else if(shift==64)integer=high+(low>=(std::uint64_t(1)<<63));
+ else if(shift>64&&shift<128){const int bits=shift-64;integer=high>>bits;if((high&((std::uint64_t(1)<<bits)-1))>=(std::uint64_t(1)<<(bits-1)))++integer;}
+ return double(integer)/1.e6;
+}
+StunSpec readStun(PyObject* value){
+ if(PyDict_Check(value)&&PyDict_Size(value)!=7)throw p::Error("invalid stun shell fields");
+ double v[7];for(int i=0;i<7;++i){auto item=p::value(value,stun_fields[i]);if(item.get()==Py_None||PyBool_Check(item.get())||!(PyFloat_Check(item.get())
+#if PY_MAJOR_VERSION < 3
+ ||PyInt_Check(item.get())
+#endif
+ ||PyLong_Check(item.get())))throw p::Error("invalid stun number");
+  double n=p::scalar(item.get()),high=i==0?100.:i==1?900.:1.;if(n<0.||n>high)throw p::Error("invalid stun number");v[i]=roundSix(n);}
+ StunSpec out;out.radius=v[0];out.duration=v[1];out.factor=v[2];out.guaranteed_duration=v[3];out.damage_duration=v[4];out.guaranteed_effect=v[5];out.damage_effect=v[6];return out;
+}
+double optionalNumber(PyObject* o,const char* name,double fallback){return p::numeric(o,name,fallback);}
+std::optional<double> positiveComponent(PyObject* value,Py_ssize_t index){
+ if(!value||value==Py_None)return {};
+ const char* keys[]={"x","y","z"};
+ PyObject* raw=nullptr;
+ if(PyDict_Check(value)){raw=PyDict_GetItemString(value,keys[index]);Py_XINCREF(raw);}
+ else {raw=PySequence_GetItem(value,index);if(!raw){PyErr_Clear();raw=PyObject_GetAttrString(value,keys[index]);}}
+ if(!raw){PyErr_Clear();return {};}
+ p::Ref part(raw);
+ try {if(PyBool_Check(part.get()))return {};const double n=relaxedNumber(part.get());return n>0.?std::optional<double>(n):std::nullopt;}
+ catch(const std::exception&){PyErr_Clear();return {};}
+}
+void readTrackBounds(PyObject* chassis,TargetDescriptor& out){
+ auto carrying=p::value(chassis,"topRightCarryingPoint"),sizes=p::value(chassis,"drivingWheelsSizes");
+ try {
+  auto half=positiveComponent(carrying.get(),1),front=positiveComponent(sizes.get(),0),rear=positiveComponent(sizes.get(),1);
+  if(!half||!front||!rear)return;
+  const double largest=std::max({*half,*front,*rear});
+  const double a=*half/largest,b=*front/largest,c=*rear/largest;
+  if(b+c>=2.*a){const double split=*half*((c-b)/(b+c));out.front_bound=split;out.rear_bound=split;}
+  else {out.front_bound=*half-*front;out.rear_bound=*rear-*half;}
+ } catch(const std::exception&){PyErr_Clear();}
+}
+}
+bool readShotDescriptor(PyObject* source,ShotDescriptor& output){try{
+ auto shot=legacyShot(source),shell=p::value(shot.get(),"shell");if(!PyDict_Check(shell.get()))throw p::Error("Projectile shell is invalid");
+ ShotDescriptor out;out.shot.deadeye=p::truth(source,"deadeye");auto kind=p::value(shell.get(),"kind");out.shot.shell.kind=kind.get()==Py_None?"ARMOR_PIERCING":p::string(kind.get());out.shot.shell.caliber=optionalNumber(shell.get(),"caliber",100.);
+ auto piercing=p::value(shot.get(),"piercingPower");if(piercing.get()==Py_None)throw p::Error("Projectile piercing descriptor unavailable");auto near=p::item(piercing.get(),0),far=p::item(piercing.get(),1);
+ out.shot.shell.piercing_near=p::scalar(near.get());out.shot.shell.piercing_far=p::scalar(far.get());out.shot.shell.maximum_distance=optionalNumber(shot.get(),"maxDistance",0.);
+ auto damage=p::value(shell.get(),"damage");if(damage.get()!=Py_None){if(PySequence_Check(damage.get())&&!PyString_Check(damage.get())){auto a=p::item(damage.get(),0);out.shot.shell.damage=p::scalar(a.get());const auto count=PySequence_Size(damage.get());if(count<0)throw p::Error("Projectile damage sequence invalid");if(count>1){auto b=p::item(damage.get(),1);out.shot.device_damage_mean=p::scalar(b.get());}}else out.shot.shell.damage=p::scalar(damage.get());}
+ if(!out.shot.device_damage_mean){auto d=p::value(shell.get(),"deviceDamage");if(d.get()!=Py_None){if(PyTuple_Check(d.get())||PyList_Check(d.get())){if(p::size(d.get())>0){auto first=p::item(d.get(),0);out.shot.device_damage_mean=p::scalar(first.get());}}else out.shot.device_damage_mean=p::scalar(d.get());}}
+ out.shot.shell.explosion_damage_factor=heFactor(shell.get(),"explosionDamageFactor",.5);
+ out.shot.shell.explosion_absorption_factor=heFactor(shell.get(),"explosionDamageAbsorptionFactor",1.3);
+ out.shot.edge_damage_factor=heFactor(shell.get(),"explosionEdgeDamageFactor",.15,1.);
+ p::Ref rules(PyImport_ImportModule("gui.mods.offline_lan_0922.combat_rules"));auto overrides=p::value(rules.get(),"_OFFH_HE_TUNING_OVERRIDES");
+ if(PyDict_Check(overrides.get())){auto f=p::value(overrides.get(),"splash_fraction"),a=p::value(overrides.get(),"armor_factor");if(f.get()!=Py_None)out.shot.shell.explosion_damage_factor=p::scalar(f.get());if(a.get()!=Py_None)out.shot.shell.explosion_absorption_factor=p::scalar(a.get());}
+ double radius=0.;try{auto v=p::value(shell.get(),"explosionRadius");if(v.get()!=Py_None)radius=relaxedNumber(v.get());}catch(const std::exception&){PyErr_Clear();}
+ if(radius<=0.){double caliber=0.;try{auto v=p::value(shell.get(),"caliber");if(v.get()!=Py_None)caliber=relaxedNumber(v.get());}catch(const std::exception&){PyErr_Clear();}radius=caliber>0.?caliber*caliber/5555.:0.;}out.shot.explosion_radius=radius;
+ auto stun=p::value(shell.get(),"stun");if(stun.get()!=Py_None){auto v=readStun(stun.get());out.stun=v;out.shot.stun=v;}
+ output=std::move(out);return true;
+ }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readLaunchDescriptor(PyObject* source,LaunchDescriptor& output){try{
+ auto raw=p::dict(),shell=p::dict(),source_shell=p::value(source,"shell"),shell_type=p::value(source_shell.get(),"type");
+ const char* shot_fields[]={"speed","gravity","maxDistance","piercingPower"};for(const char* name:shot_fields)copyField(source,raw.get(),name);
+ const char* shell_fields[]={"kind","caliber","damage","explosionRadius","explosionDamageFactor","explosionDamageAbsorptionFactor","explosionEdgeDamageFactor"};for(const char* name:shell_fields)copyField(source_shell.get(),shell.get(),name);
+ if(!p::field(shell.get(),"kind")){auto kind=p::value(shell_type.get(),"name");if(kind.get()!=Py_None&&p::flag(kind.get()))p::set(shell.get(),"kind",kind);}
+ if(!p::field(shell.get(),"explosionRadius")){auto radius=p::value(shell_type.get(),"explosionRadius");if(radius.get()!=Py_None)p::set(shell.get(),"explosionRadius",radius);else p::set(shell.get(),"explosionRadius",p::number(0.));}
+ auto kind=p::value(shell.get(),"kind");if(kind.get()!=Py_None&&p::string(kind.get())=="HIGH_EXPLOSIVE"){
+  const char* names[]={"explosionDamageFactor","explosionDamageAbsorptionFactor","explosionEdgeDamageFactor"};const double defaults[]={.5,1.3,.15};
+  for(int i=0;i<3;++i){auto value=fallbackValue(source_shell.get(),shell_type.get(),names[i]);auto selected=p::dict();if(value.get()!=Py_None)p::set(selected.get(),names[i],value);p::set(shell.get(),names[i],p::number(heFactor(selected.get(),names[i],defaults[i],i==2?1.:0.)));}
+  copyField(source_shell.get(),shell.get(),"stun");
+ }
+ p::set(raw.get(),"shell",shell);
+ if(!PyDict_Check(raw.get()))throw p::Error("Projectile launch projection invalid");if(!PyDict_Check(shell.get()))throw p::Error("Projectile launch shell invalid");
+ LaunchDescriptor next;next.speed=p::numeric(raw.get(),"speed");next.gravity=p::numeric(raw.get(),"gravity");next.maximum=p::numeric(raw.get(),"maxDistance");next.raw_radius=p::numeric(shell.get(),"explosionRadius");
+ next.explosion_factors=p::field(shell.get(),"explosionDamageFactor")&&p::field(shell.get(),"explosionDamageAbsorptionFactor")&&p::field(shell.get(),"explosionEdgeDamageFactor");
+ ShotDescriptor shot;if(!readShotDescriptor(raw.get(),shot))return false;next.shot=std::move(shot.shot);output=std::move(next);return true;
+ }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readTargetDescriptor(PyObject* descriptor,PyObject* critical_descriptor,TargetDescriptor& output,PyObject* accepted_critical_profile){try{
+ if(!critical_descriptor||critical_descriptor==Py_None)critical_descriptor=descriptor;
+ TargetDescriptor out;PyObject* config_module=PyImport_ImportModule("_constants");if(config_module){p::Ref module(config_module);auto options=p::value(module.get(),"CONFIG_OPTIONS");if(PyDict_Check(options.get())){out.critical.module_damage=p::truth(options.get(),"module_damage",true);out.critical.crew_damage=p::truth(options.get(),"crew_damage",true);out.critical.internal_module_damage=p::truth(options.get(),"internal_module_damage",true);}}else PyErr_Clear();
+ p::Ref track(PyImport_ImportModule("gui.mods.offline_lan_0922.track_damage"));
+ for(const char* name:devices){const auto pool=stock_native_bot_descriptor::devicePool(critical_descriptor,name);if(pool.maximum)out.critical.maxima[name]=*pool.maximum;}
+ if(accepted_critical_profile&&accepted_critical_profile!=Py_None){if(!PyDict_Check(accepted_critical_profile))throw p::Error("Projectile critical profile invalid");auto rows=p::value(accepted_critical_profile,"devices");if(!PyList_Check(rows.get())&&!PyTuple_Check(rows.get()))throw p::Error("Projectile critical pools invalid");out.critical.maxima.clear();for(Py_ssize_t i=0;i<p::size(rows.get());++i){auto row=p::item(rows.get(),i),name=p::value(row.get(),"name");out.critical.maxima[p::string(name.get())]=p::numeric(row.get(),"max_hp");}}
+ auto engine=p::value(descriptor,"engine");out.critical.engine_fire_chance=p::numeric(engine.get(),"fireStartingChance",.15);out.critical.min_engine_fire_damage=p::numeric(engine.get(),"minFireStartingDamage",21.);
+ auto chassis=p::value(descriptor,"chassis");readTrackBounds(chassis.get(),out);
+ auto bulk_fn=p::value(track.get(),"bulk_health_factor"),bulk=call1(bulk_fn.get(),descriptor);if(bulk.get()!=Py_None)out.bulk_factor=p::scalar(bulk.get());
+ out.crew_roster=stock_native_bot_descriptor::crewRoster(descriptor);
+ auto misc=p::value(descriptor,"miscAttrs");try{out.spall=std::max(1.,p::numeric(misc.get(),"antifragmentationLiningFactor",1.));}catch(const std::exception&){PyErr_Clear();out.spall=1.;}out.stun_resistance_duration=p::numeric(misc.get(),"stunResistanceDuration");out.stun_resistance_effect=p::numeric(misc.get(),"stunResistanceEffect");
+ output=std::move(out);return true;
+ }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readProjectileTargetState(PyObject* battle,PyObject* record,PyObject* entity,const TargetDescriptor& descriptor,Target& output){try{
+ if(!record||!PyDict_Check(record)||!entity||entity==Py_None)throw p::Error("Projectile target record invalid");auto state=p::value(record,"state"),kind=p::value(record,"kind");if(!PyDict_Check(state.get()))throw p::Error("Projectile target state invalid");
+ const auto type=p::string(kind.get());if(type!="bot"&&type!="player")throw p::Error("Projectile target kind invalid");Target out;out.identity={type=="player",p::integral(record,"network_id")};out.config=descriptor.critical;out.spall=descriptor.spall;out.crew_roster=descriptor.crew_roster;
+ out.track_front=descriptor.front_bound;out.track_rear=descriptor.rear_bound;out.track_bulk=descriptor.bulk_factor;out.stun_config.resist_duration=descriptor.stun_resistance_duration;out.stun_config.resist_effect=descriptor.stun_resistance_effect;
+ out.critical_target_base_revision=p::integral(state.get(),type=="bot"?"combat_base_revision":"critical_base_revision",-1);out.critical_target_ack_sequence=p::integral(state.get(),type=="bot"?"combat_ack_seq":"critical_ack_seq",-1);
+ auto field=[&](const char* name){return p::Ref(stock_native_bot::readNativeEntityField(battle,entity,name));};auto native_health=field("health");out.config.health=int(p::wide(native_health.get()));auto hp=field("devices_hp"),destroyed=field("_destroyed_devices"),yellow=field("_critical_devices"),crew=field("_crew_ko");out.critical.fire=p::flag(field("is_on_fire").get());out.critical.ammo_rack_death=p::flag(field("_ammo_rack_death").get());
+ auto names=[](PyObject* object){std::set<std::string> result;if(object==Py_None)return result;if(!PyList_CheckExact(object)&&!PyTuple_CheckExact(object)&&Py_TYPE(object)!=&PySet_Type&&Py_TYPE(object)!=&PyFrozenSet_Type)throw p::Error("Projectile critical list invalid");p::Ref iter(PyObject_GetIter(object));while(auto* value=PyIter_Next(iter.get())){p::Ref v(value);result.insert(p::string(value));}if(PyErr_Occurred())throw p::Error("Projectile critical list invalid");return result;};
+ auto dead=names(destroyed.get()),damaged=names(yellow.get());out.critical.crew_ko=names(crew.get());if(hp.get()!=Py_None){if(!PyDict_Check(hp.get()))throw p::Error("Projectile device state invalid");Py_ssize_t i=0;PyObject *key=nullptr,*value=nullptr;while(PyDict_Next(hp.get(),&i,&key,&value)){const auto name=p::string(key);auto& d=out.critical.devices[name];d.hp=p::scalar(value);const auto m=descriptor.critical.maxima.find(name);if(m!=descriptor.critical.maxima.end())d.maximum=m->second;}}
+ for(const auto& name:dead)out.critical.devices[name].destroyed=true;for(const auto& name:damaged)if(!dead.count(name))out.critical.devices[name].critical=true;
+ auto equipment=p::value(state.get(),"equipment_states");if(equipment.get()!=Py_None){for(Py_ssize_t i=0;i<p::size(equipment.get());++i){auto row=p::item(equipment.get(),i);if(!PyDict_Check(row.get()))continue;auto contract=p::value(row.get(),"equipment");if(!PyDict_Check(contract.get()))continue;auto kind_value=p::value(contract.get(),"kind");const auto equipment_kind=p::string(kind_value.get());const auto uses=p::integral(row.get(),"usesLeft",-1);if(equipment_kind=="extinguisher")out.config.fire_chance_factor*=std::max(0.,p::numeric(contract.get(),"fireStartingChanceFactor",1.));else if(equipment_kind=="medkit"&&uses!=0)out.config.medkit_bonus+=p::numeric(contract.get(),"bonusValue");if(uses!=0){out.stun_config.resist_duration+=p::numeric(contract.get(),"stunResistanceDuration");out.stun_config.resist_effect+=p::numeric(contract.get(),"stunResistanceEffect");}}}
+ out.stun_config.resist_duration=std::max(0.,std::min(1.,out.stun_config.resist_duration));out.stun_config.resist_effect=std::max(0.,std::min(1.,out.stun_config.resist_effect));
+ auto effective=p::value(state.get(),"effective_params"),crew_data=p::value(effective.get(),"crew"),dynamic=p::value(crew_data.get(),"dynamic_spotting"),roster=p::value(dynamic.get(),"crew"),states=p::value(dynamic.get(),"states");std::uint64_t mask=0;if(roster.get()!=Py_None&&p::size(roster.get())<=63)for(Py_ssize_t i=0;i<p::size(roster.get());++i){auto name=p::item(roster.get(),i);if(out.critical.crew_ko.count(p::string(name.get())))mask|=std::uint64_t(1)<<i;}
+ if(PyDict_Check(states.get())){const auto key=std::to_string(mask)+":"+(out.critical.fire?"1":"0");auto* row=PyDict_GetItemString(states.get(),key.c_str());if(row){auto factors=p::value(row,"battle_factors");out.config.fire_chance_factor*=p::numeric(factors.get(),"engine_fire_factor",1.);}}
+ output=std::move(out);return true;
+ }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readStunConfig(PyObject* config,StunConfig& output){try{StunConfig out;out.minimum_duration=p::numeric(config,"minStunDuration");for(std::size_t i=0;i<out.factors.size();++i)out.factors[i]=p::numeric(config,stun_factors[i]);output=out;return true;
+ }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+}

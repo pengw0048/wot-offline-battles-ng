@@ -3976,3 +3976,43 @@ x86 functions matched 8000 seeded cases without external math stubs, excluding
 NaN payload comparisons. The ordinary client descriptor's xphysics fields are
 only a subset of the complete native configuration; a complete loader and the
 remaining engine/contact constraints are still required for driving.
+
+### Persistent native worker simulation
+
+The independent client's worker adapter installs one persistent
+`offline_bot_runtime_native` owner for the fixed `144619f6` gameplay runtime.
+It retains actor, navigation, contact, weapon, projectile and destructible
+state across callbacks. The native owner preserves sequential actor updates,
+the original elapsed-time bank and burst edges, followed by vertical/contact
+settlement and publication. It does not increase the original control rate.
+The visible client's own simulation and the LAN server retain their existing
+owners.
+
+The prepared `native_bot_runtime.py` is a lifecycle and transport boundary.
+The worker's planning, motion/rotation proofs, vertical integration, spotting,
+aiming, fire admission, projectile advancement and terminal calculation,
+human-contact validation, detached-turret simulation, and Bot pose publication
+run in C++. Native snapshot readers use accepted plain data and exact mounted
+descriptors. The hidden worker explicitly uses `RemoteVehicle`; its matrix,
+filter speed and gear updates must not be confused with the visible client's
+`NativeRemoteState` path. Accepted projectile outputs remain immutable until
+transport acknowledgement, and a failed operation is contained to its actor
+or event.
+
+The retained Python calls are explicit resource/lifecycle boundaries: stock
+#1513 crew and equipment attribute producers at installation, cold resource
+catalog/XML readers, and the stock destructible effect/lifetime interfaces.
+The latter preserve the original effect-before-removal order and are counted
+separately from simulation callbacks. They do not perform collision admission
+or body integration. Unsupported or unready geometry cannot grant a physical
+result.
+
+The `test_stock_native*` host fixtures compare fixed-source CPython 2.7 laws
+with the native implementations, including numerical edges, lifecycle changes,
+transport retries and forbidden-callback traps. Supply
+`WOT_FORK_0101_SOURCE`, `WOT_GAMEPLAY_SOURCE` and the audit Python 2.7 runtime
+to run the differential suite; public source-only CI does not imply that these
+resource-dependent comparisons ran. Windows build and live-profile evidence
+remain separate from these host checks. Neither the port nor its fixtures
+establish unexercised vehicle/map behavior or reconstruct the complete retail
+native physics engine.

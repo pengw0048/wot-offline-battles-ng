@@ -217,6 +217,18 @@ inline float boundingRadiusSquared( const Point & minimum, const Point & maximum
 BW_BEGIN_NAMESPACE
 class BSPTree;
 class Model;
+class Vector3;
+
+struct StockBspSegmentHit {
+    float distance=0.f,angleCosine=0.f;
+    std::uint32_t material=0;
+    wot::stock_bsp::Point normal{};
+};
+// Native consumers retain the Model that owns the tree. The query uses the
+// same collector and ordering as WGBspCollisionModel.localHitTest, without a
+// Python tuple or callback at the per-ray boundary.
+std::vector<StockBspSegmentHit> stockBspSegment(const BSPTree &,
+    const Vector3 & start,const Vector3 & end);
 
 // Native owners of a WGBspCollisionModel for consumers outside Python, such as
 // wg_createHKAttachment (00653540). Both return NULL for any other object.

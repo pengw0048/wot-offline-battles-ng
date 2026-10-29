@@ -44,6 +44,10 @@ _spec = importlib.util.spec_from_file_location(
     'stock_motion_rotation_bindings', Path(__file__).with_name('stock_motion_rotation_bindings.py'))
 rotation_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rotation_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_bot_bindings', Path(__file__).with_name('stock_native_bot_bindings.py'))
+bot_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bot_bindings)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -227,7 +231,9 @@ ADAPTERS.update((NATIVE_MATH_PATH.with_name(name), query_bindings.ADAPTERS[name]
 ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
     lambda source: catalog_stream.sensor(
         tree_registration.sensor(query_bindings.sensor(source))))
-ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = rotation_bindings.runtime
+ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = (
+    lambda source: bot_bindings.battle(rotation_bindings.runtime(source)))
+ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
 
 
 def stage_runtime(source, staged):
@@ -256,6 +262,16 @@ def stage_runtime(source, staged):
         if (runtime / path).exists():
             raise ValueError('The pinned payload already owns the independent entry')
         shutil.copyfile(source_path, runtime / path)
+    native_modules = (
+        ('stock_native_bot_consumer.py', 'native_bot_runtime.py'),
+        ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
+        ('stock_native_destructible_present.py', 'stock_native_destructible_present.py'),
+    )
+    for source_name, module_name in native_modules:
+        output = runtime / ROTATION_PATH.with_name(module_name)
+        if output.exists():
+            raise ValueError('The pinned payload already owns the native Bot entry')
+        shutil.copyfile(Path(__file__).with_name(source_name), output)
     (staged / 'offline-res.json').write_text(json.dumps({
         'revision': PINNED_COMMIT,
         'source': PINNED_RESOURCES.as_posix(),
@@ -263,7 +279,7 @@ def stage_runtime(source, staged):
         'entry': ENTRY_PATH.as_posix(),
         'services': SERVICES_PATH.as_posix(),
         'rotation': ROTATION_PATH.as_posix(),
-        'files': len(files) + 3,
+        'files': len(files) + 3 + len(native_modules),
     }, indent=2, sort_keys=True) + '\n')
 
 
@@ -332,6 +348,17 @@ def stage_replay_package(source, staged):
     shutil.copyfile(package, output)
 
 
+def stage_native_drive_law(native):
+    """Expose the fixed release's pure drive law without its Python binding."""
+    source = (native / 'offline_release_drive_python.inc').read_text()
+    marker = 'PyObject *WOT_CDECL release_drive(PyObject *,PyObject *args) {'
+    if source.count(marker) != 1 or source.count('namespace release_drive_law {') != 1:
+        raise ValueError('Pinned release drive law boundary changed')
+    law = source.split(marker, 1)[0]
+    (native / 'offline_release_drive_law.hpp').write_text(
+        '#pragma once\n#include <algorithm>\n#include <cmath>\n' + law)
+
+
 def prepare(source, destination):
     source, destination = Path(source), Path(destination)
     identity = json.loads((source / 'fork-source.json').read_text(encoding='utf-8-sig'))
@@ -348,6 +375,7 @@ def prepare(source, destination):
             if not (native / name).is_file():
                 raise ValueError('Missing pinned numerical source: ' + name)
         patch(staged, rotation_query=True)
+        stage_native_drive_law(native)
         stage_runtime(source, staged)
         stage_replay_package(source, staged)
         # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().

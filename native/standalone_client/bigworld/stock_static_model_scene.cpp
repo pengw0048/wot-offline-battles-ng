@@ -93,6 +93,8 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>,
     bool snapshot(uint32 index,StockDestructibleSnapshot& output)const override;
     bool transform(uint32 index,const Matrix& world,float wind,std::string& error)override;
     bool destroy(uint32 index,bool animate,bool shot,bool havok,std::string& error)override;
+    bool destroyNative(uint32 index,bool animate,bool shot,bool havok,std::string& error,
+        const std::function<bool(uint32)>& child)override;
     bool restore(std::string& error)override;
     bool refresh(const std::vector<uint32>& changed,std::string& error);
     const void* soundMapping = NULL;
@@ -233,6 +235,12 @@ bool StockStaticModelSceneLoader::State::transform(uint32 index,const Matrix& wo
 
 bool StockStaticModelSceneLoader::State::destroy(uint32 index,bool animate,bool shot,bool havok,std::string& error)
 {
+    return destroyNative(index,animate,shot,havok,error,{});
+}
+
+bool StockStaticModelSceneLoader::State::destroyNative(uint32 index,bool animate,bool shot,bool havok,std::string& error,
+    const std::function<bool(uint32)>& nativeChild)
+{
     if(!bound){error="The compiled destructible mapping retired";return false;}
     wot::StockDestructibleGeometryChanges changes;
     bool publishedUpdates=false;
@@ -249,7 +257,8 @@ bool StockStaticModelSceneLoader::State::destroy(uint32 index,bool animate,bool 
         for(const auto* values:{&changes.added,&changes.removed,&changes.fallingCandidates})for(const auto index:*values)
             instances[index].active=binary.active(index,mappingMask);
         instances[child].active=binary.active(child,mappingMask);
-        playStockModuleDestructionAnimation(destructibleOwner,soundMapping,child,shot,havok);
+        if(nativeChild) {if(!nativeChild(child))return false;}
+        else playStockModuleDestructionAnimation(destructibleOwner,soundMapping,child,shot,havok);
         return bound;
     };
     if(!wot::destroyStockCompiledDestructible(binary,index,animate,changes,error,beforeFalling))return false;

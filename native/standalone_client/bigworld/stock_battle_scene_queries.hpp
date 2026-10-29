@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cstdmf/bw_namespace.hpp"
+#include "cstdmf/bw_string.hpp"
 #include "math/vector3.hpp"
 #include "math/vector4.hpp"
 #include "physics2/worldtri.hpp"
@@ -64,6 +65,21 @@ typedef std::function< bool( uint32 materialKind, uint32 collisionFlags, uint64 
 StockSegmentResult collideStockSegmentFiltered( SpaceID spaceID,
     const Vector3 & start, const Vector3 & end, WorldTriangle::Flags skipFlags,
     const StockNativeSegmentFilter & filter, StockSegmentHit & hit );
+
+struct StockMaterialHit
+{
+    Vector3 point, normal;
+    uint32 materialKind = 0, chunkID = 0;
+    uint16 itemIndex = 0;
+    BW::string filename;
+    StockMaterialHit() : point(0.f,0.f,0.f), normal(0.f,0.f,0.f) {}
+};
+// The broken predicate has the original material query's rejection polarity.
+// Its filename is the previously accepted filename, as in #1513 f6124e.
+using StockNativeBrokenFilter = std::function<bool(uint32,uint16,uint32,const BW::string&)>;
+StockSegmentResult stockMaterialNearPoint( SpaceID spaceID,
+    const Vector3 & start, const Vector3 & end, const Vector3 & point,
+    const StockNativeBrokenFilter & broken, StockMaterialHit & hit );
 
 // The native f642b0 query for native owners such as PyBallisticsSimulator.
 // False for no surface, a zero-length segment, a missing or cleared space and

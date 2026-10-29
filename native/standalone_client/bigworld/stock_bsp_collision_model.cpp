@@ -128,6 +128,25 @@ PyObject * missingTree( const char * method )
 }
 }
 
+std::vector<StockBspSegmentHit> stockBspSegment(const BSPTree & tree,
+    const Vector3 & start,const Vector3 & end)
+{
+    Vector3 direction=end-start;direction.normalise();
+    CollideSegmentTriangleCollector collector(start,direction,false);
+    CollisionState state(collector);
+    collideSegment(tree,start,end,Matrix::identity,Matrix::identity,state);
+    std::vector<StockBspSegmentHit> result;
+    result.reserve(collector.hits().size());
+    for(const auto & raw:collector.hits()) {
+        Vector3 normal=toVector3(raw.normal);normal.normalise();
+        StockBspSegmentHit hit;hit.distance=raw.distance;hit.material=raw.materialKind;
+        hit.normal=toPoint(normal);
+        hit.angleCosine=wot::stock_bsp::facedCosine(hit.normal,toPoint(direction));
+        result.push_back(hit);
+    }
+    return result;
+}
+
 /**
  *	#1513 WGBspCollisionModel: the BSP of one cached Model, queried in that
  *	model's own coordinates. Callers transform world points before querying.

@@ -270,6 +270,14 @@ public:
         D3DXVec3Normalize( &direction_, &direction_ );
     }
 
+    MaterialNearPointQuery( const ClientSpacePtr & space, const Vector3 & start,
+        const Vector3 & end, const Vector3 & point,
+        const StockNativeBrokenFilter & broken ) :
+        MaterialNearPointQuery(space,start,end,point,PyObjectPtr())
+    {
+        nativeBroken_ = &broken;
+    }
+
     bool useHighestAvailableLod() override { return true; }
 
     int operator()( const CollisionObstacle & obstacle,
@@ -293,9 +301,15 @@ public:
         {
             // Damaged material, or no callback: record the kind only. The caller
             // uses this even if no surface was accepted (f613ee).
-            if (!broken_ || kind >= 87) { kind_ = kind; return COLLIDE_ALL; }
+            if ((!broken_ && (!nativeBroken_ || !*nativeBroken_)) || kind >= 87)
+            { kind_ = kind; return COLLIDE_ALL; }
             readStockObstacleFilename( obstacle, filename );
             if (PyErr_Occurred()) { failed_ = true; return COLLIDE_STOP; }
+            bool reject = true;
+            if (nativeBroken_)
+                reject = (*nativeBroken_)(chunk,uint16(item),kind,filename_);
+            else
+            {
             PyObjectPtr args( PyTuple_New( 4 ), PyObjectPtr::STEAL_REFERENCE );
             if (!args) { failed_ = true; return COLLIDE_STOP; }
             PyTuple_SET_ITEM( args.get(), 0, unsignedObject( chunk ) );
@@ -308,7 +322,6 @@ public:
                 if (!PyTuple_GET_ITEM( args.get(), i ))
                 { failed_ = true; return COLLIDE_STOP; }
             PyObjectPtr callback = broken_;
-            bool reject = true;
             {
                 PyObjectPtr result( PyObject_Call( callback.get(), args.get(), NULL ),
                     PyObjectPtr::STEAL_REFERENCE );
@@ -321,6 +334,7 @@ public:
                     return COLLIDE_STOP;
                 }
             } // An int subclass destructor may retire the space too.
+            }
             if (space_->cleared()) { interrupted_ = true; return COLLIDE_STOP; }
             if (reject) return COLLIDE_ALL;
         }
@@ -361,10 +375,20 @@ public:
         return result;
     }
 
+    StockSegmentResult result(StockMaterialHit & output) const
+    {
+        if (failed_) return STOCK_SEGMENT_FAILED;
+        output.point=hitPoint_;output.normal=normal_;output.materialKind=kind_;
+        output.chunkID=chunk_;output.itemIndex=item_;output.filename=filename_;
+        return found_&&!interrupted_&&!space_->cleared() ?
+            STOCK_SEGMENT_HIT : STOCK_SEGMENT_MISS;
+    }
+
 private:
     ClientSpacePtr space_;
     Vector3 start_, direction_, point_;
     PyObjectPtr broken_;
+    const StockNativeBrokenFilter * nativeBroken_ = nullptr;
     float nearest_;
     bool found_, failed_, interrupted_;
     Vector3 hitPoint_, normal_;
@@ -447,6 +471,17 @@ StockSegmentResult collideSegment( SpaceID spaceID, const Vector3 & start,
     return STOCK_SEGMENT_HIT;
 }
 } // namespace
+
+StockSegmentResult stockMaterialNearPoint( SpaceID spaceID,
+    const Vector3 & start, const Vector3 & end, const Vector3 & point,
+    const StockNativeBrokenFilter & broken, StockMaterialHit & hit )
+{
+    ClientSpacePtr space=SpaceManager::instance().space(spaceID);
+    if(!space)return STOCK_SEGMENT_NO_SPACE;
+    MaterialNearPointQuery query(space,start,end,point,broken);
+    if(!space->cleared()&&!(start==end))space->collide(start,end,query);
+    return query.result(hit);
+}
 
 StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,

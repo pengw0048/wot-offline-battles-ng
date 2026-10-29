@@ -2,6 +2,7 @@
 #include "stock_destructibles.hpp"
 #include "stock_destructible_falling_query.hpp"
 #include <cmath>
+#include <climits>
 #include "stock_space_sounds_data.hpp"
 #include "compiled_space/binary_format.hpp"
 #include "duplo/pyfashion.hpp"
@@ -54,6 +55,7 @@ public:
     ClientSpace* space;
     const SpaceID spaceID;
     std::vector<Mapping> mappings;
+    uint64 revision=1;
     explicit StockDestructiblesOwner(ClientSpace* value):space(value),spaceID(value->id()){}
     ~StockDestructiblesOwner(){const auto found=owners.find(space);if(found!=owners.end()&&found->second.expired())owners.erase(found);}
     Mapping& mapping(const void* identity)
@@ -65,7 +67,8 @@ public:
     {for(const auto& value:mappings)if(value.identity==identity)return &value;return NULL;}
     bool current()const
     {return SpaceManager::instance().space(spaceID)==space&&!space->cleared();}
-    bool resolve(int chunk,int item,int module,std::shared_ptr<StockDestructibleObjects>& endpoint,uint32& index)const
+    bool resolve(int chunk,int item,int module,std::shared_ptr<StockDestructibleObjects>& endpoint,uint32& index,
+        const void** mappingIdentity=nullptr)const
     {
         if(!current()||item<0)return false;
         for(const auto& value:mappings)
@@ -81,6 +84,7 @@ public:
                 const uint32 object=value.data->objects[std::size_t(offset)];
                 if(object==0xffffffffu)return false;
                 endpoint=value.objects[object>>31].lock();index=object&0x7fffffffu;
+                if(mappingIdentity)*mappingIdentity=value.identity;
                 return endpoint!=NULL;
             }
         }
@@ -97,9 +101,9 @@ StockDestructibles acquireStockDestructibles(ClientSpace* space)
 }
 void registerStockDestructibleObjects(const StockDestructibles& owner,const void* mapping,bool tree,
     const std::shared_ptr<StockDestructibleObjects>& objects)
-{if(owner&&mapping)owner->mapping(mapping).objects[tree?1:0]=objects;}
+{if(owner&&mapping){owner->mapping(mapping).objects[tree?1:0]=objects;++owner->revision;}}
 void unregisterStockDestructibleObjects(const StockDestructibles& owner,const void* mapping,bool tree)
-{if(owner)for(auto& value:owner->mappings)if(value.identity==mapping){value.objects[tree?1:0].reset();return;}}
+{if(owner)for(auto& value:owner->mappings)if(value.identity==mapping){value.objects[tree?1:0].reset();++owner->revision;return;}}
 
 void playStockModuleDestructionAnimation(const StockDestructibles& owner,const void* mapping,
     uint32 instance,bool shot,bool havok)
@@ -128,18 +132,77 @@ struct Resolved
     ClientSpacePtr space;
     StockDestructibles owner;
     std::shared_ptr<StockDestructibleObjects> objects;
+    const void* mapping=nullptr;
     uint32 index=0;
     bool lookup(int spaceID,int chunk,int item,int module=-1)
     {
         space=SpaceManager::instance().space(spaceID);
         if(!space||space->cleared())return false;
         const auto found=owners.find(space.get());if(found==owners.end())return false;
-        owner=found->second.lock();return owner&&owner->resolve(chunk,item,module,objects,index);
+        owner=found->second.lock();return owner&&owner->resolve(chunk,item,module,objects,index,&mapping);
     }
     bool snapshot(StockDestructibleSnapshot& out)const{return objects&&objects->snapshot(index,out);}
 };
 PyObject* unavailable(const char* message)
 {PyErr_SetString(PyExc_RuntimeError,message);return NULL;}
+}
+
+bool readStockDestructible(SpaceID space,uint32 chunk,uint32 item,int module,
+    StockDestructibleSnapshot& output,StockDestructibleBinding* binding)
+{
+    if(item>uint32(INT_MAX))return false;
+    Resolved object;
+    if(!object.lookup(int(space),int(chunk),int(item),module)||!object.snapshot(output))return false;
+    if(binding){binding->objects=object.objects;binding->index=object.index;
+        binding->owner=object.owner;binding->mapping=object.mapping;}
+    return true;
+}
+
+bool stockDestructibleChunks(SpaceID spaceID,std::vector<uint32>& chunks)
+{
+    chunks.clear();
+    ClientSpacePtr space=SpaceManager::instance().space(spaceID);
+    if(!space||space->cleared())return false;
+    const auto found=owners.find(space.get());
+    const auto owner=found==owners.end()?StockDestructibles():found->second.lock();
+    if(!owner||!owner->current())return false;
+    for(const auto& mapping:owner->mappings)
+        if(mapping.bound&&mapping.data)
+            for(const auto& row:mapping.data->chunks)chunks.push_back(row.id);
+    std::sort(chunks.begin(),chunks.end());
+    chunks.erase(std::unique(chunks.begin(),chunks.end()),chunks.end());
+    return true;
+}
+
+void stockDestructibleLocalMatrix(uint32 chunk,const Matrix& world,Matrix& local,Matrix& cell)
+{
+    cell=chunkMatrix(int(chunk));Matrix inverse;
+    D3DXMatrixInverse(&inverse,NULL,&cell);D3DXMatrixMultiply(&local,&world,&inverse);
+}
+uint64 stockDestructibleRevision(SpaceID spaceID)
+{
+    ClientSpacePtr space=SpaceManager::instance().space(spaceID);if(!space||space->cleared())return 0;
+    const auto found=owners.find(space.get());const auto owner=found==owners.end()?StockDestructibles():found->second.lock();
+    return owner&&owner->current()?owner->revision:0;
+}
+
+bool resolveStockDestructibleChild(const StockDestructibleBinding& binding,uint32 instance,
+    uint32& chunk,uint32& item,uint32& module)
+{
+    const auto& owner=binding.owner;
+    if(!owner||!owner->current())return false;
+    const auto* value=owner->find(binding.mapping);
+    if(!value||!value->bound||!value->reverseReady||!value->data)return false;
+    bool found=false;
+    for(const auto& record:value->data->chunks)
+        for(uint32 row=0;row<record.count;++row) {
+            const auto& span=value->data->items[std::size_t(record.first)+row];
+            const uint64 count=uint32(span.unused-span.object+1u);
+            for(uint64 index=0;index<count&&uint64(span.object)+index<value->data->objects.size();++index)
+                if(value->data->objects[std::size_t(span.object)+std::size_t(index)]==instance)
+                {chunk=record.id;item=row;module=uint32(index);found=true;}
+        }
+    return found;
 }
 
 PyObject* wg_getChunkMatrix(int space,int chunk)
@@ -330,7 +393,7 @@ bool StockDestructiblesSceneLoader::doBind()
     auto state=state_;if(!state)return false;if(state->bound)return true;
     if(!Py_IsInitialized())return false;
     state->owner=acquireStockDestructibles(state->space);if(!state->owner)return false;
-    auto& mapping=state->owner->mapping(state->identity);mapping.data=state->data;mapping.bound=true;mapping.reverseReady=false;state->bound=true;
+    auto& mapping=state->owner->mapping(state->identity);mapping.data=state->data;mapping.bound=true;mapping.reverseReady=false;state->bound=true;++state->owner->revision;
     // The original call is synchronous and can replay queued destruction.
     // Install the complete mapping before exposing the first chunk callback.
     for(const auto& chunk:state->data->chunks)
@@ -349,7 +412,7 @@ void StockDestructiblesSceneLoader::doUnload()
     const bool notify=state->bound;state->bound=false;
     if(state->owner)
     {
-        auto& mapping=state->owner->mapping(state->identity);mapping.bound=false;mapping.reverseReady=false;mapping.data.reset();
+        auto& mapping=state->owner->mapping(state->identity);mapping.bound=false;mapping.reverseReady=false;mapping.data.reset();++state->owner->revision;
     }
     if(notify&&Py_IsInitialized())for(const auto& chunk:state->data->chunks)
         gameEvent("wg_onChunkLoose",Py_BuildValue("(iIO)",state->spaceID,chunk.id,Py_True));
