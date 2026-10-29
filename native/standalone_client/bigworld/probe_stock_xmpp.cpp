@@ -45,6 +45,26 @@ int main(int argc,char** argv){
         python(R"PY(
 import BigWorld, thread, gc
 main_thread=thread.get_ident()
+spam=BigWorld.WGSpamFilter(1,ignored=True)
+assert isinstance(spam.removeSpam(''),unicode) and spam.removeSpam('')==u''
+for text,expected in ((u'hello',u'hello'),(u'!!!!!',u'!!!'),(u'ababab',u'ababab'),(u'abababab',u'abab'),(u'abcabcabcabc',u'abcabc'),(u'a\0b',u'a\0b'),(u'\U0001f600',u'\U0001f600')):
+    assert spam.removeSpam(text)==expected
+assert spam.removeSpam(u'hello',ignored=True)==u'hello'
+for arguments in ((),(u'a',u'b')):
+    try:spam.removeSpam(*arguments)
+    except TypeError as error:assert str(error)=='removeSpam() expects 1 argument of type BW::wstring'
+    else:raise AssertionError('removeSpam accepted invalid positional arity')
+try:spam.removeSpam(text=u'a')
+except TypeError:pass
+else:raise AssertionError('removeSpam accepted keyword-only text')
+for invalid in (None,1,[],object(),'\xff'):
+    try:spam.removeSpam(invalid)
+    except TypeError as error:assert str(error)=='() argument 1 must be set to a wide string.'
+    else:raise AssertionError('removeSpam accepted invalid text')
+for unused in xrange(100):
+    other=BigWorld.WGSpamFilter()
+    assert other.removeSpam(u'abababab')==u'abab'
+other=None;spam=None;gc.collect()
 c=BigWorld.XmppClient()
 assert c.connectionState==0 and c.fullJid=='' and c.presence==0
 assert (c.PRESENCE_UNKNOWN,c.PRESENCE_AVAILABLE,c.PRESENCE_UNAVAILABLE)==(0,1,6)

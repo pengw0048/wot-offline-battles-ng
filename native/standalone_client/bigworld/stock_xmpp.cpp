@@ -47,6 +47,7 @@
 #if defined(hypot)
 #undef hypot
 #endif
+#include "stock_spam_filter.hpp"
 #include <client.h>
 #include <connectionbosh.h>
 #include <connectionhttpproxy.h>
@@ -377,9 +378,52 @@ struct Session {
 };
 struct PyClient {PyObject_HEAD Session* session;PyObject* handlers[EventCount];};
 struct PyTag {PyObject_HEAD TagPtr* tag;};
+struct PySpamFilter {PyObject_HEAD StockSpamFilterDetail::Filter* filter;};
 PyTypeObject clientType={PyObject_HEAD_INIT(NULL) 0};
 PyTypeObject tagType={PyObject_HEAD_INIT(NULL) 0};
+PyTypeObject spamFilterType={PyObject_HEAD_INIT(NULL) 0};
 std::set<PyClient*> clients;
+
+void spamFilterDealloc(PySpamFilter* self){delete self->filter;Py_TYPE(self)->tp_free(reinterpret_cast<PyObject*>(self));}
+PyObject* spamFilterNew(PyTypeObject* type,PyObject*,PyObject*) {
+    // The original tp_new ignores its argument tuple and keyword dictionary.
+    auto* self=reinterpret_cast<PySpamFilter*>(type->tp_alloc(type,0));if(!self)return NULL;
+    self->filter=NULL;
+    try {self->filter=new StockSpamFilterDetail::Filter;}
+    catch(...){Py_DECREF(self);return PyErr_NoMemory();}
+    return reinterpret_cast<PyObject*>(self);
+}
+PyObject* spamFilterRemove(PySpamFilter* self,PyObject* args,PyObject*) {
+    // The original VARARGS|KEYWORDS wrapper checks positional arity only.
+    if(PyTuple_Size(args)!=1) {PyErr_SetString(PyExc_TypeError,"removeSpam() expects 1 argument of type BW::wstring");return NULL;}
+    PyObject* input=PyTuple_GET_ITEM(args,0);
+    PyObject* unicode=(PyString_Check(input)||PyUnicode_Check(input))?PyObject_Unicode(input):NULL;
+    if(!unicode) {PyErr_SetString(PyExc_TypeError,"() argument 1 must be set to a wide string.");return NULL;}
+    try {
+        const Py_UNICODE* units=PyUnicode_AS_UNICODE(unicode);
+        const Py_ssize_t length=PyUnicode_GET_SIZE(unicode);
+        std::u16string text;
+        for(Py_ssize_t index=0;index<length;++index) {
+            unsigned long unit=units[index];
+            if(sizeof(Py_UNICODE)>2&&unit>0xffff) {
+                unit-=0x10000;text.push_back(static_cast<char16_t>(0xd800+(unit>>10)));
+                text.push_back(static_cast<char16_t>(0xdc00+(unit&0x3ff)));
+            }else text.push_back(static_cast<char16_t>(unit));
+        }
+        Py_DECREF(unicode);unicode=NULL;
+        text=self->filter->apply(std::move(text));
+        std::vector<Py_UNICODE> output;
+        for(size_t index=0;index<text.size();++index) {
+            unsigned long unit=text[index];
+            if(sizeof(Py_UNICODE)>2&&unit>=0xd800&&unit<=0xdbff&&index+1<text.size()&&text[index+1]>=0xdc00&&text[index+1]<=0xdfff)
+                unit=0x10000+((unit-0xd800)<<10)+(text[++index]-0xdc00);
+            output.push_back(static_cast<Py_UNICODE>(unit));
+        }
+        return PyUnicode_FromUnicode(output.empty()?NULL:output.data(),static_cast<Py_ssize_t>(output.size()));
+    }catch(const std::bad_alloc&){Py_XDECREF(unicode);return PyErr_NoMemory();}
+    catch(const std::exception& error){Py_XDECREF(unicode);PyErr_SetString(PyExc_RuntimeError,error.what());return NULL;}
+}
+PyMethodDef spamFilterMethods[]={{"removeSpam",reinterpret_cast<PyCFunction>(spamFilterRemove),METH_VARARGS|METH_KEYWORDS,NULL},{NULL,NULL,0,NULL}};
 
 PyObject* wrapTag(TagPtr tag) {
     if(!tag){Py_RETURN_NONE;}
@@ -558,7 +602,8 @@ bool prepareTypes(){
     for(size_t index=0;index<EventCount;++index)properties[index+3]={const_cast<char*>(callbackNames[index]),reinterpret_cast<getter>(getHandler),reinterpret_cast<setter>(setHandler),NULL,reinterpret_cast<void*>(index)};
     properties[EventCount+3]={NULL,NULL,NULL,NULL,NULL};clientType.tp_getset=properties;
     tagType.tp_name=const_cast<char*>("PyGlooxTag");tagType.tp_basicsize=sizeof(PyTag);tagType.tp_dealloc=reinterpret_cast<destructor>(tagDealloc);tagType.tp_flags=Py_TPFLAGS_DEFAULT;tagType.tp_methods=tagMethods;tagType.tp_new=tagNew;
-    if(PyType_Ready(&clientType)<0||PyType_Ready(&tagType)<0)return false;
+    spamFilterType.tp_name=const_cast<char*>("WGSpamFilter");spamFilterType.tp_basicsize=sizeof(PySpamFilter);spamFilterType.tp_dealloc=reinterpret_cast<destructor>(spamFilterDealloc);spamFilterType.tp_flags=Py_TPFLAGS_DEFAULT;spamFilterType.tp_methods=spamFilterMethods;spamFilterType.tp_new=spamFilterNew;
+    if(PyType_Ready(&clientType)<0||PyType_Ready(&tagType)<0||PyType_Ready(&spamFilterType)<0)return false;
     struct Constant{const char* name;long value;};
     const Constant constants[]={{"PRESENCE_UNKNOWN",0},{"PRESENCE_AVAILABLE",1},{"PRESENCE_CHAT",2},{"PRESENCE_AWAY",3},{"PRESENCE_DND",4},{"PRESENCE_XA",5},{"PRESENCE_UNAVAILABLE",6},
         {"STATE_DISCONNECTED",0},{"STATE_CONNECTING",1},{"STATE_AUTHENTICATING",2},{"STATE_INITIALIZING",3},{"STATE_CONNECTED",4},
@@ -572,7 +617,7 @@ void deliver(PyClient* client,const Event& event){PyObject* handler=client->hand
 } // namespace StockXmppDetail
 
 bool initialiseStockXmpp(){using namespace StockXmppDetail;if(!prepareTypes())return false;PyObject* module=PyImport_AddModule("BigWorld");if(!module)return false;
-    if(PyObject_SetAttrString(module,"XmppClient",reinterpret_cast<PyObject*>(&clientType))!=0||PyObject_SetAttrString(module,"PyGlooxTag",reinterpret_cast<PyObject*>(&tagType))!=0)return false;return true;}
+    if(PyObject_SetAttrString(module,"XmppClient",reinterpret_cast<PyObject*>(&clientType))!=0||PyObject_SetAttrString(module,"PyGlooxTag",reinterpret_cast<PyObject*>(&tagType))!=0||PyObject_SetAttrString(module,"WGSpamFilter",reinterpret_cast<PyObject*>(&spamFilterType))!=0)return false;return true;}
 void tickStockXmpp(){using namespace StockXmppDetail;std::vector<PyClient*> snapshot(clients.begin(),clients.end());for(auto* client:snapshot)Py_INCREF(client);
     for(auto* client:snapshot){auto run=client->session->run;std::deque<StockXmppDetail::Event> events;if(run){std::lock_guard<std::mutex> lock(run->mutex);events.swap(run->events);}std::deque<StockXmppDetail::Event> local;local.swap(client->session->localEvents);
         for(const auto& event:local)deliver(client,event);
