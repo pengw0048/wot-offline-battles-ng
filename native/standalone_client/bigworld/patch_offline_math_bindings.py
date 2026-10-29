@@ -270,7 +270,7 @@ def patch_query_chain(root, pending):
     pending[path] = source
 
 
-def patch(root):
+def patch(root, native_query=False):
     root = Path(root)/'native'
     pending = {}
     path = root/'offline_math_batch_native.cpp'
@@ -309,7 +309,10 @@ def patch(root):
     # The preceding guard bounds the index by the owned list's unsigned size.
     # Make its existing conversion explicit for MSVC /WX, without changing it.
     pending[path] = source
-    patch_query_chain(root, pending)
+    # The native-query prototype is exercised by its contract harness only.
+    # The real 15v15 run regressed; ordinary builds retain the existing path.
+    if native_query:
+        patch_query_chain(root, pending)
     # Validate the complete transaction before publishing any adapted source.
     for path, source in pending.items():
         path.write_text(source, encoding='utf-8', newline='')

@@ -393,7 +393,7 @@ def build_bridge(test, path, fork):
     spec.loader.exec_module(adapter)
     generated = path / 'fork'
     shutil.copytree(fork / 'native', generated / 'native')
-    adapter.patch(generated)
+    adapter.patch(generated, native_query=True)
     binding_cpp = generated / 'native/offline_math_batch_native.cpp'
     binding_cpp.write_text(binding_cpp.read_text() + MOTION_ENTRY)
     subprocess.run([cxx, *native_test_compile_flags(cxx), '-std=c++17', '-g', '-fno-omit-frame-pointer',

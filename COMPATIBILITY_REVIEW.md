@@ -3343,18 +3343,19 @@ its bundled Python process runtime; resource mounts cannot replace that file.
 Preparation validates the package against the pinned source and recorder's
 existing integrity contract. It remains outside the resource search paths, so
 the adapted `offline-res` payload is the sole gameplay module owner.
-The synchronous world and motion adapters can keep standard engine queries in
-C++ through vector rounding, scene traversal, surface filtering, skin ownership,
-recasts and intermediate hit storage. The generated Python seams expose only
-canonical callback captures and identity; custom callbacks retain the generic
-path. Effects keep their existing order, refresh live ownership and destruction
-state, and materialize a hit only when a Python effect needs it. A failure after
-an effect cannot replay the operation. Focused CPython 2.7 host tests compile
-the production bridge, scene query and generated numerical module: both entry
-paths match the generic results with zero Python calls in the standard ray
-loop, including ground recovery, float32 boundaries and recast budgets.
-These tests establish the adapter contract, not Windows performance; preparing
-the native identity view still incurs work for each synchronous sweep.
+A native-query prototype keeps standard motion/ground vectors, scene traversal,
+surface filtering, skin ownership, recasts and intermediate hits in C++.
+Canonical callback identity gates its use; custom callbacks retain the generic
+path and effects preserve their order and failure semantics. Focused CPython
+2.7 host tests compile the production bridge, scene query and generated numerical
+module: both entry paths match the generic results with zero Python calls in
+standard ray loops, including ground recovery, float32 and recast boundaries.
+The prototype remains disabled in ordinary builds. A real 15v15 short comparison
+observed 18–21 player FPS and 2.6 worker ticks/s with the prototype, versus 21–24
+FPS and 3.2–3.8 ticks/s immediately beforehand. The vehicles and slots matched,
+but tactical routes remained random. This is insufficient evidence to enable
+it. Native identity-view preparation still copies metadata per synchronous
+sweep; its end-to-end cost needs further work before another activation trial.
 `Hybrid` names the engine's optimized build configuration with debug symbols;
 it is independent of the target architecture and deployment environment.
 The executable also retains the original PE large-address-aware flag. Without
