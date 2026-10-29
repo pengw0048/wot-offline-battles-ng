@@ -27,6 +27,7 @@ constexpr unsigned D3DPT_TRIANGLESTRIP = 5, D3DPT_TRIANGLELIST = 4;
 #define FAILED(value) ((value) < 0)
 #define SUCCEEDED(value) ((value) >= 0)
 #define BW_GUARD
+#define PROFILER_SCOPED(name)
 #define MF_ASSERT(value) assert(value)
 #define ERROR_MSG(...) ((void)0)
 namespace wot { enum { treeBranch, treeFrond, treeLeaf, treeBillboard }; }

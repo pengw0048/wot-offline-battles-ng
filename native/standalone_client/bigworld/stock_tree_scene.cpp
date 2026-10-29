@@ -948,6 +948,7 @@ struct TreePartInstance
 bool collectTreePartInstances( unsigned part, const std::vector<TreeDrawItem> & items,
     std::vector<TreePartInstance> & records )
 {
+    PROFILER_SCOPED( StockTrees_collectPart );
     // b05560/b05b00 collect each active part/LOD before drawing. The caller
     // already supplies the native filename/seed order; preserve it here.
     records.clear();
@@ -987,6 +988,7 @@ bool collectTreePartInstances( unsigned part, const std::vector<TreeDrawItem> & 
 
 bool uploadTreeInstances( TreeRenderingOwner & owner, const std::vector<TreePartInstance> & records )
 {
+    PROFILER_SCOPED( StockTrees_upload );
     if (records.empty() || records.size() > UINT_MAX / sizeof( PackedTreeInstance )) return false;
     const uint32 count = static_cast<uint32>( records.size() );
     const uint32 bytes = count * sizeof( PackedTreeInstance );
@@ -1041,6 +1043,7 @@ private:
 bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPassType pass,
     const std::vector<TreeDrawItem> & items, const float (&billboardRotation)[4], float reflectionCorrection )
 {
+    PROFILER_SCOPED( StockTrees_drawPart );
     std::vector<TreePartInstance> records;
     records.reserve( items.size() );
     if (!collectTreePartInstances( part, items, records )) return owner.fail( "Original tree LOD has no geometry" );
@@ -1301,49 +1304,55 @@ public:
         std::vector<TreeDrawItem> items;
         items.reserve( count );
         const Vector2 weather = space->enviro().weather()->wind();
-        for (std::size_t i = 0; i < count; ++i)
         {
-            auto * instance = objects[i].getAs<TreeInstance>();
-            if (!instance || !instance->type || !instance->type->uploaded || !instance->type->registered) continue;
-            const uint32 flags = instance->definition.flags;
-            const uint32 requiredDecor = flags & 0x20 ? 2 : ((flags >> 4) & 1);
-            // 006c57e4: SpTr3's bit 4 is distinct from BSMI's bit 7.
-            if ((context.stockLowDetailedMode() && (flags & 0x10)) ||
-                (flags & 8) || (requiredDecor && static_cast<int>( requiredDecor ) > decorLevel) ||
-                (pass == Moo::RENDERING_PASS_REFLECTION && !(flags & 2)) ||
-                (pass == Moo::RENDERING_PASS_SHADOWS && !(flags & 1))) continue;
-            if (!instance->type->wind || !advanceTreeWind( *owner, *instance->type->wind, weather )) continue;
-            TreeDrawItem item;
-            item.instance = instance;
-            float lodDistance;
-            if (!selectInstanceLods( *owner, *instance, camera, item.lod, lodDistance )) continue;
-            if (colour)
+            PROFILER_SCOPED( StockTrees_collect );
+            for (std::size_t i = 0; i < count; ++i)
             {
-                const auto & type = *instance->type;
-                const auto & parts = type.geometry.parts;
-                wot::StockTreeFadeInput input = {};
-                input.world = reinterpret_cast<const float *>( &instance->definition.world );
-                for (unsigned axis = 0; axis < 3; ++axis)
+                auto * instance = objects[i].getAs<TreeInstance>();
+                if (!instance || !instance->type || !instance->type->uploaded || !instance->type->registered) continue;
+                const uint32 flags = instance->definition.flags;
+                const uint32 requiredDecor = flags & 0x20 ? 2 : ((flags >> 4) & 1);
+                // 006c57e4: SpTr3's bit 4 is distinct from BSMI's bit 7.
+                if ((context.stockLowDetailedMode() && (flags & 0x10)) ||
+                    (flags & 8) || (requiredDecor && static_cast<int>( requiredDecor ) > decorLevel) ||
+                    (pass == Moo::RENDERING_PASS_REFLECTION && !(flags & 2)) ||
+                    (pass == Moo::RENDERING_PASS_SHADOWS && !(flags & 1))) continue;
+                if (!instance->type->wind || !advanceTreeWind( *owner, *instance->type->wind, weather )) continue;
+                TreeDrawItem item;
+                item.instance = instance;
+                float lodDistance;
+                if (!selectInstanceLods( *owner, *instance, camera, item.lod, lodDistance )) continue;
+                if (colour)
                 {
-                    input.boundsMin[axis] = type.geometry.minimumBounds[axis];
-                    input.boundsMax[axis] = type.geometry.maximumBounds[axis];
-                    input.eye[axis] = eye[axis];
+                    const auto & type = *instance->type;
+                    const auto & parts = type.geometry.parts;
+                    wot::StockTreeFadeInput input = {};
+                    input.world = reinterpret_cast<const float *>( &instance->definition.world );
+                    for (unsigned axis = 0; axis < 3; ++axis)
+                    {
+                        input.boundsMin[axis] = type.geometry.minimumBounds[axis];
+                        input.boundsMax[axis] = type.geometry.maximumBounds[axis];
+                        input.eye[axis] = eye[axis];
+                    }
+                    input.lodDistance = lodDistance;
+                    input.bush = type.bush;
+                    input.model3d = (item.lod.branch >= 0 && parts[wot::treeBranch].vertexCount) ||
+                        (item.lod.frond >= 0 && parts[wot::treeFrond].vertexCount) ||
+                        ((item.lod.leaves[0] >= 0 || item.lod.leaves[1] >= 0) && parts[wot::treeLeaf].vertexCount);
+                    if (fadeTreeInstance( *instance, input )) { owner->semitransparent.push_back( item ); continue; }
                 }
-                input.lodDistance = lodDistance;
-                input.bush = type.bush;
-                input.model3d = (item.lod.branch >= 0 && parts[wot::treeBranch].vertexCount) ||
-                    (item.lod.frond >= 0 && parts[wot::treeFrond].vertexCount) ||
-                    ((item.lod.leaves[0] >= 0 || item.lod.leaves[1] >= 0) && parts[wot::treeLeaf].vertexCount);
-                if (fadeTreeInstance( *instance, input )) { owner->semitransparent.push_back( item ); continue; }
+                items.push_back( item );
             }
-            items.push_back( item );
         }
-        // Native batches traverse the actual filename/seed registry order.
-        std::stable_sort( items.begin(), items.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
-            const auto & x = *a.instance->type;
-            const auto & y = *b.instance->type;
-            return x.resource + "/" + std::to_string( x.seed ) < y.resource + "/" + std::to_string( y.seed );
-        } );
+        {
+            PROFILER_SCOPED( StockTrees_sort );
+            // Native batches traverse the actual filename/seed registry order.
+            std::stable_sort( items.begin(), items.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
+                const auto & x = *a.instance->type;
+                const auto & y = *b.instance->type;
+                return x.resource + "/" + std::to_string( x.seed ) < y.resource + "/" + std::to_string( y.seed );
+            } );
+        }
         if (items.empty()) return;
         float reflectionCorrection = 0.f;
         if (pass == Moo::RENDERING_PASS_REFLECTION)
