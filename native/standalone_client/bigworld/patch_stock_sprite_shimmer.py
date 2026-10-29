@@ -54,6 +54,26 @@ def patch(root):
         updateMaterial();
     }'''
     source = replace(source, before, after, 'draw material reload')
+    source = replace(source, '''        // setup alpha blending state
+        setMaterialFX();
+
+        // set texture''', '''        // #1513 a0375a binds texture before ordinary-mode properties.
+        // set texture''', 'original property order')
+    source = replace(source, '''        effectMaterial_->setProperty( "softDepthRange", softDepthRange_, true );''',
+                     '''        // #1513 a03783: shimmer owns only diffuseMap. Its original
+        // shader has neither the ordinary soft-depth nor near-fade fields.
+        if (materialFX_ == FX_SHIMMER) return;
+        setMaterialFX();
+
+        effectMaterial_->setProperty( "softDepthRange", softDepthRange_, true );''',
+                     'original shimmer property owner')
+    # a03570 sets only blend selectors and the source-alpha reference. These
+    # legacy public-engine booleans do not exist in either original shader.
+    legacy = {'effectMaterial_->setProperty( "%s", %s, true );' % (name, value)
+              for name in ('fogToFogColour', 'alphaTestEnable')
+              for value in ('false', 'true')}
+    source = ''.join(line for line in source.splitlines(keepends=True)
+                     if line.strip() not in legacy)
     inline = replace(ipp.read_text(), OLD_SETTER,
                      '// materialFX is out-of-line: it selects configured shaders.', 'inline setter')
     # Validate every seam before writing either file.

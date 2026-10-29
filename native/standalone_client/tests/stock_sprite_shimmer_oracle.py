@@ -54,6 +54,61 @@ class Setter(Original):
         return self.calls
 
 
+class MaterialProperties(Original):
+    def __init__(self, executable):
+        super().__init__(executable)
+        self.owner, self.material, self.table = DATA + 0x10000, DATA + 0x11000, DATA + 0x12000
+        for address, kind in ((0x96de30, 'texture'), (0x96dec0, 'float'), (0x96de90, 'int')):
+            self.u.hook_add(unicorn.UC_HOOK_CODE,
+                            lambda u, a, s, d, k=kind: self.property(k), begin=address, end=address)
+
+    def property(self, kind):
+        assert self.u.reg_read(UC_X86_REG_ECX) == self.material and self.arg(3) == 1
+        data, length = struct.unpack('<II', self.u.mem_read(self.arg(1), 8))
+        name = bytes(self.u.mem_read(data, length)).decode()
+        value = self.farg(2) if kind == 'float' else self.arg(2)
+        if kind == 'texture': value = struct.unpack('<I', self.u.mem_read(value, 4))[0]
+        self.writes.append((name, value))
+        self.ret(1, 12)
+
+    def run(self, mode, dirty, force, texture, material):
+        self.u.mem_write(self.owner, b'\0' * 0x300)
+        self.put(self.owner, '<I', self.table)
+        self.put(self.table + 0x54, '<I', 0xa03570)
+        self.put(self.owner + 0xc, '<I', mode)
+        self.put(self.owner + 0xf0, '<B', dirty)
+        self.put(self.owner + 0x1c4, '<I', 123 if texture else 0)
+        self.put(self.owner + 0x21c, '<I', self.material if material else 0)
+        self.put(self.owner + 0x220, '<6f', *range(1, 7))
+        self.writes = []
+        self.call(0xa03730, self.owner, [force])
+        return self.writes
+
+
+def audit_properties(executable):
+    owner = MaterialProperties(executable)
+    count = 0
+    fields = ('softDepthRange', 'softFalloffPower', 'softDepthOffset',
+              'nearFadeCutoff', 'nearFadeStart', 'nearFadeFalloffPower')
+    for mode in range(8):
+        for dirty in (0, 1):
+            for force in (0, 1):
+                for texture in (0, 1):
+                    for material in (0, 1):
+                        expected = []
+                        if material and (dirty or force):
+                            if texture: expected.append(('diffuseMap', 123))
+                            if mode != 6:
+                                if dirty:
+                                    expected += [('srcBlend', (5, 2, 5, 3, 3, 2, 0, 2)[mode]),
+                                                 ('destBlend', (2, 6, 6, 4, 4, 1, 0, 1)[mode])]
+                                    if mode == 7: expected.append(('alphaReference', 128))
+                                expected += list(zip(fields, range(1, 7)))
+                        assert owner.run(mode, dirty, force, texture, material) == expected
+                        count += 1
+    return count
+
+
 def audit(executable):
     owner = Setter(executable)
     count = 0

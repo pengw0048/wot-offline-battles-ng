@@ -5,6 +5,7 @@
 #include <iterator>
 #include <iostream>
 #include <stdexcept>
+#include <set>
 int main(int argc,char** argv) {
     if(argc!=3) return 2;
     for(int index=1;index<3;++index) {
@@ -26,6 +27,13 @@ int main(int argc,char** argv) {
             found=true;
         }
         if(!found || effect.techniques[0].name!=(index==1?"SpriteParticles":"pointDraw")) return 4;
+        std::set<std::string> fields;
+        for(const auto& buffer:effect.uniform_buffers)
+            for(const auto& uniform:buffer.uniforms) fields.insert(uniform.name);
+        if(fields.count("fogToFogColour") || fields.count("alphaTestEnable")) return 5;
+        for(const auto* field:{"softDepthRange","softFalloffPower","softDepthOffset",
+                              "nearFadeCutoff","nearFadeStart","nearFadeFalloffPower"})
+            if(fields.count(field)!=(index==1?1u:0u)) return 6;
     }
     std::cout<<"Original ordinary RGBA / shimmer alpha-mask render contracts passed\n";
 }

@@ -6,7 +6,9 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #define BW_GUARD
+#define ERROR_MSG(...) throw std::runtime_error("Unexpected material mode")
 #define BW_BEGIN_NAMESPACE namespace BW {
 #define BW_END_NAMESPACE }
 namespace BW {
@@ -26,8 +28,11 @@ public:
 #include "particle_serialisation.hpp"
 namespace BW {
 namespace Moo {
+struct Material { enum { ZERO=1, ONE=2, SRC_COLOUR=3, INV_SRC_COLOUR=4, SRC_ALPHA=5, INV_SRC_ALPHA=6 }; };
 struct EffectMaterial {
     string shader;
+    std::map<string,std::any> values;
+    unsigned writes=0;
     struct Properties { unsigned clears=0; void clear(){++clears;} } properties_;
     inline static unsigned loads=0;
     inline static std::set<string> resources;
@@ -37,6 +42,21 @@ struct EffectMaterial {
     }
     bool pEffect() const { return !shader.empty(); }
     Properties& properties(){return properties_;}
+    template<class T> void setProperty(const char* name, const T& value, bool create) {
+        assert(create);
+        const string key(name);
+        const bool ordinary=shader.find("shimmer")==string::npos;
+        const std::set<string> fields={"srcBlend","destBlend","alphaReference",
+            "softDepthRange","softFalloffPower","softDepthOffset",
+            "nearFadeCutoff","nearFadeStart","nearFadeFalloffPower"};
+        // Exact .10/.11 effect tables are independently checked by the shader
+        // consumer. An unknown property is a rejected production call.
+        if (key!="diffuseMap" && (!ordinary || !fields.count(key)))
+            throw std::runtime_error("Unknown shader property: "+key);
+        if constexpr(std::is_enum_v<T>) values[key]=int(value);
+        else values[key]=value;
+        ++writes;
+    }
 };
 using EffectMaterialPtr=std::shared_ptr<EffectMaterial>;
 }
@@ -64,6 +84,7 @@ public:
     float softDepthRange_=0,softFalloffPower_=1,softDepthOffset_=0;
     float nearFadeCutoff_=1,nearFadeStart_=1,nearFadeFalloffPower_=1;
     Moo::EffectMaterialPtr effectMaterial_;
+    std::shared_ptr<int> diffuseMap_=std::make_shared<int>(1);
     unsigned propertyUpdates=0, textureUpdates=0;
     explicit SpriteParticleRenderer(const StringRef& name) : textureName_(name) { updateMaterial(); }
     MaterialFX materialFX()const {return materialFX_;}
@@ -73,7 +94,8 @@ public:
     void updateMaterial();
     void updateTexture(){++textureUpdates;}
     void setMaterial(Moo::EffectMaterialPtr&);
-    void setMaterialProperties(bool force){assert(force);++propertyUpdates;}
+    void setMaterialProperties(bool force=false);
+    void setMaterialFX();
     void loadInternal(DataSectionPtr);
     void saveInternal(DataSectionPtr)const;
     SpriteParticleRenderer* clone()const;
@@ -112,6 +134,20 @@ int main(){
         assert(owner.effectMaterial_!=previous && owner.effectMaterial_->shader==expected);
         assert(!owner.materialSettingsChanged_ && Moo::EffectMaterial::loads==loads+1);
         owner.drawPrefix();assert(Moo::EffectMaterial::loads==loads+1);
+        const auto& values=owner.effectMaterial_->values;
+        assert(owner.effectMaterial_->writes==values.size());
+        if (mode==6) assert(values.size()==1 && values.count("diffuseMap"));
+        else {
+            const int source[]={5,2,5,3,3,2,0,2}, destination[]={2,6,6,4,4,1,0,1};
+            assert(std::any_cast<int>(values.at("srcBlend"))==source[mode]);
+            assert(std::any_cast<int>(values.at("destBlend"))==destination[mode]);
+            assert(values.count("alphaReference")==unsigned(mode==7));
+            assert(std::any_cast<float>(values.at("softDepthRange"))==owner.softDepthRange_);
+        }
+        const unsigned writes=owner.effectMaterial_->writes;
+        owner.setMaterialProperties();assert(owner.effectMaterial_->writes==writes);
+        owner.setMaterialProperties(true);
+        assert(owner.effectMaterial_->writes-writes==unsigned(mode==6?1:7));
     }
     owner.effectName("configured/explicit.fx");
     assert(owner.effectMaterial_->shader=="configured/explicit.fx");

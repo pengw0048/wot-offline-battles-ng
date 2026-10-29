@@ -56,6 +56,8 @@ def host(source, original_ipp):
     methods = [extract_method(source, 'void SpriteParticleRenderer::materialFX(')]
     for signature in ('void SpriteParticleRenderer::updateMaterial()',
                       'void SpriteParticleRenderer::setMaterial(',
+                      'void SpriteParticleRenderer::setMaterialProperties(',
+                      'void SpriteParticleRenderer::setMaterialFX()',
                       'void SpriteParticleRenderer::loadInternal(',
                       'void SpriteParticleRenderer::saveInternal(',
                       'SpriteParticleRenderer * SpriteParticleRenderer::clone() const'):
@@ -92,7 +94,15 @@ class SpriteShimmerTests(unittest.TestCase):
             (folder/'particle_serialisation.hpp').write_text(source['lib/particle/particle_serialisation.hpp'])
             for name, text in [('production', generated),
                                ('old-selection', generated.replace(patch.SETTER, 'void SpriteParticleRenderer::materialFX(MaterialFX v){materialFX_=v;materialSettingsChanged_=true;}')),
-                               ('old-reload', generated.replace('        updateMaterial();\n', '        setMaterialProperties(true);\n'))]:
+                               ('old-reload', generated.replace('        updateMaterial();\n', '        setMaterialProperties(true);\n')),
+                               ('old-properties', generated.replace(
+                                   extract_method(cpp, 'void SpriteParticleRenderer::setMaterialProperties('),
+                                   extract_method(source['lib/particle/renderers/sprite_particle_renderer.cpp'],
+                                                  'void SpriteParticleRenderer::setMaterialProperties('))),
+                               ('old-blending', generated.replace(
+                                   extract_method(cpp, 'void SpriteParticleRenderer::setMaterialFX()'),
+                                   extract_method(source['lib/particle/renderers/sprite_particle_renderer.cpp'],
+                                                  'void SpriteParticleRenderer::setMaterialFX()')))]:
                 path=folder/(name+'.cpp');path.write_text(text);binary=folder/(name+'.exe')
                 subprocess.run([compiler,'-std=c++17','-UNDEBUG',*native_test_compile_flags(compiler),str(path),'-o',str(binary)],check=True)
                 result=subprocess.run([str(binary)],capture_output=True,text=True)
@@ -125,8 +135,9 @@ class SpriteShimmerTests(unittest.TestCase):
             import pefile, unicorn
         except ImportError:
             self.skipTest('Optional original PE execution dependencies required')
-        from stock_sprite_shimmer_oracle import audit
+        from stock_sprite_shimmer_oracle import audit, audit_properties
         self.assertEqual(audit(original/'WorldOfTanks.exe'),28)
+        self.assertEqual(audit_properties(original/'WorldOfTanks.exe'),128)
 
     def test_original_shot_producer_and_shader_resources(self):
         original=client(self)
