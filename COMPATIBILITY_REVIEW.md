@@ -3356,6 +3356,36 @@ FPS and 3.2–3.8 ticks/s immediately beforehand. The vehicles and slots matched
 but tactical routes remained random. This is insufficient evidence to enable
 it. Native identity-view preparation still copies metadata per synchronous
 sweep; its end-to-end cost needs further work before another activation trial.
+
+A separate, inactive typed rotation experiment ports the pinned angle-slice
+loop, departure rule and lazy previous-contact proof. Equal-angle slices reuse
+one analytical envelope; world-query order, float32 position/contact boundaries,
+backing-wall rejection and local query failures remain explicit. Its host test
+compares the fixed-release Python laws and separately links the real
+`world_stage` kernel to native miss and failure frontiers. It requires
+`WOT_FORK_0101_SOURCE`; hosted CI without that source skips this oracle.
+The experiment does not yet provide the live BigWorld frame factory, complete
+catalog/tree/translation resolvers or an ordinary build entry point.
+Scripted host timings only measure orchestration and departure, excluding real
+scene queries, descriptor acquisition and the future C API boundary; they are
+not evidence of Windows frame-time savings.
+
+A subsequent Windows workload capture attributed 26.2% of worker frame time to
+complete rotation and 17.3% to translation. The rotation world loop was 14.3%
+of the frame, already contained within rotation. A private 100 ms step experiment
+still averaged 98.8 ms per slice before surrounding work, and catch-up batches
+grew to 12--13 slices per callback. These are observed diagnostic windows with
+random tactical routes, not isolated causal comparisons or 30 Hz acceptance.
+The exact v0.7.7 source lacks the later full Bot rotation resolver; its
+translation still uses native scene queries. No matched v0.7.7 runtime benchmark
+has been established. Production scheduling and collision coverage are unchanged
+by these experiments. A separate temporary removal of the whole Bot rotation
+chain reduced mean worker callback time from 269.6 to 135.5 ms in one short
+Windows pair, but only reached 6.7 callbacks/s. Frame work per simulated second
+fell from 943.6 to 898.3 ms while decision refreshes increased. The ablation
+changes physical trajectories, remains outside production, and does not prove
+that optimization is exhausted or that rotation collision can be removed safely.
+
 `Hybrid` names the engine's optimized build configuration with debug symbols;
 it is independent of the target architecture and deployment environment.
 The executable also retains the original PE large-address-aware flag. Without
