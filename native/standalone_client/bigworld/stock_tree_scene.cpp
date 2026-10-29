@@ -171,6 +171,7 @@ struct TreeType
 {
     std::string resource;
     uint32 seed = 0;
+    std::string sortKey;
     wot::StockTreeGeometry geometry;
     wot::StockTreeMaterials materials;
     wot::StockTreeLodConfiguration lod;
@@ -458,6 +459,7 @@ public:
         auto type = std::make_shared<TreeType>();
         type->resource = resource;
         type->seed = seed;
+        type->sortKey = key;
         if (!loadTreeType( *type, defaultWind ))
         {
             fail( type->error );
@@ -1350,7 +1352,7 @@ public:
             std::stable_sort( items.begin(), items.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
                 const auto & x = *a.instance->type;
                 const auto & y = *b.instance->type;
-                return x.resource + "/" + std::to_string( x.seed ) < y.resource + "/" + std::to_string( y.seed );
+                return x.sortKey < y.sortKey;
             } );
         }
         if (items.empty()) return;

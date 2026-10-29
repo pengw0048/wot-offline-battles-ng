@@ -20,6 +20,25 @@ from test_stock_cursor_camera import function
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class StockTreeSortKeyTests(unittest.TestCase):
+    def test_registry_lifecycle_stable_order_and_sort_allocations(self):
+        compiler = shutil.which(os.environ.get('CXX', 'c++'))
+        if not compiler:
+            self.skipTest('Host compiler required')
+        tree = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        host = (ROOT / 'tests/stock_tree_sort_key_host.hpp').read_text()
+        host = host.replace('@TYPE@', function(tree, 'struct TreeType') + ';')
+        host = host.replace('@ACQUIRE@', function(tree, 'std::shared_ptr<TreeType> acquire('))
+        host = host.replace('@SORT@', function(tree, 'std::stable_sort( items.begin()') + ' );')
+        with tempfile.TemporaryDirectory(prefix='stock-tree-sort-key-') as folder:
+            source, binary = Path(folder) / 'host.cpp', Path(folder) / 'host'
+            source.write_text(host)
+            subprocess.run([compiler, '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
+                            '-UNDEBUG', *native_test_compile_flags(compiler), str(source),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+
 class StockTreeInstancingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
