@@ -299,6 +299,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "resource-write-overlay-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_packages.py"),
         $EngineRoot) "resource-packages-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_zip_case_lookup.py"),
+        $EngineRoot) "stock-zip-case-lookup-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_processed_resources.py"),
         $EngineRoot) "processed-resources-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vertex_format_cache.py"),

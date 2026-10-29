@@ -3269,6 +3269,17 @@ behavior as a negative control. A Windows probe confirms identical existing and
 missing resource results with tracing enabled and disabled; this isolates
 diagnostic overhead, not total battle frame time.
 
+ZIP member ingestion and lookup share #1513's lowercase-then-slash
+canonicalization (`0x011aeae0`, CRT `_strlwr`). The original archive reader
+normalizes names before indexing them, and its lookup helpers query that
+canonical key directly. The adaptation removes the public SDK's full-map
+case-mismatch scan and routes `dirTest` through the same helper. Raw central
+directory entries with the same canonical name retain the last entry's file
+index; explicitly encoded duplicate names keep their separate ` 1` selection
+rule. This does not change package search order or global diagnostic build
+flags. Exact executable/source evidence establishes the lookup contract;
+Windows startup and frame timing require separate runtime measurements.
+
 The native entry creates a local space and free camera, loads optional model
 assemblies through the engine's model/embodiment path, and releases attachments
 before the space. The personality only forwards input to the native camera and
