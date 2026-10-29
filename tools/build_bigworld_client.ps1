@@ -295,6 +295,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-python-watchers-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_python_profile_hook.py"),
         $EngineRoot) "stock-python-profile-hook-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_memory_debug.py"),
+        $EngineRoot) "stock-memory-debug-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),

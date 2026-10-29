@@ -3352,6 +3352,17 @@ of 1.06 MiB when the Scaleform string table allocation returned null. Packaging
 rejects a binary without this flag; resource lifetime still requires repeated
 Windows battle-cycle acceptance.
 
+The messenger initialization also registers the original `WGSpamFilter` type.
+Its synchronous UTF-16 filter retains the ordered named locales, strict
+majority case conversion, character-run and repeated-chunk compression,
+including the original embedded-NUL comparison and deletion behavior.
+The original PE instruction oracle covers these rules with explicit CRT
+classification fixtures; the Python 2 binding probe covers conversion,
+argument errors and instance lifetime. Those fixtures do not prove identical
+Windows locale tables. The stock Python consumer previously caught the missing
+type and used identity filtering, so this correction alone does not establish
+that Enter opens the battle-chat input.
+
 The battle-entry adapters expose the existing native `Math.Vector4Basic`,
 retain the `WGVehiclePhysics.owner` weak reference, and restore control-mode
 rendering, trajectory drawing, the tree collision-body provider, water ripples,
@@ -3437,11 +3448,24 @@ Python stack and line-table work on every traced call even when profiler
 collection was disabled. A paired Windows 15-versus-15 sample, changing only
 those two installations, reduced the observed slow Bot updates from 1.5–2.5
 seconds to 0.31–0.36 seconds; the remaining worker latency is still excessive.
+The roster and map matched, but tactical routes were randomized; these observed
+bounds are not a deterministic workload speedup.
 C++ profiling, native stack guards, thread registration and teardown remain
 available. Explicit CPython profiling remains available, but enabling the native
 profiler alone no longer implicitly traces Python calls. Focused tests execute
 the SDK thread functions and initialization/cleanup statements before and after
 the change. This worker result does not establish visible-client frame rate.
+Hybrid allocation diagnostics are also opt-in. The unchanged SDK default
+created a `MemoryDebug` owner that records allocations and frees through a
+global mutex, call-stack bookkeeping and a live-allocation table. The inspected
+consumer executable's allocation path does not use that owner. Two ordinary
+Windows replay comparisons, changing only the existing `-memdebug=disable`
+argument on the same hook-free executable, reduced sampled mean frame time
+from 19.49–21.01 ms to 10.69–10.89 ms; the render-output portion changed from
+15.40–15.77 ms to 7.32 ms. These short saved-replay windows do not establish
+live multiplayer frame pacing. The allocator, native guards and profiler remain
+unchanged. Existing explicit memory-diagnostic arguments still enable their
+requested collection, and an explicit disable keeps precedence.
 GPU timing queries are opt-in with the existing profiler switch. Disabled
 profiling submits no timestamp queries and performs no query readback. A Windows
 dump reproduced a GPU parent interval ending before its children, which failed
