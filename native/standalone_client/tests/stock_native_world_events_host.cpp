@@ -5,6 +5,8 @@ using namespace stock_native_world;
 namespace p=stock_native_bot_python;
 namespace d=stock_native_destructible;
 namespace {
+PyObject*cancelled=nullptr;
+PyObject*cancel(PyObject*,PyObject*args){try{auto area=p::Ref(PyImport_ImportModule("AreaDestructibles"));auto animator=p::value(area.get(),"g_destructiblesAnimator");assert(!p::truth(animator.get(),"_DestructiblesAnimator__isUpdating",true));if(PyList_Append(cancelled,args)<0)return nullptr;Py_RETURN_NONE;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 struct Backend:d::Backend {
     bool loaded=true;int effects=0,geometry_calls=0,replay_calls=0;std::uint64_t incarnation=1;
     bool current()const override{return true;}
@@ -47,13 +49,13 @@ PyObject* run(PyObject*,PyObject*battle){
         assert(events.commitTrustedTrees(token,{},{},0.,1.,4.2).status==ContactStatus::Crushed);auto pair=p::item(trusted.get(),0),echo=p::item(pair.get(),1);const auto before=native.counters().accepted;assert(events.ingress(echo.get(),4.3)&&native.counters().accepted==before+1);const int effects=backend.effects;assert(events.ingress(echo.get(),4.4)&&backend.effects==effects);
         scene.rows[{1,11}]=instance(Kind::Falling,0.);scene.refresh({1,11},registry);assert(pipeline.commit({1,11,-1},{{0.,1.,0.}},2.));
         auto sensor=p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.destructibles_sensor"));auto dict=p::retain(PyModule_GetDict(sensor.get()));auto instances=p::dict(),raw=p::dict();p::set(raw.get(),"kind",p::text("falling"));p::Ref key(Py_BuildValue("(ii)",1,11));if(PyDict_SetItem(instances.get(),key.get(),raw.get())<0)return nullptr;p::set(dict.get(),"g_offh_destr_instances",instances);
-        registry.instances.at({1,11}).boxes[0].center[0]=16.;p::Ref falling(events.pack(battle));auto boxrows=p::value(raw.get(),"boxes"),box=p::item(boxrows.get(),0),center=p::item(box.get(),0);assert(p::numbers<3>(center.get())[0]==16.);
+        registry.instances.at({1,11}).boxes[0].center[0]=16.;assert(events.synchronizeGeometry());auto boxrows=p::value(raw.get(),"boxes"),box=p::item(boxrows.get(),0),center=p::item(box.get(),0);assert(p::numbers<3>(center.get())[0]==16.);p::Ref falling(events.pack(battle));
         const int replay_before=backend.replay_calls,resource_before=backend.effects;++backend.incarnation;++scene.revision;assert(events.mappingChanged(5.));assert(backend.replay_calls>replay_before&&backend.effects==resource_before);assert(events.mappingChanged(5.1)&&backend.effects==resource_before);
         p::Ref no_x(PyDict_Copy(queued.get()));PyDict_DelItemString(no_x.get(),"x");assert(!events.ingress(no_x.get(),6.)&&PyErr_Occurred());PyErr_Clear();assert(events.ingress(queued.get(),6.));
         auto activated=events.takeActivatedTrees();assert(activated.count({1,9})&&activated.count({1,10}));return Py_BuildValue("(NNN)",first.release(),trusted.release(),falling.release());
     }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}
 }
 PyObject* installOnly(PyObject*,PyObject*battle){Registry registry;Backend backend;d::Runtime native(backend);SceneFixture scene(backend,native);WorldEvents events(registry,native,scene,41);if(!events.install(battle))return nullptr;Py_RETURN_TRUE;}
-PyMethodDef methods[]={{"run",run,METH_O,nullptr},{"install",installOnly,METH_O,nullptr},{nullptr,nullptr,0,nullptr}};
+PyMethodDef methods[]={{"run",run,METH_O,nullptr},{"install",installOnly,METH_O,nullptr},{"cancel",cancel,METH_VARARGS,nullptr},{nullptr,nullptr,0,nullptr}};
 }
-extern "C" void initworld_events_test(){Py_InitModule("world_events_test",methods);}
+extern "C" void initworld_events_test(){auto*module=Py_InitModule("world_events_test",methods);cancelled=PyList_New(0);PyModule_AddObject(module,"cancelled",cancelled);}

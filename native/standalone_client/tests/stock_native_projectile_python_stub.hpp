@@ -35,14 +35,14 @@ class NativeServices {public:std::map<offline_simulation::ActorKey,ServiceEntity
 namespace stock_native_world {class WorldEvents {public:bool mirrorOnly(const Destruction&){return true;}};}
 namespace stock_native_projectile_damage {
 class GeometryWorld:public DamageWorld {
- stock_native_bot_geometry::Vehicle v_;stock_native_bot_geometry::Pose p_;std::function<bool(const Point&,const Point&,const Point&)>visible_;
+ stock_native_bot_geometry::Vehicle v_;stock_native_bot_geometry::Pose p_;std::function<bool(const Point&,const Point&,const Point&)>visible_;std::array<std::optional<unsigned>,2>stickers_;
 public:
- GeometryWorld(const stock_native_bot_geometry::Vehicle&v,const wot::offline_bot_step::InternalLayout&,const stock_native_bot_geometry::Pose&p,std::function<bool(const Point&,const Point&,const Point&)>f,std::array<std::optional<unsigned>,2>,std::optional<bool> detached={}):v_(v),p_(p),visible_(f){if(detached)v_.detached=*detached;}
+ GeometryWorld(const stock_native_bot_geometry::Vehicle&v,const wot::offline_bot_step::InternalLayout&,const stock_native_bot_geometry::Pose&p,std::function<bool(const Point&,const Point&,const Point&)>f,std::array<std::optional<unsigned>,2>stickers,std::optional<bool> detached={}):v_(v),p_(p),visible_(f),stickers_(stickers){if(detached)v_.detached=*detached;}
  std::vector<BlastComponent>components(const Point&,double)override{return {};}
  Point toWorld(unsigned,const Point&p)override{return p;}
  std::vector<ImpactLayer>vehicleRay(const Point&a,const Point&b)override{std::vector<ImpactLayer>out;for(const auto&h:stock_native_bot_geometry::intersections(v_,p_,a,b)){ImpactLayer x(h.distance,h.angle_cosine,h.component,h.material);x.world_normal=h.world_normal;out.push_back(x);}return out;}
  bool visible(const Point&a,const Point&b,const Point&c)override{return visible_(a,b,c);}
  std::vector<CriticalLayer>internal(const Target&,const Point&,const Point&,bool,const std::vector<ImpactLayer>&)override{return {};}
- std::optional<std::uint64_t>sticker(const Target&,const Point&,const Point&,const std::vector<ImpactLayer>&,const std::optional<ArmorContact>&,int)override{return {};}
+ std::optional<std::uint64_t>sticker(const Target&,const Point&,const Point&,const std::vector<ImpactLayer>&,const std::optional<ArmorContact>&,int result)override{return stickers_[result==2?1:0];}
 };
 }

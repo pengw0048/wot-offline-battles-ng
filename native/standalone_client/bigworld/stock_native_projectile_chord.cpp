@@ -44,7 +44,7 @@ std::optional<Terminal> ChordResolver::trace(const Cursor&state,FlightMeta&meta,
         };
         if(world_.liveGeometry(r,*mid)){
             adjusted_start=adjust(chord.start,r.current.position,a->position);adjusted_end=adjust(chord.end,r.current.position,b->position);++metrics_.candidates;
-            accept(world_.collide(r,adjusted_start,adjusted_end,{}),0,1,{});continue;
+            auto query=world_.collide(r,adjusted_start,adjusted_end,{});if(!query.valid)return failure("live_component_matrix_unavailable");accept(std::move(query),0,1,{});continue;
         }
         const auto fractions=history_.sweep(key,begin,end);if(!fractions)return failure("historic_pose_unavailable");
         struct Candidate{double start,end;Point a,b;Pose pose;};std::vector<Candidate> candidates;

@@ -37,6 +37,9 @@ public:
     // compatibility mirrors after native acceptance and is safe to retry.
     bool mirrorOnly(const Destruction&);
     bool mappingChanged(double now);
+    // Publish native falling transforms to raw compatibility spatial cells
+    // before a support consumer may read them. No animation is advanced here.
+    bool synchronizeGeometry();
     TrustedTreeStatus trustedTreeStatus(const Key&);
     ContactResult commitTrustedTrees(const std::set<MaterialKey>& token,
         const Point& start,const Point& end,double end_yaw,double speed,double now);

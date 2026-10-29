@@ -25,6 +25,16 @@ public:
     PyObject*release(){auto*p=p_;p_=nullptr;return p;}
 };
 inline Ref retain(PyObject*p){checked(p);Py_INCREF(p);return Ref(p);}
+// #1513 constants and some descriptor producers are Python 2 old-style
+// classes/instances. GenericGetAttr does not read their class dictionaries.
+// Keep the direct new-style entity path while using their actual attribute ABI.
+inline PyObject* directAttribute(PyObject*object,PyObject*name){
+#if PY_MAJOR_VERSION < 3
+    if(PyClass_Check(object)||PyInstance_Check(object))
+        return PyObject_GetAttr(object,name);
+#endif
+    return PyObject_GenericGetAttr(object,name);
+}
 inline Ref dict(){return Ref(PyDict_New());}
 inline Ref list(){return Ref(PyList_New(0));}
 inline Ref text(const std::string&s){

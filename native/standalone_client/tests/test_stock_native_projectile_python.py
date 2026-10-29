@@ -29,9 +29,10 @@ native.change();rows=native.launch(dict(type='bot_state',launches=[dict(id=4,fir
 row=dict(kind='bot_shot',round_id=11,authority_epoch=7,projectile_id='shell',shooter_kind='bot',shooter_id=4,source_vehicle='ussr:T-34',shot_seq=1,burst_group_seq=1,burst_index=0,burst_count=1,shell_index=0,origin=[0.,0.,0.],velocity=[0.,0.,100.],range_origin=[0.,0.,0.],segment_origin=[0.,0.,0.],segment_velocity=[0.,0.,100.],gravity=10.,max_distance=500.,max_time_ms=20000,is_he=False,splash_radius=0.,penetration_factor=1.,launch_server_time_ms=0,segment_start_time_ms=0,ricochet_count=0,base_penetration_multiplier=1.)
 row['source_shot']=dict(speed=100.,gravity=10.,maxDistance=500.,piercingPower=[100.,80.],deadeye=False,shell=dict(kind='ARMOR_PIERCING',caliber=100.,damage=[200.,80.],explosionRadius=0.))
 assert native.advance(battle,1.)==[]
-assert native.event(row,1.);assert native.acks()==[[4,1]]
+assert native.event(row,1.);assert native.acks()==[[4,1]];native.vanish()
 rows=native.advance(battle,1.1);terminal=[r for r in rows if r[1]=='resolve'];assert len(terminal)==1,rows
 serial,kind,wire=terminal[0];assert wire['outcome']=='impact' and wire['hit_vehicle'];assert wire['direct']['target_id']==1 and wire['direct']['shot_result']==2 and wire['direct']['damage']>0,wire
+assert wire['direct']['damage_sticker']==401,wire
 work_names=('chords','scans','candidates','terminals');hit_stats=native.stats()
 assert all(hit_stats[name]>0 for name in work_names),hit_stats
 assert hit_stats['active']==0 and hit_stats['debt']==0.,hit_stats

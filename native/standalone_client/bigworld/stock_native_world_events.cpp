@@ -35,7 +35,14 @@ bool WorldEvents::install(PyObject*battle){
         if(battle_)throw p::Error("Native world event owner is already installed");auto bd=objectDict(battle),sensor=module("gui.mods.offline_lan_0922.destructibles_sensor"),authority=module("gui.mods.offline_lan_0922.destructibles_authority"),area=module("AreaDestructibles"),geometry=module("gui.mods.offline_lan_0922.native_destructibles");
         // Never leave an old per-body Python animator running beside native
         // authority. The bootstrap owner must be created before its first fall.
-        auto animator=p::value(area.get(),"g_destructiblesAnimator");if(animator.get()!=Py_None){auto bodies=p::value(animator.get(),"_DestructiblesAnimator__bodies");if(bodies.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(bodies.get());++i){auto body=p::item(bodies.get(),i);if(PyDict_Check(body.get())&&p::integral(body.get(),"spaceID",-1)==space_)throw p::Error("Native world installation encountered active stock destructible bodies; install before legacy authority advances");}}
+        auto animator=p::value(area.get(),"g_destructiblesAnimator");if(animator.get()!=Py_None){auto bodies=p::value(animator.get(),"_DestructiblesAnimator__bodies");if(bodies.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(bodies.get());++i){auto body=p::item(bodies.get(),i);if(PyDict_Check(body.get())&&p::integral(body.get(),"spaceID",-1)==space_)throw p::Error("Native world installation encountered active stock destructible bodies; install before legacy authority advances");}
+            if(bodies.get()==Py_None||p::size(bodies.get())==0){
+                // Exact #1513 __stopUpdate writes this flag before cancelling
+                // its native callback. Retire the empty legacy clock at the
+                // ownership boundary; native Runtime is the only new writer.
+                auto raw=objectDict(animator.get());p::set(raw.get(),"_DestructiblesAnimator__isUpdating",p::boolean(false));auto callback=p::value(raw.get(),"_DestructiblesAnimator__updateCallbackID");
+                if(callback.get()!=Py_None){p::Ref bigworld(PyImport_ImportModule("BigWorld"));auto cancel=p::value(bigworld.get(),"cancelCallback");if(!PyCFunction_Check(cancel.get()))throw p::Error("Native destructible callback retirement requires the reviewed builtin");p::Ref args(PyTuple_Pack(1,callback.get())),result(PyObject_CallObject(cancel.get(),args.get()));p::set(raw.get(),"_DestructiblesAnimator__updateCallbackID",p::retain(Py_None));}
+            }}
         auto state=dictionary(authority.get(),"_state"),sid=p::value(state.get(),"spaceID");const bool other=sid.get()!=Py_None&&p::wide(sid.get())!=space_;
         if(other){p::set(state.get(),"chunks",p::dict());p::set(state.get(),"entities",p::dict());registry_.skin.destroyed.clear();registry_.skin.speculative.clear();registry_.pending.clear();}
         p::set(state.get(),"spaceID",p::integer(space_));dictionary(state.get(),"chunks");dictionary(state.get(),"entities");
@@ -106,6 +113,7 @@ bool WorldEvents::mirrorOnly(const Destruction& event){
 bool WorldEvents::mappingChanged(double now){
     try{if(epoch_!=registry_.epoch)return false;const auto revision=scene_.streamRevision();if(revision==stream_revision_)return true;for(const auto&e:native_.acceptedOrders())scene_.refresh(e.key,registry_);native_.mappingChanged(now);stream_revision_=revision;for(auto i=replay_pending_.begin();i!=replay_pending_.end();)if(native_.applied(i->second)){mirror(i->second,false,true);i=replay_pending_.erase(i);}else ++i;return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
 }
+bool WorldEvents::synchronizeGeometry(){try{if(!battle_||epoch_!=registry_.epoch)return false;mirrorFallings();return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 TrustedTreeStatus WorldEvents::trustedTreeStatus(const Key&key){if(trusted_.count(key)||trusted_published_.count(key))return TrustedTreeStatus::Tree;for(const auto&e:registry_.journal)if(e.destruction.kind==Kind::Tree&&e.destruction.key==key)return TrustedTreeStatus::Tree;return scene_.trustedTree(key);}
 ContactResult WorldEvents::commitTrustedTrees(const std::set<MaterialKey>&token,const Point&start,const Point&end,double end_yaw,double speed,double now){
     ContactResult out;bool pending=false,hard=false;const Point a{{float(start[0]),float(start[1]),float(start[2])}},b{{float(end[0]),float(end[1]),float(end[2])}};const double dx=b[0]-a[0],dz=b[2]-a[2],yaw=dx*dx+dz*dz>1.e-16?std::atan2(dx,dz):end_yaw+(speed<0.?3.14159265358979323846:0.);

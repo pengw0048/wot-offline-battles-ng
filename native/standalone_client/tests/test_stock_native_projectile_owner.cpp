@@ -15,6 +15,11 @@ struct World:OwnerWorld {
     void confirmed(const Launch&)override{++confirmations;}
     std::vector<stock_native_world::Destruction> takeDestructions()override{return {};}
 };
+struct PlayerWorld:World {
+    std::string shooterKey(const Launch&l)const override{return "player:"+std::to_string(l.shooter);}
+    bool pipelined(const Launch&)const override{return true;}
+    std::optional<double> localLaunchTime(const Launch&,double now)const override{return now;}
+};
 Launch launch(const char*id){Launch l;l.id=id;l.vehicle="ussr:T-34";l.source_signature="frozen";l.shooter=1;l.sequence=l.group_sequence=1;l.burst_count=1;l.velocity=l.segment_velocity={0,0,100};l.gravity=10;l.maximum_distance=10000;l.maximum_ms=1000;l.penetration_factor=1;l.shot.shell.kind="ARMOR_PIERCING";return l;}
 int main(){
     {
@@ -42,5 +47,18 @@ int main(){
     assert(owner.observe(8,2000,2,2));world.block=true;l=launch("impact");l.launch_ms=2000;assert(owner.launch(l,2));owner.advance(2.1);dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].proposal&&dispatch[0].proposal->outcome=="impact");assert(world.resolutions==1);owner.acknowledge(dispatch[0].serial,false);owner.advance(2.2);assert(world.resolutions==1);assert(owner.terminalEvent(l.id,8));assert(owner.launch(l,2.2));assert(owner.flights().empty());
     assert(owner.observe(9,3000,3,3));world.block=false;world.fail=true;l=launch("failed");l.launch_ms=3000;assert(owner.launch(l,3));owner.advance(3.1);dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].proposal->outcome=="expired"&&!dispatch[0].proposal->direct);assert(owner.metrics().local_failures==1);
     auto bad=l;bad.velocity[1]=1;assert(!same_launch(l,bad));bad=l;bad.sequence=2;assert(!valid(bad));bad=l;bad.penetration_factor=std::nan("");assert(!valid(bad));
+    // The visible player queues progress and its terminal on reliable FIFO,
+    // without waiting for a server snapshot to advance the CAS base.
+    {
+        PlayerWorld player;Owner native(player);assert(native.observe(1,0,0,0));auto shot=launch("player");assert(native.launch(shot,0));assert(native.flights().at(shot.id).meta.shooter_key=="player:1");
+        assert(native.advance(.1));auto rows=native.dispatches();assert(rows.size()==1&&rows[0].kind=="progress");assert(native.acknowledge(rows[0].serial,true));
+        assert(native.advance(.2));rows=native.dispatches();assert(rows.size()==1&&rows[0].progress[0].base_ms==100&&rows[0].progress[0].checked_ms==200);assert(native.acknowledge(rows[0].serial,true));
+        player.block=true;assert(native.advance(.3));rows=native.dispatches();assert(rows.size()==1&&rows[0].kind=="resolve"&&rows[0].proposal->frontier.base_ms==200);const auto frozen=*rows[0].proposal;assert(native.acknowledge(rows[0].serial,false));
+        assert(native.advance(.4));rows=native.dispatches();assert(rows.size()==1&&rows[0].proposal->frontier.checked_ms==frozen.frontier.checked_ms&&rows[0].proposal->frontier.base_ms==200);assert(native.acknowledge(rows[0].serial,true));
+        // A full snapshot that precedes the reliable launch cannot acknowledge
+        // its absence. A canonical launch/event first establishes that owner.
+        native.reconcile({}, {},.4);assert(native.flights().size()==1);assert(native.acceptCanonical(shot,.4));native.reconcile({}, {},.5);assert(native.flights().empty());
+        auto rejected=launch("not-sent");assert(native.launch(rejected,.5));assert(native.discard(rejected.id));assert(native.flights().empty());
+    }
     std::cout<<"Native projectile owner lifecycle passed\n";
 }

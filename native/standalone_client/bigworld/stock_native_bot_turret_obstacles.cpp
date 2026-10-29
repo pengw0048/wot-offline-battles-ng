@@ -114,7 +114,7 @@ bool Obstacles::blocks(const stock_native_world::TurretSweep & sweep,const Movin
         const auto initial=worldBox(shape,start,start_angle),final=worldBox(shape,end,end_angle);const auto sweeps=componentSweeps(shape,start,start_angle,end,end_angle,pivot);
         double moving_radius=radius(shape);if(pivot){const auto radial=sub(start,pivot->first);moving_radius+=std::hypot(radial[0],radial[2])*(1.-std::cos(std::abs(pivot->second)*.5));}
         for(const auto*entry:ready) {
-            if(entry->record.support&&*entry->record.support==Owner{false,std::int64_t(sweep.actor)})continue;
+            if(entry->record.support&&*entry->record.support==Owner{sweep.human,std::int64_t(sweep.actor)})continue;
             if(segmentDistance(entry->record.rest,start,end)>std::pow(entry->radius+moving_radius,2.))continue;
             for(const auto&obstacle:entry->boxes) {
                 bool intersects=false;for(const auto&box:sweeps)intersects=intersects||offline_destructible::intersects(box,obstacle);if(!intersects)continue;

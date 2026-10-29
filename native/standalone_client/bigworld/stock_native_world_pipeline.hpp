@@ -91,6 +91,7 @@ struct TurretPose {
 struct TurretSweep {
     std::uint64_t actor=0;
     TurretPose start,end;
+    bool human=false;
 };
 class Scene {
 public:

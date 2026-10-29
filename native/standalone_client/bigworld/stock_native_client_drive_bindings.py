@@ -20,6 +20,31 @@ def prepend(source, name, statement):
 def battle(source):
     if "return native_client_drive.advance(" in source:
         raise ValueError("The native client-drive binding is already installed")
+    source = once(source, "        if record.get('local'):\n            if dead:\n                self._local_speed = 0.0\n",
+        "        if record.get('local'):\n            if dead:\n"
+        "                from . import native_client_drive\n"
+        "                native_client_drive.local_death(self)\n"
+        "                self._local_speed = 0.0\n")
+    source = once(source,
+        '                    owner._collision_feedback.observed(veh_a, veh_b, contact_time)\n',
+        '                    from . import native_client_drive\n'
+        '                    native_client_drive.observe_feedback(\n'
+        '                        owner, veh_a, veh_b, contact_time)\n')
+    source = prepend(source, '_observe_native_ram_contact', """        from . import native_client_drive
+        if native_client_drive.enabled(self):
+            return native_client_drive.observe_contact(
+                self, veh_a, veh_b, hit_point, contact_time)
+""")
+    for name, destructible in (('_ack_local_ram_contacts', False),
+                               ('_ack_local_destructible_contacts', True)):
+        source = prepend(source, name, """        from . import native_client_drive
+        if native_client_drive.enabled(self):
+            return native_client_drive.ack_contacts(self, snapshot, %s)
+""" % destructible)
+    source = prepend(source, '_drive_local', """        from . import native_client_drive
+        if native_client_drive.enabled(self):
+            return native_client_drive.drive_local(self, elapsed)
+""")
     source = prepend(source, '_update_suspension_vertical_motion', '''        from . import native_client_drive
         if native_client_drive.enabled(self):
             return native_client_drive.advance(
@@ -46,17 +71,17 @@ def battle(source):
     # the existing visible owner. Native support sees its ledger after commit.
     source = once(source, '    def _apply_destructible_event(self, event):\n',
         '    def _apply_destructible_event(self, event):\n'
-        '        result = self._apply_destructible_event_visible(event)\n'
         '        from . import native_client_drive\n'
         '        if native_client_drive.enabled(self):\n'
-        '            native_client_drive.ingress(self, event)\n'
-        '        return result\n\n'
+        '            return native_client_drive.ingress(self, event)\n'
+        '        return self._apply_destructible_event_visible(event)\n\n'
         '    def _apply_destructible_event_visible(self, event):\n')
     source = once(source, "            self.state = 'running'\n", "            from . import native_client_drive\n"
         "            if native_client_drive.enabled(self):\n"
         "                native_client_drive.prepare(self)\n"
         "            self.state = 'running'\n")
-    return source
+    return source + ("\nfrom . import native_client_drive\n"
+                     "native_client_drive.install_state_views(BattleRuntime)\n")
 
 
 _LEDGER_REVISION = '_native_client_drive_ledger_revision'

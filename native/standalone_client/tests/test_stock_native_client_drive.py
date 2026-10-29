@@ -198,8 +198,14 @@ class ClientDriveLifecycle(unittest.TestCase):
         original=(Path(SOURCE)/'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py').read_text()
         prepared=module.battle(original)
         self.assertEqual(prepared.count('return native_client_drive.advance('),1)
+        drive_method=prepared.split('    def _drive_local(self, elapsed):\n',1)[1].split('\n    def ',1)[0]
+        self.assertIn('return native_client_drive.drive_local(self, elapsed)',drive_method)
+        self.assertIn('native_client_drive.observe_contact(',prepared)
+        self.assertEqual(prepared.count('native_client_drive.ack_contacts(self, snapshot,'),2)
         self.assertEqual(prepared.count('native_client_drive.ingress(self, event)'),1)
-        self.assertIn('result = self._apply_destructible_event_visible(event)',prepared)
+        event_method=prepared.split('    def _apply_destructible_event(self, event):\n',1)[1].split('\n    def ',1)[0]
+        self.assertIn('return native_client_drive.ingress(self, event)',event_method)
+        self.assertNotIn('result = self._apply_destructible_event_visible(event)',event_method)
         self.assertIn('native_client_drive.restore(self)',prepared)
         self.assertIn('native_client_drive.retire(self)',prepared)
         with self.assertRaises(ValueError):module.battle(prepared)

@@ -25,7 +25,13 @@ std::vector<world::Box> boxes(PyObject*row){auto raw=p::value(row,"boxes");std::
         const double volume=std::abs(a[0]*(b[1]*c[2]-b[2]*c[1])+a[1]*(b[2]*c[0]-b[0]*c[2])+a[2]*(b[0]*c[1]-b[1]*c[0]));
         if(volume<=1.e-9)throw p::Error("Native player live box basis is singular");out.push_back(std::move(box));}
     if(out.empty())throw p::Error("Native player live geometry has no boxes");return out;}
-std::string filename(PyObject*row){auto v=p::value(row,"filename");auto out=p::string(v.get());for(auto&c:out){if(c=='\\')c='/';c=char(std::tolower(static_cast<unsigned char>(c)));}return out;}
+std::string normalizedFilename(std::string out){
+    for(auto&c:out){if(c=='\\')c='/';c=char(std::tolower(static_cast<unsigned char>(c)));}
+    const auto first=out.find_first_not_of(" \t\r\n\v\f");
+    if(first==std::string::npos)return {};
+    return out.substr(first,out.find_last_not_of(" \t\r\n\v\f")-first+1);
+}
+std::string filename(PyObject*row){auto v=p::value(row,"filename");return normalizedFilename(p::string(v.get()));}
 }
 void LocalGeometry::seedIsolation(PyObject*sensor){
     if(isolation_seeded_)throw p::Error("Native player isolation mirror is already seeded");
@@ -83,7 +89,7 @@ bool LocalGeometry::sync(PyObject*sensor,stock_native_world::Registry&registry,
         // it does not prove a loaded resource or authorize native destruction.
         const auto baked=registry.baked_instances.find(id);if(baked==registry.baked_instances.end())continue;
         auto kind=p::value(raw,"kind");const auto tag=p::string(kind.get());const auto expected=baked->second.kind;
-        if(filename(raw)!=baked->second.filename||
+        if(filename(raw)!=normalizedFilename(baked->second.filename)||
             (expected==world::Kind::Fragile?tag!="fragile":expected==world::Kind::Structure?tag!="structure":expected==world::Kind::Falling?tag!="falling":tag!="tree"))
             throw p::Error("Native player visible geometry identity changed");
         auto value=baked->second;value.boxes=boxes(raw);value.admission=world::Admission::Admitted;

@@ -60,6 +60,42 @@ _spec = importlib.util.spec_from_file_location(
     'stock_native_client_drive_bindings', Path(__file__).with_name('stock_native_client_drive_bindings.py'))
 drive_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(drive_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_query_bindings', Path(__file__).with_name('stock_native_client_query_bindings.py'))
+client_query_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_query_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_transport_bindings', Path(__file__).with_name('stock_native_client_transport_bindings.py'))
+transport_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(transport_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_environment_bindings', Path(__file__).with_name('stock_native_client_environment_bindings.py'))
+client_environment_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_environment_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_input_bindings', Path(__file__).with_name('stock_native_client_input_bindings.py'))
+client_input_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_input_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_weapon_runtime_bindings', Path(__file__).with_name('stock_native_client_weapon_runtime_bindings.py'))
+client_weapon_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_weapon_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_projectile_bindings', Path(__file__).with_name('stock_native_client_projectile_bindings.py'))
+client_projectile_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_projectile_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_vehicle_hooks_bindings', Path(__file__).with_name('stock_native_client_vehicle_hooks_bindings.py'))
+client_vehicle_hooks_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_vehicle_hooks_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_critical_bindings', Path(__file__).with_name('stock_native_client_critical_bindings.py'))
+client_critical_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_critical_bindings)
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_client_turret_presentation_bindings', Path(__file__).with_name('stock_native_client_turret_presentation_bindings.py'))
+client_turret_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_turret_bindings)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -233,7 +269,8 @@ ADAPTERS = {
     NATIVE_MATH_PATH: adapt_native_math,
     INSTANCE_GUARD_PATH: adapt_instance_guard,
     BOOTSTRAP_PATH: adapt_bootstrap,
-    COMPAT_PATH: adapt_compat,
+    COMPAT_PATH: lambda source: client_vehicle_hooks_bindings.compat(
+        client_query_bindings.compat(adapt_compat(source))),
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
@@ -247,12 +284,17 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
     lambda source: drive_bindings.authority(
         query_bindings.ADAPTERS['destructibles_authority.py'](source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = (
-    lambda source: replica_bindings.battle(drive_bindings.battle(
-        bot_bindings.battle(rotation_bindings.runtime(source)))))
+    lambda source: client_query_bindings.targeting_cleanup(client_turret_bindings.battle(client_critical_bindings.battle(client_projectile_bindings.battle(client_input_bindings.battle(client_weapon_bindings.battle(
+        client_environment_bindings.battle(replica_bindings.battle(drive_bindings.battle(
+            client_query_bindings.battle(bot_bindings.battle(rotation_bindings.runtime(source)))))))))))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
-ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = snapshot_bindings.delta
-ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = snapshot_bindings.client
+ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
+    lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
+ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
+    lambda source: transport_bindings.client(snapshot_bindings.client(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snapshot
+ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/turret_obstacles.py'] = client_query_bindings.turrets
+ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/detached_turret.py'] = client_turret_bindings.presenter
 
 
 def stage_runtime(source, staged):
@@ -286,6 +328,12 @@ def stage_runtime(source, staged):
         ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
         ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
         ('stock_native_client_replica.py', 'native_client_replica.py'),
+        ('stock_native_client_query.py', 'native_client_query.py'),
+        ('stock_native_client_environment.py', 'native_client_environment.py'),
+        ('stock_native_client_weapon_runtime.py', 'native_client_weapon_runtime.py'),
+        ('stock_native_client_projectile.py', 'native_client_projectile.py'),
+        ('stock_native_client_critical.py', 'native_client_critical.py'),
+        ('stock_native_client_turret_presentation.py', 'native_client_turret_presentation.py'),
         ('stock_native_client_drive_facade.py', 'native_client_drive.py'),
         ('stock_native_destructible_present.py', 'stock_native_destructible_present.py'),
     )

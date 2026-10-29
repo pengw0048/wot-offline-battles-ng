@@ -42,7 +42,7 @@ std::optional<std::int64_t> optionalInteger(PyObject*raw,const char*key){auto va
 }
 struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::DetachedHits {
     struct CachedRecord {Record record;std::unique_ptr<p::Ref> raw,entity;};
-    struct FrozenLaunch {LaunchRecord source;damage::LaunchDescriptor descriptor;Point velocity{};double factor=1.;std::optional<std::int64_t> epoch;};
+    struct FrozenLaunch {LaunchRecord source;damage::LaunchDescriptor descriptor;Point velocity{};double factor=1.;std::optional<std::int64_t> epoch;std::array<std::optional<unsigned>,2> stickers;};
     world::Registry& registry;
     world::Scene& scene;
     geo::Vehicles& vehicles;
@@ -65,6 +65,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     std::map<std::int64_t,std::int64_t> confirmed_sequences;
     std::map<std::int64_t,std::set<std::int64_t>> confirmations;
     std::map<std::pair<std::int64_t,std::int64_t>,FrozenLaunch> launch_payloads;
+    std::map<std::string,std::array<std::optional<unsigned>,2>> source_stickers;
     std::vector<LaunchRecord> launch_batch;
     std::set<std::int64_t> blocked_bots;
     std::map<std::int64_t,std::int64_t> next_sequences;
@@ -117,7 +118,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         const auto&descriptor=s.projectile[pose.siege==2?1:0];if(!descriptor)throw p::Error("Projectile target descriptor unavailable");damage::Target out;if(!damage::readProjectileTargetState(battle->get(),r.raw->get(),r.entity->get(),*descriptor,out))throw p::Error("Projectile target state unavailable");out.position=pose.position;out.stun_config.minimum_duration=stun.minimum_duration;out.stun_config.factors=stun.factors;return out;
     }
     damage::GeometryWorld geometry(const Record&r,const bots::ServiceEntity&s,const Pose&pose,bool historical,const Flight&flight,double at){
-        const auto stickers=s.projectile_stickers[pose.siege==2?1:0].find(int(flight.canonical.shell_index));std::array<std::optional<unsigned>,2> values{};if(stickers!=s.projectile_stickers[pose.siege==2?1:0].end())values=stickers->second;
+        std::array<std::optional<unsigned>,2> values{};const auto frozen=source_stickers.find(flight.canonical.id);if(frozen!=source_stickers.end())values=frozen->second;
         // Installed attachment identity is changed only at the resource owner.
         // A historical pose never claims to reconstruct detached attachments.
         return damage::GeometryWorld(s.geometry[pose.siege==2?1:0],s.interior[pose.siege==2?1:0],geometryPose(pose,historical),[this,at](const Point&a,const Point&b,const Point&c){return visible(a,b,c,at);},values,r.detached);
@@ -141,6 +142,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         return result;
     }
     void confirmed(const Launch&launch)override{
+        const auto frozen=launch_payloads.find({launch.shooter,launch.sequence});if(frozen!=launch_payloads.end())source_stickers.emplace(launch.id,frozen->second.stickers);
         auto&last=confirmed_sequences[launch.shooter];if(launch.sequence<=last)return;auto&pending=confirmations[launch.shooter];pending.insert(launch.sequence);
         while(pending.count(last+1)){const auto next=last+1;if(!runtime.acknowledgeLaunch(launch.shooter,next))throw p::Error("Canonical native Bot launch acknowledgement is out of order");pending.erase(next);launch_payloads.erase({launch.shooter,next});last=next;}
         if(pending.empty())confirmations.erase(launch.shooter);
@@ -188,7 +190,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
             const auto&r=launch_batch[launch_cursor++];const auto bot=r.actor.id,sequence=r.edge.shot_seq;const auto last=confirmed_sequences[bot];if(sequence<=last||blocked_bots.count(bot))continue;const auto next=next_sequences.find(bot);const auto expected=next==next_sequences.end()?last+1:next->second;if(sequence!=expected){blocked_bots.insert(bot);continue;}
             const auto key=std::make_pair(bot,sequence);auto frozen=launch_payloads.find(key);
             if(frozen==launch_payloads.end())try{
-                const auto*s=services.find({ActorKind::Bot,bot});const auto state=runtime.actors().find(bot);if(!s||state==runtime.actors().end()||!s->available||!s->record_ready||!r.has_origin||r.launch_time_us<0)throw p::Error("Bot launch source unavailable");const auto&shots=s->launch_shots[state->second.mode==1?1:0];if(r.edge.shell<0||std::size_t(r.edge.shell)>=shots.size())throw p::Error("Bot launch shell unavailable");FrozenLaunch launch;launch.source=r;launch.descriptor=shots[std::size_t(r.edge.shell)];const auto&d=launch.descriptor;const double horizontal=std::cos(r.pitch);Point direction{std::sin(r.yaw)*horizontal,std::sin(r.pitch),std::cos(r.yaw)*horizontal};const double n=length({},direction);if(n<=1e-6||d.speed<=0||d.gravity<=0||d.maximum<=0)throw p::Error("Bot launch trajectory invalid");for(unsigned i=0;i<3;++i)launch.velocity[i]=direction[i]*d.speed/(r.artillery?1.:n);
+                const auto*s=services.find({ActorKind::Bot,bot});const auto state=runtime.actors().find(bot);if(!s||state==runtime.actors().end()||!s->available||!s->record_ready||!r.has_origin||r.launch_time_us<0)throw p::Error("Bot launch source unavailable");const auto&shots=s->launch_shots[state->second.mode==1?1:0];if(r.edge.shell<0||std::size_t(r.edge.shell)>=shots.size())throw p::Error("Bot launch shell unavailable");FrozenLaunch launch;launch.source=r;launch.descriptor=shots[std::size_t(r.edge.shell)];const auto cosmetics=s->projectile_stickers[state->second.mode==1?1:0].find(r.edge.shell);if(cosmetics!=s->projectile_stickers[state->second.mode==1?1:0].end())launch.stickers=cosmetics->second;const auto&d=launch.descriptor;const double horizontal=std::cos(r.pitch);Point direction{std::sin(r.yaw)*horizontal,std::sin(r.pitch),std::cos(r.yaw)*horizontal};const double n=length({},direction);if(n<=1e-6||d.speed<=0||d.gravity<=0||d.maximum<=0)throw p::Error("Bot launch trajectory invalid");for(unsigned i=0;i<3;++i)launch.velocity[i]=direction[i]*d.speed/(r.artillery?1.:n);
                 if(r.artillery){if(r.maximum_time_ms<=0||r.maximum_time_ms>20000||r.gravity!=d.gravity||r.maximum_distance!=d.maximum)throw p::Error("Bot artillery launch descriptor changed");for(unsigned i=0;i<3;++i)if(std::abs(r.velocity[i]-launch.velocity[i])>1e-7)throw p::Error("Bot artillery launch velocity changed");launch.velocity=r.velocity;}
                 launch.factor=damage::sampleShellValue(1.,random);launch.epoch=optionalInteger(client->get(),"authority_epoch");frozen=launch_payloads.emplace(key,std::move(launch)).first;
             }catch(const std::exception&e){blocked_bots.insert(bot);error("launch",e);continue;}
@@ -200,6 +202,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     PyObject* advance(PyObject*raw,double at,bool force){
         current(raw);now=at;refresh();
         const auto start=std::chrono::steady_clock::now();owner.advance(at,force);
+        for(auto at=source_stickers.begin();at!=source_stickers.end();)if(!owner.flights().count(at->first))at=source_stickers.erase(at);else ++at;
         const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         const auto& metrics=owner.lastAdvanceMetrics();auto perf=p::dict();
         p::set(perf.get(),"active",p::integer(metrics.cursor.active));

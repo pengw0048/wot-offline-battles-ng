@@ -27,13 +27,34 @@ int main(){Py_Initialize();{
     assert(visibleTreeKey(tree_pair.get())==world::Key(1,7));assert(!visibleTreeKey(module_triple.get()));
     auto sensor=p::dict();p::set(sensor.get(),"__builtins__",p::retain(PyEval_GetBuiltins()));
     script(sensor.get(),"g_offh_destr_contact_bins={}\ng_offh_destr_instances={}\ng_offh_destr_spatial_revision=0\ng_offh_destr_spatial_published_revision=0\ng_offh_destr_spatial_cell_generations={}\n");
-    world::Registry registry;world::Instance value;value.kind=world::Kind::Fragile;value.filename="exact/fragile.model";value.descriptor_valid=true;
+    // The DTO retains the cache's original descriptor spelling; the live
+    // sensor key uses its normalized resource spelling.
+    world::Registry registry;world::Instance value;value.kind=world::Kind::Fragile;value.filename="Exact/Fragile.model";value.descriptor_valid=true;
     world::Box box;box.center={0.,0.,0.};box.axes={{1.,0.,0.},{0.,1.,0.},{0.,0.,1.}};value.boxes={box};registry.putBaked({1,7},value);registry.skin.destroyed.insert({1,7,-1});
     Scene scene;LocalGeometry sync;world::Pipeline pipeline(registry,scene,0);SceneGround ground(pipeline);const std::array<Point,2> region{{{-2.,0.,-2.},{2.,0.,2.}}};
     assert(sync.sync(sensor.get(),registry,scene,region));assert(registry.instances.empty());assert(ground.column(0.,0.,-1.,2.,{})==0.);
     scene.ready=true;++scene.revision;
     script(sensor.get(),"g_offh_destr_contact_bins={(0,0):set([(1,7)])}\ng_offh_destr_instances={(1,7):dict(kind='fragile',filename='exact/fragile.model',boxes=[((0.,0.,0.),((1.,0.,0.),(0.,1.,0.),(0.,0.,1.)),None)])}\ng_offh_destr_spatial_revision=1\ng_offh_destr_spatial_published_revision=1\ng_offh_destr_spatial_cell_generations={(0,0):1}\n");
     assert(sync.sync(sensor.get(),registry,scene,region));assert(registry.instances.count({1,7}));assert(registry.skin.contact_bins.at({0,0}).count({1,7}));assert(ground.column(0.,0.,-1.,2.,{})==0.);
+    assert(registry.instances.at({1,7}).filename=="Exact/Fragile.model");
+    // Spelling is normalized only for identity comparison, never before
+    // forwarding the original filename to the case-sensitive resource cache.
+    for(const char* spelling:{"  EXACT\\FRAGILE.MODEL  ","exact/fragile.model"}){
+        auto rows=p::value(sensor.get(),"g_offh_destr_instances");p::Ref id(Py_BuildValue("(ii)",1,7));auto* row=PyDict_GetItem(rows.get(),id.get());p::set(row,"filename",p::text(spelling));++scene.revision;
+        assert(sync.sync(sensor.get(),registry,scene,region));
+        assert(registry.instances.at({1,7}).filename=="Exact/Fragile.model");
+    }
+    {
+        auto rows=p::value(sensor.get(),"g_offh_destr_instances");p::Ref id(Py_BuildValue("(ii)",1,7));auto* row=PyDict_GetItem(rows.get(),id.get());
+        for(const char* different:{"exact/other.model","different/fragile.model"}){
+            p::set(row,"filename",p::text(different));++scene.revision;bool rejected=false;
+            try{sync.sync(sensor.get(),registry,scene,region);}catch(const p::Error&){rejected=true;}
+            assert(rejected);
+        }
+        p::set(row,"filename",p::text("exact/fragile.model"));p::set(row,"kind",p::text("falling"));++scene.revision;bool rejected=false;
+        try{sync.sync(sensor.get(),registry,scene,region);}catch(const p::Error&){rejected=true;}
+        assert(rejected);p::set(row,"kind",p::text("fragile"));assert(sync.sync(sensor.get(),registry,scene,region));
+    }
     const auto calls=scene.calls;assert(!sync.sync(sensor.get(),registry,scene,region));assert(scene.calls==calls);
     script(sensor.get(),"g_offh_destr_spatial_revision=2\ng_offh_destr_spatial_published_revision=2\ng_offh_destr_spatial_cell_generations[(100,100)]=1\n");
     assert(!sync.sync(sensor.get(),registry,scene,region));assert(scene.calls==calls);

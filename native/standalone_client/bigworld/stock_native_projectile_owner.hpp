@@ -42,7 +42,10 @@ struct Flight {
     Launch canonical;
     FlightMeta meta;
     std::optional<double> anchor;
-    double acked_distance=0,acked_loss=0;
+    double acked_distance=0,acked_loss=0,queued_distance=0,queued_loss=0;
+    std::int64_t queued_ms=0;
+    bool canonical_seen=false;
+    std::optional<Launch> continuation;
     std::vector<stock_native_world::Destruction> destructibles;
     std::optional<Frontier> progress_pending;
     std::optional<Proposal> terminal;
@@ -54,6 +57,13 @@ public:
     virtual std::vector<Record> records()=0;
     virtual damage::Resolution resolve(Flight&,const Cursor&,const TerminalData&)=0;
     virtual void confirmed(const Launch&){}
+    // Player clients own their shells and publish reliable FIFO CAS frontiers.
+    // The default retains the hidden worker's canonical-acknowledged policy.
+    virtual std::string shooterKey(const Launch&l)const{return "bot:"+std::to_string(l.shooter);}
+    virtual bool pipelined(const Launch&)const{return false;}
+    virtual std::optional<double> localLaunchTime(const Launch&,double)const{return {};}
+    virtual double wireValue(double value)const{return value;}
+    virtual bool historyRecord(const Record&r)const{return r.started&&!r.tombstone&&!r.local;}
     virtual std::map<std::string,double> presentationOffsets(const Launch&,double){return {};}
     virtual std::vector<stock_native_world::Destruction> takeDestructions()=0;
 };
@@ -80,7 +90,7 @@ class Owner:private CursorSink {
     std::map<std::uint64_t,Dispatch> outbox_;
     std::uint64_t next_serial_=1;
     std::optional<std::int64_t> epoch_,server_ms_;
-    double server_local_=0,next_progress_=0;
+    double server_local_=0,next_progress_=0,last_now_=0;
     OwnerMetrics metrics_;
     AdvanceMetrics last_advance_;
     bool setEpoch(std::int64_t,double);
@@ -92,16 +102,21 @@ class Owner:private CursorSink {
     Frontier frontier(const Flight&,const Cursor&)const;
     void pending();
     void progress();
-    bool admit(const Launch&,double,bool restore);
+    bool admit(const Launch&,double,bool restore,std::optional<double> local_anchor={});
+    void continuations(double);
 public:
     explicit Owner(OwnerWorld&w):world_(w),resolver_(history_,w),cursors_(128){}
     bool observe(std::optional<std::int64_t> epoch,std::optional<std::int64_t> server_ms,double local_anchor,double now);
-    bool launch(const Launch&,double now);
+    bool launch(const Launch&,double now,std::optional<double> local_anchor={});
+    bool discard(const std::string&);
+    bool localFailure(const std::string&);
+    bool acceptCanonical(const Launch&l,double now){return admit(l,now,true);}
     bool reconcile(const std::vector<Launch>&,const std::set<std::string>& reported,double now);
     bool terminalEvent(const std::string&,std::optional<std::int64_t> epoch={});
+    bool sample(double now);
     bool advance(double,bool force=false);
     std::vector<Dispatch> dispatches()const;
-    bool acknowledge(std::uint64_t,bool sent);
+    bool acknowledge(std::uint64_t,bool sent,std::optional<double> now={});
     const OwnerMetrics& metrics()const{return metrics_;}
     const AdvanceMetrics& lastAdvanceMetrics()const{return last_advance_;}
     std::optional<Pose> historic(const std::string&key,double at)const{return history_.at(key,at);}

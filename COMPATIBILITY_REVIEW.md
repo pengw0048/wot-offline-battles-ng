@@ -4032,16 +4032,73 @@ fields; simulation publication retains the complete actor mirror.
 render-time interpolation, matrix/aim publication and track feed. Snapshot
 health, visibility and asynchronous entity creation keep their existing
 lifecycle boundary. Native presentation checks current engine/entity identity,
-and round changes discard the previous history. Stock track and engine effects
-remain explicit callbacks; synchronous retirement cannot destroy an entry in
+and round changes discard the previous history. Native track/engine publication
+uses the reviewed appearance fields and providers. Discrete stock effects keep
+their lifecycle boundary; synchronous retirement cannot destroy an entry in
 the middle of its native call.
+Its state reader projects only the envelope fields consumed by snapshot and
+manifest reconciliation. Actor fields remain complete, including unknown
+presentation fields; the original accepted message remains available to world,
+projectile and other owners without a second native parse of their payloads.
+Each accepted actor has one immutable native value version shared by current
+state, interpolation samples, collision receipts and lifecycle events. Retained
+history keeps its original version when a later snapshot changes nested data.
+Generic values allocate object trees only for object fields. Primitive/shared
+values and moves do not allocate empty MSVC map heads; nested arrays reserve
+their received extent, and value/sample/event relocation is non-throwing.
 
-`offline_client_drive_native` owns the visible player's ground-column queries,
-support memory and vertical/suspension integration. It retains the fixed local
-player laws, including rollback and landing witnesses. Its query scene follows
-the existing accepted/speculative destruction ledger; it does not create a
-second destruction or animation owner. Horizontal controls, player projectile
-integration, damage presentation and transport retain their existing owners.
-The native replica and suspension differential fixtures exercise the fixed
-Python laws; only a Windows run establishes the corresponding engine lifecycle
-and frame-time behavior.
+`offline_client_drive_native` owns the visible player's complete movement step:
+horizontal drive and rotation, ground-column queries, support memory,
+vertical/suspension integration, vehicle and detached-turret contacts, landing
+witnesses, local presentation and input publication. It preserves the fixed
+player laws and their operation order. Its query scene follows the existing
+accepted/speculative destruction ledger. Native query resources may install
+before the first pose, but a collision candidate requires a current admitted
+pose and the matching live entity. A resource becoming ready after initial
+registration must refresh that same owner.
+The pinned navigation loader packs hazard cells into a Python `bytearray`;
+the cold native reader preserves unsigned byte values as well as unpacked
+list/tuple cells. The general event-sequence boundary remains list/tuple only.
+Live geometry compares the sensor's normalized resource spelling with a
+normalized copy of the descriptor filename; the original filename remains
+intact for the exact resource-cache lookup.
+The query resource key retains the filter, compound and persistent appearance
+providers together with descriptor/BSP owners and lifecycle flags. The filter's
+body/ground matrix getters allocate new provider wrappers on each access, so
+those temporary wrapper addresses cannot invalidate geometry. Dynamic matrix
+values remain live inputs to collision; real owner replacements reinstall the
+dependent drive and projectile resources.
+Legacy position/speed consumers read the current native player state through
+C getsets. Cold setup, worker and replay storage keep their original dictionary
+path; these reads never create a driver. Local death explicitly stops the native
+driver before the stock health transition completes.
+
+Separate persistent native owners advance the player's weapon and projectiles,
+resolve terminal hits, maintain contact/landing publication frontiers, update
+environment observations and local track repair, and present detached turrets.
+The LAN server still confirms shared outcomes; the hidden worker still owns
+Bot motion and Bot projectiles. Accepted shots freeze their shell and effect
+identity. Contact barriers and one-shot reports survive transport backpressure
+and retain their original order. Repair reports retain the server revision
+against which they were produced.
+Expert tracking, target selection, outline hysteresis and target-lock
+validation also run in native owners using the shared admitted actor state.
+The stock mouse-targeting matrix remains the input producer. GUI drawing,
+focus changes and stock auto-aim calls occur only at their discrete edges;
+targeting retires before the actor state and query resources are released.
+
+The prepared Python adapters retain cold stock descriptor/resource producers,
+entity and GUI lifecycle entry points, and discrete effect calls. Native input
+and Vehicle hooks preserve those stock interfaces without re-entering the
+former per-frame gameplay implementations. Native owners retire with their
+battle and entity identities, including synchronous stock callback retirement.
+The attribute boundary distinguishes Python 2 old-style classes/instances
+from native/new-style entities: `PyObject_GenericGetAttr` cannot read the
+former's class dictionaries. The exact `constants.VEHICLE_MISC_STATUS` producer
+and an actual Python 2 bridge fixture cover that distinction.
+The exact vehicle reader produces `Math.Vector3` turret mount points, so shot
+installation uses the native vector conversion rather than a list/tuple reader.
+The host differential fixtures exercise the pinned Python laws, publication
+retry order and startup/resource transitions. They do not establish rendering,
+native memory ownership, gameplay feel or frame-time improvements; those
+boundaries require the matching Windows client and exercised scene.

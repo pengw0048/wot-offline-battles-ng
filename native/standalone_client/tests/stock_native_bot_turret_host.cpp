@@ -20,8 +20,11 @@ int main(int argc,char**){std::cout<<std::setprecision(17);
         stock_native_world::TurretSweep sweep;sweep.actor=1;sweep.start.position={{0.,0.,-5.}};sweep.end.position={{0.,0.,5.}};
         assert(!obstacles.blocks(sweep,moving,1999.));assert(obstacles.blocks(sweep,moving,2000.));
         row.motion_sequence=1;row.support=Owner{false,1};assert(obstacles.put(row,detached));assert(!obstacles.blocks(sweep,moving,2000.));assert(obstacles.navigation(2000.).empty());
-        row.motion_sequence=2;row.support.reset();row.has_body=true;assert(obstacles.put(row,detached));assert(!obstacles.blocks(sweep,moving,2000.));
-        row.motion_sequence=3;row.has_body=false;row.landed=false;assert(obstacles.put(row,detached));assert(obstacles.active()==0);
+        sweep.human=true;assert(obstacles.blocks(sweep,moving,2000.));
+        row.motion_sequence=2;row.support=Owner{true,1};assert(obstacles.put(row,detached));assert(!obstacles.blocks(sweep,moving,2000.));
+        sweep.human=false;assert(obstacles.blocks(sweep,moving,2000.));
+        row.motion_sequence=3;row.support.reset();row.has_body=true;assert(obstacles.put(row,detached));assert(!obstacles.blocks(sweep,moving,2000.));
+        row.motion_sequence=4;row.has_body=false;row.landed=false;assert(obstacles.put(row,detached));assert(obstacles.active()==0);
         bool rejected=false;try{componentSweeps(box,{{NAN,0.,0.}},{},{},{},{});}catch(...){rejected=true;}assert(rejected);
         std::cout<<"ok\n";return 0;
     }

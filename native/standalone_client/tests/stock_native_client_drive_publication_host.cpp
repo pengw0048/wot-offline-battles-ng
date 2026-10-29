@@ -1,0 +1,11 @@
+#define WOT_CLIENT_REPLICA_HOST_BUILD
+#include "stock_native_client_state.cpp"
+#include "stock_native_client_drive_publication.cpp"
+namespace {namespace d=stock_native_client_drive;namespace cs=stock_native_client_state;namespace p=stock_native_bot_python;const char*tag="drive.publication.fixture";
+void destroy(PyObject*c){delete static_cast<d::PublicationLedger*>(PyCapsule_GetPointer(c,tag));}
+PyObject*create(PyObject*,PyObject*){return PyCapsule_New(new d::PublicationLedger,tag,destroy);}
+PyObject*queue(PyObject*,PyObject*args){try{PyObject*c,*start,*end,*token;double yaw,end_yaw,speed,dt;if(!PyArg_ParseTuple(args,"OOdOdddO",&c,&start,&yaw,&end,&end_yaw,&speed,&dt,&token))return nullptr;auto*owner=static_cast<d::PublicationLedger*>(PyCapsule_GetPointer(c,tag));if(!owner)return nullptr;stock_native_world::ContactResult detail;detail.requires_commit=true;const auto rows=cs::read(token);for(const auto&row:rows.array)detail.contacts.insert({std::uint32_t(row.array[0].numeric()),std::uint32_t(row.array[1].numeric()),row.array[2].kind==cs::Value::Kind::Null?-1:std::int64_t(row.array[2].numeric())});const bool accepted=owner->queueDestructible(detail,p::numbers<3>(start),yaw,p::numbers<3>(end),end_yaw,speed,dt);p::Ref value(cs::write(owner->destructible_contacts));return Py_BuildValue("(ON)",accepted?Py_True:Py_False,value.release());}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_RuntimeError,e.what());return nullptr;}}
+PyObject*ack(PyObject*,PyObject*args){try{PyObject*c,*exact,*rejected;long admitted,resolved;if(!PyArg_ParseTuple(args,"OllOO",&c,&admitted,&resolved,&exact,&rejected))return nullptr;auto*owner=static_cast<d::PublicationLedger*>(PyCapsule_GetPointer(c,tag));if(!owner)return nullptr;std::vector<d::ID>a,b;for(const auto&v:cs::read(exact).array)a.push_back(d::ID(v.numeric()));for(const auto&v:cs::read(rejected).array)b.push_back(d::ID(v.numeric()));owner->acknowledgeDestructible(admitted,resolved,a,b);return cs::write(owner->destructible_contacts);}catch(const std::exception&e){PyErr_SetString(PyExc_RuntimeError,e.what());return nullptr;}}
+PyMethodDef methods[]={{"create",create,METH_NOARGS,""},{"queue",queue,METH_VARARGS,""},{"ack",ack,METH_VARARGS,""},{nullptr,nullptr,0,nullptr}};
+}
+extern "C" void initclient_drive_publication_test(){Py_InitModule("client_drive_publication_test",methods);}

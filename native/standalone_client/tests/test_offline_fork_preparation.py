@@ -130,6 +130,12 @@ class OfflineForkPreparationTests(unittest.TestCase):
             'stock_native_world_snapshot.py': 'stock_native_world_snapshot.py',
             'stock_native_destructible_present.py': 'stock_native_destructible_present.py',
             'stock_snapshot_static.py': 'stock_snapshot_static.py',
+            'native_client_query.py': 'stock_native_client_query.py',
+                'native_client_environment.py': 'stock_native_client_environment.py',
+                'native_client_weapon_runtime.py': 'stock_native_client_weapon_runtime.py',
+                'native_client_projectile.py': 'stock_native_client_projectile.py',
+                'native_client_critical.py': 'stock_native_client_critical.py',
+                'native_client_turret_presentation.py': 'stock_native_client_turret_presentation.py',
             'native_client_replica.py': 'stock_native_client_replica.py',
             'native_client_drive.py': 'stock_native_client_drive_facade.py',
         }

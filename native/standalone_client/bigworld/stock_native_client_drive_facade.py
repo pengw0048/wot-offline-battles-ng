@@ -1,10 +1,15 @@
-"""Visible-player lifecycle and rare impact effects for native suspension.
-
-The native owner samples columns, filters the real scene, retains support and
-integrates every suspension slice. Horizontal input/contact ownership remains
-in the fixed local-player adapter. No ray or numeric-policy callback is passed.
-"""
+"""Lifecycle seams for the persistent native visible-player owner."""
 import offline_client_drive_native as native
+
+
+def install_state_views(runtime_class):
+    return native.install_state_views(runtime_class)
+
+
+def local_death(battle):
+    if enabled(battle) and not battle._replay_mode:
+        return native.local_death(battle)
+    return False
 
 
 def enabled(battle):
@@ -54,3 +59,29 @@ def advance(battle, entity, position, yaw, dt, height_delta, speed_delta):
         battle._landing_contact_normal = normal
         battle._apply_landing_impact(entity, impact, normal_impact=True)
     return result
+
+
+def drive_local(battle, elapsed):
+    return native.drive_local(prepare(battle), battle, elapsed)
+
+
+def ack_contacts(battle, snapshot, destructible):
+    owner = getattr(battle, '_native_client_drive_owner', None)
+    if owner is None:
+        return False
+    return native.ack_contacts(owner, battle, snapshot, destructible)
+
+
+def observe_contact(battle, first, second, hit, contact_time):
+    owner = getattr(battle, '_native_client_drive_owner', None)
+    if owner is None:
+        return False
+    return native.observe_contact(
+        owner, battle, first, second, hit, contact_time)
+
+
+def observe_feedback(battle, first, second, contact_time):
+    owner = getattr(battle, '_native_client_drive_owner', None)
+    if owner is None:
+        return False
+    return native.observe_feedback(owner, battle, first, second, contact_time)

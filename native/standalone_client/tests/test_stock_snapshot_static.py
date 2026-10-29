@@ -30,6 +30,10 @@ class SnapshotStaticTests(unittest.TestCase):
             for name in ('snapshot_delta', 'lan_client'):
                 original = Path(source) / 'src/res/scripts/client/gui/mods/offline_lan_0922' / (name + '.py')
                 (package / ('_stock_snapshot_original_' + name + '.py')).write_text(original.read_text(), encoding='utf-8')
+                # This fixture exercises the immutable Python value contract
+                # independently of the native decoder tested by its CAPI host.
+                adapter = prepare.snapshot_bindings.delta if name == 'snapshot_delta' else prepare.snapshot_bindings.client
+                (package / (name + '.py')).write_text(adapter(original.read_text()), encoding='utf-8')
             for name in ('gui/__init__.py', 'gui/mods/__init__.py'):
                 path = target / name
                 if not path.exists():

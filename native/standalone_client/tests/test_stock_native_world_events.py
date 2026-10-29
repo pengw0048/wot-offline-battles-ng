@@ -12,9 +12,12 @@ for name in ('gui','gui.mods','gui.mods.offline_lan_0922'):
 sensor=types.ModuleType('gui.mods.offline_lan_0922.destructibles_sensor');sensor.g_offh_destr_runtime_space=41
 authority=types.ModuleType('gui.mods.offline_lan_0922.destructibles_authority');authority._state=dict(spaceID=41,chunks={},entities={})
 geometry=types.ModuleType('gui.mods.offline_lan_0922.native_destructibles');geometry._owner=None;geometry._disabled=False
-area=types.ModuleType('AreaDestructibles');area.g_destructiblesAnimator=Box(_DestructiblesAnimator__bodies=[])
+area=types.ModuleType('AreaDestructibles');area.g_destructiblesAnimator=Box(_DestructiblesAnimator__bodies=[],_DestructiblesAnimator__isUpdating=True,_DestructiblesAnimator__updateCallbackID=42)
+bigworld=types.ModuleType('BigWorld');bigworld.cancelCallback=native.cancel;sys.modules['BigWorld']=bigworld
 for m in (sensor,authority,geometry,area):sys.modules[m.__name__]=m
 battle=Box();packets=native.run(battle)
+assert native.cancelled==[(42,)] and area.g_destructiblesAnimator._DestructiblesAnimator__isUpdating is False
+assert area.g_destructiblesAnimator._DestructiblesAnimator__updateCallbackID is None
 for packet in packets:
     for seq,event in packet:
         assert seq>0 and set(event)==set(('destructible_kind','chunk_id','item_index','x','y','z','fall_yaw','speed','is_shot'))

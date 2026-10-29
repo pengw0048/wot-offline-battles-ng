@@ -18,26 +18,32 @@ def prepend(source, name, statement):
 
 
 def snapshot(source):
-    source = once(source,
-        '        return output\n\n    def _sequence(self, message):',
-        '        from . import native_client_replica\n'
-        '        native_client_replica.ingest(self)\n'
-        '        return output\n\n'
-        '    def _sequence(self, message):')
-    source = once(source,
-        '        return output\n\n    def _advance_wreck(self, record, key, alpha, output):',
-        '        from . import native_client_replica\n'
-        '        native_client_replica.ingest(self)\n'
-        '        return output\n\n'
-        '    def _advance_wreck(self, record, key, alpha, output):')
-    return prepend(source, 'advance', '''        from . import native_client_replica
-        native_output = native_client_replica.advance(self, now)
+    # These early returns remove the Python header/upsert/history pipeline for
+    # visible clients. The hidden worker retains its independent native adapter.
+    for name, manifest in (('manifest', True), ('snapshot', False)):
+        source = prepend(source, name, """        from . import native_client_replica
+        native_output = native_client_replica.receive(self, message, manifest=%s)
+        if native_output is not None:
+            return native_output
+""" % manifest)
+    source = prepend(source, 'take_motion_probes', '''        from . import native_client_replica
+        native_output = native_client_replica.probes(self, now)
         if native_output is not None:
             return native_output
 ''')
+    return prepend(source, 'advance', """        from . import native_client_replica
+        native_output = native_client_replica.advance(self, now)
+        if native_output is not None:
+            return native_output
+""")
 
 
 def battle(source):
+    source = prepend(source, '_flush_pending_entities', '''        from . import native_client_replica
+        native = native_client_replica.flush_pending(self, now)
+        if native is not None:
+            return native
+''')
     source = once(source,
         '                clock=self._clock, pose_safe=self._baked_pose_safe)\n',
         '                clock=self._clock, pose_safe=self._baked_pose_safe)\n'
