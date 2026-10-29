@@ -9,6 +9,14 @@ namespace wot
 {
 namespace stock_numeric_format
 {
+// WGExtensions and the Python exports share the same Windows NLS owner.
+enum Format
+{
+    GOLD, INTEGRAL, FRACTIONAL, NICE_NUMBER, SHORT_TIME, LONG_TIME,
+    SHORT_DATE, LONG_DATE, YEAR_MONTH
+};
+bool format(Format kind, double value, std::wstring &result);
+
 // #1513 006f3e60: Windows' semicolon-separated grouping is converted to
 // NUMBERFMT's decimal encoding. Only digits 1..9 contribute, and a final
 // character other than '0' appends a zero (including a trailing semicolon).

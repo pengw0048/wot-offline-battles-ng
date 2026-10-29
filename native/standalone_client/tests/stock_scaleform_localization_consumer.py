@@ -178,13 +178,49 @@ assert host.fallback_calls == []
 assert i18n.makeStringJSON('#dialogs:barracksExpand/message', '{"price": "10", "count": "4"}').decode('utf-8') \
     == formatted[0][1]
 
-# Every other name keeps the DAAPI/Python fallback route.
-for name, arguments in (('WG.getGoldFormat', (1000,)), ('WG.getShortDateFormat', (1.5e9,)),
-                        ('lobby.showWindow', ('x', 'y')), ('wg.getFormattedLocalizedString', ('a', 'b'))):
+# LocaleBase.envokeC String() must receive the native result, not the DAAPI
+# fallback's null. The controlled NLS replies exercise the production owner.
+for name, number, expected_input, counter, digits in (
+        ('Integral', 0, u'0', 1, 0), ('Integral', 1234.9, u'1234', 1, 0),
+        ('Integral', -1234.9, u'-1234', 1, 0), ('Gold', 2345, u'2345', 2, None),
+        ('Fractional', 1.25, u'1.250000', 1, 2),
+        ('NiceNumber', 3.0, u'3', 1, 0), ('NiceNumber', 1.25, u'1.250000', 1, 2)):
+    before = host.numeric_receipt()
+    result, err, events = captured(host.callback, 'WG.get%sFormat' % name, (number,))
+    receipt = host.numeric_receipt()
+    expected = u'1,234.5' if name == 'NiceNumber' and number == 1.25 else u'1,234.50'
+    assert result == expected and not err and not events, (name, result, err, events)
+    assert receipt[0] == expected_input and receipt[counter] == before[counter] + 1, receipt
+    if digits is not None:
+        assert receipt[7] == digits, receipt
+
+for name, flags, counter, expected in (
+        ('ShortTime', 2, 6, u'8:07:09 PM'), ('LongTime', 0, 6, u'8:07:09 PM'),
+        ('ShortDate', 1, 5, u'Tuesday, March 5, 2024'),
+        ('LongDate', 2, 5, u'Tuesday, March 5, 2024'),
+        ('YMDate', 8, 5, u'Tuesday, March 5, 2024')):
+    before = host.numeric_receipt()
+    result, err, events = captured(host.callback, 'WG.get%sFormat' % name, (1709687229.9,))
+    receipt = host.numeric_receipt()
+    assert result == expected and not err and not events, (name, result, err, events)
+    assert receipt[3:5] == (flags, 1709687229) and receipt[counter] == before[counter] + 1, receipt
+
+for arguments in ((None,), ('123',)):
+    before = host.numeric_receipt()
+    result, err, events = captured(host.callback, 'WG.getIntegralFormat', arguments)
+    assert result is None and not err and events == ['ERROR WG numeric format: expected a Number argument\n']
+    assert host.numeric_receipt() == before
+host.numeric_failure(1)
+result, err, events = captured(host.callback, 'WG.getIntegralFormat', (1234,))
+assert result == u'' and not err and not events
+host.numeric_failure(0)
+assert host.fallback_calls == [], host.fallback_calls
+
+# Unrelated names keep the DAAPI/Python fallback route.
+for name, arguments in (('lobby.showWindow', ('x', 'y')), ('wg.getFormattedLocalizedString', ('a', 'b'))):
     result, err, events = captured(host.callback, name, arguments)
     assert result is None and err == '' and events == [], name
-expected_fallback = [('WG.getGoldFormat', 1), ('WG.getShortDateFormat', 1), ('lobby.showWindow', 2),
-                     ('wg.getFormattedLocalizedString', 2)]
+expected_fallback = [('lobby.showWindow', 2), ('wg.getFormattedLocalizedString', 2)]
 assert host.fallback_calls == expected_fallback, host.fallback_calls
 report('fallback', host.fallback_calls)
 

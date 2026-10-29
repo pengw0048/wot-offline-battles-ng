@@ -407,7 +407,7 @@ print('Actual CPython 2 UTF-8 str, subtype, arity and converter contracts passed
 
 def body():
     source = SOURCE.read_text()
-    return '\n'.join(line for line in source.splitlines()
+    return '\n'.join(line.replace('BW_NAMESPACE ', '') for line in source.splitlines()
                      if not line.startswith('#include') and
                      not line.startswith('BW_') and
                      not line.startswith('PY_MODULE_FUNCTION('))

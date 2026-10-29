@@ -146,6 +146,8 @@ public:
     // The SDK stores the pointer; the movie root copies it in SetExternalInterfaceRetVal.
     Value(const wchar_t * text) : type_(VT_StringW), number_(0), wide_(text) {}
     ValueType GetType() const { return type_; }
+    bool IsNumber() const { return type_ == VT_Number; }
+    double GetNumber() const { assert(IsNumber()); return number_; }
     const wchar_t * GetStringW() const { return wide_; }
     String ToString() const
     {
@@ -241,6 +243,7 @@ template <class T> void bw_safe_delete(T *& p) { delete p; p = 0; }
 } // namespace BW
 #define BW_BEGIN_NAMESPACE namespace BW {
 #define BW_END_NAMESPACE }
+#define BW_NAMESPACE BW::
 #define MF_ASSERT(x) assert(x)
 #define MF_ASSERT_DEV(x) do { if (!(x)) record("MF_ASSERT_DEV %s", #x); } while (0)
 #define MEMTRACKER_SCOPED(x)
@@ -295,6 +298,7 @@ PyObject * getData(const BW::wstring & data);
 @UTF8TOW@
 BW_END_NAMESPACE
 
+@NUMERIC_OWNER@
 @PRODUCTION@
 
 // ----- _localization: the Python driver's view of the owner.
@@ -510,6 +514,23 @@ static PyObject * py_live(PyObject *, PyObject *)
     return PyInt_FromLong(liveObjects);
 }
 
+static PyObject * py_numeric_receipt(PyObject *, PyObject *)
+{
+    return Py_BuildValue("(NIIkLIII)",
+        PyUnicode_FromWideChar(lastInput.data(), lastInput.size()),
+        numberCalls, currencyCalls, static_cast<unsigned long>(lastFlags), lastTime,
+        dateCalls, timeCalls, lastNumber.NumDigits);
+}
+
+static PyObject * py_numeric_failure(PyObject *, PyObject * args)
+{
+    int failed;
+    if (!PyArg_ParseTuple(args, "i", &failed))
+        return NULL;
+    formatFailure = failed != 0;
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef methods[] = {
     {"install", py_install, METH_NOARGS, NULL},
     {"uninstall", py_uninstall, METH_NOARGS, NULL},
@@ -523,6 +544,8 @@ static PyMethodDef methods[] = {
     {"set_finalised", py_set_finalised, METH_VARARGS, NULL},
     {"events", py_events, METH_NOARGS, NULL},
     {"live", py_live, METH_NOARGS, NULL},
+    {"numeric_receipt", py_numeric_receipt, METH_NOARGS, NULL},
+    {"numeric_failure", py_numeric_failure, METH_VARARGS, NULL},
     {NULL, NULL, 0, NULL}};
 
 int main(int argc, char ** argv)
@@ -531,6 +554,9 @@ int main(int argc, char ** argv)
         return 2;
     Py_SetProgramName(argv[0]);
     Py_Initialize();
+    localFixture.tm_year = 124;
+    localFixture.tm_mon = 2;
+    localFixture.tm_mday = 5;
     PySys_SetArgvEx(argc - 1, argv + 1, 0);
     PyObject * module = Py_InitModule("_localization", methods);
     fallbackCalls = PyList_New(0);

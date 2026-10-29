@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_scaleform_localization.hpp"
+#include "stock_numeric_format.hpp"
 #include "scaleform/fx_game_delegate.hpp"
 #include "pyscript/script.hpp"
 #include "script/init_time_job.hpp"
@@ -106,15 +107,46 @@ public:
 };
 
 /**
- *	#1513 WGExtensions (vtable 0150c004), limited to the formatted string
- *	callback; the number/date callbacks stay on the Python fallback.
+ *	#1513 WGExtensions (vtable 0150c004). LocaleBase.envokeC converts the
+ *	ExternalInterface result to String, so an unregistered callback displays
+ *	"null" even when the supplied experience/damage/currency value is valid.
  */
 class StockLocalizationHandler : public FxDelegateHandler
 {
 public:
     void Accept( CallbackProcessor * pProcessor )
     {
+        pProcessor->Process( "WG.getGoldFormat", &getNumericFormat<wot::stock_numeric_format::GOLD> );
+        pProcessor->Process( "WG.getIntegralFormat", &getNumericFormat<wot::stock_numeric_format::INTEGRAL> );
+        pProcessor->Process( "WG.getFractionalFormat", &getNumericFormat<wot::stock_numeric_format::FRACTIONAL> );
+        pProcessor->Process( "WG.getNiceNumberFormat", &getNumericFormat<wot::stock_numeric_format::NICE_NUMBER> );
+        pProcessor->Process( "WG.getShortTimeFormat", &getNumericFormat<wot::stock_numeric_format::SHORT_TIME> );
+        pProcessor->Process( "WG.getLongTimeFormat", &getNumericFormat<wot::stock_numeric_format::LONG_TIME> );
+        pProcessor->Process( "WG.getShortDateFormat", &getNumericFormat<wot::stock_numeric_format::SHORT_DATE> );
+        pProcessor->Process( "WG.getLongDateFormat", &getNumericFormat<wot::stock_numeric_format::LONG_DATE> );
+        pProcessor->Process( "WG.getYMDateFormat", &getNumericFormat<wot::stock_numeric_format::YEAR_MONTH> );
         pProcessor->Process( "WG.getFormattedLocalizedString", &getFormattedLocalizedString );
+    }
+
+    template <wot::stock_numeric_format::Format Kind>
+    static void getNumericFormat( const FxDelegateArgs & params )
+    {
+        // The original directly reads the first Number. Contain malformed
+        // calls without inventing a number or handing a WG name to DAAPI.
+        if (params.GetArgCount() < 1 || !params[0].IsNumber())
+        {
+            ERROR_MSG( "WG numeric format: expected a Number argument\n" );
+            return;
+        }
+        if (!pythonAvailable())
+            return;
+        std::wstring result;
+        if (!wot::stock_numeric_format::format( Kind, params[0].GetNumber(), result ))
+        {
+            PyErr_Print();
+            return;
+        }
+        params.GetMovie()->SetExternalInterfaceRetVal( GFx::Value( result.c_str() ) );
     }
 
     // 00ab37c0: (key, argsJSON) -> makeStringJSON; a str result is returned

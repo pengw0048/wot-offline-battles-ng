@@ -430,3 +430,23 @@ PyObject *py_wg_getYMDateFormatU(PyObject *args)
 }
 PY_MODULE_FUNCTION(wg_getYMDateFormatU, BigWorld)
 BW_END_NAMESPACE
+
+bool wot::stock_numeric_format::format(Format kind, double value, std::wstring &result)
+{
+    // #1513 WGExtensions 00ab3b60..00ab43c6 reads the first GFx Number,
+    // truncates integer/time values with 013d83cf and calls the shared NLS owner.
+    const std::int64_t integer = signedInteger(value);
+    switch (kind)
+    {
+    case GOLD: result = BW_NAMESPACE numericFormats().gold(integer); break;
+    case INTEGRAL: result = BW_NAMESPACE numericFormats().integral(integer); break;
+    case FRACTIONAL: result = BW_NAMESPACE numericFormats().fractional(value, -1); break;
+    case NICE_NUMBER: return BW_NAMESPACE numericFormats().nice(value, result);
+    case SHORT_TIME: result = BW_NAMESPACE numericFormats().timeOfDay(integer, TIME_NOSECONDS); break;
+    case LONG_TIME: result = BW_NAMESPACE numericFormats().timeOfDay(integer, 0); break;
+    case SHORT_DATE: result = BW_NAMESPACE numericFormats().date(integer, DATE_SHORTDATE); break;
+    case LONG_DATE: result = BW_NAMESPACE numericFormats().date(integer, DATE_LONGDATE); break;
+    case YEAR_MONTH: result = BW_NAMESPACE numericFormats().date(integer, DATE_YEARMONTH); break;
+    }
+    return true;
+}

@@ -19,6 +19,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_stock_scaleform_scene import ROOT, REVISION, SDK_FILES, load_patch
 from stock_battle_gui_support import client_executable
+from test_stock_numeric_format import NLS_HOST
 
 ENGINE_FILES = ('CMakeLists.txt', 'build/cmake/BWConfiguration_client.cmake', 'client/CMakeLists.txt',
                 'lib/scaleform/CMakeLists.txt', 'lib/scaleform/config.hpp', 'lib/scaleform/ime.cpp',
@@ -268,6 +269,9 @@ def generated_host(sdk, public, set_result):
     delegate_h = text(public['lib/scaleform/fx_game_delegate.hpp'])
     delegate_cpp = text(public['lib/scaleform/fx_game_delegate.cpp'])
     production = (ROOT / 'bigworld/stock_scaleform_localization.cpp').read_text()
+    numeric = (ROOT / 'bigworld/stock_numeric_format.cpp').read_text()
+    numeric = numeric[numeric.index('BW_BEGIN_NAMESPACE'):numeric.index('\nbool readInteger(')] + '\n}\nBW_END_NAMESPACE\n' + \
+        numeric[numeric.index('bool wot::stock_numeric_format::format('):]
     replacements = {
         '@SDK_STD@': between(std, 'UPInt   SF_CDECL SFwcslen(', '\n}\n') +
         between(std, 'wchar_t* SF_CDECL SFwcsncpy(', '\n}\n'),
@@ -294,6 +298,8 @@ def generated_host(sdk, public, set_result):
         '@UTF8TOW@': between(text(public['lib/cstdmf/string_utils.cpp']),
                              'bool bw_utf8tow( const char * src, BW::wstring& output )', '\n}\n'),
         '@PRODUCTION@': ''.join(line for line in production.splitlines(True) if not line.startswith('#include')),
+        '@NUMERIC_OWNER@': (ROOT / 'bigworld/stock_numeric_format.hpp').read_text().replace('#pragma once', '') +
+        NLS_HOST + numeric,
     }
     host = (ROOT / 'tests/stock_scaleform_localization_host.cpp').read_text()
     for key, value in replacements.items():
@@ -334,6 +340,29 @@ class ScaleformLocalizationOwnerTest(unittest.TestCase):
 
 
 class ScaleformLocalizationOriginalTest(unittest.TestCase):
+    def test_original_numeric_callback_registration_and_nls_calls(self):
+        exe = client_executable(self)
+        callbacks = (
+            ('Gold', 0x150c00c, 0xab3447, 0xab345a, 0xab3c50, 0xab3cac, 0x6f4070),
+            ('Integral', 0x150c020, 0xab349a, 0xab34b3, 0xab3d40, 0xab3d9c, 0x6f4120),
+            ('Fractional', 0x150c038, 0xab34f1, 0xab350a, 0xab3b60, 0xab3bbd, 0x6f3eb0),
+            ('NiceNumber', 0x150c050, 0xab3548, 0xab3561, 0xab4010, 0xab406d, 0x6f41d0),
+            ('ShortTime', 0x150c068, 0xab359f, 0xab35b8, 0xab41f0, 0xab424e, 0x6f42b0),
+            ('LongTime', 0x150c080, 0xab35f6, 0xab360f, 0xab3f20, 0xab3f7d, 0x6f42b0),
+            ('ShortDate', 0x150c098, 0xab364d, 0xab3666, 0xab4100, 0xab415e, 0x6f3d50),
+            ('LongDate', 0x150c0b0, 0xab36a4, 0xab36bd, 0xab3e30, 0xab3e8e, 0x6f3d50),
+            ('YMDate', 0x150c0c8, 0xab36fb, 0xab3714, 0xab42e0, 0xab433e, 0x6f3d50),
+        )
+        for name, string, registration, function, body, call, nls in callbacks:
+            with self.subTest(name=name):
+                self.assertEqual(exe.cstr(string), 'WG.get%sFormat' % name)
+                self.assertEqual(exe.code(registration, 5), b'\x68' + string.to_bytes(4, 'little'))
+                self.assertEqual(exe.code(function, 5), b'\x68' + body.to_bytes(4, 'little'))
+                self.assertEqual(exe.code(body + 44, 8), bytes.fromhex('8b4608f20f104010'))
+                instruction = exe.code(call, 5)
+                self.assertEqual(instruction[0], 0xe8)
+                self.assertEqual(call + 5 + int.from_bytes(instruction[1:], 'little', signed=True), nls)
+
     def test_original_owner_bodies(self):
         exe = client_executable(self)
         # WGGFxStringTranslator vtable 014bf270: dtor, GetCaps, Translate, OnWordWrapping.
