@@ -447,7 +447,68 @@ def patch_context(root):
     path.write_text(text)
 
 
+STOCK_FAR_PLANE_READ = r'''        DataSectionPtr stockFarPlane = pDS->openSection("farPlane");
+        stockFarPlanesAvailable_ = stockFarPlane && stockFarPlane->countChildren() != 0;
+        if (stockFarPlanesAvailable_)
+        {
+            // #1513 a35ba1..a35c8c: per-space distances replace the ratio.
+            stockFarPlanes_[0] = stockFarPlane->readFloat("max", 1000.f);
+            stockFarPlanes_[1] = stockFarPlane->readFloat("high", 800.f);
+            stockFarPlanes_[2] = stockFarPlane->readFloat("medium", 600.f);
+            stockFarPlanes_[3] = stockFarPlane->readFloat("low", 600.f);
+        }
+        else this->farPlaneBaseLine_ = pDS->readFloat("farPlane", this->farPlaneBaseLine_);'''
+
+STOCK_FAR_PLANE_SELECT = r'''void EnviroMinder::setStockFarPlaneOption(int optionIndex, float ratio)
+{
+    // a362c0 retains the maximum environment distance separately from the
+    // selected camera clip distance. a361f0 publishes those two consumers.
+    if (stockFarPlanesAvailable_)
+    {
+        MF_ASSERT(optionIndex >= 0 && optionIndex < 4);
+        if (optionIndex < 0 || optionIndex >= 4) return;
+        const float selected = stockFarPlanes_[optionIndex];
+        setFarPlane(selected < 1.f ? 1.f : selected);
+        farPlane_ = stockFarPlanes_[0] < 1.f ? 1.f : stockFarPlanes_[0];
+    }
+    else
+    {
+        const float selected = farPlaneBaseLine_ * ratio;
+        setFarPlane(selected < 1.f ? 1.f : selected);
+    }
+}
+
+'''
+
+
+def patch_far_plane(root):
+    apply_file(root, Path('lib/romp/enviro_minder.hpp'), [
+        ('    void setFarPlane(float farPlane);',
+         '    void setFarPlane(float farPlane);\n    void setStockFarPlaneOption(int optionIndex, float ratio);',
+         'original per-quality far-plane consumer'),
+        ('    float                       farPlaneBaseLine_;',
+         '    float stockFarPlanes_[4] = {1000.f, 800.f, 600.f, 600.f};\n'
+         '    bool stockFarPlanesAvailable_ = false;\n'
+         '    float                       farPlaneBaseLine_;', 'original far-plane table owner'),
+    ])
+    apply_file(root, Path('lib/romp/enviro_minder.cpp'), [
+        ('    this->farPlaneBaseLine_ = 500.f;',
+         '    this->farPlaneBaseLine_ = 500.f;\n    stockFarPlanesAvailable_ = false;',
+         'far-plane table reload reset'),
+        ('        this->farPlaneBaseLine_ = pDS->readFloat( "farPlane", this->farPlaneBaseLine_ );',
+         STOCK_FAR_PLANE_READ, 'original per-quality far-plane reader'),
+        ('void EnviroMinder::setFarPlane(float farPlane)',
+         STOCK_FAR_PLANE_SELECT + 'void EnviroMinder::setFarPlane(float farPlane)',
+         'original far-plane selection'),
+        ('        float farPlaneBaseLine = this->activeMinder_->farPlaneBaseLine();\n'
+         '        this->activeMinder_->setFarPlane(farPlaneBaseLine * ratio);',
+         '        this->activeMinder_->setStockFarPlaneOption(optionIndex, ratio);',
+         'original far-plane graphics callback'),
+    ])
+
+
 def patch_environment(root):
+    patch_far_plane(root)
     # These types are included by public engine headers. The pinned build
     # flattens library linkage into bwclient, so target usage requirements do
     # not reach all header consumers. Publish the owned interface headers
