@@ -29,6 +29,7 @@ class VehicleFashionsTest(unittest.TestCase):
             self.skipTest('pefile and unicorn are required for original native instructions')
         from stock_vehicle_material_binding_oracle import audit
         self.assertEqual(audit(executable), 12)
+        self.assertEqual(audit(executable, "vTransform_diffuse"), 12)
 
     def test_original_handler_shader_receipts(self):
         source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()
@@ -168,6 +169,190 @@ int main() {
                 '-Wextra', '-Werror', str(path / 'probe.cpp'),
                 '-o', str(path / 'before')], check=True)
             self.assertEqual(subprocess.run([str(path / 'before')]).returncode, 11)
+
+    def test_optional_track_properties_and_lod_restoration(self):
+        source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()
+        binding_begin = source.index('struct VehicleTrackMaterialBinding\n')
+        binding_end = source.index('\n// WGBaseFashion embeds', binding_begin)
+        clone_begin = source.index('Moo::ComplexEffectMaterialPtr cloneMaterial(')
+        clone_end = source.index('\nMoo::ComplexEffectMaterialPtr materialVariant(', clone_begin)
+        dress_begin = source.index('    void undress()\n')
+        dress_end = source.index('\n};\n\nclass VehicleMaterialFashion', dress_begin)
+        host = r"""
+#include <cassert>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+struct Vector4 {
+    float x,y,z,w;
+    Vector4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d) {}
+};
+struct XMLSection {
+    Vector4 value;
+    explicit XMLSection(const char*) {}
+    void setVector4(const Vector4& v) { value=v; }
+};
+template<class T> struct Ptr : std::shared_ptr<T> {
+    Ptr()=default;
+    Ptr(T* p):std::shared_ptr<T>(p) {}
+    Ptr& operator=(T* p) { this->reset(p);return *this; }
+};
+using DataSectionPtr=Ptr<XMLSection>;
+namespace Moo {
+struct EffectProperty {
+    bool vector;
+    Vector4 value;
+    unsigned writes=0;
+    explicit EffectProperty(bool v=true):vector(v) {}
+    EffectProperty* clone() const { return new EffectProperty(*this); }
+    bool getVector(Vector4& v) { if(!vector)return false;v=value;return true; }
+    bool be(const Vector4& v) { ++writes;if(!vector)return false;value=v;return true; }
+    bool be(float v) { ++writes;value.w=v;return true; }
+};
+using EffectPropertyPtr=Ptr<EffectProperty>;
+struct EffectPropertyFactory {
+    static const Ptr<EffectPropertyFactory>& findFactory(const char*) {
+        static const Ptr<EffectPropertyFactory> factory=new EffectPropertyFactory();
+        return factory;
+    }
+    EffectPropertyPtr create(const char*,DataSectionPtr section) {
+        EffectPropertyPtr property=new EffectProperty();
+        property->value=section->value;return property;
+    }
+};
+using EffectPropertyFactoryPtr=Ptr<EffectPropertyFactory>;
+struct EffectMaterial {
+    using Properties=std::map<std::string,EffectPropertyPtr>;
+    Properties values;
+    unsigned absentWrites=0;
+    Properties& properties() { return values; }
+    EffectPropertyPtr getProperty(const char* name) {
+        auto found=values.find(name);
+        return found==values.end()?EffectPropertyPtr():found->second;
+    }
+    bool replaceProperty(const char* name,EffectPropertyPtr value) {
+        auto found=values.find(name);
+        if(found==values.end()) { ++absentWrites;return false; }
+        found->second=value;return true;
+    }
+    template<class T> bool setProperty(const char* name,const T& value,bool) {
+        auto property=getProperty(name);
+        if(!property) { ++absentWrites;return false; }
+        return property->be(value);
+    }
+};
+using EffectMaterialPtr=Ptr<EffectMaterial>;
+struct ComplexEffectMaterial {
+    Ptr<EffectMaterial> material=new EffectMaterial();
+    ComplexEffectMaterial()=default;
+    ComplexEffectMaterial(const ComplexEffectMaterial& other):
+        material(new EffectMaterial(*other.material)) {}
+    Ptr<EffectMaterial>& baseMaterial() { return material; }
+};
+using ComplexEffectMaterialPtr=Ptr<ComplexEffectMaterial>;
+struct Visual { struct PrimitiveGroup { ComplexEffectMaterialPtr material_; }; };
+}
+"""
+        state = r"""
+struct Handler { void apply(Moo::EffectMaterial&) {} };
+struct HandlerEntry { std::shared_ptr<Handler> state; };
+struct VehicleFashionState {
+    std::vector<VehicleMaterialBinding> bindings;
+    std::vector<std::pair<Moo::Visual::PrimitiveGroup*,Moo::ComplexEffectMaterialPtr>> saved;
+    std::vector<HandlerEntry> handlers;
+    unsigned hiddenTracks=0;
+    float alpha=1.f;
+    bool trackConfigured=true,crashed=false,tracksBeyondLod=false;
+    float crashCoefficient[2]={0.25f,0.75f};
+    struct { float left=0.125f,right=-0.375f; } tracks;
+"""
+        cases = r"""
+};
+int main() {
+    const char* uv="vTransform_diffuse";
+    Moo::ComplexEffectMaterialPtr original=new Moo::ComplexEffectMaterial();
+    original->baseMaterial()->values[uv]=new Moo::EffectProperty();
+    original->baseMaterial()->values[uv]->value={3,4,5,6};
+    original->baseMaterial()->values["crash_coefficient"]=new Moo::EffectProperty(false);
+    auto first=cloneMaterial(original),second=cloneMaterial(original);
+    auto authoredFirst=first->baseMaterial()->getProperty(uv);
+    auto authoredSecond=second->baseMaterial()->getProperty(uv);
+    auto authoredOriginal=original->baseMaterial()->getProperty(uv);
+    assert(authoredFirst!=authoredSecond && authoredFirst!=authoredOriginal);
+    Moo::ComplexEffectMaterialPtr distant=new Moo::ComplexEffectMaterial();
+    distant->baseMaterial()->values["crash_coefficient"]=new Moo::EffectProperty(false);
+    Moo::ComplexEffectMaterialPtr alpha=new Moo::ComplexEffectMaterial();
+    alpha->baseMaterial()->values[uv]=new Moo::EffectProperty();
+    alpha->baseMaterial()->values[uv]->value={7,8,9,10};
+    alpha->baseMaterial()->values["wgOutputAlphaModifier"]=new Moo::EffectProperty(false);
+    const auto authoredAlpha=alpha->baseMaterial()->getProperty(uv);
+    Moo::Visual::PrimitiveGroup nearGroup{original},farGroup{distant};
+    VehicleMaterialBinding near{},far{};
+    near.group=&nearGroup;near.original=original;near.normal=first;near.alpha=alpha;
+    near.trackSide=1;
+    assert(near.normalTracks.bind(*first->baseMaterial()));
+    assert(near.alphaTracks.bind(*alpha->baseMaterial()));
+    far.group=&farGroup;far.original=distant;far.normal=distant;far.trackSide=2;
+    assert(far.normalTracks.bind(*distant->baseMaterial()));
+    assert(!far.normalTracks.authoredUV && !far.normalTracks.scrollingUV);
+    VehicleFashionState fashion;fashion.bindings={near,far};
+    fashion.dress();
+    auto scroll=first->baseMaterial()->getProperty(uv);
+    assert(scroll!=authoredFirst && scroll->value.y==1.f && scroll->value.w==0.125f);
+    assert(authoredFirst->value.w==6.f && authoredFirst->writes==0);
+    assert(authoredSecond->value.w==6.f && authoredOriginal->value.w==6.f);
+    assert(farGroup.material_==distant && distant->baseMaterial()->values.size()==1);
+    fashion.tracksBeyondLod=true;fashion.dress();
+    assert(first->baseMaterial()->getProperty(uv)==authoredFirst);
+    fashion.alpha=0.5f;fashion.tracksBeyondLod=false;fashion.dress();
+    assert(nearGroup.material_==alpha);
+    assert(alpha->baseMaterial()->getProperty(uv)!=authoredAlpha);
+    assert(alpha->baseMaterial()->getProperty(uv)->value.w==0.125f);
+    fashion.tracksBeyondLod=true;fashion.dress();
+    assert(alpha->baseMaterial()->getProperty(uv)==authoredAlpha);
+    assert(authoredAlpha->value.w==10.f && authoredAlpha->writes==0);
+    // An alpha variant with no UV slot remains optional independently.
+    fashion.bindings[0].alpha=distant;
+    fashion.bindings[0].alphaTracks=VehicleTrackMaterialBinding();
+    assert(fashion.bindings[0].alphaTracks.bind(*distant->baseMaterial()));
+    distant->baseMaterial()->values["wgOutputAlphaModifier"]=new Moo::EffectProperty(false);
+    fashion.dress();assert(nearGroup.material_==distant);
+    assert(!distant->baseMaterial()->getProperty(uv));
+    // The original binder replaces a matching slot without consulting its
+    // previous property type, then restores that exact pointer beyond LOD.
+    Moo::EffectMaterial wrongType;
+    wrongType.values[uv]=new Moo::EffectProperty(false);
+    auto authoredWrong=wrongType.getProperty(uv);
+    VehicleTrackMaterialBinding replacement;
+    assert(replacement.bind(wrongType));
+    replacement.apply(wrongType,false,{0,1,0,-0.25f});
+    assert(wrongType.getProperty(uv)!=authoredWrong);
+    assert(wrongType.getProperty(uv)->vector && wrongType.getProperty(uv)->value.w==-0.25f);
+    replacement.apply(wrongType,true,{0,1,0,0});
+    assert(wrongType.getProperty(uv)==authoredWrong && authoredWrong->writes==0);
+    // UV capability must not erase track identity: hiding and crash handling
+    // still affect the distant material which lacks the scroll parameter.
+    fashion.alpha=1.f;fashion.hiddenTracks=2;fashion.dress();
+    assert(!farGroup.material_);
+    fashion.hiddenTracks=0;fashion.crashed=true;fashion.dress();
+    assert(farGroup.material_==distant);
+    assert(distant->baseMaterial()->getProperty("crash_coefficient")->value.w==0.75f);
+    fashion.undress();
+    assert(nearGroup.material_==original && farGroup.material_==distant);
+    assert(!first->baseMaterial()->absentWrites && !alpha->baseMaterial()->absentWrites &&
+        !distant->baseMaterial()->absentWrites && !wrongType.absentWrites);
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='stock-track-binding-') as directory:
+            path = Path(directory)
+            (path / 'probe.cpp').write_text(host + source[clone_begin:clone_end] +
+                source[binding_begin:binding_end] + state + source[dress_begin:dress_end] + cases)
+            subprocess.run([
+                os.environ.get('CXX', 'clang++'), '-std=c++17', '-Wall',
+                '-Wextra', '-Werror', str(path / 'probe.cpp'), '-o', str(path / 'probe')], check=True)
+            subprocess.run([str(path / 'probe')], check=True)
 
     def test_track_receipts_and_property_isolation(self):
         source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()

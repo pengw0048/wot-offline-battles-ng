@@ -8,7 +8,7 @@ from pathlib import Path
 import struct
 
 
-def audit(executable):
+def audit(executable, target_name="g_baseColor"):
     import pefile
     from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
     from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_EBP,
@@ -19,6 +19,13 @@ def audit(executable):
     assert pe.FILE_HEADER.Machine == 0x14c, 'Expected the exact #1513 x86 executable'
     base = pe.OPTIONAL_HEADER.ImageBase
     assert pe.get_data(0x96d8d0 - base, 6) == bytes.fromhex('55 8b ec 83 ec 34')
+    if target_name == "vTransform_diffuse":
+        # af07a0's track owner calls this same binder and immediately overwrites
+        # EAX for refcount work: a missing slot's false result is ignored.
+        assert pe.get_data(0xaf094f - base, 0x15) == bytes.fromhex(
+            'e8 7c cf e7 ff 51 8b c4 8d 5f 04 53 89 38 ff d6 e9 bf 00 00 00')
+        name_address = struct.unpack('<I', pe.get_data(0x1a2082c - base, 4))[0]
+        assert pe.get_string_at_rva(name_address - base) == target_name.encode('ascii')
     image = pe.get_memory_mapped_image()
     machine = Uc(UC_ARCH_X86, UC_MODE_32)
     machine.mem_map(base, (len(image) + 4095) & ~4095)
@@ -79,6 +86,9 @@ def audit(executable):
             assert 0x96d8d0 <= address <= 0x96d99d or 0x686680 <= address <= 0x686710, hex(address)
 
     machine.hook_add(UC_HOOK_CODE, code)
+    # The fake property vtable exposes only destruction, so any original-type
+    # query (getVector/be) would fail the instruction hook. The binder replaces
+    # an existing slot without imposing a type requirement on its old pointer.
     # Name, records, new property, expected records/refcounts/result/queries,
     # optional absent owner/effect or descriptor failure.
     cases = (
@@ -116,14 +126,15 @@ def audit(executable):
         state = {'names': {}, 'queries': [], 'ref_events': [], 'destroyed': [],
                  'bad_descriptors': options.get('bad', set())}
         for index, (name, pointer) in enumerate(entries):
+            name = target_name[:-1] if name == 'g_baseColo' else name.replace('g_baseColor', target_name)
             text = names + (index + 1) * 0x100
             machine.mem_write(text, name.encode('ascii') + b'\0')
             state['names'][index + 1] = text
             write(records + index * 8, index + 1)
             write(records + index * 8 + 4, pointer)
-        machine.mem_write(names, b'g_baseColor\0')
+        machine.mem_write(names, target_name.encode('ascii') + b'\0')
         write(target, names)
-        write(target + 4, len('g_baseColor'))
+        write(target + 4, len(target_name))
         write(replacement, value)
         machine.mem_write(stack, struct.pack('<III', stop, target, replacement))
         machine.reg_write(UC_X86_REG_ECX, owner)

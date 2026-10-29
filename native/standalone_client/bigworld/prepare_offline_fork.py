@@ -28,6 +28,10 @@ _spec = importlib.util.spec_from_file_location(
     'patch_stock_worker_runtime', Path(__file__).with_name('patch_stock_worker_runtime.py'))
 worker_runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker_runtime)
+_spec = importlib.util.spec_from_file_location(
+    'stock_offline_query_bindings', Path(__file__).with_name('stock_offline_query_bindings.py'))
+query_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(query_bindings)
 
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
@@ -203,6 +207,8 @@ ADAPTERS = {
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
+ADAPTERS.update({NATIVE_MATH_PATH.with_name(name): adapter
+                 for name, adapter in query_bindings.ADAPTERS.items()})
 
 
 def stage_runtime(source, staged):

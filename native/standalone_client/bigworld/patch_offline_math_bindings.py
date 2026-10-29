@@ -114,11 +114,160 @@ def expanded_methods(root, source):
 
 
 def once(source, before, after):
-    if source.count(after) == 1 and before not in source:
+    if source.count(after) == 1:
         return source
     if source.count(before) != 1 or after in source:
         raise ValueError('Pinned numerical binding seam changed: '+repr(before))
     return source.replace(before, after, 1)
+
+
+
+def patch_query_chain(root, pending):
+    # Keep ordered numerical laws intact; adapt only the synchronous owner.
+    path = root/'offline_math_batch_native.cpp'
+    pending[path] = once(pending[path], '#include "offline_simulation_diagnostics.h"',
+        '#include "offline_simulation_diagnostics.h"\n'
+        '#ifdef WOT_NATIVE_ENGINE_QUERY\n'
+        '#include "stock_offline_query_bridge.hpp"\n'
+        '#endif')
+    path = root/'offline_simulation_motion_python.inc'
+    source = pending[path]
+    source = once(source, '        bool departing(PyObject *hit) {\n',
+        '''        #ifdef WOT_NATIVE_ENGINE_QUERY
+        stock_offline_query::Context *native_ = nullptr;
+        std::map<std::uint64_t, stock_offline_query::Hit> native_hits_;
+        #endif
+        bool departing(PyObject *hit) {
+''')
+    source = once(source,
+        '            session.point(items(hit)[1], normal);\n            if (normal[1] < -.2)',
+        '''            session.point(items(hit)[1], normal);
+            return departing_point(point, normal);
+        }
+        bool departing_point(const double *point, const double *normal) {
+            if (normal[1] < -.2)''')
+    source = once(source, '            auto position=session.vector(snapshot.position);\n',
+        '''            #ifdef WOT_NATIVE_ENGINE_QUERY
+            if(!snapshot.supplied_departing)native_=stock_offline_query::begin(capabilities);
+            if(native_) {stock_offline_query::rounded(snapshot.position,position_);return;}
+            #endif
+            auto position=session.vector(snapshot.position);
+''')
+    source = once(source, '        void departure(const WorldRequest &request) {\n',
+        '''        ~WorldFrontier() {
+            #ifdef WOT_NATIVE_ENGINE_QUERY
+            stock_offline_query::end(native_);
+            #endif
+        }
+        bool finish() {
+            #ifdef WOT_NATIVE_ENGINE_QUERY
+            return stock_offline_query::beforeEffect(native_);
+            #else
+            return true;
+            #endif
+        }
+        void effect_returned() {
+            #ifdef WOT_NATIVE_ENGINE_QUERY
+            if(!stock_offline_query::afterEffect(native_))throw engine_query::Failed();
+            #endif
+        }
+        bool native_ground(const WorldRequest &request, WorldResponse &response) {
+            #ifdef WOT_NATIVE_ENGINE_QUERY
+            if(stock_offline_query::groundAvailable(native_)) {
+                ray(WORLD_GROUND,request,response,nullptr);return stock_offline_query::groundAvailable(native_);
+            }
+            #endif
+            return false;
+        }
+        void departure(const WorldRequest &request) {
+''')
+    source = once(source, '            return hits_[static_cast<unsigned>(handle-1)].get();',
+        '''            auto &cached=hits_[static_cast<unsigned>(handle-1)];
+            #ifdef WOT_NATIVE_ENGINE_QUERY
+            if(!cached.get()) {
+                const auto found=native_hits_.find(handle);
+                if(found==native_hits_.end())throw Unsupported();
+                cached=engine_query::Object(stock_offline_query::materialize(found->second));
+            }
+            #endif
+            return cached.get();''')
+    source = once(source, '            engine_query::Object start,end;\n            session.segment(request.start,request.end,start,end,response.start,response.end);',
+        '''            #ifdef WOT_NATIVE_ENGINE_QUERY
+            if(native_ && !external_departing) {
+                stock_offline_query::beginRay(native_);
+                const auto old_planes=planes_.size();
+                stock_offline_query::Hit hit;
+                double current[3];stock_offline_query::rounded(request.start,response.start);
+                stock_offline_query::rounded(request.end,response.end);
+                std::memcpy(current,response.start,sizeof current);
+                auto result=stock_offline_query::Unbound;
+                for(unsigned attempt=0;attempt<=recasts_;++attempt) {
+                    result=stock_offline_query::ray(native_,query_filter,op==WORLD_GROUND,current,response.end,hit);
+                    if(result==stock_offline_query::Failed)throw engine_query::Failed();
+                    if(result!=stock_offline_query::Found || op!=WORLD_HORIZONTAL || !has_departing_ ||
+                       !(request.flags&1) || !departing_point(hit.point,hit.normal))break;
+                    double length=0.;stock_offline_query::departureStep(response.end,hit.point,epsilon_,current,length);
+                    if(length<=epsilon_) {result=stock_offline_query::Miss;break;}
+                }
+                stock_offline_query::finishRay(native_,result!=stock_offline_query::Unbound);
+                if(result!=stock_offline_query::Unbound) {
+                    if(result==stock_offline_query::Found) {
+                        std::memcpy(response.point,hit.point,sizeof response.point);
+                        std::memcpy(response.normal,hit.normal,sizeof response.normal);
+                        hits_.push_back(engine_query::Object());
+                        response.handle=hits_.size();response.status=1;
+                        native_hits_.emplace(response.handle,hit);
+                    }
+                    return;
+                }
+                planes_.resize(old_planes);
+                if(!finish())throw engine_query::Failed();
+                if(!query_filter)return;
+            }
+            #endif
+            engine_query::Object start,end;
+            session.segment(request.start,request.end,start,end,response.start,response.end);''')
+    source = once(source,
+        '                        if(op!=WORLD_GROUND)throw Unsupported();\n                        OwnedTuple rows(1);rows.set(0,world_request(WORLD_GROUND,q[i]));',
+        '''                        if(op!=WORLD_GROUND)throw Unsupported();
+                        if(frontier_->native_ground(q[i],r[i])) {
+                            stopped=stopped || (!r[i].status && (q[i].flags&1));continue;
+                        }
+                        OwnedTuple rows(1);rows.set(0,world_request(WORLD_GROUND,q[i]));''')
+    source = once(source,
+        '            OwnedTuple rows(n);\n            for(size_t i=0;i<n;++i) {\n                auto value=world_request(op,q[i]);',
+        '''            if(!frontier_->finish())throw engine_query::Failed();
+            OwnedTuple rows(n);
+            for(size_t i=0;i<n;++i) {
+                auto value=world_request(op,q[i]);''')
+    source = once(source, '            auto result=query(op,rows,n);\n            bridge.input();',
+        '            auto result=query(op,rows,n);\n            frontier_->effect_returned();\n            bridge.input();')
+    source = once(source,
+        '        void end_world()override {\n            NativeProfilePhase bridge(NativePhase::Pack);\n            frontier_.reset();',
+        '''        void end_world()override {
+            NativeProfilePhase bridge(NativePhase::Pack);
+            if(frontier_ && !frontier_->finish() && !world_error_)
+                world_error_=std::make_exception_ptr(engine_query::Failed());
+            frontier_.reset();''')
+    pending[path] = source
+    path = root/'offline_world_query_python.inc'
+    source = path.read_text()
+    source = once(source,
+        '                    if(op!=WORLD_GROUND)throw Unsupported();\n                    OwnedTuple rows(1);rows.set(0,world_request(WORLD_GROUND,request));',
+        '''                    if(op!=WORLD_GROUND)throw Unsupported();
+                    if(frontier->native_ground(request,response)) {
+                        stopped=stopped || (!response.status && (request.flags&1));continue;
+                    }
+                    OwnedTuple rows(1);rows.set(0,world_request(WORLD_GROUND,request));''')
+    source = once(source, '        OwnedTuple rows(count);\n',
+        '        if(!frontier->finish())throw engine_query::Failed();\n        OwnedTuple rows(count);\n')
+    source = once(source, '        auto result=invoke(op,rows,count);bridge.input();',
+        '        auto result=invoke(op,rows,count);frontier->effect_returned();bridge.input();')
+    source = once(source,
+        '        const int result=profile.run(wot_world_run,&snapshot,native_world_query_dispatch,&context);\n',
+        '        const int result=profile.run(wot_world_run,&snapshot,native_world_query_dispatch,&context);\n'
+        '        if(!frontier.finish())throw engine_query::Failed();\n')
+    pending[path] = source
 
 
 def patch(root):
@@ -153,11 +302,14 @@ def patch(root):
         raise ValueError('Pinned thread/window platform seams changed')
     pending[path] = source
     path = root/'offline_simulation_motion_python.inc'
-    source = once(path.read_text(), 'return hits_[handle-1].get();',
-                  'return hits_[static_cast<unsigned>(handle-1)].get();')
+    source = path.read_text()
+    if 'auto &cached=hits_[static_cast<unsigned>(handle-1)];' not in source:
+        source = once(source, 'return hits_[handle-1].get();',
+                      'return hits_[static_cast<unsigned>(handle-1)].get();')
     # The preceding guard bounds the index by the owned list's unsigned size.
     # Make its existing conversion explicit for MSVC /WX, without changing it.
     pending[path] = source
+    patch_query_chain(root, pending)
     # Validate the complete transaction before publishing any adapted source.
     for path, source in pending.items():
         path.write_text(source, encoding='utf-8', newline='')

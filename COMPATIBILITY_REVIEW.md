@@ -3343,6 +3343,18 @@ its bundled Python process runtime; resource mounts cannot replace that file.
 Preparation validates the package against the pinned source and recorder's
 existing integrity contract. It remains outside the resource search paths, so
 the adapted `offline-res` payload is the sole gameplay module owner.
+The synchronous world and motion adapters can keep standard engine queries in
+C++ through vector rounding, scene traversal, surface filtering, skin ownership,
+recasts and intermediate hit storage. The generated Python seams expose only
+canonical callback captures and identity; custom callbacks retain the generic
+path. Effects keep their existing order, refresh live ownership and destruction
+state, and materialize a hit only when a Python effect needs it. A failure after
+an effect cannot replay the operation. Focused CPython 2.7 host tests compile
+the production bridge, scene query and generated numerical module: both entry
+paths match the generic results with zero Python calls in the standard ray
+loop, including ground recovery, float32 boundaries and recast budgets.
+These tests establish the adapter contract, not Windows performance; preparing
+the native identity view still incurs work for each synchronous sweep.
 `Hybrid` names the engine's optimized build configuration with debug symbols;
 it is independent of the target architecture and deployment environment.
 The executable also retains the original PE large-address-aware flag. Without
@@ -3376,8 +3388,14 @@ Camouflage and repaint handlers update only properties exposed by each effect,
 matching the original material binder. Track, partial and non-colourised
 materials may omit those optional parameters. The adapter preserves existing
 property values and types without creating missing shader parameters or emitting
-an asset error on every draw. Required track and alpha-property handling is
-unchanged; Windows frame pacing remains a separate measurement.
+an asset error on every draw. Track UV bindings likewise leave absent slots
+alone: some distant LOD materials retain their track identifier but use an
+effect without a UV-transform parameter. The original track binder replaces an
+existing property pointer and ignores a missing slot. Each normal/alpha variant
+retains its own authored pointer for distance restoration and its own scrolling
+property, preserving vehicle isolation and track hiding/damage semantics.
+Exact-client resource and instruction checks plus host material tests cover
+these cases; Windows frame pacing remains a separate measurement.
 Compiled static materials and vehicle effect variants clone shared default
 properties once before their mutable bindings are published. The SDK default
 property objects otherwise alias across materials, allowing a later texture or

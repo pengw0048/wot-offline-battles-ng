@@ -431,6 +431,13 @@ StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     return collideSegment( spaceID, start, end, skipFlags, filter, hit );
 }
 
+StockSegmentResult collideStockSegmentFiltered( SpaceID spaceID,
+    const Vector3 & start, const Vector3 & end, WorldTriangle::Flags skipFlags,
+    const StockNativeSegmentFilter & filter, StockSegmentHit & hit )
+{
+    return collideSegment( spaceID, start, end, skipFlags, filter, hit );
+}
+
 bool collideStockSegmentNative( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags,
     const StockNativeSegmentFilter & filter, StockNativeSegmentHit & hit )
@@ -570,5 +577,11 @@ PY_AUTO_MODULE_FUNCTION( RETOWN, wg_getMatInfoNearPoint, ARG( SpaceID, ARG( Vect
 PY_AUTO_MODULE_FUNCTION( RETDATA, wg_collideWater, ARG( Vector3, ARG( Vector3,
     OPTARG( bool, true, END ) ) ), BigWorld )
 PY_AUTO_MODULE_FUNCTION( RETDATA, wg_getSpaceBounds, END, BigWorld )
+
+bool stockSegmentQueryCallable( PyObject * object )
+{
+    return object && PyCFunction_Check( object ) &&
+        PyCFunction_GET_FUNCTION( object ) == _py_wg_collideSegment;
+}
 
 BW_END_NAMESPACE

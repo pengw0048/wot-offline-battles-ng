@@ -14,6 +14,9 @@
 #define BW_BEGIN_NAMESPACE namespace BW {
 namespace wot { inline bool stockSimulationWorker() { return false; } }
 #define BW_END_NAMESPACE }
+// The production capability identity points at this fixture's exact wrapper.
+namespace BW { namespace { PyObject * pyCollideSegment(PyObject *, PyObject *); } }
+#define _py_wg_collideSegment pyCollideSegment
 #define PY_AUTO_MODULE_FUNCTION(...)
 #define BW_GUARD
 #define BW_STATIC_ASSERT(expression, message) static_assert(expression, #message)

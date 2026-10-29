@@ -36,7 +36,7 @@ class OfflineMathBindingTests(unittest.TestCase):
         changed = {name for name in before if before[name] != after[name]}
         self.assertEqual(changed, {'offline_math_batch_native.cpp',
             'offline_destructible_prepare_python.inc', 'offline_navigation_query_python.inc',
-            'offline_simulation_motion_python.inc'})
+            'offline_simulation_motion_python.inc', 'offline_world_query_python.inc'})
         self.assertEqual(len(adapter.METHODS), 103)
         self.assertIn('sim_control_contacts_materialized', adapter.METHODS)
         self.assertIn('sim_control_source_still', adapter.METHODS)
@@ -48,9 +48,19 @@ class OfflineMathBindingTests(unittest.TestCase):
             b'#ifdef WOT_HOST_PYTHON',b'#if !defined(_WIN32)').replace(
             b'#ifndef WOT_HOST_PYTHON',b'#if defined(_WIN32)'),
             after['offline_navigation_query_python.inc'])
-        self.assertEqual(before['offline_simulation_motion_python.inc'].replace(
-            b'return hits_[handle-1].get();', b'return hits_[static_cast<unsigned>(handle-1)].get();'),
-            after['offline_simulation_motion_python.inc'])
+        motion = after['offline_simulation_motion_python.inc'].decode()
+        self.assertIn('stock_offline_query::begin(capabilities)', motion)
+        self.assertIn('stock_offline_query::materialize(found->second)', motion)
+        self.assertIn('frontier_->native_ground(q[i],r[i])', motion)
+        self.assertIn('frontier_->effect_returned()', motion)
+        world = after['offline_world_query_python.inc'].decode()
+        self.assertIn('frontier->native_ground(request,response)', world)
+        self.assertIn('frontier->effect_returned()', world)
+        # The independent ownership adapter leaves all numerical algorithms
+        # and the generic capability/recast implementation byte-for-byte.
+        for name in ('world_stage.cpp', 'offline_simulation_motion.cpp',
+                     'offline_engine_query_python.inc'):
+            self.assertEqual(before[name], after[name])
         cpp = after['offline_math_batch_native.cpp'].decode()
         self.assertIn('#ifdef WOT_PYTHON_C_API\n#include <Python.h>', cpp)
         self.assertIn('#if defined(_WIN32)\nextern "C" __declspec(dllexport)', cpp)

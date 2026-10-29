@@ -229,6 +229,39 @@ struct VehicleMaterialHandlerEntry
     std::shared_ptr<VehicleMaterialHandlerState> state;
 };
 
+struct VehicleTrackMaterialBinding
+{
+    Moo::EffectPropertyPtr authoredUV;
+    Moo::EffectPropertyPtr scrollingUV;
+
+    bool bind( Moo::EffectMaterial & material )
+    {
+        authoredUV = material.getProperty( "vTransform_diffuse" );
+        if (!authoredUV)
+            return true;
+        // #1513 af07a0 calls 96d8d0 with a vector property and ignores an
+        // absent slot. It does not require the previous property to be a
+        // vector. Keep its identity for the distance-LOD restoration.
+        const Moo::EffectPropertyFactoryPtr & factory =
+            Moo::EffectPropertyFactory::findFactory( "Vector4" );
+        if (!factory)
+            return false;
+        DataSectionPtr section = new XMLSection( "Vector4" );
+        section->setVector4( Vector4( 0.f, 1.f, 0.f, 0.f ) );
+        scrollingUV = factory->create( "vTransform_diffuse", section );
+        return scrollingUV != NULL;
+    }
+
+    void apply( Moo::EffectMaterial & material, bool beyondLod, const Vector4 & value )
+    {
+        if (!authoredUV)
+            return;
+        if (!beyondLod)
+            scrollingUV->be( value );
+        material.replaceProperty( "vTransform_diffuse", beyondLod ? authoredUV : scrollingUV );
+    }
+};
+
 struct VehicleMaterialBinding
 {
     Moo::Visual::PrimitiveGroup * group;
@@ -236,7 +269,8 @@ struct VehicleMaterialBinding
     Moo::ComplexEffectMaterialPtr normal;
     Moo::ComplexEffectMaterialPtr alpha;
     int trackSide;
-    Vector4 authoredUV;
+    VehicleTrackMaterialBinding normalTracks;
+    VehicleTrackMaterialBinding alphaTracks;
 };
 
 // WGBaseFashion embeds a Svarog ComponentSystem (#1513 native +0x0c).
@@ -340,58 +374,11 @@ struct VehicleFashionState
                     // cannot be loaded. Preserve that original material.
                     if (!binding.normal)
                         binding.normal = cloneMaterial( binding.original );
-                    if (trackConfigured && binding.trackSide != 0 && !crashed)
+                    if (trackConfigured && binding.trackSide != 0 && !crashed &&
+                        !binding.normalTracks.bind( *binding.normal->baseMaterial() ))
                     {
-                        Moo::EffectPropertyPtr uv = binding.normal->baseMaterial()->getProperty(
-                            "vTransform_diffuse" );
-                        if (!uv || !uv->getVector( binding.authoredUV ))
-                        {
-                            // Capture the failed material only. A model may contain
-                            // multiple LODs with the same track identifier, and a
-                            // cloned material may use a different effect variant.
-                            Moo::EffectMaterialPtr original = binding.original->baseMaterial();
-                            Moo::EffectMaterialPtr normal = binding.normal->baseMaterial();
-                            Moo::ManagedEffectPtr managed = normal->pEffect();
-                            Moo::EffectPropertyPtr originalUV = original->getProperty( "vTransform_diffuse" );
-                            Vector4 unused;
-                            const bool originalVector = originalUV && originalUV->getVector( unused );
-                            Moo::EffectPropertyPtr defaultUV;
-                            ID3DXEffect * effect = managed ? managed->pEffect() : NULL;
-                            D3DXHANDLE parameter = effect ? effect->GetParameterByName( NULL, "vTransform_diffuse" ) : NULL;
-                            D3DXPARAMETER_DESC description = {};
-                            const bool described = parameter && SUCCEEDED( effect->GetParameterDesc( parameter, &description ) );
-                            unsigned usedTechniques = 0;
-                            if (effect && parameter)
-                            {
-                                D3DXEFFECT_DESC effectDescription = {};
-                                if (SUCCEEDED( effect->GetDesc( &effectDescription ) ))
-                                    for (UINT technique = 0; technique < effectDescription.Techniques; ++technique)
-                                        if (effect->IsParameterUsed( parameter, effect->GetTechnique( technique ) ))
-                                            ++usedTechniques;
-                            }
-                            if (managed)
-                            {
-                                const Moo::EffectPropertyMappings & defaults = managed->defaultProperties();
-                                Moo::EffectPropertyMappings::const_iterator found = defaults.find( "vTransform_diffuse" );
-                                if (found != defaults.end()) defaultUV = found->second;
-                            }
-                            const bool defaultVector = defaultUV && defaultUV->getVector( unused );
-                            ERROR_MSG( "VehicleFashion track binding failed: model=%s part=%d material=%s "
-                                "original_fx=%s normal_fx=%s original_property=%d original_vector=%d "
-                                "normal_property=%d normal_vector=0 default_property=%d default_vector=%d "
-                                "effect=%d parameter=%d parameter_desc=%d class=%u type=%u used_techniques=%u\n",
-                                level->resourceID().c_str(), part, name.c_str(),
-                                original->pEffect() ? original->pEffect()->resourceID().c_str() : "",
-                                managed ? managed->resourceID().c_str() : "",
-                                originalUV ? 1 : 0, originalVector ? 1 : 0, uv ? 1 : 0,
-                                defaultUV ? 1 : 0, defaultVector ? 1 : 0, effect ? 1 : 0,
-                                parameter ? 1 : 0, described ? 1 : 0,
-                                described ? static_cast<unsigned>( description.Class ) : 0U,
-                                described ? static_cast<unsigned>( description.Type ) : 0U, usedTechniques );
-                            PyErr_Format( PyExc_ValueError,
-                                "Track material '%s' has no vector vTransform_diffuse", name.c_str() );
-                            return false;
-                        }
+                        PyErr_SetString( PyExc_RuntimeError, "Cannot create the track vector property" );
+                        return false;
                     }
                     if (crashed && binding.trackSide != 0 && !foundCrash[binding.trackSide - 1])
                         foundCrash[binding.trackSide - 1] = binding.original->baseMaterial()->floatProperty(
@@ -403,6 +390,12 @@ struct VehicleFashionState
                         {
                             binding.alpha->baseMaterial()->setProperty( "srcBlend", 4, false );
                             binding.alpha->baseMaterial()->setProperty( "destBlend", 5, false );
+                            if (trackConfigured && binding.trackSide != 0 && !crashed &&
+                                !binding.alphaTracks.bind( *binding.alpha->baseMaterial() ))
+                            {
+                                PyErr_SetString( PyExc_RuntimeError, "Cannot create the track vector property" );
+                                return false;
+                            }
                         }
                     }
                     next.push_back( binding );
@@ -448,8 +441,9 @@ struct VehicleFashionState
             if (binding.alpha && alpha != 1.f)
                 effect->setProperty( "wgOutputAlphaModifier", alpha, false );
             if (trackConfigured && !crashed && binding.trackSide != 0)
-                effect->setProperty( "vTransform_diffuse", tracksBeyondLod ? binding.authoredUV :
-                    Vector4( 0.f, 1.f, 0.f, binding.trackSide == 1 ? tracks.left : tracks.right ), false );
+                (binding.alpha && alpha != 1.f ? binding.alphaTracks : binding.normalTracks).apply(
+                    *effect, tracksBeyondLod,
+                    Vector4( 0.f, 1.f, 0.f, binding.trackSide == 1 ? tracks.left : tracks.right ) );
             if (trackConfigured && crashed && binding.trackSide != 0)
                 effect->setProperty( "crash_coefficient", crashCoefficient[binding.trackSide - 1], false );
             for (size_t handler = 0; handler < handlers.size(); ++handler)

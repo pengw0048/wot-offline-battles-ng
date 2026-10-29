@@ -39,6 +39,9 @@ StockSegmentResult collideStockSegment( SpaceID spaceID, const Vector3 & start,
     const Vector3 & end, WorldTriangle::Flags skipFlags, PyObject * filter,
     StockSegmentHit & hit );
 
+// Exact registered Python wrapper identity, including custom-builtin rejection.
+bool stockSegmentQueryCallable( PyObject * object );
+
 // One f642b0 result: +4 point, +10 normal, +1c materialKind, +20 origin,
 // +30 identity. identity is 0 without static-item identity, otherwise
 // chunkID | uint64(uint16 itemIndex) << 32 | uint64(1) << 48 (f63ac0).
@@ -55,6 +58,12 @@ struct StockNativeSegmentHit
 // function accepts every surface without an identity lookup.
 typedef std::function< bool( uint32 materialKind, uint32 collisionFlags, uint64 identity ) >
     StockNativeSegmentFilter;
+
+// Status-preserving typed query for synchronous native engine-query owners.
+// The caller retains the Python error channel and never materializes a hit.
+StockSegmentResult collideStockSegmentFiltered( SpaceID spaceID,
+    const Vector3 & start, const Vector3 & end, WorldTriangle::Flags skipFlags,
+    const StockNativeSegmentFilter & filter, StockSegmentHit & hit );
 
 // The native f642b0 query for native owners such as PyBallisticsSimulator.
 // False for no surface, a zero-length segment, a missing or cleared space and
