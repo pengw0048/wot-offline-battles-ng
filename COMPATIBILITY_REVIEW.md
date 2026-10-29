@@ -3415,6 +3415,14 @@ not manufacture a Python error before Svarog invokes them. The real SDK
 resolver and callback dispatch run with CPython 2.7 in focused tests, including
 the original failure, dynamic attributes and preservation of actual callback
 exceptions. This does not change component activation or teardown ordering.
+GPU timing queries are opt-in with the existing profiler switch. Disabled
+profiling submits no timestamp queries and performs no query readback. A Windows
+dump reproduced a GPU parent interval ending before its children, which failed
+the SDK's hierarchy assertion. Complete query batches are now checked before
+publication; failed, stale or non-nested GPU samples are discarded while CPU
+events remain intact. Focused tests replay that failure through the actual SDK
+producer and hierarchy, including activation, device-reset and frame-delay
+transitions. This establishes query ownership and containment, not an FPS gain.
 Vehicle traces use the shared LOD settings parser: the ordinary assembler's
 `LodSettings(distance, None)` keeps the unrestricted priority, and the native
 trace owner receives the converted settings only after successful conversion.
@@ -3435,6 +3443,12 @@ Original shooting resources use the shimmer effect to write an alpha mask; the
 ordinary sprite effect writes colour instead. Original setter instructions, SDK
 serialization and clone paths, and both pipeline shader assets exercise this
 contract. Complete refraction output still requires Windows visual acceptance.
+Sprite material-property writes follow the original effect family: shimmer only
+receives its diffuse texture, while soft-depth and near-fade parameters belong
+to the ordinary sprite effects. The public SDK's extra fog-colour and alpha-test
+writes are absent from the original producer. Exact executable conditions and
+both shader pipelines cover these distinctions, including failing old-code
+controls; removing invalid writes does not establish final muzzle appearance.
 The shared `ParticlesParams` shader constant retains the original distance fade,
 sniper field-of-view adjustment and quality fields. Without this binding, the
 original shooting shaders receive zero parameters and suppress particle alpha.
@@ -3494,6 +3508,14 @@ before releasing the provider. `resetKeys` clears the native camera controls.
 These calls are required by the ordinary control-mode create/disable sequence,
 even when the player never selects the video camera.
 
+Camera clipping reads each space's authored `farPlane` quality table when it
+is present. The selected distance feeds camera clipping while the maximum
+distance remains available to the environment, matching the original separate
+consumers. Scalar-only spaces retain their existing ratio path. On Fjord the
+minimum option selects the authored 600 metres; treating the table as a scalar
+had instead used the public SDK's 500-metre default and halved it. Tests cover
+quality changes, space reloads and the original native selection instructions.
+
 `MouseTargetingMatrix.detach(bool)` freezes the last sampled screen coordinate
 while the GUI owns the cursor. Sampling resumes only with focus and an in-window
 cursor; the ray still uses the current camera on every matrix read. The stock
@@ -3523,6 +3545,13 @@ so its exception cannot surface later in an unrelated event subscription.
 The AVM2 call-frame guard uses the original 1024-frame limit; the authored lobby
 scheduler can exceed the older SDK's 128 frames while draining a finite queue.
 Original PYC/ABC consumers and x86 branch checks cover these contracts.
+
+The native Flash delegate registers all original `WG` numeric and date-format
+callbacks with the shared Windows locale owner. Without these handlers, the
+stock Python external-interface fallback returned `None`, which ActionScript
+converted to the literal `null` in experience and result fields. Exact native
+registrations, original Flash consumers and the shared formatting boundary are
+covered by focused tests; the visible result remains a Windows acceptance check.
 
 Runtime Flash bitmap fills retain the loaded-image definition alongside the
 image in each render fill. This lease follows copied shapes and old snapshots
