@@ -3371,11 +3371,19 @@ catalog/tree/translation resolver migration.
 The generated numerical module registers `offline_rotation_world_native`
 without changing the pinned numerical method table. Its separate rotation-only
 build flag leaves ordinary translation queries generic, and the prepared
-consumer's activation guard is initially disabled. Fixed-source host tests
-compare the original rotation consumer and the actual native frontier, including
+consumer enables the rotation entry after canonical admission. Fixed-source host
+tests compare the original rotation consumer and the actual native frontier, including
 hit, recast and failure paths. These tests require `WOT_FORK_0101_SOURCE`; hosted
 CI without that source skips the oracle. Host timings are not evidence of
-Windows frame-time savings.
+Windows frame-time savings. Two same-executable Windows comparison pairs kept
+rotation collision and ordinary scheduling intact. The full rotation-world
+boundary changed from 125.15 to 125.47 and 122.53 to 118.60 milliseconds per
+simulated second; random routes and different call populations prevent a causal
+speedup claim. A separate diagnostic recorded 4,557 canonical native context
+admissions, no recorded generic transition, and 1,350 successful outer entries
+without a query failure. It observed context status assignments, not individual
+ray counts. The migration is active, but a substantial end-to-end speedup remains
+unproved.
 
 Tree registration no longer prepares the hull sweep or proximity receipt that
 its registration-only branch never reads. Space changes, publication retries,

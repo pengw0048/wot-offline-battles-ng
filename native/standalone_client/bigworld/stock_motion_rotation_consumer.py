@@ -1,7 +1,7 @@
 """Independent prepared-rotation adapter; ordinary world queries stay unchanged."""
 from __future__ import print_function
 
-_NATIVE_ROTATION_ENABLED = False
+_NATIVE_ROTATION_ENABLED = True
 _calls = {'admitted': 0, 'fallback': 0, 'failed_worlds': 0}
 
 
