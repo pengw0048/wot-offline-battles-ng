@@ -18,6 +18,7 @@
 #include "stock_audio_io.hpp"
 #include "stock_audio_plugins.hpp"
 #include "app.hpp"
+#include "device_app.hpp"
 
 #include "cstdmf/string_utils.hpp"
 #include "cstdmf/timestamp.hpp"
@@ -27,6 +28,7 @@
 #include "romp/weather.hpp"
 #include "space/client_space.hpp"
 #include "resmgr/bwresource.hpp"
+#include "resmgr/dataresource.hpp"
 #include "space/deprecated_space_helpers.hpp"
 #include "terrain/base_terrain_block.hpp"
 #include <AK/SoundEngine/Common/AkMemoryMgr.h>
@@ -266,9 +268,16 @@ bool queryDevice(DeviceInfo& output) {
     return true;
 }
 void saveSpeakerPreference(const char* key, unsigned value) {
-    if (!s_scriptsPreferences) return;
-    s_scriptsPreferences->writeUInt(key, value);
-    if (!App::instance().savePreferences())
+    if (s_scriptsPreferences) s_scriptsPreferences->writeUInt(key, value);
+    // #1513 0x012533c0/0x012535d0 update the existing document. A full
+    // application save here would discard graphics settings not registered yet.
+    DataResource resource;
+    if (resource.load(DeviceApp::instance.preferencesFilePath()) != DataHandle::DHE_NoError)
+        return;
+    DataSectionPtr preferences = resource.getRootSection();
+    if (!preferences) return;
+    preferences->writeUInt(BW::string("scriptsPreferences/") + key, value);
+    if (resource.save() != DataHandle::DHE_NoError)
         ERROR_MSG("StockAudio: failed to save authored speaker preference\n");
 }
 }
