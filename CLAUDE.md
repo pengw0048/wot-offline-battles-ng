@@ -36,6 +36,23 @@ symlink target. Read this file before investigating or changing the repository.
   but do not invent an extra review, full-CI, or native-acceptance gate after
   he explicitly asks to commit, package, or release without it.
 
+## Subagent model and effort selection
+
+- Delegate independent, bounded work when it improves progress. Give each
+  agent an explicit scope, file ownership, current revision and evidence limits.
+- Use Sol or Terra by default. Use low or medium effort for inventories, log
+  extraction and straightforward scripts; use high effort for substantial
+  implementation, contract review and performance analysis.
+- Reserve Astra with high or higher effort for difficult cross-layer diagnosis,
+  unresolved design questions or high-value final review. Do not use the most
+  expensive model or maximum effort automatically for every subtask.
+- Choose the model and effort explicitly when dispatching; provide a focused
+  task briefing rather than inheriting a costly configuration by accident.
+  Escalate when observed complexity warrants it, not just because more effort
+  is available.
+- Keep VM operation, builds and timed gameplay samples under one coordinator.
+  Avoid concurrent compilation or heavy tests during performance captures.
+
 ## Start every task from the exact current state
 
 Run these checks before relying on an old handoff, test count, hash, or path:
