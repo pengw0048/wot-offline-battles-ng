@@ -1,6 +1,7 @@
 // LAN battle transport owned by native threads: connect, frame receive and send queue.
 #include "stock_wire_net.hpp"
 #include "stock_wire_codec.hpp"
+#include "stock_wire_replica_store.hpp"
 #if defined(_WIN32)
 #if !defined(NOMINMAX)
 #define NOMINMAX
@@ -24,6 +25,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -47,6 +49,14 @@ const char* capsule_name = "offline_client_wire_native.Connection";
 
 enum class State { connecting, connected, closed, failed };
 
+// One received frame; replica snapshots are already decoded and merged on the receive thread.
+struct Received {
+    std::string frame;
+    Clock::time_point arrival;
+    std::shared_ptr<const stock_native_client_state::Value> snapshot;
+    std::string resync;
+};
+
 struct Shared {
     std::mutex mutex;
     std::condition_variable wake;
@@ -55,7 +65,7 @@ struct Shared {
     Socket socket = invalid_socket;
     std::deque<std::string> outgoing;
     std::size_t outgoing_bytes = 0;
-    std::deque<std::pair<std::string, Clock::time_point>> frames;
+    std::deque<Received> frames;
     bool closing = false;
     double flush_seconds = 0.5;
 
@@ -174,6 +184,8 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
     { std::lock_guard<std::mutex> lock(shared->mutex); s = shared->socket; }
     std::string buffer;
     char chunk[65536];
+    stock_wire::ReplicaStore store;
+    const uint16_t replica = stock_wire::message_id("replica_snapshot");
     for (;;) {
         int got = ::recv(s, chunk, sizeof(chunk), 0);
         if (got <= 0) {
@@ -188,19 +200,32 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
         buffer.append(chunk, static_cast<std::size_t>(got));
         Clock::time_point now = Clock::now();
         std::size_t used = 0;
-        std::vector<std::string> ready;
+        std::vector<Received> ready;
         while (buffer.size() - used >= stock_wire::frame_header_bytes) {
             std::size_t size = stock_wire::frame_size(reinterpret_cast<const unsigned char*>(buffer.data() + used),
                                                       buffer.size() - used);
             if (size > max_frame) { shared->finish(State::failed, "battle frame exceeds the wire limit"); return; }
             if (buffer.size() - used < size) break;
-            ready.emplace_back(buffer, used, size);
+            Received item{std::string(buffer, used, size), now, {}, {}};
             used += size;
+            const auto* data = reinterpret_cast<const unsigned char*>(item.frame.data());
+            if (stock_wire::frame_message(data, item.frame.size()) == replica) {
+                // A delta that does not fit the merged rows asks the server for a full one.
+                stock_native_client_state::Value message;
+                try {
+                    if (!stock_wire::decode_value(data, item.frame.size(), message, item.resync)) throw std::runtime_error(item.resync);
+                    item.snapshot = store.apply(std::move(message));
+                } catch (const std::exception& error) {
+                    item.resync = error.what();
+                    item.snapshot.reset();
+                }
+            }
+            ready.push_back(std::move(item));
         }
         buffer.erase(0, used);
         if (!ready.empty()) {
             std::lock_guard<std::mutex> lock(shared->mutex);
-            for (auto& frame : ready) shared->frames.emplace_back(std::move(frame), now);
+            for (auto& item : ready) shared->frames.push_back(std::move(item));
         }
     }
 }
@@ -266,13 +291,14 @@ PyObject* sendPython(PyObject*, PyObject* args) {
     Py_RETURN_TRUE;
 }
 
-// ([(frame, age_seconds), ...], state, error); age converts to the caller's clock.
+// ([(frame, age_seconds, native), ...], state, error); age converts to the caller's clock.
+// native is a merged replica snapshot capsule, a resync reason string, or None.
 PyObject* receivePython(PyObject*, PyObject* args) {
     PyObject* capsule; int limit = 256;
     if (!PyArg_ParseTuple(args, "O|i", &capsule, &limit)) return nullptr;
     Connection* value = connection(capsule);
     if (!value) return nullptr;
-    std::deque<std::pair<std::string, Clock::time_point>> taken;
+    std::deque<Received> taken;
     State state; std::string error;
     {
         std::lock_guard<std::mutex> lock(value->shared->mutex);
@@ -288,9 +314,12 @@ PyObject* receivePython(PyObject*, PyObject* args) {
     if (!list) return nullptr;
     Py_ssize_t index = 0;
     for (auto& item : taken) {
-        double age = std::chrono::duration<double>(now - item.second).count();
-        PyObject* bytes = PyString_FromStringAndSize(item.first.data(), static_cast<Py_ssize_t>(item.first.size()));
-        PyObject* pair = bytes ? Py_BuildValue("(Nd)", bytes, age) : nullptr;
+        double age = std::chrono::duration<double>(now - item.arrival).count();
+        PyObject* bytes = PyString_FromStringAndSize(item.frame.data(), static_cast<Py_ssize_t>(item.frame.size()));
+        PyObject* native = item.snapshot ? stock_wire::snapshot_capsule(item.snapshot)
+                         : !item.resync.empty() ? PyString_FromString(item.resync.c_str()) : (Py_INCREF(Py_None), Py_None);
+        PyObject* pair = bytes && native ? Py_BuildValue("(NdN)", bytes, age, native) : nullptr;
+        if (!pair) { Py_XDECREF(bytes); Py_XDECREF(native); }
         if (!pair) { Py_DECREF(list); return nullptr; }
         PyList_SET_ITEM(list, index++, pair);
     }

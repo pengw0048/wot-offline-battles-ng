@@ -1,5 +1,6 @@
 #include "stock_wire_replica_store.hpp"
 #include <stdexcept>
+#include <string>
 
 namespace stock_wire {
 namespace {
@@ -92,14 +93,81 @@ std::shared_ptr<const V> ReplicaStore::apply(V message) {
     };
     auto& players = snapshot->object["players"];
     players.kind = V::Kind::Array;
-    if (message.get("own").kind == V::Kind::Object)
-        players.array.push_back(shared(std::make_shared<const V>(message.get("own"))));
+    const bool own = message.get("own").kind == V::Kind::Object;
+    if (own) players.array.push_back(shared(std::make_shared<const V>(message.get("own"))));
+    snapshot->object["_own"].kind = V::Kind::Boolean;
+    snapshot->object["_own"].boolean = own;
     V remote;
     rows(players_, remote);
     for (auto& row : remote.array) players.array.push_back(std::move(row));
     rows(bots_, snapshot->object["bots"]);
     valid_ = true;
     return snapshot;
+}
+
+}
+
+namespace stock_wire {
+namespace {
+const char* snapshot_name = "offline_client_wire_native.Snapshot";
+void destroySnapshot(PyObject* capsule) {
+    delete static_cast<std::shared_ptr<const V>*>(PyCapsule_GetPointer(capsule, snapshot_name));
+}
+PyObject* fail(const char* why) { PyErr_SetString(PyExc_ValueError, why); return nullptr; }
+
+// The Python view of a merged snapshot: envelope, the recipient's own row and the capsule.
+PyObject* replicaMessage(PyObject*, PyObject* capsule) {
+    auto snapshot = snapshot_from_capsule(capsule);
+    if (!snapshot) return fail("not a native replica snapshot");
+    PyObject* out = PyDict_New();
+    if (!out) return nullptr;
+    for (const auto& field : snapshot->object) {
+        if (field.first == "players" || field.first == "bots" || field.first == "_own") continue;
+        PyObject* value = stock_native_client_state::write(field.second);
+        if (!value || PyDict_SetItemString(out, field.first.c_str(), value) < 0) { Py_XDECREF(value); Py_DECREF(out); return nullptr; }
+        Py_DECREF(value);
+    }
+    PyObject* players = PyList_New(0);
+    PyObject* bots = PyList_New(0);
+    const auto& rows = snapshot->get("players");
+    if (players && bots && snapshot->get("_own").truth() && !rows.array.empty()) {
+        PyObject* own = stock_native_client_state::write(rows.array.front());
+        if (!own || PyList_Append(players, own) < 0) { Py_XDECREF(own); Py_DECREF(players); Py_DECREF(bots); Py_DECREF(out); return nullptr; }
+        Py_DECREF(own);
+    }
+    if (!players || !bots || PyDict_SetItemString(out, "players", players) < 0 ||
+        PyDict_SetItemString(out, "bots", bots) < 0 || PyDict_SetItemString(out, "_native_snapshot", capsule) < 0) {
+        Py_XDECREF(players); Py_XDECREF(bots); Py_DECREF(out); return nullptr;
+    }
+    Py_DECREF(players); Py_DECREF(bots);
+    return out;
+}
+
+// Every row as Python values, for the one-off replay header seed.
+PyObject* completeSnapshot(PyObject*, PyObject* capsule) {
+    auto snapshot = snapshot_from_capsule(capsule);
+    if (!snapshot) return fail("not a native replica snapshot");
+    PyObject* out = stock_native_client_state::write(*snapshot);
+    if (out && PyDict_DelItemString(out, "_own") < 0) { Py_DECREF(out); return nullptr; }
+    return out;
+}
+}
+
+PyObject* snapshot_capsule(std::shared_ptr<const stock_native_client_state::Value> snapshot) {
+    return PyCapsule_New(new std::shared_ptr<const V>(std::move(snapshot)), snapshot_name, destroySnapshot);
+}
+
+std::shared_ptr<const stock_native_client_state::Value> snapshot_from_capsule(PyObject* capsule) {
+    if (!PyCapsule_IsValid(capsule, snapshot_name)) return {};
+    return *static_cast<std::shared_ptr<const V>*>(PyCapsule_GetPointer(capsule, snapshot_name));
+}
+
+PyMethodDef* replica_methods() {
+    static PyMethodDef table[] = {
+        {"replica_message", replicaMessage, METH_O, "Python view of a merged replica snapshot."},
+        {"complete_snapshot", completeSnapshot, METH_O, "Every row of a merged replica snapshot as Python values."},
+        {nullptr, nullptr, 0, nullptr}};
+    return table;
 }
 
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <Python.h>
 // Receiver side of the replica snapshot split: merges state and motion records into rows.
 #include "stock_native_client_state.hpp"
 #include <cstdint>
@@ -26,5 +27,11 @@ private:
     std::vector<stock_native_client_state::Value> contracts_;
     bool valid_ = false;
 };
+
+// Capsule for one merged snapshot handed from the receive thread to the main thread.
+PyObject* snapshot_capsule(std::shared_ptr<const stock_native_client_state::Value> snapshot);
+// The merged snapshot, or empty when the object is not such a capsule.
+std::shared_ptr<const stock_native_client_state::Value> snapshot_from_capsule(PyObject* capsule);
+PyMethodDef* replica_methods();
 
 }

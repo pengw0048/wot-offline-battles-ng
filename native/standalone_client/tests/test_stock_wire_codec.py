@@ -154,8 +154,18 @@ while len(received) < len(frames) and time.time() < deadline:
     batch, state, error = sock.receive()
     received.extend(batch)
     time.sleep(0.01)
-assert [frame for frame, age in received] == frames, (len(received), len(frames))
-assert all(age >= 0.0 for frame, age in received)
+assert [item[0] for item in received] == frames, (len(received), len(frames))
+assert all(item[1] >= 0.0 for item in received)
+replicas = 0
+for frame, age, native in received:
+    if wire.decode(frame)['type'] != 'replica_snapshot':
+        assert native is None, native
+        continue
+    replicas += 1
+    view, complete = wire.replica_message(native), wire.complete_snapshot(native)
+    assert view['type'] == 'snapshot' and view['bots'] == [] and len(view['players']) == 1, view
+    assert view['_native_snapshot'] is native and complete['bots'], complete
+assert replicas == 1, replicas
 sock.sendall(wire.encode({'type': 'leave'}))
 sock.close()
 thread.join(10)
@@ -211,7 +221,7 @@ class StagedClientTransport(unittest.TestCase):
                             '-Wno-missing-field-initializers', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
                             '-DWOT_WIRE_HOST_BUILD', str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'),
-                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'), str(ROOT / 'bigworld/stock_wire_replica_store.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             frames = [{'frame': SCHEMA.encode(m).hex()} for m in samples()]
@@ -293,7 +303,7 @@ class NativeReplay(unittest.TestCase):
                             '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
                             '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
                             '-I' + str(ROOT / 'bigworld'), str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'),
-                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'), str(ROOT / 'bigworld/stock_wire_replica_store.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             (folder / 'fixture.py').write_text(REPLAY_FIXTURE)
