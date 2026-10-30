@@ -1352,7 +1352,8 @@ public:
             std::stable_sort( items.begin(), items.end(), []( const TreeDrawItem & a, const TreeDrawItem & b ) {
                 const auto & x = *a.instance->type;
                 const auto & y = *b.instance->type;
-                return x.sortKey < y.sortKey;
+                // Instances of one type share its key; skip the string compare.
+                return &x != &y && x.sortKey < y.sortKey;
             } );
         }
         if (items.empty()) return;
