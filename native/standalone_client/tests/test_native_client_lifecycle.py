@@ -11,7 +11,7 @@ RUNTIME = 'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py'
 METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_attacker_engine_id',
            '_should_suppress_postmortem_killer', '_sync_fire_effect', '_stop_remote_visual',
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
-           '_apply_critical_state', '_apply_stun_state', '_apply_siege_state')
+           '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -95,6 +95,7 @@ NATIVE = {
     '_apply_critical_state': lambda b, r, payload, authority=None: native.critical_state(b, r, payload, authority, critical_damage),
     '_apply_stun_state': native.stun_state,
     '_apply_siege_state': lambda b, r, st: native.siege_state(b, r, st, vehicle_physics),
+    '_present_critical': native.present_critical,
 }
 vehicle_physics = None
 critical_damage = None
@@ -242,6 +243,43 @@ for end in (0, 5000, -1, True, 2.5):
                                     b._entity_probe = entity
                                     return b, args
                                 run('_apply_stun_state', make_checked, (end, kind, attacker, factors, presented, estimated, local, variant)); cases += 1
+EVENT_SETS = [
+    [], [{'kind': 'ammo_rack', 'state': 'destroyed'}],
+    [{'kind': 'device', 'name': 'engine', 'state': 'destroyed', 'cause': 'fire'},
+     {'kind': 'device', 'name': 'gun', 'state': 'normal', 'old_state': 'critical'},
+     {'kind': 'device', 'name': 'radio', 'state': 'critical', 'old_state': 'destroyed'},
+     {'kind': 'device', 'name': 'track', 'state': 'critical', 'cause': 'repair'}],
+    [{'kind': 'crew', 'name': 'driver', 'state': 'normal'}, {'kind': 'crew', 'name': 'gunner', 'state': 'destroyed', 'cause': 'drowning'},
+     {'kind': 'crew', 'name': 'loader', 'state': 'destroyed', 'cause': 'fire'}, {'kind': 'crew', 'name': 'commander', 'state': 'destroyed'}],
+    [{'kind': 'fire', 'state': True, 'cause': 'ramming'}, {'kind': 'fire', 'state': True}, {'kind': 'fire', 'state': False},
+     {'kind': 'other'}, {'kind': 'ammo_rack', 'state': 'damaged'}],
+    [{'kind': 'device', 'name': 'bad', 'state': 'critical'}],
+    [{'kind': 'device', 'name': 'engine', 'state': 'critical', 'cause': 'world_collision'}],
+]
+CODES = ['DEVICE_REPAIRED', 'DEVICE_REPAIRED_TO_CRITICAL', 'DEVICE_DESTROYED_AT_FIRE', 'DEVICE_CRITICAL_AT_SHOT',
+         'TANKMAN_RESTORED', 'TANKMAN_HIT_AT_DROWNING', 'TANKMAN_HIT', 'TANKMAN_HIT_AT_SHOT',
+         'DEVICE_STARTED_FIRE_AT_RAMMING', 'DEVICE_STARTED_FIRE_AT_SHOT', 'FIRE_STOPPED', 'DEVICE_CRITICAL_AT_WORLD_COLLISION']
+for events_index in range(len(EVENT_SETS)):
+    for local in (True, False):
+        for spot in (True, False, None):
+            for attacker in (0, 9, None):
+                for variant in range(6):
+                    def make(log, events_index=events_index, local=local, spot=spot, attacker=attacker, variant=variant):
+                        b = battle(log, worker=variant == 5)
+                        indices = dict((code, i + 1) for i, code in enumerate(CODES)) if variant != 3 else {'FIRE_STOPPED': 2}
+                        modes = Log(log, 'modes', HE_DETONATION=4) if variant != 4 else Log(log, 'modes', missing=('HE_DETONATION',))
+                        constants = Log(log, 'constants', AMMOBAY_DESTRUCTION_MODE=modes, DAMAGE_INFO_INDICES=indices)
+                        b._runtime = Log(log, 'runtime', constants=constants)
+                        b._avatar = None if variant == 2 else Log(log, 'avatar')
+                        entity = Log(log, 'entity', typeDescriptor=Log(log, 'td'))
+                        stub(b, log, '_server_entity', entity if variant != 1 else None)
+                        stub(b, log, '_sync_fire_effect'); stub(b, log, '_damage_info_is_serviceable', True)
+                        stub(b, log, '_critical_extra_index', lambda td, name: -1 if name == 'bad' else len(name or ''))
+                        stub(b, log, '_show_damage_info', lambda *a: a[1] % 2 == 0); stub(b, log, '_report_critical_presentation')
+                        record = {'engine_id': 41, 'local': local}
+                        if spot is not None: record['spot_visible'] = spot
+                        return b, (record, [dict(e) for e in EVENT_SETS[events_index]], attacker)
+                    run('_present_critical', make, (events_index, local, spot, attacker, variant)); cases += 1
 SIEGE = Log([], 'siege', DISABLED=0, SWITCHING_ON=1, ENABLED=2, SWITCHING_OFF=3)
 for siege in (0, 1, 2, 3, 7, True, None):
     for left in (0, 1500, -5, 2.0):

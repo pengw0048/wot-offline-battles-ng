@@ -464,6 +464,102 @@ PyObject* siegeState(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+bool textIs(PyObject* v, const char* text) { return v && equal(v, p::text(text).get()); }
+
+// BattleRuntime._present_critical(record, events, attacker_id)
+PyObject* presentCritical(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *events, *attacker;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &record, &events, &attacker)) return nullptr;
+    try {
+        const bool local = truthy(get(record, "local"));
+        if (truthy(attr(battle, "_worker_mode")) || (!local && !truthy(get(record, "spot_visible", Py_True)))) Py_RETURN_FALSE;
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        auto entity = method(battle, "_server_entity", engine);
+        if (entity.get() == Py_None || attr(entity.get(), "typeDescriptor").get() == Py_None) Py_RETURN_FALSE;
+        method(battle, "_sync_fire_effect", entity.get());
+        if (PyObject_IsTrue(events) <= 0) Py_RETURN_FALSE;
+        bool shown = false;
+        auto constants = attr(attr(battle, "_runtime").get(), "constants");
+        {
+            p::Ref iterator(PyObject_GetIter(events));
+            while (PyObject* raw = PyIter_Next(iterator.get())) {
+                p::Ref event(raw);
+                if (!textIs(get(event.get(), "kind").get(), "ammo_rack") || !textIs(get(event.get(), "state").get(), "destroyed")) continue;
+                auto callback = optionalAttr(entity.get(), "showAmmoBayEffect");
+                if (callback.get() == Py_None || !PyCallable_Check(callback.get())) throw p::Error("#1513 ammo-bay effect boundary is unavailable");
+                auto modes = optionalAttr(constants.get(), "AMMOBAY_DESTRUCTION_MODE");
+                if (modes.get() == Py_None || !PyObject_HasAttrString(modes.get(), "HE_DETONATION"))
+                    throw p::Error("#1513 ammo-bay destruction mode is unavailable");
+                std::int64_t mode = 0;
+                if (!pyInt(attr(modes.get(), "HE_DETONATION").get(), mode)) throw p::Error("#1513 ammo-bay destruction mode is invalid");
+                p::Ref unused(PyObject_CallFunctionObjArgs(callback.get(), integer(mode).get(), p::number(0.).get(), p::number(0.).get(), nullptr));
+                shown = true;
+            }
+            if (PyErr_Occurred()) throw p::Error("Native critical event iteration failed");
+        }
+        if (!local || attr(battle, "_avatar").get() == Py_None || !truthy(method(battle, "_damage_info_is_serviceable")))
+            return p::boolean(shown).release();
+        auto indices = optionalAttr(constants.get(), "DAMAGE_INFO_INDICES");
+        if (indices.get() == Py_None && !PyObject_HasAttrString(constants.get(), "DAMAGE_INFO_INDICES")) replace(indices, p::dict());
+        auto suffix = [](PyObject* cause) -> std::string {
+            if (textIs(cause, "fire")) return "_AT_FIRE";
+            if (textIs(cause, "ramming")) return "_AT_RAMMING";
+            if (textIs(cause, "world_collision")) return "_AT_WORLD_COLLISION";
+            if (textIs(cause, "drowning")) return "_AT_DROWNING";
+            return "_AT_SHOT";
+        };
+        std::int64_t attacker_value = 0;
+        if (!pyInt(PyObject_IsTrue(attacker) > 0 ? attacker : integer(0).get(), attacker_value)) throw p::Error("Native critical attacker is invalid");
+        p::Ref iterator(PyObject_GetIter(events));
+        while (PyObject* raw = PyIter_Next(iterator.get())) {
+            p::Ref event(raw);
+            auto kind = get(event.get(), "kind"), state = get(event.get(), "state");
+            auto cause = get(event.get(), "cause", p::text("shot").get());
+            auto old = get(event.get(), "old_state");
+            std::int64_t extra = 0;
+            std::string code;
+            auto extraIndex = [&](const char* why) {
+                auto value = method(battle, "_critical_extra_index", attr(entity.get(), "typeDescriptor").get(), get(event.get(), "name").get());
+                if (PyObject_RichCompareBool(value.get(), integer(0).get(), Py_LE) == 1) throw p::Error(why);
+                if (!pyInt(value.get(), extra)) throw p::Error(why);
+            };
+            if (textIs(kind.get(), "device")) {
+                extraIndex("#1513 device critical extra is invalid");
+                const bool repaired = textIs(cause.get(), "repair") ||
+                    (textIs(old.get(), "destroyed") && (textIs(state.get(), "critical") || textIs(state.get(), "normal"))) ||
+                    (textIs(old.get(), "critical") && textIs(state.get(), "normal"));
+                if (repaired) code = textIs(state.get(), "normal") ? "DEVICE_REPAIRED" : "DEVICE_REPAIRED_TO_CRITICAL";
+                else code = std::string(textIs(state.get(), "destroyed") ? "DEVICE_DESTROYED" : "DEVICE_CRITICAL") + suffix(cause.get());
+            } else if (textIs(kind.get(), "crew")) {
+                extraIndex("#1513 crew critical extra is invalid");
+                if (textIs(state.get(), "normal")) code = "TANKMAN_RESTORED";
+                else if (textIs(cause.get(), "world_collision") || textIs(cause.get(), "drowning")) code = "TANKMAN_HIT" + suffix(cause.get());
+                else if (textIs(cause.get(), "fire")) code = "TANKMAN_HIT";
+                else code = "TANKMAN_HIT_AT_SHOT";
+            } else if (textIs(kind.get(), "fire")) {
+                if (truthy(state)) code = textIs(cause.get(), "ramming") ? "DEVICE_STARTED_FIRE_AT_RAMMING" : "DEVICE_STARTED_FIRE_AT_SHOT";
+                else code = "FIRE_STOPPED";
+            } else continue;
+            auto index = method(indices.get(), "get", p::text(code).get());
+            if (index.get() == Py_None) throw p::Error("#1513 damage-info index is unavailable: " + code);
+            std::int64_t damage = 0;
+            if (!pyInt(index.get(), damage)) throw p::Error("#1513 damage-info index is invalid: " + code);
+            if (truthy(method(battle, "_show_damage_info", engine, integer(damage).get(), integer(extra).get(), integer(attacker_value).get())))
+                shown = true;
+        }
+        if (PyErr_Occurred()) throw p::Error("Native critical event iteration failed");
+        auto report = p::dict();
+        put(report.get(), "phase", p::text("critical_present"));
+        p::Ref all(PySequence_List(events));
+        put(report.get(), "events", p::Ref(PyList_GetSlice(all.get(), 0, 24)));
+        put(report.get(), "shown", p::boolean(shown));
+        method(battle, "_report_critical_presentation", record, report.get());
+        return p::boolean(shown).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -473,6 +569,7 @@ PyMethodDef methods[] = {
     {"stop_remote_visual", stopRemoteVisual, METH_VARARGS, "Stop a remote vehicle's marker and minimap entry."},
     {"critical_state", criticalState, METH_VARARGS, "Apply a canonical critical payload to a vehicle."},
     {"stun_state", stunState, METH_VARARGS, "Present the #1513 stunInfo absolute-time contract."},
+    {"present_critical", presentCritical, METH_VARARGS, "Map critical transitions to stock #1513 UI callbacks."},
     {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};
 }
