@@ -20,7 +20,8 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_known_event_state', '_merge_shot_event_state', '_merge_combat_event_state', '_merge_stun_event_state',
            '_combat_event_state', '_combat_attack_reason', '_validate_combat_event_contract',
            '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
-           '_record_is_event_ready', '_combat_event_source', '_apply_combat_event', '_frame')
+           '_record_is_event_ready', '_combat_event_source', '_apply_combat_event', '_frame',
+           '_optional_feature_enabled', '_run_optional_feature', '_schedule')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -171,7 +172,13 @@ NATIVE = {
     '_pending_event_references': native.pending_event_references,
     '_apply_combat_event': lambda b, e, update_state=True: native.apply_combat_event(b, e, update_state, globals()),
     '_frame': lambda b: native.frame(b, globals()),
+    '_optional_feature_enabled': native.optional_feature_enabled,
+    '_run_optional_feature': lambda b, f, cb, args=(), on_error=None, disable=True, kwargs=None: native.run_optional_feature(
+        b, f, cb, args, on_error, disable, kwargs),
+    '_schedule': lambda b, d, fn, ammo=False: native.schedule(b, d, fn, ammo, globals()),
 }
+def _underlying_function(function):
+    return getattr(function, '__func__', function)
 PROBE_KINDS = ('visibility', 'lane', 'cover', 'ground', 'motion')
 BOT_SOFT_RECAST_BUDGET = 8
 FRAME_SECONDS = 0.0
@@ -802,6 +809,92 @@ for event_index in list(range(16)) + [38]:
                     args = (event,) if update else (event, False)
                     return b, args
                 run('_apply_combat_event', make, (event_index, variant, local, update)); cases += 1
+for disabled in (None, set(), set(['spotting'])):
+    for name in ('spotting', 'outline', 7):
+        def make(log, disabled=disabled, name=name):
+            b = battle(log)
+            if disabled is not None: b._disabled_optional_features = set(disabled)
+            return b, (name,)
+        run('_optional_feature_enabled', make, (disabled, name)); cases += 1
+for disabled in (False, True):
+    for behaviour in ('ok', 'raise', 'raise_cleanup_ok', 'raise_cleanup_fail', 'kwargs', 'keyboard'):
+        for disable in (True, False):
+            def make(log, disabled=disabled, behaviour=behaviour, disable=disable):
+                b = battle(log)
+                if disabled: b._disabled_optional_features = set(['feature'])
+                stub(b, log, '_warn_optional_failure')
+                def callback(*args, **kwargs):
+                    log.append(('callback', rep(args), rep(sorted(kwargs.items()))))
+                    if behaviour.startswith('raise'): raise ValueError('boom')
+                    if behaviour == 'keyboard': raise KeyError('k')
+                    return 'result'
+                def cleanup():
+                    log.append(('cleanup',))
+                    if behaviour == 'raise_cleanup_fail': raise IOError('cleanup broke')
+                on_error = cleanup if behaviour.startswith('raise_cleanup') else None
+                kwargs = {'hud_only': True} if behaviour == 'kwargs' else None
+                return b, ('feature', callback, (1, 2), on_error, disable, kwargs)
+            run('_run_optional_feature', make, (disabled, behaviour, disable)); cases += 1
+for ammo in (False, True):
+    for existing in (None, 41):
+        for variant in range(6):
+            def make(log, ammo=ammo, existing=existing, variant=variant):
+                b = battle(log)
+                b._generation = 3
+                b._ammo_callback_id = existing
+                b._ammo_callback_token = 'old' if existing else None
+                b._callback_token = None
+                b._callback_id = None
+                b._offframe_seconds = 0.5
+                stored = []
+                def callback(delay, fn):
+                    log.append(('bigworld', 'callback', rep(delay)))
+                    if variant == 5: raise RuntimeError('callback refused')
+                    stored.append(fn)
+                    return 99
+                def cancel(identifier):
+                    log.append(('bigworld', 'cancelCallback', rep(identifier)))
+                    if variant == 4: raise RuntimeError('cancel failed')
+                class BigWorld(object):
+                    pass
+                bigworld = BigWorld()
+                bigworld.callback, bigworld.cancelCallback = callback, cancel
+                b._runtime = Log(log, 'runtime', bigworld=bigworld)
+                def frame():
+                    log.append(('frame',))
+                    if variant == 3: raise ValueError('frame failed')
+                b._frame = frame
+                function = frame if variant % 2 == 0 else (lambda: log.append(('other',)))
+                b._scheduled_store = stored
+                return b, (0.016, function, ammo)
+            def scenario(log, make=make, variant=variant):
+                b, args = make(log)
+                return b, args
+            name = '_schedule'
+            out = []
+            for impl in ('pinned', 'native'):
+                log = []
+                b, args = make(log)
+                fn = Pinned.__dict__[name].__get__(b) if impl == 'pinned' else lambda *a: NATIVE[name](b, *a)
+                try:
+                    result = ('ok', fn(*args))
+                except Exception as error:
+                    result = ('error', type(error).__name__, str(error))
+                state = (b._callback_id, b._ammo_callback_id, b._callback_token is None, b._ammo_callback_token is None)
+                invoked = []
+                for stored in b._scheduled_store:
+                    if variant == 2: b._generation = 4
+                    if variant == 1: b._callback_token = b._ammo_callback_token = 'replaced'
+                    try:
+                        stored()
+                        invoked.append('ok')
+                    except Exception as error:
+                        invoked.append((type(error).__name__, str(error)))
+                after = (b._callback_id, b._ammo_callback_id, b._callback_token is None, b._ammo_callback_token is None,
+                         b._callback_token == 'replaced', b._offframe_seconds)
+                out.append((result, log, state, invoked, after))
+            assert out[0] == out[1], ('_schedule', ammo, existing, variant, out)
+            cases += 1
 class Scope(object):
     def __init__(self, log, suppress):
         self.log, self.suppress = log, suppress
@@ -1081,7 +1174,7 @@ class LifecycleDifferential(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='lifecycle-') as folder:
             folder = Path(folder)
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                            '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup',
+                            '-Wno-register', '-Wno-missing-field-initializers', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
                             str(ROOT / 'tests/stock_native_client_lifecycle_host.cpp'),
                             '-o', str(folder / 'offline_client_lifecycle_native.so')], check=True)

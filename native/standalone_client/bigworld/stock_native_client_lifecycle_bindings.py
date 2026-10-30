@@ -51,6 +51,10 @@ PORTS = (
     ('_pending_event_references', 'pending_event_references(self, key)'),
     ('_apply_combat_event', 'apply_combat_event(self, event, update_state, globals())'),
     ('_frame', 'frame(self, globals())'),
+    ('_optional_feature_enabled', 'optional_feature_enabled(self, feature)'),
+    ('_run_optional_feature',
+     'run_optional_feature(self, feature, callback, args, on_error, disable, kwargs)'),
+    ('_schedule', 'schedule(self, delay, function, ammo, globals())'),
 )
 
 

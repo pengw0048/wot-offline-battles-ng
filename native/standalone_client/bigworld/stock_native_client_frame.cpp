@@ -445,8 +445,159 @@ PyObject* frame(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._optional_feature_enabled(feature)
+bool featureEnabled(PyObject* battle, PyObject* name) {
+    PyObject* raw = PyObject_GetAttrString(battle, "_disabled_optional_features");
+    if (!raw) { if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("feature lookup failed"); PyErr_Clear(); raw = (Py_INCREF(Py_None), Py_None); }
+    p::Ref disabled(raw);
+    if (disabled.get() == Py_None) { replace(disabled, p::Ref(PySet_New(nullptr))); setAttr(battle, "_disabled_optional_features", disabled.get()); }
+    p::Ref text(PyObject_Str(name));
+    const int found = PySequence_Contains(disabled.get(), text.get());
+    if (found < 0) throw p::Error("feature membership failed");
+    return found == 0;
+}
+PyObject* optionalFeatureEnabled(PyObject*, PyObject* args) {
+    PyObject *battle, *name;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &name)) return nullptr;
+    try { return p::boolean(featureEnabled(battle, name)).release(); } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._run_optional_feature(feature, callback, args=(), on_error=None, disable=True, kwargs=None)
+PyObject* runOptionalFeature(PyObject*, PyObject* args) {
+    PyObject *battle, *name, *callback, *call_args, *on_error, *disable, *kwargs;
+    if (!PyArg_ParseTuple(args, "OOOOOOO", &battle, &name, &callback, &call_args, &on_error, &disable, &kwargs)) return nullptr;
+    try {
+        if (!truthy(method(battle, "_optional_feature_enabled", name))) Py_RETURN_FALSE;
+        p::Ref positional(PySequence_Tuple(call_args));
+        p::Ref keywords(PyObject_IsTrue(kwargs) > 0 ? PyDict_Copy(kwargs) : PyDict_New());
+        PyObject* result = PyObject_Call(callback, positional.get(), keywords.get());
+        if (result) return result;
+        if (!PyErr_ExceptionMatches(PyExc_Exception)) return nullptr;
+        PyObject *type, *value, *trace;
+        PyErr_Fetch(&type, &value, &trace);
+        PyErr_NormalizeException(&type, &value, &trace);
+        Py_XDECREF(type); Py_XDECREF(trace);
+        p::Ref error(value);
+        if (on_error != Py_None && PyCallable_Check(on_error)) {
+            PyObject* cleaned = PyObject_CallFunctionObjArgs(on_error, nullptr);
+            if (cleaned) Py_DECREF(cleaned);
+            else {
+                if (!PyErr_ExceptionMatches(PyExc_Exception)) return nullptr;
+                PyObject *ctype, *cvalue, *ctrace;
+                PyErr_Fetch(&ctype, &cvalue, &ctrace);
+                PyErr_NormalizeException(&ctype, &cvalue, &ctrace);
+                Py_XDECREF(ctype); Py_XDECREF(ctrace);
+                p::Ref cleanup(cvalue);
+                p::Ref message(PyString_FromFormat("%s; disable cleanup failed: %s", PyString_AsString(p::Ref(PyObject_Str(error.get())).get()),
+                                                   PyString_AsString(p::Ref(PyObject_Str(cleanup.get())).get())));
+                replace(error, p::Ref(PyObject_CallFunctionObjArgs(PyExc_RuntimeError, message.get(), nullptr)));
+            }
+        }
+        callKw(battle, "_warn_optional_failure", {name, error.get()}, {{"disable", disable}});
+        Py_RETURN_FALSE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// The callable BattleRuntime._schedule hands to BigWorld.callback (its pinned `invoke` closure).
+struct Scheduled {
+    PyObject_HEAD
+    PyObject *battle, *function, *generation, *token, *clock;
+    bool ammo, measured;
+};
+void scheduledDealloc(PyObject* self) {
+    auto* s = reinterpret_cast<Scheduled*>(self);
+    Py_XDECREF(s->battle); Py_XDECREF(s->function); Py_XDECREF(s->generation); Py_XDECREF(s->token); Py_XDECREF(s->clock);
+    PyObject_Del(self);
+}
+PyObject* scheduledCall(PyObject* self, PyObject*, PyObject*) {
+    auto* s = reinterpret_cast<Scheduled*>(self);
+    try {
+        PyObject* battle = s->battle;
+        const char* token_name = s->ammo ? "_ammo_callback_token" : "_callback_token";
+        const char* id_name = s->ammo ? "_ammo_callback_id" : "_callback_id";
+        if (attr(battle, token_name).get() == s->token) { setAttr(battle, token_name, Py_None); setAttr(battle, id_name, Py_None); }
+        if (!equal(s->generation, attr(battle, "_generation").get())) Py_RETURN_NONE;
+        if (!s->measured) { p::Ref unused(PyObject_CallFunctionObjArgs(s->function, nullptr)); Py_RETURN_NONE; }
+        p::Ref started(PyObject_CallFunctionObjArgs(s->clock, nullptr));
+        auto settle = [&] {
+            p::Ref ended(PyObject_CallFunctionObjArgs(s->clock, nullptr));
+            p::Ref spent(PyNumber_Subtract(ended.get(), started.get()));
+            setAttr(battle, "_offframe_seconds", p::Ref(PyNumber_Add(attr(battle, "_offframe_seconds").get(), spent.get())).get());
+        };
+        PyObject* result = PyObject_CallFunctionObjArgs(s->function, nullptr);
+        if (!result) {
+            PyObject *type, *value, *trace;
+            PyErr_Fetch(&type, &value, &trace);
+            try { settle(); } catch (...) { Py_XDECREF(type); Py_XDECREF(value); Py_XDECREF(trace); throw; }
+            PyErr_Restore(type, value, trace);
+            return nullptr;
+        }
+        Py_DECREF(result);
+        settle();
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+PyTypeObject ScheduledType = {PyVarObject_HEAD_INIT(nullptr, 0) "offline_client_lifecycle_native.Scheduled"};
+
+// BattleRuntime._schedule(delay, function, ammo=False)
+PyObject* schedule(PyObject*, PyObject* args) {
+    PyObject *battle, *delay, *function, *ammo_raw, *g;
+    if (!PyArg_ParseTuple(args, "OOOOO", &battle, &delay, &function, &ammo_raw, &g)) return nullptr;
+    try {
+        const bool ammo = p::flag(ammo_raw);
+        auto generation = attr(battle, "_generation");
+        auto bigworld = attr(attr(battle, "_runtime").get(), "bigworld");
+        if (ammo && attr(battle, "_ammo_callback_id").get() != Py_None) {
+            PyObject* cancelled = PyObject_CallMethod(bigworld.get(), const_cast<char*>("cancelCallback"), const_cast<char*>("O"),
+                                                      attr(battle, "_ammo_callback_id").get());
+            if (cancelled) Py_DECREF(cancelled);
+            else if (PyErr_ExceptionMatches(PyExc_Exception)) PyErr_Clear();
+            else return nullptr;
+            setAttr(battle, "_ammo_callback_id", Py_None);
+            setAttr(battle, "_ammo_callback_token", Py_None);
+        }
+        p::Ref token(PyObject_CallObject(reinterpret_cast<PyObject*>(&PyBaseObject_Type), nullptr));
+        setAttr(battle, ammo ? "_ammo_callback_token" : "_callback_token", token.get());
+        auto underlying = frameGlobal(g, "_underlying_function");
+        p::Ref target(PyObject_CallFunctionObjArgs(underlying.get(), function, nullptr));
+        p::Ref frame_target(PyObject_CallFunctionObjArgs(underlying.get(), attr(battle, "_frame").get(), nullptr));
+        if (!ScheduledType.tp_call) {
+            ScheduledType.tp_basicsize = sizeof(Scheduled);
+            ScheduledType.tp_dealloc = scheduledDealloc;
+            ScheduledType.tp_call = scheduledCall;
+            ScheduledType.tp_flags = Py_TPFLAGS_DEFAULT;
+            if (PyType_Ready(&ScheduledType) < 0) throw p::Error("scheduled callback type failed");
+        }
+        auto* invoke = PyObject_New(Scheduled, &ScheduledType);
+        if (!invoke) throw p::Error("scheduled callback allocation failed");
+        Py_INCREF(battle); Py_INCREF(function);
+        invoke->battle = battle; invoke->function = function;
+        invoke->generation = generation.release(); invoke->token = p::retain(token.get()).release();
+        invoke->clock = frameGlobal(g, "_PROFILE_CLOCK").release();
+        invoke->ammo = ammo;
+        invoke->measured = target.get() != frame_target.get();
+        p::Ref callable(reinterpret_cast<PyObject*>(invoke));
+        PyObject* id = PyObject_CallMethod(bigworld.get(), const_cast<char*>("callback"), const_cast<char*>("OO"), delay, callable.get());
+        const char* token_name = ammo ? "_ammo_callback_token" : "_callback_token";
+        if (!id) {
+            PyObject *type, *value, *trace;
+            PyErr_Fetch(&type, &value, &trace);
+            if (attr(battle, token_name).get() == token.get()) setAttr(battle, token_name, Py_None);
+            PyErr_Restore(type, value, trace);
+            return nullptr;
+        }
+        p::Ref callback_id(id);
+        if (attr(battle, token_name).get() == token.get()) setAttr(battle, ammo ? "_ammo_callback_id" : "_callback_id", callback_id.get());
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef frame_methods[] = {
     {"frame", frame, METH_VARARGS, "Run one battle render callback."},
+    {"optional_feature_enabled", optionalFeatureEnabled, METH_VARARGS, "Whether a presentation feature is still enabled."},
+    {"run_optional_feature", runOptionalFeature, METH_VARARGS, "Run one presentation boundary without widening frame failure."},
+    {"schedule", schedule, METH_VARARGS, "Schedule one generation-fenced runtime callback."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
