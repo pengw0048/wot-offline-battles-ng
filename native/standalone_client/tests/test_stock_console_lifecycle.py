@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 import patch_stock_console_lifecycle
 
 FILES = ('lib/romp/console.hpp', 'lib/romp/console.cpp', 'client/canvas_app.cpp',
-         'lib/script/script_output_hook.cpp', 'lib/script/py_script_output_writer.cpp')
+         'lib/script/script_output_hook.cpp', 'lib/script/py_script_output_writer.cpp',
+         'client/debug_app.cpp', 'lib/romp/engine_statistics.hpp')
 
 
 def function(source, signature):
@@ -146,6 +147,93 @@ class StockConsoleLifecycleTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'canvas_app'):
                 patch_stock_console_lifecycle.patch(root)
             self.assertEqual(before, {name: (root / name).read_text() for name in FILES})
+            for name, text in sources.items():
+                (root / name).write_text(text)
+            path = root / 'client/debug_app.cpp'
+            path.write_text(path.read_text().replace('"Debug/Log slow frames"',
+                                                    '"Debug/Unexpected slow frames"'))
+            before = {name: (root / name).read_text() for name in FILES}
+            with self.assertRaisesRegex(RuntimeError, 'debug_app'):
+                patch_stock_console_lifecycle.patch(root)
+            self.assertEqual(before, {name: (root / name).read_text() for name in FILES})
+
+    def test_console_watcher_compiles_with_watchers_and_both_console_modes(self):
+        sources = self.sources()
+        with tempfile.TemporaryDirectory(prefix='console-watcher-host-') as directory:
+            root = Path(directory)
+            for name, text in sources.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text)
+            patch_stock_console_lifecycle.patch(root)
+            original = sources['client/debug_app.cpp']
+            patched = (root / 'client/debug_app.cpp').read_text()
+            before = patch_stock_console_lifecycle.SLOW_FRAME_WATCHER
+            after = patch_stock_console_lifecycle.GUARDED_SLOW_FRAME_WATCHER
+            self.assertEqual(patched.replace(after, before), original)
+            self.assertEqual(patched.count('"Debug/Log slow frames"'), 1)
+            # Include neighboring registrations so disabling consoles cannot
+            # silently disable otherwise available watchers.
+            begin = patched.index('    MF_WATCH( "Debug/Break on critical"')
+            end = patched.index('\n#if ENABLE_CONSOLES\n    // 6. Consoles', begin)
+            registrations = patched[begin:end]
+            # Use the real SDK header: EngineStatistics does not exist at all
+            # with ENABLE_CONSOLES=0, as in the failing Consumer build.
+            console = root / 'lib/romp/console.hpp'
+            console.write_text('struct XConsole {};\nstruct StatisticsConsole { '
+                               'struct Handler {}; };\n')
+            host = r'''
+#include <cassert>
+#include <string>
+#include <vector>
+#define BW_BEGIN_NAMESPACE
+#define BW_END_NAMESPACE
+#include "romp/engine_statistics.hpp"
+#if ENABLE_CONSOLES
+bool EngineStatistics::logSlowFrames_ = false;
+#endif
+struct Watcher { enum { WT_READ_WRITE }; };
+std::vector<std::string> registered;
+void registerWatcher(const char* name, bool&, int, const char*) {
+    registered.push_back(name);
+}
+#if ENABLE_WATCHERS
+#define MF_WATCH(...) registerWatcher(__VA_ARGS__)
+#else
+#error This regression requires enabled watchers
+#endif
+int main() {
+    bool shouldBreakOnCritical_=false, shouldAddTimePrefix_=false;
+@REGISTRATIONS@
+    assert(registered.size() == (ENABLE_CONSOLES ? 3u : 2u));
+    assert(registered[0] == "Debug/Break on critical");
+    assert(registered[1] == "Debug/Add time prefix");
+#if ENABLE_CONSOLES
+    assert(registered[2] == "Debug/Log slow frames");
+#endif
+}
+'''
+            source = root / 'watcher.cpp'
+            source.write_text(host.replace('@REGISTRATIONS@', registrations))
+            for enabled in (0, 1):
+                with self.subTest(consoles=enabled):
+                    flags = ['c++', '-std=c++14', '-DENABLE_WATCHERS=1',
+                             '-DENABLE_CONSOLES=%d' % enabled, '-I', str(root / 'lib')]
+                    preprocessed = subprocess.check_output(
+                        flags + ['-E', '-P', str(source)], text=True)
+                    if not enabled:
+                        self.assertNotIn('EngineStatistics', preprocessed)
+                    subprocess.run(flags + [str(source), '-o', str(root / 'watcher')],
+                                   check=True)
+                    subprocess.run([str(root / 'watcher')], check=True)
+            # The exact unguarded registration must still reproduce the
+            # missing-type failure, rather than being swallowed by a fake.
+            source.write_text(host.replace('@REGISTRATIONS@',
+                                           registrations.replace(after, before)))
+            negative = subprocess.run(['c++', '-std=c++14', '-DENABLE_WATCHERS=1',
+                '-DENABLE_CONSOLES=0', '-I', str(root / 'lib'), '-fsyntax-only',
+                str(source)], capture_output=True, text=True)
+            self.assertNotEqual(negative.returncode, 0)
+            self.assertIn('EngineStatistics', negative.stderr)
 
     def test_sdk_hooks_detach_before_real_python_finalization(self):
         sources = self.sources()

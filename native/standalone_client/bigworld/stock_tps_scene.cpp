@@ -13,6 +13,7 @@
 #include "stock_graphics_settings_consumers.hpp"
 #include "stock_battleground_elements.hpp"
 #include "app.hpp"
+#include "cstdmf/profiler.hpp"
 #include "particle/particle_system.hpp"
 #include "resmgr/bwresource.hpp"
 #include "resmgr/multi_file_system.hpp"
@@ -32,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <limits>
+#include <optional>
 
 BW_BEGIN_NAMESPACE
 namespace
@@ -1120,7 +1122,19 @@ private:
     {
         const auto owner = currentRuntime();
         if (!owner || owner->closed) return;
-        const Matrix world = system.worldTransform();
+        // #1513 00fab560/00fab860 synchronously sample the committed liaison.
+        // An absent effect has no matrix consumer. Reuse one sample when a
+        // dirty effect is both created and updated during this same sync.
+        std::optional<Matrix> world;
+        const auto committedWorld = [&]() -> const Matrix &
+        {
+            if (!world)
+            {
+                PROFILER_SCOPED( StockInflux_Active );
+                world = system.worldTransform();
+            }
+            return *world;
+        };
         if (dirty_)
         {
             const float now = owner->time.load(std::memory_order_relaxed);
@@ -1132,8 +1146,8 @@ private:
                 const auto resource = owner->preload( filename_, error );
                 if (resource)
                 {
-                    auto effect = std::make_shared<SceneEffect>( *owner, resource, world );
-                    effect->setWorld( world );
+                    auto effect = std::make_shared<SceneEffect>( *owner, resource, committedWorld() );
+                    effect->setWorld( committedWorld() );
                     effect->multRate( rateMultiplier_ );
                     owner->pendingEffects.push_back( effect );
                     effect_ = effect;
@@ -1144,12 +1158,22 @@ private:
             if (const auto effect = effect_.lock()) effect->warmup( gap > 2.f ? gap : -1.f );
             if (gap > 2.f) lastStart_ = now;
         }
-        if (const auto effect = effect_.lock())
+        if (!effect_.expired())
         {
-            if (resetMotion_) effect->resetMotion();
-            effect->setWorld( world );
+            // Matrix providers may synchronously re-enter the owner. Sample
+            // before reading flags and reacquire the effect after that call.
+            const Matrix & activeWorld = committedWorld();
+            if (const auto effect = effect_.lock())
+            {
+                if (resetMotion_) effect->resetMotion();
+                effect->setWorld( activeWorld );
+            }
         }
         resetMotion_ = false;
+        if (!world)
+        {
+            PROFILER_SCOPED( StockInflux_NoEffect );
+        }
     }
 protected:
     void loadInternal( DataSectionPtr section ) override
@@ -1305,9 +1329,14 @@ bool initialiseStockTPSRuntime()
     }
     return true;
 }
-void tickStockTPSRuntime( float elapsed ) { if (const auto owner = currentRuntime()) owner->tick( elapsed ); }
+void tickStockTPSRuntime( float elapsed )
+{
+    PROFILER_SCOPED( StockTPS_tick );
+    if (const auto owner = currentRuntime()) owner->tick( elapsed );
+}
 bool drawStockTPSRuntime()
 {
+    PROFILER_SCOPED( StockTPS_draw );
     const auto owner = currentRuntime();
     if (!owner || owner->closed || !drawEnabled.load( std::memory_order_relaxed ) ||
         (owner->chunks.empty() && owner->visuals.empty()) ||

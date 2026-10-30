@@ -49,7 +49,7 @@ class StockGUIMaterialTests(unittest.TestCase):
                               if n.endswith('/programming/bigworld/lib/ashes/' + name))
                 (self.ashes / name).write_bytes(original.extractfile(member).read())
 
-    def test_gui_profiler_patch_is_only_four_scopes_and_is_transactional(self):
+    def test_gui_profiler_patch_only_adds_scopes_and_is_transactional(self):
         spec = importlib.util.spec_from_file_location(
             'gui_profiler_patch', ROOT / 'bigworld/patch_stock_gui_profiler.py')
         profiler = importlib.util.module_from_spec(spec)
@@ -68,7 +68,27 @@ class StockGUIMaterialTests(unittest.TestCase):
         final = {name: (self.root / name).read_text() for name in profiler.TOKENS}
         profiler.patch(self.root)
         self.assertEqual(final, {name: (self.root / name).read_text() for name in final})
-        self.assertEqual(sum(text.count('PROFILER_SCOPED(') for text in final.values()), 4)
+        self.assertEqual(sum(text.count('PROFILER_SCOPED(') for text in final.values()), 10)
+        # Every original call is retained once and in its original order. The
+        # NextCapture result still gates Display, outside its timing scope.
+        flash = final[profiler.FLASH]
+        calls = ('pRenderer->BeginFrame();', 'pMovieView_->pMovieView()->Capture();',
+                 'movieDisplayHandle.NextCapture(pRenderer->GetContextNotify())',
+                 'pRenderer->Display(movieDisplayHandle);', 'pRenderer->EndFrame();',
+                 'Moo::rc().initRenderStates();')
+        self.assertEqual([flash.count(call) for call in calls], [1] * len(calls))
+        self.assertEqual(sorted(flash.index(call) for call in calls),
+                         [flash.index(call) for call in calls])
+        self.assertIn('if (stockNextCapture)\n\t{\n\t\tPROFILER_SCOPED( GUI_FlashDisplay );', flash)
+        legacy = pristine[profiler.FLASH]
+        for name, before, after in profiler.CORE_SEAMS:
+            if name == profiler.FLASH:
+                legacy = legacy.replace(before, after, 1)
+        self.assertEqual(profiler.patch_source(profiler.FLASH, legacy), flash)
+        for name, before, after in profiler.CORE_SEAMS:
+            if name == profiler.FLASH:
+                with self.assertRaises(ValueError):
+                    profiler.patch_source(name, legacy.replace(after, before, 1))
         for name in final:
             reverted = final[name]
             for relative, before, after in profiler.SEAMS:

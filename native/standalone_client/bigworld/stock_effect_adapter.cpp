@@ -2,6 +2,10 @@
 #include "stock_effect_dx9.hpp"
 #include "wot/stock_effect_reflection.hpp"
 
+#if defined(BW_CLIENT)
+#include "cstdmf/profiler.hpp"
+#endif
+
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -506,6 +510,9 @@ bool StockEffectAdapter::validate_shared(const StockDx9PassSelection &selected,
   return true;
 }
 HRESULT StockEffectAdapter::apply_current() {
+#if defined(BW_CLIENT) && ENABLE_PROFILER
+  BW::ScopedProfiler profile_apply("StockEffect_Apply");
+#endif
   if (!material_ || !pass_)
     return D3DERR_INVALIDCALL;
   const auto technique =

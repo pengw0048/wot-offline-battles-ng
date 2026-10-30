@@ -130,6 +130,7 @@ class OfflineForkPreparationTests(unittest.TestCase):
             'stock_native_world_snapshot.py': 'stock_native_world_snapshot.py',
             'stock_native_destructible_present.py': 'stock_native_destructible_present.py',
             'stock_snapshot_static.py': 'stock_snapshot_static.py',
+            'stock_replay_codec.py': 'stock_replay_codec.py',
             'native_client_query.py': 'stock_native_client_query.py',
                 'native_client_environment.py': 'stock_native_client_environment.py',
                 'native_client_weapon_runtime.py': 'stock_native_client_weapon_runtime.py',

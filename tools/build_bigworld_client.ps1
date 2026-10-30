@@ -521,6 +521,12 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-audio-space-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_scene_ownership.py"),
         $EngineRoot) "stock-dynamic-scene-ownership-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scene_profiler.py"),
+        $EngineRoot) "stock-scene-profiler-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_occlusion_profiler.py"),
+        $EngineRoot) "stock-occlusion-profiler-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_modelnode_identity.py"),
+        $EngineRoot) "stock-modelnode-identity-patch.log"
 
     # Microsoft's D3DX package supplies the legacy headers/import libraries
     # alongside the runner's Windows SDK, without installing the old SDK.

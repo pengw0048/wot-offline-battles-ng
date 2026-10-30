@@ -17,7 +17,7 @@ UPDATE = '''\twhile (it != end)
 \t\tit++;
 \t}
 '''
-SEAMS = (
+CORE_SEAMS = (
     *((name, '#include "pch.hpp"\n',
        '#include "pch.hpp"\n#include "cstdmf/profiler.hpp"\n')
       for name in (SIMPLE_GUI, FLASH, MANAGER)),
@@ -37,14 +37,45 @@ SEAMS = (
      '\t\tPROFILER_SCOPED( GUI_GlobalMovies );\n\n'
      '\t\tGFx::Viewport gvFullScreen;\n\t\tfullScreenViewport( gvFullScreen );\n'),
 )
+FLASH_SUBMIT_SEAMS = (
+    *((FLASH, before, '\t{\n\t\tPROFILER_SCOPED( ' + scope + ' );\n\t' + before + '\t}\n')
+      for scope, before in (
+          ('GUI_FlashBeginFrame', '\tpRenderer->BeginFrame();\n'),
+          ('GUI_FlashCapture', '\tpMovieView_->pMovieView()->Capture();\n'),
+          ('GUI_FlashEndFrame', '\tpRenderer->EndFrame();\n'),
+          ('GUI_FlashResetStates', '\tMoo::rc().initRenderStates();\n'))),
+    (FLASH, '\tif (movieDisplayHandle.NextCapture(pRenderer->GetContextNotify()))\n'
+     '\t\tpRenderer->Display(movieDisplayHandle);\n',
+     '\tbool stockNextCapture;\n'
+     '\t{\n\t\tPROFILER_SCOPED( GUI_FlashNextCapture );\n'
+     '\t\tstockNextCapture = movieDisplayHandle.NextCapture(pRenderer->GetContextNotify());\n\t}\n'
+     '\tif (stockNextCapture)\n'
+     '\t{\n\t\tPROFILER_SCOPED( GUI_FlashDisplay );\n'
+     '\t\tpRenderer->Display(movieDisplayHandle);\n\t}\n'),
+)
+SEAMS = CORE_SEAMS + FLASH_SUBMIT_SEAMS
+CORE_TOKENS = ('GUI_FlashAdvance', 'GUI_FlashSubmit')
 TOKENS = {
     SIMPLE_GUI: ('GUI_UpdateComponents',),
-    FLASH: ('GUI_FlashAdvance', 'GUI_FlashSubmit'),
+    FLASH: CORE_TOKENS + ('GUI_FlashBeginFrame', 'GUI_FlashCapture',
+                         'GUI_FlashNextCapture', 'GUI_FlashDisplay',
+                         'GUI_FlashEndFrame', 'GUI_FlashResetStates'),
     MANAGER: ('GUI_GlobalMovies',),
 }
 
 
 def patch_source(name, source):
+    # Cached engine sources can contain the complete previous four-scope patch.
+    # Only that exact state upgrades; partial or duplicated instrumentation fails.
+    if name == FLASH and not any(token in source for token in TOKENS[FLASH][2:]):
+        core = [(before, after) for relative, before, after in CORE_SEAMS if relative == FLASH]
+        if (all(source.count(after) == 1 for before, after in core) and
+                all(source.count(token) == 1 for token in CORE_TOKENS)):
+            restored = source
+            for before, after in core:
+                restored = restored.replace(after, before, 1)
+            if all(restored.count(before) == 1 for before, after in core):
+                source = restored
     edits = [(before, after) for relative, before, after in SEAMS if relative == name]
     tokens = TOKENS[name]
     final = all(source.count(after) == 1 for before, after in edits)

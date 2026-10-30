@@ -4025,6 +4025,11 @@ results; dynamic fields remain detached per delivery. Memoization belongs to
 the value version, so queue coalescing or rejected snapshots cannot discard a
 static change. Explicit deep copies still produce writable JSON containers.
 Native readers accept the read-only dictionary/list subclasses as data.
+The replay IPC writer projects only those owned static fields into private
+plain-container versions at its existing synchronous byte-freeze boundary.
+Each immutable version caches that projection; dynamic records retain their
+original capture isolation. The background queue still owns bytes, and the
+restricted reader continues to reject global-object reconstruction.
 Worker snapshot receipts mirror only changed combat state or acknowledgement
 fields; simulation publication retains the complete actor mirror.
 

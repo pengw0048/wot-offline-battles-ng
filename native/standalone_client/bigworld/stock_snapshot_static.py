@@ -20,7 +20,7 @@ def _readonly(*unused_args, **unused_kwargs):
 
 
 class _StaticDict(dict):
-    __slots__ = ('__canonical',)
+    __slots__ = ('__canonical', '__replay')
     __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _readonly
     __ior__ = _readonly
     __setattr__ = __delattr__ = _readonly
@@ -30,6 +30,7 @@ class _StaticDict(dict):
             _readonly()
         dict.__init__(self, ((key, freeze(item)) for key, item in value.items()))
         object.__setattr__(self, '_StaticDict__canonical', {})
+        object.__setattr__(self, '_StaticDict__replay', None)
 
     def normalized(self, normalizer):
         memo = self.__canonical
@@ -45,9 +46,16 @@ class _StaticDict(dict):
         # Explicit copies, notably replay recording, remain writable JSON.
         return detach(self)
 
+    def _replay_plain(self):
+        # Only the immediate replay pickler consumes this private projection.
+        # Its bytes, never this mutable memo, cross the background queue.
+        if self.__replay is None:
+            object.__setattr__(self, '_StaticDict__replay', detach(self))
+        return self.__replay
+
 
 class _StaticList(list):
-    __slots__ = ('__sealed',)
+    __slots__ = ('__sealed', '__replay')
     __setitem__ = __delitem__ = append = extend = insert = pop = remove = _readonly
     __setslice__ = __delslice__ = __iadd__ = __imul__ = reverse = sort = _readonly
 
@@ -58,12 +66,18 @@ class _StaticList(list):
             _readonly()
         list.__init__(self, (freeze(item) for item in value))
         object.__setattr__(self, '_StaticList__sealed', True)
+        object.__setattr__(self, '_StaticList__replay', None)
 
     def __copy__(self):
         return self
 
     def __deepcopy__(self, memo):
         return detach(self)
+
+    def _replay_plain(self):
+        if self.__replay is None:
+            object.__setattr__(self, '_StaticList__replay', detach(self))
+        return self.__replay
 
 
 def freeze(value):

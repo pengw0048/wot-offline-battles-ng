@@ -53,6 +53,10 @@ _spec = importlib.util.spec_from_file_location(
 snapshot_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(snapshot_bindings)
 _spec = importlib.util.spec_from_file_location(
+    'stock_replay_bindings', Path(__file__).with_name('stock_replay_bindings.py'))
+replay_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(replay_bindings)
+_spec = importlib.util.spec_from_file_location(
     'stock_native_client_replica_bindings', Path(__file__).with_name('stock_native_client_replica_bindings.py'))
 replica_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(replica_bindings)
@@ -293,6 +297,7 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
 ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
     lambda source: transport_bindings.client(snapshot_bindings.client(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snapshot
+ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
 ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/turret_obstacles.py'] = client_query_bindings.turrets
 ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/detached_turret.py'] = client_turret_bindings.presenter
 
@@ -327,6 +332,7 @@ def stage_runtime(source, staged):
         ('stock_native_bot_consumer.py', 'native_bot_runtime.py'),
         ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
         ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
+        ('stock_replay_codec.py', 'stock_replay_codec.py'),
         ('stock_native_client_replica.py', 'native_client_replica.py'),
         ('stock_native_client_query.py', 'native_client_query.py'),
         ('stock_native_client_environment.py', 'native_client_environment.py'),

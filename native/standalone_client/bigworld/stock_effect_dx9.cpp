@@ -1,5 +1,9 @@
 #include "stock_effect_dx9.hpp"
 
+#if defined(BW_CLIENT)
+#include "cstdmf/profiler.hpp"
+#endif
+
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>
@@ -178,46 +182,56 @@ bool StockDx9EffectMaterial::apply_shader(std::uint32_t shader_index, ShaderAppl
     std::vector<std::optional<std::uint32_t>> resource_slots;
     std::vector<std::optional<std::uint32_t>> sampler_slots;
     std::uint32_t resource_first = 0xffffffff;
-    for (const auto& resource : shader.resources) {
-        if (mode == ShaderApply::uniforms && resource.kind != 3) continue;
-        if (mode == ShaderApply::textures && resource.kind != 2) continue;
-        if (mode == ShaderApply::samplers && resource.kind != 1) continue;
-        StockEffectResourceTable table;
-        // b3b3d0 resolves group 1 through sampler RTB; b3e9a0/b3b1f0
-        // resolve group 2 through SRV RTB. Several SRVs can share one sampler.
-        if (resource.kind == 1) table = StockEffectResourceTable::sampler_state;
-        else if (resource.kind == 2) table = StockEffectResourceTable::resource_view;
-        else if (resource.kind == 3) table = StockEffectResourceTable::uniform_buffer;
-        else if (resource.kind == 11) return invalid("DX9 shader requires an unordered view", error);
-        else continue; // b3e080 ignores unrecognized resource groups.
-        std::optional<std::uint32_t> index;
-        if (!resolve_stock_effect_reference(definition, binding_.selection(), table,
-                resource.resource_index, index, error)) return false;
-        if (!index) return invalid("Shader resource reference is absent", error);
-        const auto slot = resource.shader_slot;
-        if (resource.kind == 3) {
-            if (*index >= definition.uniform_buffers.size())
-                return invalid("Shader refers to an invalid uniform buffer", error);
-            if (slot >= uniform_views.size()) uniform_views.resize(std::size_t(slot)+1);
-            auto storage = binding_.uniform_buffer(*index);
-            if (!storage) return invalid("Shader attempts to bind selection data as a UBB", error);
-            uniform_views[slot] = {storage->bytes().data(), storage->bytes().size()};
-            storage_owners.push_back(std::move(storage));
-        } else if (resource.kind == 2) {
-            if (*index >= textures_.size()) return invalid("Shader refers to an invalid texture view", error);
-            if (slot >= resource_slots.size()) resource_slots.resize(std::size_t(slot)+1);
-            resource_slots[slot] = index;
-            resource_first = (std::min)(resource_first, slot);
-        } else {
-            if (*index >= definition.sampler_states.size())
-                return invalid("Shader refers to an invalid sampler state", error);
-            if (slot >= sampler_slots.size()) sampler_slots.resize(std::size_t(slot)+1);
-            sampler_slots[slot] = index;
+    {
+#if defined(BW_CLIENT) && ENABLE_PROFILER
+        BW::ScopedProfiler profile_resources("StockEffect_ResolveResources");
+#endif
+        for (const auto& resource : shader.resources) {
+            if (mode == ShaderApply::uniforms && resource.kind != 3) continue;
+            if (mode == ShaderApply::textures && resource.kind != 2) continue;
+            if (mode == ShaderApply::samplers && resource.kind != 1) continue;
+            StockEffectResourceTable table;
+            // b3b3d0 resolves group 1 through sampler RTB; b3e9a0/b3b1f0
+            // resolve group 2 through SRV RTB. Several SRVs can share one sampler.
+            if (resource.kind == 1) table = StockEffectResourceTable::sampler_state;
+            else if (resource.kind == 2) table = StockEffectResourceTable::resource_view;
+            else if (resource.kind == 3) table = StockEffectResourceTable::uniform_buffer;
+            else if (resource.kind == 11) return invalid("DX9 shader requires an unordered view", error);
+            else continue; // b3e080 ignores unrecognized resource groups.
+            std::optional<std::uint32_t> index;
+            if (!resolve_stock_effect_reference(definition, binding_.selection(), table,
+                    resource.resource_index, index, error)) return false;
+            if (!index) return invalid("Shader resource reference is absent", error);
+            const auto slot = resource.shader_slot;
+            if (resource.kind == 3) {
+                if (*index >= definition.uniform_buffers.size())
+                    return invalid("Shader refers to an invalid uniform buffer", error);
+                if (slot >= uniform_views.size()) uniform_views.resize(std::size_t(slot)+1);
+                auto storage = binding_.uniform_buffer(*index);
+                if (!storage) return invalid("Shader attempts to bind selection data as a UBB", error);
+                uniform_views[slot] = {storage->bytes().data(), storage->bytes().size()};
+                storage_owners.push_back(std::move(storage));
+            } else if (resource.kind == 2) {
+                if (*index >= textures_.size()) return invalid("Shader refers to an invalid texture view", error);
+                if (slot >= resource_slots.size()) resource_slots.resize(std::size_t(slot)+1);
+                resource_slots[slot] = index;
+                resource_first = (std::min)(resource_first, slot);
+            } else {
+                if (*index >= definition.sampler_states.size())
+                    return invalid("Shader refers to an invalid sampler state", error);
+                if (slot >= sampler_slots.size()) sampler_slots.resize(std::size_t(slot)+1);
+                sampler_slots[slot] = index;
+            }
         }
     }
     if (mode == ShaderApply::uniforms) {
         StockShaderRegisters registers;
-        if (!stage_stock_shader_registers(shader, uniform_views, registers, error)) return false;
+        {
+#if defined(BW_CLIENT) && ENABLE_PROFILER
+            BW::ScopedProfiler profile_registers("StockEffect_PackRegisters");
+#endif
+            if (!stage_stock_shader_registers(shader, uniform_views, registers, error)) return false;
+        }
         for (unsigned kind = 0; kind < registers.size(); ++kind) {
             const auto& block = registers[kind];
             if (!block.range.end) continue;
@@ -273,7 +287,12 @@ bool StockDx9EffectMaterial::apply(std::size_t technique, std::size_t pass, std:
     const auto descriptor = selected.render_state ?
         runtime_->definition_->render_states[*selected.render_state] : stock_dx9_default_render_descriptor();
     std::vector<StockDx9StateValue> states;
-    if (!stock_dx9_render_states(descriptor, states, error)) return false;
+    {
+#if defined(BW_CLIENT) && ENABLE_PROFILER
+        BW::ScopedProfiler profile_render_states("StockEffect_ExpandRenderStates");
+#endif
+        if (!stock_dx9_render_states(descriptor, states, error)) return false;
+    }
     for (const auto& state : states)
         if (failed(device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state.state), state.value),
                    "SetRenderState", error)) return false;

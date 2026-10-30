@@ -1,6 +1,15 @@
-"""Detach the Python console's output hook before the script runtime retires."""
+"""Fence console-only watchers and retire their script output subscription."""
 from pathlib import Path
 import sys
+
+
+SLOW_FRAME_WATCHER = '''    MF_WATCH( "Debug/Log slow frames",
+        EngineStatistics::logSlowFrames_,
+        Watcher::WT_READ_WRITE,
+        "If enabled, slow frames are logged to a file so you can cross-check "
+        "them with other debug output." );'''
+GUARDED_SLOW_FRAME_WATCHER = ('#if ENABLE_CONSOLES\n' +
+                            SLOW_FRAME_WATCHER + '\n#endif // ENABLE_CONSOLES')
 
 
 def replace_once(text, old, new, label):
@@ -14,6 +23,8 @@ def replace_once(text, old, new, label):
 def patch(root):
     root = Path(root)
     changes = {
+        'client/debug_app.cpp': (
+            SLOW_FRAME_WATCHER, GUARDED_SLOW_FRAME_WATCHER),
         'lib/romp/console.hpp': (
             '\tPythonConsole();\n\t~PythonConsole();',
             '\tPythonConsole();\n\t~PythonConsole();\n\tvoid finiScriptOutput();'),
