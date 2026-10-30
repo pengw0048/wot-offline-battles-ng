@@ -105,9 +105,8 @@ class StockWireCodec(unittest.TestCase):
 
 
 CLIENT_FIXTURE = r'''
-import json, sys, types
+import json, socket, sys, threading, time, types
 sys.path.insert(0, sys.argv[1])
-sys.path.insert(0, sys.argv[2])
 root = sys.argv[2]
 for name in ('gui', 'gui.mods'):
     module = types.ModuleType(name); module.__path__ = [root + '/' + name.replace('.', '/')]; sys.modules[name] = module
@@ -117,27 +116,65 @@ sys.modules[package.__name__] = package
 from gui.mods.offline_lan_0922 import lan_client
 import offline_client_wire_native as wire
 frames = [item['frame'].decode('hex') for item in json.load(open(sys.argv[4]))]
-stream = ''.join(frames)
-decoder = lan_client._WireStreamDecoder()
-received = []
-for start in range(0, len(stream), 7):
-    received.extend(decoder.feed(stream[start:start + 7], 0.0))
-assert [wire.encode(m) for m in received] and len(received) == len(frames), (len(received), len(frames))
-for message, frame in zip(received, frames):
-    assert message == wire.decode(frame)
-oversized = bytearray(frames[0]); oversized[0:4] = b'\x00\x00\x80\x00'
+listener = socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(1)
+port = listener.getsockname()[1]
+seen = {}
+def serve():
+    conn, unused = listener.accept()
+    data = b''
+    while len(data) < 8 or len(data) < wire.frame_size(data[:8]):
+        data += conn.recv(4096)
+    seen['hello'] = wire.decode(data[:wire.frame_size(data[:8])])
+    stream = b''.join(frames)
+    for start in range(0, len(stream), 7):
+        conn.sendall(stream[start:start + 7])
+    rest = b''
+    conn.settimeout(3.0)
+    try:
+        while True:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    except socket.timeout:
+        pass
+    seen['tail'] = wire.decode(rest) if rest else None
+    conn.close()
+thread = threading.Thread(target=serve); thread.start()
+sock = lan_client._NativeSocket('127.0.0.1', port, 3.0)
+sock.sendall(wire.encode({'type': 'hello', 'name': u'T'}))
+received, state = [], 'connecting'
+deadline = time.time() + 10
+while len(received) < len(frames) and time.time() < deadline:
+    batch, state, error = sock.receive()
+    received.extend(batch)
+    time.sleep(0.01)
+assert [frame for frame, age in received] == frames, (len(received), len(frames))
+assert all(age >= 0.0 for frame, age in received)
+sock.sendall(wire.encode({'type': 'leave'}))
+sock.close()
+thread.join(10)
+assert seen['hello'] == {u'type': u'hello', u'name': u'T'} and seen['tail'] == {u'type': u'leave'}, seen
+listener.close()
+dead = lan_client._NativeSocket('127.0.0.1', port, 0.5)
+for unused in range(300):
+    batch, state, error = dead.receive()
+    if state == 'failed':
+        break
+    time.sleep(0.01)
+assert state == 'failed' and error, (state, error)
 try:
-    lan_client._WireStreamDecoder().feed(bytes(oversized) + b'\x00' * (8 + 0x800000 - len(oversized)), 0.0)
-except ValueError:
+    dead.sendall(b'x' * 8)
+except socket.error:
     pass
 else:
-    raise AssertionError('oversized frame accepted')
-print('staged lan_client frame stream ok %d' % len(received))
+    raise AssertionError('send after failure accepted')
+print('native transport ok %d' % len(received))
 '''
 
 
 class StagedClientTransport(unittest.TestCase):
-    def test_staged_lan_client_splits_and_decodes_frames(self):
+    def test_native_transport_frames_hello_leave_and_failure(self):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
@@ -165,10 +202,11 @@ class StagedClientTransport(unittest.TestCase):
                 'configure_admission = configure_input = landing_configure = _ignore\n')
             (folder / 'pkg/stock_snapshot_static.py').write_text(
                 (ROOT / 'bigworld/stock_snapshot_static.py').read_text())
-            subprocess.run(['c++', '-std=c++17', '-O1', '-bundle', '-undefined', 'dynamic_lookup',
+            subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                            '-Wno-missing-field-initializers', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
                             '-DWOT_WIRE_HOST_BUILD', str(ROOT / 'bigworld/stock_wire_codec.cpp'),
-                            str(ROOT / 'bigworld/stock_wire_replay.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             frames = [{'frame': SCHEMA.encode(m).hex()} for m in samples()]
@@ -176,9 +214,9 @@ class StagedClientTransport(unittest.TestCase):
             (folder / 'fixture.py').write_text(CLIENT_FIXTURE)
             run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder), str(client),
                                   str(folder / 'pkg'), str(folder / 'frames.json')],
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn('frame stream ok', run.stdout)
+            self.assertIn('native transport ok', run.stdout)
 
 
 REPLAY_FIXTURE = r'''
@@ -250,7 +288,7 @@ class NativeReplay(unittest.TestCase):
                             '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
                             '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
                             '-I' + str(ROOT / 'bigworld'), str(ROOT / 'bigworld/stock_wire_codec.cpp'),
-                            str(ROOT / 'bigworld/stock_wire_replay.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             (folder / 'fixture.py').write_text(REPLAY_FIXTURE)
