@@ -181,17 +181,23 @@ and diff it before replacing tracked catalogs.
 
 ## Wire protocol and main-thread budget
 
-- High-frequency battle traffic (snapshots, combat events, projectiles, input)
-  uses a fixed-layout binary `struct` wire, negotiated as a capability.
-  Low-frequency control messages (lobby, room, garage, settlement) may stay
-  JSON. Neither side may depend on the other runtime's object model.
+- The LAN wire is binary from the first byte, generated from
+  `native/standalone_client/wire/schema.py`. There is no JSON fallback and no
+  compatibility with older builds. Neither side may depend on the other
+  runtime's object model.
+- Send each datum at the rate it changes: per-round static actor data once,
+  motion every tick in fixed-layout records, and event state only when its
+  revision changes. Do not resend unchanged state every snapshot.
 - The visible client receives, frames, decodes, and records network traffic in
   C++ on background threads, without the GIL or intermediate Python objects.
   The main thread applies decoded native state at the frame boundary.
-- Replay recording writes the received wire bytes on a native background
-  thread; the main thread does not serialize or pickle per message.
-- Our per-frame logic belongs in C++. Keep Python only where it must call a
-  stock #1513 script or BigWorld Python interface, and keep that layer thin.
+- Replay recording runs on a native background thread; the main thread does
+  not serialize or pickle per message.
+- All of our battle-time Python moves to C++, in the visible client and the
+  hidden worker alike, and the battle state is owned in C++, not in Python
+  dicts. Python remains only as a thin layer that calls a stock #1513 script
+  or BigWorld Python interface. Leave the game's own scripts and our
+  non-battle garage, account, and lobby Python unchanged.
 
 ## BigWorld lifecycle and ownership
 
