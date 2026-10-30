@@ -55,6 +55,11 @@ PORTS = (
     ('_run_optional_feature',
      'run_optional_feature(self, feature, callback, args, on_error, disable, kwargs)'),
     ('_schedule', 'schedule(self, delay, function, ammo, globals())'),
+    ('_maintain_standard_space_visibility', 'maintain_space_visibility(self, now, globals())'),
+    ('_start_team_chat_when_roster_ready', 'start_team_chat(self)'),
+    ('_prewarm_critical_layout', 'prewarm_critical_layout(self, globals())'),
+    ('_maybe_send_battle_ready', 'maybe_send_battle_ready(self)'),
+    ('_retry_bot_manifest', 'retry_bot_manifest(self, now)'),
 )
 
 

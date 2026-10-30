@@ -21,7 +21,8 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_combat_event_state', '_combat_attack_reason', '_validate_combat_event_contract',
            '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
            '_record_is_event_ready', '_combat_event_source', '_apply_combat_event', '_frame',
-           '_optional_feature_enabled', '_run_optional_feature', '_schedule')
+           '_optional_feature_enabled', '_run_optional_feature', '_schedule', '_maintain_standard_space_visibility',
+           '_start_team_chat_when_roster_ready', '_prewarm_critical_layout', '_maybe_send_battle_ready', '_retry_bot_manifest')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -96,7 +97,9 @@ def run(name, make, args):
             '_projectile_lineage', '_pending_bot_creates', '_local_last_attacker', '_last_frame_time',
             '_worker_frame_callbacks', '_worker_probe_simulation_caps', '_soft_static_recast_budget', '_offframe_seconds',
             '_worker_probe_authority_callbacks', '_worker_probe_bot_generated', '_worker_probe_bot_enqueued',
-            '_worker_probe_bot_send_failed', '_worker_probe_bot_count', '_local_frame_stages'))
+            '_worker_probe_bot_send_failed', '_worker_probe_bot_count', '_local_frame_stages',
+            '_standard_space_visibility', '_next_space_visibility_check', '_team_chat_initialized', '_ready_sent',
+            '_next_bot_manifest_retry', '_bot_manifest_retry_deadline', '_bot_manifest_retry_identity'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -176,7 +179,15 @@ NATIVE = {
     '_run_optional_feature': lambda b, f, cb, args=(), on_error=None, disable=True, kwargs=None: native.run_optional_feature(
         b, f, cb, args, on_error, disable, kwargs),
     '_schedule': lambda b, d, fn, ammo=False: native.schedule(b, d, fn, ammo, globals()),
+    '_maintain_standard_space_visibility': lambda b, now: native.maintain_space_visibility(b, now, globals()),
+    '_start_team_chat_when_roster_ready': native.start_team_chat,
+    '_prewarm_critical_layout': lambda b: native.prewarm_critical_layout(b, globals()),
+    '_maybe_send_battle_ready': native.maybe_send_battle_ready,
+    '_retry_bot_manifest': native.retry_bot_manifest,
 }
+SPACE_VISIBILITY_CHECK_SECONDS = 0.5
+class _LiveSpaceVisibilityPending(Exception):
+    pass
 def _underlying_function(function):
     return getattr(function, '__func__', function)
 PROBE_KINDS = ('visibility', 'lane', 'cover', 'ground', 'motion')
@@ -895,6 +906,103 @@ for ammo in (False, True):
                 out.append((result, log, state, invoked, after))
             assert out[0] == out[1], ('_schedule', ammo, existing, variant, out)
             cases += 1
+class Space(object):
+    def __init__(self, log, mask, sticky):
+        self.log, self._mask, self.sticky = log, mask, sticky
+    @property
+    def itemsVisibilityMask(self):
+        return self._mask
+    @itemsVisibilityMask.setter
+    def itemsVisibilityMask(self, value):
+        self.log.append(('space', 'set', value))
+        if not self.sticky:
+            self._mask = value
+for boundary in (None, (5, 0x4, 0x3, 0xc)):
+    for now in (1.0, 9.0):
+        for variant in range(5):
+            def make(log, boundary=boundary, now=now, variant=variant):
+                b = battle(log)
+                b._standard_space_visibility = boundary
+                b._next_space_visibility_check = 2.0
+                def live(space_id):
+                    log.append(('battle', '_live_standard_space', space_id))
+                    if variant == 3: raise _LiveSpaceVisibilityPending()
+                    if variant == 4: raise KeyError('no space')
+                    return Space(log, (0x1, 0x5, 0x9, 0x1)[variant], variant == 2)
+                b._live_standard_space = live
+                stub(b, log, '_warn_standard_space_visibility')
+                return b, (now,)
+            run('_maintain_standard_space_visibility', make, (boundary, now, variant)); cases += 1
+for variant in range(9):
+    for worker in (False, True):
+        def make(log, variant=variant, worker=worker):
+            b = battle(log, worker=worker)
+            b._team_chat_initialized = variant == 1
+            b.state = 'running' if variant != 2 else 'leaving'
+            def allies():
+                if variant == 5: raise ReferenceError('gone')
+                if variant == 6: raise KeyError('bad')
+                return ('3', 1, 'x', 2, 2, 0, 0, 4, 9)[variant]
+            arena = Log(log, 'arena', {'getAlliesVehiclesNumber': allies}, missing=('getAlliesVehiclesNumber',) if variant == 3 else ())
+            provider = Log(log, 'provider', {'getArenaDP': lambda: arena}, missing=('getArenaDP',) if variant == 4 else ())
+            b._avatar = Log(log, 'avatar', guiSessionProvider=provider)
+            b._server = Log(log, 'server')
+            stub(b, log, '_run_optional_feature', variant != 7)
+            return b, ()
+        run('_start_team_chat_when_roster_ready', make, (variant, worker)); cases += 1
+for variant in range(6):
+    for worker in (True, False):
+        def make(log, variant=variant, worker=worker):
+            global critical_damage
+            descriptor = Log(log, 'td')
+            records = {'bot:2': {'engine_id': 2, 'ready': True}, 'bot:1': {'engine_id': 1, 'ready': True, 'critical_layout_prewarmed': descriptor},
+                       'player:1': {'engine_id': 3, 'ready': True, 'local': True}, 'bot:3': {'engine_id': 4, 'ready': False}}
+            b = battle(log, worker=worker, records=records)
+            b._battle_live = variant == 1
+            b._prebattle_deadline = None if variant == 2 else 5.0
+            started = variant != 3
+            stub(b, log, '_server_entity', lambda engine: Log(log, 'entity', isStarted=started, typeDescriptor=descriptor))
+            stub(b, log, '_warn_optional_failure')
+            def prewarm(td):
+                log.append(('critical_damage', 'prewarm_layout'))
+                if variant == 4: raise ValueError('layout broke')
+                return variant != 5
+            critical_damage = Log(log, 'critical_damage', {'prewarm_layout': prewarm})
+            globals()['critical_damage'] = critical_damage
+            return b, ()
+        run('_prewarm_critical_layout', make, (variant, worker)); cases += 1
+for variant in range(9):
+    def make(log, variant=variant):
+        records = {'player:1': {'kind': 'player', 'ready': variant != 1}, 'bot:2': {'kind': 'bot', 'ready': variant != 2},
+                   'bot:3': {'kind': 'bot', 'ready': True, 'tombstone': variant == 3}}
+        b = battle(log, records=records)
+        b._ready_sent = variant == 4
+        b._battle_live = False
+        b._start_message = {'players': [1], 'bots': [2, 3] if variant != 5 else [2]}
+        b._pending_bot_create_order = ['bot:9'] if variant == 6 else []
+        b._pending_bot_creates = {}
+        b.client = Log(log, 'client', {'send_battle_ready': lambda bases: variant != 7}, missing=('send_battle_ready',) if variant == 8 else ())
+        b._spawn_planner = Log(log, 'planner', bases=['b'], missing=('capture_bases',) if variant % 2 else (), capture_bases=['c'])
+        stub(b, log, '_report_lineup_windows')
+        return b, ()
+    run('_maybe_send_battle_ready', make, (variant,)); cases += 1
+for variant in range(13):
+    def make(log, variant=variant):
+        b = battle(log, worker=variant != 0)
+        b.state = 'running' if variant != 1 else 'stopped'
+        b._generation = 2
+        b._battle_result = {'w': 1} if variant == 2 else None
+        b._start_message = {'round_id': 5}
+        bots_answers = {'pending_manifest': (lambda: None) if variant == 8 else (lambda: [{'id': 1}])}
+        b._bots = Log(log, 'bots', bots_answers, finished=variant == 3, authority_id=-1, round_id=5 if variant != 4 else 6) if variant != 12 else None
+        b.client = Log(log, 'client', {'is_bot_authority': lambda: variant != 6}, authority_epoch=3,
+                       round_id=5 if variant != 5 else 7, missing=('round_id',) if variant == 7 else ())
+        b._bot_manifest_retry_identity = (2, 5, -1, 4) if variant == 9 else None
+        b._bot_manifest_retry_deadline = 5.0 if variant == 10 else 0.0
+        b._next_bot_manifest_retry = 50.0 if variant == 11 else 0.0
+        stub(b, log, '_discard_pending_bot_manifest'); stub(b, log, '_enqueue_bot_manifest', 'queued')
+        return b, (20.0,)
+    run('_retry_bot_manifest', make, (variant,)); cases += 1
 class Scope(object):
     def __init__(self, log, suppress):
         self.log, self.suppress = log, suppress

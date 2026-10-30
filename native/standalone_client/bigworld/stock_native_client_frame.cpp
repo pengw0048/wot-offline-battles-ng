@@ -593,11 +593,213 @@ PyObject* schedule(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// Python's `except X as error`: the bound exception, or rethrow when it does not match.
+p::Ref catchMatching(std::initializer_list<PyObject*> types) {
+    if (!PyErr_Occurred()) throw;
+    bool matches = false;
+    for (PyObject* type : types) matches = matches || PyErr_ExceptionMatches(type);
+    if (!matches) throw;
+    PyObject *type, *value, *trace;
+    PyErr_Fetch(&type, &value, &trace);
+    PyErr_NormalizeException(&type, &value, &trace);
+    Py_XDECREF(type); Py_XDECREF(trace);
+    return p::Ref(value);
+}
+
+// BattleRuntime._maintain_standard_space_visibility(now)
+PyObject* maintainSpaceVisibility(PyObject*, PyObject* args) {
+    PyObject *battle, *now, *g;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &now, &g)) return nullptr;
+    try {
+        auto boundary = attr(battle, "_standard_space_visibility");
+        if (boundary.get() == Py_None || PyObject_RichCompareBool(now, attr(battle, "_next_space_visibility_check").get(), Py_LT) == 1)
+            Py_RETURN_FALSE;
+        setAttr(battle, "_next_space_visibility_check",
+                p::Ref(PyNumber_Add(now, frameGlobal(g, "SPACE_VISIBILITY_CHECK_SECONDS").get())).get());
+        if (p::size(boundary.get()) != 4) throw p::Error("boundary unpack failed");
+        auto space_id = p::item(boundary.get(), 0), selected = p::item(boundary.get(), 1);
+        auto client_bits = p::item(boundary.get(), 2), server_bits = p::item(boundary.get(), 3);
+        try {
+            auto space = method(battle, "_live_standard_space", space_id.get());
+            auto current = attr(space.get(), "itemsVisibilityMask");
+            if (equal(p::Ref(PyNumber_And(current.get(), server_bits.get())).get(), selected.get())) Py_RETURN_FALSE;
+            p::Ref corrected(PyNumber_Or(p::Ref(PyNumber_And(current.get(), client_bits.get())).get(), selected.get()));
+            setAttr(space.get(), "itemsVisibilityMask", corrected.get());
+            auto actual = attr(space.get(), "itemsVisibilityMask");
+            if (!equal(actual.get(), corrected.get())) {
+                p::Ref text(PyString_Format(p::Ref(PyString_FromString("#1513 typed gameplay visibility mask was not applied: expected=0x%x actual=%r")).get(),
+                                            p::Ref(PyTuple_Pack(2, corrected.get(), actual.get())).get()));
+                throw p::Error(p::string(text.get()));
+            }
+        } catch (const std::exception& e) {
+            PyObject* pending = frameGlobal(g, "_LiveSpaceVisibilityPending").release();
+            p::Ref held(pending);
+            if (PyErr_Occurred() && PyErr_ExceptionMatches(pending)) { PyErr_Clear(); Py_RETURN_FALSE; }
+            p::Ref error(p::retain(Py_None));
+            if (PyErr_Occurred()) replace(error, catchMatching({PyExc_Exception}));
+            else replace(error, p::Ref(PyObject_CallFunction(PyExc_RuntimeError, const_cast<char*>("s"), e.what())));
+            setAttr(battle, "_standard_space_visibility", Py_None);
+            method(battle, "_warn_standard_space_visibility", error.get());
+            Py_RETURN_FALSE;
+        }
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._start_team_chat_when_roster_ready()
+PyObject* startTeamChat(PyObject*, PyObject* args) {
+    PyObject* battle;
+    if (!PyArg_ParseTuple(args, "O", &battle)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode")) || truthy(attr(battle, "_team_chat_initialized")) ||
+            !equal(attr(battle, "state").get(), p::text("running").get())) Py_RETURN_FALSE;
+        auto provider = optionalAttr(attr(battle, "_avatar").get(), "guiSessionProvider");
+        auto arena_getter = optionalAttr(provider.get(), "getArenaDP");
+        if (!isCallable(arena_getter)) Py_RETURN_FALSE;
+        auto arena = call0(arena_getter.get());
+        auto allies = optionalAttr(arena.get(), "getAlliesVehiclesNumber");
+        if (!isCallable(allies)) Py_RETURN_FALSE;
+        bool teammate = false;
+        try {
+            teammate = strictInt(call0(allies.get()).get()) > 1;
+        } catch (const std::exception&) {
+            catchMatching({PyExc_TypeError, PyExc_ValueError, PyExc_OverflowError, PyExc_ReferenceError});
+            Py_RETURN_FALSE;
+        }
+        if (!teammate) Py_RETURN_FALSE;
+        auto started = method(battle, "_run_optional_feature", p::text("team chat initialization").get(),
+                              attr(attr(battle, "_server").get(), "start_team_chat").get());
+        if (truthy(started)) setAttr(battle, "_team_chat_initialized", Py_True);
+        return p::boolean(truthy(started)).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._prewarm_critical_layout()
+PyObject* prewarmCriticalLayout(PyObject*, PyObject* args) {
+    PyObject *battle, *g;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
+    try {
+        if (!truthy(attr(battle, "_worker_mode")) || truthy(attr(battle, "_battle_live")) || attr(battle, "_prebattle_deadline").get() == Py_None)
+            Py_RETURN_FALSE;
+        auto records = attr(battle, "_records");
+        p::Ref keys(PySequence_List(records.get()));
+        if (PyList_Sort(keys.get()) < 0) throw p::Error("record sort failed");
+        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(keys.get()); ++i) {
+            PyObject* k = PyList_GET_ITEM(keys.get(), i);
+            p::Ref record(PyObject_GetItem(records.get(), k));
+            if (!truthy(get(record.get(), "ready")) || truthy(get(record.get(), "tombstone")) || truthy(get(record.get(), "local"))) continue;
+            auto entity = method(battle, "_server_entity", get(record.get(), "engine_id").get());
+            if (entity.get() == Py_None || !truthy(optionalAttr(entity.get(), "isStarted"))) continue;
+            auto descriptor = optionalAttr(entity.get(), "typeDescriptor");
+            if (descriptor.get() == Py_None || get(record.get(), "critical_layout_prewarmed").get() == descriptor.get()) continue;
+            bool completed = true;
+            try {
+                completed = truthy(method(frameGlobal(g, "critical_damage").get(), "prewarm_layout", descriptor.get()));
+            } catch (const std::exception&) {
+                auto error = catchMatching({PyExc_Exception});
+                completed = true;
+                p::Ref text(PyObject_Str(k));
+                method(battle, "_warn_optional_failure", p::text("critical layout prewarm for " + p::string(text.get())).get(), error.get());
+            }
+            if (completed) { put(record.get(), "critical_layout_prewarmed", p::retain(descriptor.get())); Py_RETURN_TRUE; }
+        }
+        Py_RETURN_FALSE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._maybe_send_battle_ready()
+PyObject* maybeSendBattleReady(PyObject*, PyObject* args) {
+    PyObject* battle;
+    if (!PyArg_ParseTuple(args, "O", &battle)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_ready_sent")) || truthy(attr(battle, "_battle_live"))) Py_RETURN_FALSE;
+        auto start = attr(battle, "_start_message");
+        auto count = [&](const char* name) {
+            auto rows = method(start.get(), "get", p::text(name).get());
+            return truthy(rows) ? length(rows.get()) : 0;
+        };
+        auto collect = [&](const char* kind) {
+            std::vector<p::Ref> out;
+            p::Ref values(PyDict_Values(attr(battle, "_records").get()));
+            for (Py_ssize_t i = 0; i < PyList_GET_SIZE(values.get()); ++i) {
+                PyObject* record = PyList_GET_ITEM(values.get(), i);
+                if (equal(get(record, "kind").get(), p::text(kind).get()) && !truthy(get(record, "tombstone"))) out.push_back(p::retain(record));
+            }
+            return out;
+        };
+        auto anyNotReady = [](const std::vector<p::Ref>& rows) {
+            for (const auto& row : rows) if (!truthy(get(row.get(), "ready"))) return true;
+            return false;
+        };
+        const Py_ssize_t expected_players = count("players");
+        auto players = collect("player");
+        if (Py_ssize_t(players.size()) != expected_players || anyNotReady(players)) Py_RETURN_FALSE;
+        const Py_ssize_t expected_bots = count("bots");
+        auto bots = collect("bot");
+        if (Py_ssize_t(bots.size()) != expected_bots || truthy(attr(battle, "_pending_bot_create_order")) ||
+            truthy(attr(battle, "_pending_bot_creates")) || anyNotReady(bots)) Py_RETURN_FALSE;
+        auto ready = optionalAttr(attr(battle, "client").get(), "send_battle_ready");
+        if (!isCallable(ready)) Py_RETURN_FALSE;
+        auto planner = attr(battle, "_spawn_planner");
+        auto bases = optionalAttr(planner.get(), "capture_bases");
+        if (bases.get() == Py_None && !PyObject_HasAttrString(planner.get(), "capture_bases")) replace(bases, optionalAttr(planner.get(), "bases"));
+        if (!truthy(p::Ref(PyObject_CallFunctionObjArgs(ready.get(), bases.get(), nullptr)))) throw p::Error("LAN server did not accept battle readiness");
+        setAttr(battle, "_ready_sent", Py_True);
+        method(battle, "_report_lineup_windows", integer(Py_ssize_t(bots.size())).get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._retry_bot_manifest(now)
+PyObject* retryBotManifest(PyObject*, PyObject* args) {
+    PyObject *battle, *now_raw;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &now_raw)) return nullptr;
+    try {
+        auto bots = attr(battle, "_bots");
+        if (!truthy(attr(battle, "_worker_mode")) || !equal(attr(battle, "state").get(), p::text("running").get()) || bots.get() == Py_None)
+            Py_RETURN_FALSE;
+        auto discard = [&] { method(battle, "_discard_pending_bot_manifest"); };
+        if (attr(battle, "_battle_result").get() != Py_None || truthy(optionalAttr(bots.get(), "finished"))) { discard(); Py_RETURN_FALSE; }
+        auto start = attr(battle, "_start_message");
+        auto start_round = truthy(start) ? method(start.get(), "get", p::text("round_id").get()) : p::retain(Py_None);
+        auto client = attr(battle, "client");
+        p::Ref identity(PyTuple_Pack(4, attr(battle, "_generation").get(), start_round.get(), optionalAttr(bots.get(), "authority_id").get(),
+                                     optionalAttr(client.get(), "authority_epoch").get()));
+        auto retry_identity = attr(battle, "_bot_manifest_retry_identity");
+        if (retry_identity.get() != Py_None && !equal(retry_identity.get(), identity.get())) { discard(); Py_RETURN_FALSE; }
+        if (!equal(optionalAttr(bots.get(), "round_id").get(), start_round.get())) { discard(); Py_RETURN_FALSE; }
+        auto client_round = PyObject_HasAttrString(client.get(), "round_id") ? attr(client.get(), "round_id") : p::retain(start_round.get());
+        if (client_round.get() != Py_None && !equal(client_round.get(), start_round.get())) { discard(); Py_RETURN_FALSE; }
+        auto check = optionalAttr(client.get(), "is_bot_authority");
+        if (isCallable(check) && !truthy(call0(check.get()))) { discard(); Py_RETURN_FALSE; }
+        auto provider = optionalAttr(bots.get(), "pending_manifest");
+        auto pending = isCallable(provider) ? call0(provider.get()) : p::retain(Py_None);
+        if (pending.get() == Py_None) {
+            setAttr(battle, "_next_bot_manifest_retry", p::number(0.).get());
+            setAttr(battle, "_bot_manifest_retry_deadline", p::number(0.).get());
+            setAttr(battle, "_bot_manifest_retry_identity", Py_None);
+            Py_RETURN_FALSE;
+        }
+        const double now = p::scalar(p::Ref(PyNumber_Float(now_raw)).get());
+        const double deadline = number(attr(battle, "_bot_manifest_retry_deadline").get());
+        if (deadline > 0. && now + 1.0e-9 >= deadline) { discard(); throw p::Error("worker bot manifest enqueue timed out"); }
+        const double next = number(attr(battle, "_next_bot_manifest_retry").get());
+        if (next > 0. && now + 1.0e-9 < next) Py_RETURN_FALSE;
+        return callKw(battle, "_enqueue_bot_manifest", {pending.get()}, {{"now", p::number(now).get()}}).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef frame_methods[] = {
     {"frame", frame, METH_VARARGS, "Run one battle render callback."},
     {"optional_feature_enabled", optionalFeatureEnabled, METH_VARARGS, "Whether a presentation feature is still enabled."},
     {"run_optional_feature", runOptionalFeature, METH_VARARGS, "Run one presentation boundary without widening frame failure."},
     {"schedule", schedule, METH_VARARGS, "Schedule one generation-fenced runtime callback."},
+    {"maintain_space_visibility", maintainSpaceVisibility, METH_VARARGS, "Restore the gameplay space visibility bit."},
+    {"start_team_chat", startTeamChat, METH_VARARGS, "Start stock Chat2 once a teammate exists."},
+    {"prewarm_critical_layout", prewarmCriticalLayout, METH_VARARGS, "Build one ready vehicle's hit layout per countdown frame."},
+    {"maybe_send_battle_ready", maybeSendBattleReady, METH_VARARGS, "Open the countdown once the line-up has entered."},
+    {"retry_bot_manifest", retryBotManifest, METH_VARARGS, "Retry the worker's bot manifest at bounded cadence."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
