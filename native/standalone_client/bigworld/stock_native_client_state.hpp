@@ -1,11 +1,13 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 struct _object;
 namespace stock_native_client_state {
@@ -57,13 +59,47 @@ struct Value {
 // Keep passive Actor/State consumers independent of the Python data decoder.
 inline ObjectFields::~ObjectFields()=default;
 struct Sample {double time=0.;std::optional<std::int64_t> revision;Pose value{};Value state;};
+// Accepted contact history owns exactly the newest 512 revisions. Physical
+// slots stay fixed; chronological indexes follow head across wraparound.
+class ReceiptHistory {
+    static constexpr std::size_t limit=512;
+    using Storage=std::array<Sample,limit>;
+    std::unique_ptr<Storage> slots_;
+    std::size_t head_=0,count_=0;
+    std::size_t bound(double time,std::optional<std::int64_t> revision,bool upper)const{
+        std::size_t first=0,length=count_;
+        while(length){const auto step=length/2,index=first+step;const auto&row=(*this)[index];
+            const bool less=revision?std::make_pair(row.time,row.revision.value_or(-1))<std::make_pair(time,*revision):row.time<time;
+            const bool equal=revision?row.time==time&&row.revision.value_or(-1)==*revision:row.time==time;
+            if(less||(upper&&equal)){first=index+1;length-=step+1;}else length=step;
+        }return first;
+    }
+public:
+    ReceiptHistory()noexcept=default;
+    ReceiptHistory(std::initializer_list<Sample> rows){for(const auto&row:rows)push_back(row);}
+    ReceiptHistory(const ReceiptHistory&v):slots_(v.slots_?std::make_unique<Storage>(*v.slots_):nullptr),head_(v.head_),count_(v.count_){}
+    ReceiptHistory& operator=(const ReceiptHistory&v){if(this!=&v){ReceiptHistory copy(v);slots_.swap(copy.slots_);std::swap(head_,copy.head_);std::swap(count_,copy.count_);}return *this;}
+    ReceiptHistory(ReceiptHistory&&v)noexcept:slots_(std::move(v.slots_)),head_(std::exchange(v.head_,0)),count_(std::exchange(v.count_,0)){}
+    ReceiptHistory& operator=(ReceiptHistory&&v)noexcept{if(this!=&v){slots_=std::move(v.slots_);head_=std::exchange(v.head_,0);count_=std::exchange(v.count_,0);}return *this;}
+    std::size_t size()const noexcept{return count_;}
+    bool empty()const noexcept{return count_==0;}
+    Sample& operator[](std::size_t index){return (*slots_)[(head_+index)%limit];}
+    const Sample& operator[](std::size_t index)const{return (*slots_)[(head_+index)%limit];}
+    Sample& front(){return (*this)[0];}const Sample& front()const{return (*this)[0];}
+    Sample& back(){return (*this)[count_-1];}const Sample& back()const{return (*this)[count_-1];}
+    void push_back(Sample row){if(!slots_)slots_=std::make_unique<Storage>();if(count_<limit){(*this)[count_]=std::move(row);++count_;}else{(*slots_)[head_]=std::move(row);head_=(head_+1)%limit;}}
+    void clear()noexcept{for(std::size_t i=0;i<count_;++i)(*this)[i]=Sample{};head_=count_=0;}
+    std::size_t lowerBound(double time)const{return bound(time,{},false);}
+    std::size_t lowerBound(double time,std::int64_t revision)const{return bound(time,revision,false);}
+    std::size_t upperBound(double time,std::int64_t revision)const{return bound(time,revision,true);}
+};
 struct Bounds {Point minimum{},maximum{};};
 struct Actor {
     std::string key,kind;std::int64_t id=0,engine_id=0;
     std::uint64_t revision=0,descriptor_revision=0;
     bool local=false,has_current=false,has_target=false,missing=false;
     Pose current{},target{},velocity{};
-    std::vector<Sample> samples,receipts;
+    std::vector<Sample> samples;ReceiptHistory receipts;
     double target_time=0.,sample_time=0.,anchor_time=0.,anchor_local=0.,ideal=0.,delay=0.,observed=0.;
     std::optional<double> cursor,snapshot_interval,previous_sample;
     std::optional<std::int64_t> sample_revision;

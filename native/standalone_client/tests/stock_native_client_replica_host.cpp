@@ -45,11 +45,40 @@ PyObject*valueContract(PyObject*,PyObject*){try{
     const auto relocation=allocations([&]{values.reserve(128);});if(values.front().reference!=version)throw p::Error("Vector relocation changed shared identity");
     p::set(out.get(),"vector_relocation",p::integer(relocation));return out.release();
 }catch(const std::exception&e){return fail(e);}}
+PyObject*receiptContract(PyObject*,PyObject*){try{
+    using H=stock_native_client_state::ReceiptHistory;using S=stock_native_client_state::Sample;using V=stock_native_client_state::Value;
+    H history;std::vector<S> oracle;std::shared_ptr<const V> retained;std::weak_ptr<const V> first,second;std::size_t steady_allocations=0,checks=0;
+    if(!history.empty()||history.lowerBound(0.)!=0||history.upperBound(0.,0)!=0)throw p::Error("Empty receipt lookup changed");
+    for(std::int64_t i=0;i<2049;++i){V value;value.kind=V::Kind::Integer;value.integer=i;auto version=std::make_shared<const V>(std::move(value));S sample;sample.time=double(i/3)*1000.;sample.revision=i;sample.value[0]=double(i);sample.state.kind=V::Kind::Shared;sample.state.reference=version;
+        if(i==0){retained=version;first=version;}if(i==1)second=version;
+        const auto*latest=history.empty()?nullptr:&history.back();const auto count=allocations([&]{history.push_back(sample);});if(i)steady_allocations+=count;
+        oracle.push_back(sample);if(oracle.size()>512)oracle.erase(oracle.begin());
+        if(history.size()!=oracle.size()||(latest && &history[history.size()-2]!=latest))throw p::Error("Receipt overwrite moved a retained slot");
+        for(std::size_t j=0;j<oracle.size();++j)if(history[j].time!=oracle[j].time||history[j].revision!=oracle[j].revision||history[j].value!=oracle[j].value||history[j].state.reference!=oracle[j].state.reference)throw p::Error("Receipt chronological order changed");
+        for(double cursor:{history.front().time-1.,history.front().time,history.back().time-1.,history.back().time,history.back().time+1.}){
+            const auto time=std::lower_bound(oracle.begin(),oracle.end(),cursor,[](const S&row,double t){return row.time<t;});
+            if(history.lowerBound(cursor)!=std::size_t(time-oracle.begin()))throw p::Error("Receipt time lookup changed");
+            const auto revision=i-1;const auto target=std::make_pair(cursor,revision);
+            const auto low=std::lower_bound(oracle.begin(),oracle.end(),target,[](const S&row,const std::pair<double,std::int64_t>&v){return std::make_pair(row.time,row.revision.value_or(-1))<v;});
+            const auto high=std::upper_bound(oracle.begin(),oracle.end(),target,[](const std::pair<double,std::int64_t>&v,const S&row){return v<std::make_pair(row.time,row.revision.value_or(-1));});
+            if(history.lowerBound(cursor,revision)!=std::size_t(low-oracle.begin())||history.upperBound(cursor,revision)!=std::size_t(high-oracle.begin()))throw p::Error("Receipt revision tie lookup changed");++checks;
+        }
+        if(i==513&&!second.expired())throw p::Error("Evicted receipt still retained its data");
+        if(i==800){if(first.expired()||retained->numeric()!=0.)throw p::Error("External accepted version expired on wraparound");retained.reset();if(!first.expired())throw p::Error("Evicted accepted version leaked");}
+    }
+    if(steady_allocations)throw p::Error("Receipt overwrite allocated storage");
+    auto copy=history;copy.back().value[0]=-1.;if(history.back().value[0]<0.)throw p::Error("Receipt arena copy aliases source");
+    const auto*identity=&history.front();H moved(std::move(history));if(!history.empty()||&moved.front()!=identity)throw p::Error("Receipt move changed arena identity");
+    history=std::move(moved);if(!moved.empty()||&history.front()!=identity)throw p::Error("Receipt move assignment changed arena identity");
+    std::weak_ptr<const V> last=history.back().state.reference;oracle.clear();copy.clear();history.clear();if(!last.expired()||!history.empty())throw p::Error("Receipt clear retained accepted data");
+    S next;next.time=1.;next.revision=1;const auto reuse=allocations([&]{history.push_back(next);});if(reuse||history.size()!=1||history.front().time!=1.)throw p::Error("Cleared receipt arena was not reused");
+    return Py_BuildValue("{s:K,s:K,s:K}","appends",2049ULL,"bound_checks",static_cast<unsigned long long>(checks),"steady_allocations",static_cast<unsigned long long>(steady_allocations));
+}catch(const std::exception&e){return fail(e);}}
 PyObject* clockState(PyObject*,PyObject*args){auto handle=stock_native_bot_python::Ref(stateHandle(nullptr,args));auto state=stock_native_client_state::shared(handle.get());return Py_BuildValue("(OdK)",state->server_time_ms?stock_native_bot_python::integer(*state->server_time_ms).get():Py_None,state->received_at,static_cast<unsigned long long>(state->epoch));}
 PyObject* controllerCall(PyObject*self,PyObject*args){return PyObject_CallObject(PyTuple_GET_ITEM(self,0),args);}
 PyMethodDef controllerMethod={"native_controller",controllerCall,METH_VARARGS,""};
 PyObject* controller(PyObject*,PyObject*args){PyObject*object;const char*name;if(!PyArg_ParseTuple(args,"Os",&object,&name))return nullptr;auto fn=stock_native_bot_python::value(object,name);stock_native_bot_python::Ref context(PyTuple_Pack(1,fn.get()));return PyCFunction_New(&controllerMethod,context.get());}
 PyObject*storage(PyObject*,PyObject*args){auto handle=stock_native_bot_python::Ref(stateHandle(nullptr,args));auto state=stock_native_client_state::shared(handle.get());auto out=stock_native_bot_python::dict();for(const auto&entry:state->actors){const auto&a=*entry.second;auto row=stock_native_bot_python::dict();stock_native_bot_python::set(row.get(),"current_shared",stock_native_bot_python::boolean(bool(a.state.reference)));stock_native_bot_python::set(row.get(),"sample_shared",stock_native_bot_python::boolean(a.samples.empty()||a.samples.back().state.reference==a.state.reference));stock_native_bot_python::set(row.get(),"receipt_shared",stock_native_bot_python::boolean(a.receipts.empty()||a.receipts.back().state.reference==a.state.reference));if(!a.receipts.empty())stock_native_bot_python::set(row.get(),"first_receipt",stock_native_bot_python::Ref(stock_native_client_state::write(a.receipts.front().state)));stock_native_bot_python::set(out.get(),entry.first.c_str(),row);}return out.release();}
-PyMethodDef methods[]={{"value_contract",valueContract,METH_NOARGS,""},{"storage",storage,METH_VARARGS,""},{"controller",controller,METH_VARARGS,""},{"clock_state",clockState,METH_VARARGS,""},{"state",stateHandle,METH_VARARGS,""},{"snapshot",snapshot,METH_VARARGS,""},{"manifest",manifest,METH_VARARGS,""},{"refresh_pending",refreshPending,METH_VARARGS,""},{"flush_pending",flushPending,METH_VARARGS,""},{"refresh",refresh,METH_VARARGS,""},{"probes",probes,METH_VARARGS,""},{"statistics",statistics,METH_VARARGS,""},{"inspect",inspect,METH_VARARGS,""},{"create",create,METH_VARARGS,""},{"ingest",ingest,METH_VARARGS,""},{"advance",advance,METH_VARARGS,""},{"manages",manages,METH_VARARGS,""},{"close",close,METH_VARARGS,""},{nullptr,nullptr,0,nullptr}};
+PyMethodDef methods[]={{"receipt_contract",receiptContract,METH_NOARGS,""},{"value_contract",valueContract,METH_NOARGS,""},{"storage",storage,METH_VARARGS,""},{"controller",controller,METH_VARARGS,""},{"clock_state",clockState,METH_VARARGS,""},{"state",stateHandle,METH_VARARGS,""},{"snapshot",snapshot,METH_VARARGS,""},{"manifest",manifest,METH_VARARGS,""},{"refresh_pending",refreshPending,METH_VARARGS,""},{"flush_pending",flushPending,METH_VARARGS,""},{"refresh",refresh,METH_VARARGS,""},{"probes",probes,METH_VARARGS,""},{"statistics",statistics,METH_VARARGS,""},{"inspect",inspect,METH_VARARGS,""},{"create",create,METH_VARARGS,""},{"ingest",ingest,METH_VARARGS,""},{"advance",advance,METH_VARARGS,""},{"manages",manages,METH_VARARGS,""},{"close",close,METH_VARARGS,""},{nullptr,nullptr,0,nullptr}};
 }
 PyMODINIT_FUNC initclient_replica_test(){Py_InitModule("client_replica_test",methods);}

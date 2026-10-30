@@ -30,13 +30,12 @@ std::array<double,5>pending(const Value&state,ID player,const PushCheckpoint*loc
 }
 std::array<double,3>wreckContactStep(const PlayerDescriptor&d,const std::array<double,4>&shape,double vx,double vz,double omega,double yaw,double dt,double normal){if(dt<=0.)return {vx,vz,omega};return wreck(d,shape,vx,vz,omega,yaw,dt,normal);}
 std::optional<HistoricalMotion>historicalMotion(const shared::Actor&actor,double cursor,ID player){const auto&history=actor.receipts;if(history.empty())return {};
-    const auto right=std::lower_bound(history.begin(),history.end(),cursor,[](const shared::Sample&s,double t){return s.time<t;});if(right==history.end()||(right==history.begin()&&right->time!=cursor)||!right->revision)return {};
-    const auto target=std::make_pair(cursor,*right->revision);const auto less=[](const shared::Sample&s,const std::pair<double,ID>&value){return std::make_pair(s.time,s.revision.value_or(-1))<value;};
-    const auto upper=std::upper_bound(history.begin(),history.end(),target,[](const std::pair<double,ID>&value,const shared::Sample&s){return value<std::make_pair(s.time,s.revision.value_or(-1));});if(upper==history.begin())return {};const auto left=upper-1;
-    const auto other=std::lower_bound(history.begin(),history.end(),target,less);if(other==history.end()||!left->revision||!other->revision||left->time>cursor||*left->revision>*right->revision||other->time<cursor||*other->revision<*right->revision)return {};
-    HistoricalMotion out;out.witness=witness(left->state,other->state,cursor,player);out.bracket=std::array<ID,4>{*left->revision,ID(left->time),*other->revision,ID(other->time)};
-    const shared::Sample*a=&*left,*b=&*other;if(left->time==other->time){if(history.size()<2)return out;if(left!=history.begin()){a=&*(left-1);b=&*left;}else{a=&*left;b=&*(left+1);}}
-    if(left->time==other->time){const double span=(b->time-a->time)/1000000.;if(span>0.)for(unsigned i=0;i<3;++i)out.velocity[i]=(b->value[i]-a->value[i])/span;}
+    const auto right=history.lowerBound(cursor);if(right==history.size()||(right==0&&history[right].time!=cursor)||!history[right].revision)return {};
+    const auto revision=*history[right].revision;const auto upper=history.upperBound(cursor,revision);if(upper==0)return {};const auto left=upper-1,other=history.lowerBound(cursor,revision);
+    if(other==history.size()||!history[left].revision||!history[other].revision||history[left].time>cursor||*history[left].revision>revision||history[other].time<cursor||*history[other].revision<revision)return {};
+    HistoricalMotion out;out.witness=witness(history[left].state,history[other].state,cursor,player);out.bracket=std::array<ID,4>{*history[left].revision,ID(history[left].time),*history[other].revision,ID(history[other].time)};
+    const shared::Sample*a=&history[left],*b=&history[other];if(history[left].time==history[other].time){if(history.size()<2)return out;if(left!=0){a=&history[left-1];b=&history[left];}else{a=&history[left];b=&history[left+1];}}
+    if(history[left].time==history[other].time){const double span=(b->time-a->time)/1000000.;if(span>0.)for(unsigned i=0;i<3;++i)out.velocity[i]=(b->value[i]-a->value[i])/span;}
     else{const double span=b->time-a->time;if(span>0.)for(unsigned i=0;i<3;++i)out.velocity[i]=(b->value[i]-a->value[i])*1000000./span;}return out;
 }
 std::array<double,3>predictContactVelocity(const PlayerDescriptor&d,const Value&state,const std::array<double,4>&shape,double stamp,double now,const std::vector<std::array<double,4>>&impulses,double fixed){

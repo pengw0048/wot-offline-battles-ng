@@ -9,6 +9,13 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[1]
 STAGES=r'''
 namespace {
+PyObject*benchmarkReceipts(PyObject*,PyObject*args){int loops;if(!PyArg_ParseTuple(args,"i",&loops))return nullptr;if(loops<=0){PyErr_SetString(PyExc_ValueError,"append count must be positive");return nullptr;}
+using Clock=std::chrono::steady_clock;cs::ReceiptHistory ring;std::vector<cs::Sample> legacy;legacy.reserve(513);cs::Sample row;row.state.kind=cs::Value::Kind::Shared;row.state.reference=std::make_shared<const cs::Value>();
+for(int i=0;i<512;++i){row.time=i;row.revision=i;legacy.push_back(row);ring.push_back(row);}
+const auto begin=Clock::now();for(int i=0;i<loops;++i){row.time=i+512;row.revision=i+512;legacy.push_back(row);legacy.erase(legacy.begin());}const auto middle=Clock::now();
+for(int i=0;i<loops;++i){row.time=i+512;row.revision=i+512;ring.push_back(row);}const auto end=Clock::now();
+if(ring.front().revision!=legacy.front().revision||ring.back().revision!=legacy.back().revision){PyErr_SetString(PyExc_AssertionError,"receipt benchmark order changed");return nullptr;}
+return Py_BuildValue("{s:i,s:d,s:d,s:i}","appends",loops,"vector_erase_ns",std::chrono::duration<double>(middle-begin).count()*1.e9/loops,"ring_ns",std::chrono::duration<double>(end-middle).count()*1.e9/loops,"retained",int(ring.size()));}
 PyObject*benchmarkSnapshot(PyObject*,PyObject*args){PyObject*raw;int loops,projected=0,edges=0;if(!PyArg_ParseTuple(args,"Oi|ii",&raw,&loops,&projected,&edges))return nullptr;try{using Clock=std::chrono::steady_clock;double parse=0,core=0,pack=0,release=0;std::uint64_t count=0;Owner o;o.state->local_player_id=1;
 for(int i=0;i<loops;++i){if(edges){auto*bots=PyDict_GetItemString(raw,"bots");for(Py_ssize_t j=0;bots&&j<std::min<Py_ssize_t>(edges,PySequence_Size(bots));++j){auto row=p::item(bots,j);p::set(row.get(),"fire_seq",p::integer(i));}}const auto t0=Clock::now();auto t3=t0;
 {cs::Value data;if(!projected)data=readMessage(o,raw);else data=readStateMessage(o,raw,false);
@@ -22,7 +29,9 @@ SCRIPT=r'''
 import json,sys
 import client_replica_test as native
 print(json.dumps(dict(value_allocations=native.value_contract())))
-message=json.load(open(sys.argv[1]));loops=int(sys.argv[2]);edges=int(sys.argv[3])
+message=json.load(open(sys.argv[1]));loops=int(sys.argv[2]);edges=int(sys.argv[3]);receipt_appends=int(sys.argv[4])
+if receipt_appends:
+ print(json.dumps(dict(boundary='Host receipt bookkeeping only; both histories share one immutable Value, excluding codec and old-row destruction',receipt_stages=native.benchmark_receipts(receipt_appends))))
 class _StaticDict(dict):pass
 for row in message.get('players',[]):
  for key in ('outfits','effective_params'):
@@ -51,7 +60,7 @@ def fixture():
         version=dict(row);version.update(profile=dict(class_tag='mediumTank',preferred_range=200.,parking_radius=4.),terminal_critical=critical,route=dict(id='map_route',waypoints=[dict(x=j*20.,y=0.,z=j*20.,hold=False) for j in range(16)]));manifest.append(version)
     return dict(round_id=1,server_tick=1,server_time_ms=1,bot_state_revision=1,motion_time_us=50000,bot_state_time_us=50000,players=[human],bots=bots,bot_manifest=manifest,destructibles=[dict(chunk_id=i,item_index=j,kind='tree',fallen=True,direction=[1.,0.,0.]) for i in range(8) for j in range(18)])
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--loops',type=int,default=120);parser.add_argument('--optimization',choices=['0','2'],default='0');parser.add_argument('--input',type=Path);parser.add_argument('--legacy-copies',action='store_true');parser.add_argument('--eager-object',action='store_true');parser.add_argument('--edge-actors',type=int,default=0);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--loops',type=int,default=120);parser.add_argument('--optimization',choices=['0','2'],default='0');parser.add_argument('--input',type=Path);parser.add_argument('--legacy-copies',action='store_true');parser.add_argument('--eager-object',action='store_true');parser.add_argument('--edge-actors',type=int,default=0);parser.add_argument('--receipt-appends',type=int,default=0);args=parser.parse_args()
     fork=Path(os.environ['WOT_FORK_0101_SOURCE']);py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip();prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
     with tempfile.TemporaryDirectory(prefix='native-replica-benchmark-') as directory:
         folder=Path(directory);raw=json.loads(args.input.read_text()) if args.input else fixture();(folder/'input.json').write_text(json.dumps(raw));(folder/'run.py').write_text(SCRIPT)
@@ -69,8 +78,8 @@ def main():
             for name in ('state','replica'):
                 path=folder/('experiment_'+name+'.cpp');text=path.read_text() if path.exists() else (ROOT/('bigworld/stock_native_client_'+name+'.cpp')).read_text()
                 path.write_text(text);host=host.replace(str(ROOT/('bigworld/stock_native_client_'+name+'.cpp')),str(path))
-        host=host.replace('PyMethodDef methods[]={',STAGES+'\nPyMethodDef methods[]={{"benchmark_snapshot",benchmarkSnapshot,METH_VARARGS,""},',1);(folder/'benchmark.cpp').write_text(host)
+        host=host.replace('PyMethodDef methods[]={',STAGES+'\nPyMethodDef methods[]={{"benchmark_receipts",benchmarkReceipts,METH_VARARGS,""},{"benchmark_snapshot",benchmarkSnapshot,METH_VARARGS,""},',1);(folder/'benchmark.cpp').write_text(host)
         subprocess.run(['c++','-std=c++17','-O'+args.optimization,'-ffp-contract=off','-Wno-register','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(fork/'native'),'-I'+str(folder),str(folder/'benchmark.cpp'),'-o',str(folder/'client_replica_test.so')],check=True)
         print(json.dumps(dict(boundary=('Captured JSON with accepted static wrappers restored' if args.input else 'Synthetic server-canonical schema')+' on host CPython 2.7; no Windows performance claim',bytes=len(json.dumps(raw)),actors=len(raw['players'])+len(raw['bots']),loops=args.loops,optimization=args.optimization,legacy_copies_experiment=args.legacy_copies,eager_object_experiment=args.eager_object,edge_actors=args.edge_actors)),flush=True)
-        subprocess.run([py27,'-B',str(folder/'run.py'),str(folder/'input.json'),str(args.loops),str(args.edge_actors)],check=True)
+        subprocess.run([py27,'-B',str(folder/'run.py'),str(folder/'input.json'),str(args.loops),str(args.edge_actors),str(args.receipt_appends)],check=True)
 if __name__=='__main__':main()

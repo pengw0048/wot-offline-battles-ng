@@ -14,6 +14,8 @@ for name in ('gui','gui.mods','gui.mods.offline_lan_0922'):
  module=types.ModuleType(name);module.__path__=[source];sys.modules[name]=module
 from gui.mods.offline_lan_0922.snapshot_sync import SnapshotSync
 import client_replica_test as native
+receipt_contract=native.receipt_contract()
+assert receipt_contract["appends"]==2049 and receipt_contract["bound_checks"]==10245 and receipt_contract["steady_allocations"]==0,receipt_contract
 allocation_contract=native.value_contract()
 assert allocation_contract["probe"]==1,allocation_contract
 for key in ("primitive","shared","move"):assert allocation_contract[key]==0,allocation_contract

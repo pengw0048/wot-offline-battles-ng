@@ -93,7 +93,7 @@ bool setTarget(Actor&a,const Pose&v,double now,std::optional<std::int64_t> sampl
             if(!a.has_delay){a.delay=a.ideal;a.has_delay=true;}else {const double growth=a.ideal-a.delay;const bool warm=a.warmup_active&&a.warmup_intervals<=3;if(growth>0.&&(warm||growth>=15000.||observed_interval>=100000.))a.delay=a.ideal;}
         }else if(!had||!previous_sample)a.has_ideal=false;
         a.samples.push_back(Sample{double(*sample),revision,v,a.state});
-        if(a.receipts.empty()||a.receipts.back().revision!=revision){a.receipts.push_back(a.samples.back());if(a.receipts.size()>512)a.receipts.erase(a.receipts.begin());}
+        if(a.receipts.empty()||a.receipts.back().revision!=revision)a.receipts.push_back(a.samples.back());
     }
     a.target=v;a.has_target=true;a.target_time=now;a.sample_time=sample?double(*sample):0.;a.previous_sample=sample?std::optional<double>(double(*sample)):std::nullopt;a.sample_revision=revision;a.timed=timed;
     if(!a.has_current||stale){a.current=v;a.has_current=true;return true;}return false;

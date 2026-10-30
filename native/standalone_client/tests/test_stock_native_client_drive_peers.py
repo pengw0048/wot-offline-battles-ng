@@ -32,7 +32,26 @@ for cursor in [900000,4500000]+[row['time_us']for row in rows]+[row['time_us']+5
  else:
   assert result['velocity']==tuple(expected[k]for k in('ram_vx','ram_vy','ram_vz')),(cursor,result,expected)
   witness=ram.for_player(expected['ram_motion'],1);assert result['witness']==(tuple(witness)if witness else None),(cursor,result,expected)
-print('native peer ACK velocity/history differential passed: 420 predictions, 66 history cursors')
+# The same original lookup consumes the exact retained 512 chronological
+# rows after one and multiple arena wraps, including equal-time revisions.
+wrapped_queries=0
+for count in (511,512,513,1027,2049):
+ rows=[]
+ for i in range(count):
+  stamp=1000000+(i//3)*50000
+  rows.append(dict(time_us=stamp,revision=i+1,x=i*.31,y=i*.003,z=i*.19,yaw=0.,pitch=0.,roll=0.,alive=True,ram_motion=[[1,i+1,stamp-25000]+[float(i+j)for j in range(18)]]))
+ retained=rows[-512:];old._ram_bot_lookup_cache={};old._ram_bot_history_index={2:[(r['time_us'],r['revision'])for r in retained]};old._ram_bot_history=dict((r['revision'],{2:r})for r in retained)
+ cursors=[retained[0]['time_us']-1,retained[0]['time_us'],retained[-1]['time_us'],retained[-1]['time_us']+1]
+ cursors += [r['time_us']+offset for r in retained[::17]for offset in (0,1)]
+ results=native.histories(rows,cursors,1)
+ for cursor,result in zip(cursors,results):
+  revision=old._ram_bot_revision_at(2,cursor);expected=old._ram_bot_state_at(2,revision,cursor,velocity_only=True)if revision is not None else None
+  if expected is None:assert result is None,(count,cursor,result)
+  else:
+   assert result['velocity']==tuple(expected[k]for k in('ram_vx','ram_vy','ram_vz')),(count,cursor,result,expected)
+   witness=ram.for_player(expected['ram_motion'],1);assert result['witness']==(tuple(witness)if witness else None),(count,cursor,result,expected)
+  wrapped_queries+=1
+print('native peer ACK velocity/history differential passed: 420 predictions, 66 original cursors, %d wrapped cursors'%wrapped_queries)
 '''
 class PlayerPeersDifferential(ContactDifferential):
  def test_native_prediction_and_history(self):
