@@ -176,9 +176,22 @@ print('CPython 2.7 source compile passed: %d files' % len(paths))
 PY
 ```
 
-The server and tests use Python 3. Keep protocol payloads plain JSON so neither
-runtime depends on the other's object model. Run resource bakers into a
-temporary output and diff it before replacing tracked catalogs.
+The server and tests use Python 3. Run resource bakers into a temporary output
+and diff it before replacing tracked catalogs.
+
+## Wire protocol and main-thread budget
+
+- High-frequency battle traffic (snapshots, combat events, projectiles, input)
+  uses a fixed-layout binary `struct` wire, negotiated as a capability.
+  Low-frequency control messages (lobby, room, garage, settlement) may stay
+  JSON. Neither side may depend on the other runtime's object model.
+- The visible client receives, frames, decodes, and records network traffic in
+  C++ on background threads, without the GIL or intermediate Python objects.
+  The main thread applies decoded native state at the frame boundary.
+- Replay recording writes the received wire bytes on a native background
+  thread; the main thread does not serialize or pickle per message.
+- Our per-frame logic belongs in C++. Keep Python only where it must call a
+  stock #1513 script or BigWorld Python interface, and keep that layer thin.
 
 ## BigWorld lifecycle and ownership
 
