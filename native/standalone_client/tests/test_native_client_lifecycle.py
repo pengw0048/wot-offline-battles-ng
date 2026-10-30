@@ -13,7 +13,7 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
            '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical',
            '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation',
-           '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health')
+           '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health', '_apply_record_pose')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -86,13 +86,19 @@ def run(name, make, args):
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
             'stunInfo', '_offlineStunFactors', '_spot_visible', '_offlineNativeDrawVisible', 'targetCaps',
             '_offlineNativeMarkerVisible', 'health', 'isCrewActive'))
-        out.append((result, log, copy.deepcopy([v for v in values if isinstance(v, dict)]),
-                    copy.deepcopy(b._records), entity_after))
+        identities = [str(id(v)) for v in values if isinstance(v, dict)]
+        def scrub(value):
+            text = repr(value)
+            for identity in identities:
+                text = text.replace(identity, 'ID')
+            return text
+        out.append((scrub(result), scrub(log), scrub([v for v in values if isinstance(v, dict)]),
+                    scrub(b._records), entity_after))
     (pr, pl, pv, prec, pm), (nr, nl, nv, nrec, nm) = out
-    TALLY.setdefault(name, [0, 0, 0])[0 if pr[0] == 'error' else 1 if not pl else 2] += 1
-    if pr[0] == 'error':
+    TALLY.setdefault(name, [0, 0, 0])[0 if pr.startswith("('error'") else 1 if pl == '[]' else 2] += 1
+    if pr.startswith("('error'"):
         # Pinned validation errors keep their type and message; other failures only need to fail.
-        assert nr[0] == 'error' and (pr[1] != 'RuntimeError' or pr == nr), (name, args, pr, nr)
+        assert nr.startswith("('error'") and (not pr.startswith("('error', 'RuntimeError'") or pr == nr), (name, args, pr, nr)
     else:
         assert (pr, pl, pv, prec, pm) == (nr, nl, nv, nrec, nm), (name, args, out)
 
@@ -118,8 +124,12 @@ NATIVE = {
                             suppress_combat_presentation=False, suppress_postmortem_killer=False: native.apply_health(
         b, r, st, attacker_id, reason_id, force_cause, attack_reason_id, suppress_combat_presentation,
         suppress_postmortem_killer, critical_damage, native_client_environment, native_client_drive),
+    '_apply_record_pose': lambda b, r, pose: native.record_pose(b, r, pose, native_client_replica, _engine_rotation, BOT_MOVING_SPEED),
 }
-native_client_environment = native_client_drive = None
+native_client_environment = native_client_drive = native_client_replica = None
+BOT_MOVING_SPEED = 0.05
+def _engine_rotation(yaw, pitch=0.0, roll=0.0):
+    return ('rotation', yaw, pitch, roll)
 vehicle_physics = None
 critical_damage = None
 
@@ -374,6 +384,54 @@ for factory_kind in ('none', 'no_get', 'returns_none', 'vehicle'):
                             b._entity_probe = vehicle
                             return b, (record, entity)
                         run('_finalize_dead_remote_wreck', make, (factory_kind, model, native_remote, spot, marker, failing)); cases += 1
+POSES = [{'x': 1.0, 'y': 2.0, 'z': 3.0, 'yaw': 0.5}, {'x': 1.0, 'y': 2.0, 'z': 3.0, 'yaw': 0.5, 'aim_yaw': 0.7, 'gun_pitch': -0.1,
+         'pitch': 0.02, 'roll': 0.01, 'siege_state': 2}, {}, {'yaw': 0.5, 'siege_state': None}]
+for pose_index in range(len(POSES)):
+    for owned in (False, True):
+        for local in (False, True):
+            for history in ('none', 'same', 'stale_lifecycle', 'aim_only'):
+                for state_index in range(4):
+                    for variant in range(4):
+                        def make(log, pose_index=pose_index, owned=owned, local=local, history=history, state_index=state_index, variant=variant):
+                            global native_client_replica
+                            b = battle(log)
+                            native_client_replica = Log(log, 'replica', {'owns': lambda battle, record: owned})
+                            globals()['native_client_replica'] = native_client_replica
+                            b._generation = 3
+                            stub(b, log, '_clock', 12.5); stub(b, log, '_vector', lambda xyz: ('vector',) + tuple(xyz))
+                            stub(b, log, '_projectile_plain_pose', lambda xyz, pose: {'xyz': list(xyz)})
+                            stub(b, log, '_remember_remote_track_turn', 0.25)
+                            stub(b, log, '_update_bot_tracks')
+                            stub(b, log, '_run_optional_feature', lambda name, fn, args: variant != 2)
+                            vehicle = Log(log, 'vehicle', missing=('settle_motion',) if variant == 3 else ())
+                            b._remote_factory = Log(log, 'factory', {'get': lambda engine: vehicle})
+                            states = [{'speed': 0.0, 'alive': True, 'health': 100}, {'speed': 3.0, 'movement_dir': 1, 'siege_state': 1},
+                                      {'alive': False, 'health': 0, 'rotation_dir': -1}, {}]
+                            record = {'engine_id': 41, 'local': local, 'kind': ('bot', 'player', 'other', 'bot')[variant],
+                                      'native_remote': variant != 1, 'state': dict(states[state_index]), 'presented_siege_state': 2}
+                            pose = dict(POSES[pose_index])
+                            p = pose
+                            sig = (p.get('x', 0.0), p.get('y', 0.0), p.get('z', 0.0), p.get('yaw', 0.0), p.get('pitch', 0.0),
+                                   p.get('roll', 0.0), p.get('aim_yaw', p.get('yaw', 0.0)), p.get('gun_pitch', 0.0))
+                            if history != 'none':
+                                record['_remote_pose_signature'] = sig
+                                record['_remote_pose_lifecycle'] = (3, 41, 'IDENTITY')
+                                record['_remote_track_state_signature'] = (0.0, True, 0.25)
+                                if history == 'aim_only': record['_remote_aim_signature'] = 'old'
+                            return b, (record, pose)
+                        def identity(log, make=make):
+                            b, (record, pose) = make(log)
+                            if record.get('_remote_pose_lifecycle') == (3, 41, 'IDENTITY'):
+                                record['_remote_pose_lifecycle'] = (3, 41, id(record)) if history != 'stale_lifecycle' else (2, 41, id(record))
+                                if 'old' != record.get('_remote_aim_signature'):
+                                    p = pose
+                                    record['_remote_aim_signature'] = (record['_remote_pose_lifecycle'], p.get('yaw', 0.0), p.get('pitch', 0.0),
+                                                                       p.get('aim_yaw', p.get('yaw', 0.0)), p.get('gun_pitch', 0.0), 2)
+                            return b, (record, pose)
+                        history_value = history
+                        def bound(log, identity=identity, history=history):
+                            return identity(log)
+                        run('_apply_record_pose', bound, (pose_index, owned, local, history, state_index, variant)); cases += 1
 HEALTH_STATES = [
     {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
     {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},
@@ -540,7 +598,7 @@ def pinned_source(fork):
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
     text = '\n\n'.join(chunks) + '\n'
     # Package-relative imports resolve to the fixture's fakes.
-    for module in ('native_client_environment', 'native_client_drive'):
+    for module in ('native_client_environment', 'native_client_drive', 'native_client_replica'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 

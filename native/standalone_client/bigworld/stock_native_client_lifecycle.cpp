@@ -978,6 +978,92 @@ PyObject* applyHealth(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._apply_record_pose(record, pose)
+PyObject* recordPose(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *pose, *replica, *engine_rotation, *moving_speed;
+    if (!PyArg_ParseTuple(args, "OOOOOO", &battle, &record, &pose, &replica, &engine_rotation, &moving_speed)) return nullptr;
+    try {
+        if (truthy(method(replica, "owns", battle, record))) Py_RETURN_FALSE;
+        auto state_raw = get(record, "state");
+        auto state = truthy(state_raw) ? p::retain(state_raw.get()) : p::dict();
+        auto read = [&](const char* name, PyObject* fallback) { return method(pose, "get", p::text(name).get(), fallback); };
+        auto zero = p::number(0.);
+        auto yaw = read("yaw", zero.get());
+        if (truthy(get(record, "local"))) Py_RETURN_NONE;
+        auto now = method(battle, "_clock");
+        auto x = read("x", zero.get()), y = read("y", zero.get()), z = read("z", zero.get());
+        auto pitch = read("pitch", zero.get()), roll = read("roll", zero.get());
+        auto aim_yaw = read("aim_yaw", yaw.get()), gun_pitch = read("gun_pitch", zero.get());
+        p::Ref xyz(PyTuple_Pack(3, x.get(), y.get(), z.get()));
+        auto collision = method(battle, "_projectile_plain_pose", xyz.get(), pose);
+        auto siege_raw = read("siege_state", method(state.get(), "get", p::text("siege_state").get(), integer(0).get()).get());
+        if (PyObject_SetItem(collision.get(), p::text("siege_state").get(),
+                             integer(strictInt(truthy(siege_raw) ? siege_raw.get() : integer(0).get())).get()) < 0)
+            throw p::Error("Native collision pose write failed");
+        put(record, "projectile_collision_pose", p::retain(collision.get()));
+        auto health_raw = method(state.get(), "get", p::text("health").get(), integer(1).get());
+        const bool alive = truthy(method(state.get(), "get", p::text("alive").get(), Py_True)) &&
+                           strictInt(truthy(health_raw) ? health_raw.get() : integer(0).get()) > 0;
+        PyObject* parts[] = {x.get(), y.get(), z.get(), yaw.get(), pitch.get(), roll.get(), aim_yaw.get(), gun_pitch.get()};
+        p::Ref signature(PyTuple_New(8));
+        for (int i = 0; i < 8; ++i) { Py_INCREF(parts[i]); PyTuple_SET_ITEM(signature.get(), i, parts[i]); }
+        PyObject* engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) { PyErr_SetObject(PyExc_KeyError, p::text("engine_id").get()); throw p::Error("engine_id"); }
+        p::Ref identity(PyLong_FromVoidPtr(record));
+        p::Ref lifecycle(PyTuple_Pack(3, attr(battle, "_generation").get(), engine, identity.get()));
+        const bool pose_changed = !equal(signature.get(), get(record, "_remote_pose_signature").get()) ||
+                                  !equal(lifecycle.get(), get(record, "_remote_pose_lifecycle").get());
+        if (pose_changed) {
+            method(record, "pop", p::text("_remote_pose_signature").get(), Py_None);
+            auto vector = method(battle, "_vector", xyz.get());
+            p::Ref rotation(PyObject_CallFunctionObjArgs(engine_rotation, yaw.get(), pitch.get(), roll.get(), nullptr));
+            callKw(attr(battle, "_binding").get(), "set_vehicle_pose", {engine, vector.get(), rotation.get()}, {{"now", now.get()}});
+            put(record, "_remote_pose_signature", p::retain(signature.get()));
+            put(record, "_remote_pose_lifecycle", p::retain(lifecycle.get()));
+            method(record, "pop", p::text("_remote_motion_settled_signature").get(), Py_None);
+        } else {
+            const double moving = p::scalar(moving_speed);
+            auto field = [&](const char* name) { return number(method(state.get(), "get", p::text(name).get()).get()); };
+            const bool intended = std::fabs(field("speed")) > moving || std::fabs(field("movement_dir")) > .5 ||
+                                  std::fabs(field("rotation_dir")) > .5;
+            if (truthy(get(record, "native_remote")) && !intended &&
+                !equal(get(record, "_remote_motion_settled_signature").get(), signature.get())) {
+                auto vehicle = method(attr(battle, "_remote_factory").get(), "get", engine);
+                p::Ref settle(p::retain(Py_None));
+                if (callableAttr(vehicle.get(), "settle_motion", settle)) {
+                    p::Ref feature_args(PyTuple_Pack(1, now.get()));
+                    if (truthy(method(battle, "_run_optional_feature", p::text("remote motion presentation").get(), settle.get(), feature_args.get())))
+                        put(record, "_remote_motion_settled_signature", p::retain(signature.get()));
+                }
+            }
+        }
+        p::Ref aim_signature(PyTuple_Pack(6, lifecycle.get(), yaw.get(), pitch.get(), aim_yaw.get(), gun_pitch.get(),
+                                          get(record, "presented_siege_state").get()));
+        const bool aim_changed = !equal(aim_signature.get(), get(record, "_remote_aim_signature").get());
+        if (aim_changed) {
+            method(record, "pop", p::text("_remote_aim_signature").get(), Py_None);
+            method(attr(battle, "_binding").get(), "update_vehicle_aim", engine, yaw.get(), aim_yaw.get(), gun_pitch.get());
+            put(record, "_remote_aim_signature", p::retain(aim_signature.get()));
+        }
+        auto kind = get(record, "kind");
+        if (textIs(kind.get(), "bot") || textIs(kind.get(), "player")) {
+            auto turn = method(battle, "_remember_remote_track_turn", record, yaw.get(), now.get());
+            p::Ref track(PyTuple_Pack(3, p::number(number(method(state.get(), "get", p::text("speed").get()).get())).get(),
+                                      p::boolean(alive).get(), turn.get()));
+            if (pose_changed || truthy(get(record, "_remote_track_pending")) ||
+                !equal(track.get(), get(record, "_remote_track_state_signature").get())) {
+                p::Ref feature_args(PyTuple_Pack(4, record, state.get(), now.get(), turn.get()));
+                const bool updated = truthy(method(battle, "_run_optional_feature", p::text("remote track animation").get(),
+                                                   attr(battle, "_update_bot_tracks").get(), feature_args.get()));
+                put(record, "_remote_track_pending", p::boolean(!updated));
+                if (updated) put(record, "_remote_track_state_signature", p::retain(track.get()));
+            }
+        }
+        return p::boolean(pose_changed || aim_changed).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -993,6 +1079,7 @@ PyMethodDef methods[] = {
     {"turret_detachment", turretDetachment, METH_VARARGS, "Remove attached turret armour; the worker plans debris."},
     {"finalize_dead_wreck", finalizeDeadWreck, METH_VARARGS, "Expose one finalized corpse without re-entering spotting."},
     {"apply_health", applyHealth, METH_VARARGS, "Apply a durable health/crew transition and its #1513 presentation."},
+    {"record_pose", recordPose, METH_VARARGS, "Present one remote pose sample through the matrix and aim owners."},
     {"present_critical", presentCritical, METH_VARARGS, "Map critical transitions to stock #1513 UI callbacks."},
     {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};

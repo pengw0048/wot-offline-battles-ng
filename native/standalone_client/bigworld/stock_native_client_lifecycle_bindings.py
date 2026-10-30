@@ -24,6 +24,8 @@ PORTS = (
      'apply_health(self, record, state, attacker_id, reason_id, force_cause, attack_reason_id, '
      'suppress_combat_presentation, suppress_postmortem_killer, critical_damage, '
      'native_client_environment, native_client_drive)'),
+    ('_apply_record_pose',
+     'record_pose(self, record, pose, native_client_replica, _engine_rotation, BOT_MOVING_SPEED)'),
 )
 
 
@@ -35,7 +37,8 @@ def battle(source):
             raise ValueError('The pinned lifecycle seam changed: ' + name)
         index = matches[0].end()
         imports = ''.join('        from . import %s\n' % module for module in (
-            'native_client_query', 'native_client_environment', 'native_client_drive') if module in call)
+            'native_client_query', 'native_client_environment', 'native_client_drive',
+            'native_client_replica') if module in call)
         source = (source[:index] + imports + '        import offline_client_lifecycle_native\n'
                   '        return offline_client_lifecycle_native.' + call + '\n' + source[index:])
     return source
