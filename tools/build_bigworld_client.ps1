@@ -297,6 +297,9 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-python-profile-hook-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_memory_debug.py"),
         $EngineRoot) "stock-memory-debug-patch.log"
+    # BW_GUARD, PROFILER_SCOPED and memory debug compile out as in #1513's consumer build.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_consumer_instrumentation.py"),
+        $EngineRoot) "stock-consumer-instrumentation-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_heap_allocator.py"),
         $EngineRoot) "stock-heap-allocator-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
