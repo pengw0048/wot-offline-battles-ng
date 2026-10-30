@@ -13,7 +13,9 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
            '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical',
            '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation',
-           '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health', '_apply_record_pose')
+           '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health', '_apply_record_pose',
+           '_flush_tombstone', '_destroy_entity', '_update_entity', '_apply_sync_event', '_queue_bot_create',
+           '_flush_pending_bot_create', '_flush_pending_entities', '_create_remote', '_materialize_record')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -67,7 +69,8 @@ def run(name, make, args):
         log = []
         b, values = make(log)
         if impl == 'pinned':
-            fn = getattr(b, name)
+            # The method under test, even where the fixture stubs it for its callers.
+            fn = Pinned.__dict__[name].__get__(b)
             try:
                 result = ('ok', fn(*values))
             except Exception as error:
@@ -100,7 +103,13 @@ def run(name, make, args):
         # Pinned validation errors keep their type and message; other failures only need to fail.
         assert nr.startswith("('error'") and (not pr.startswith("('error', 'RuntimeError'") or pr == nr), (name, args, pr, nr)
     else:
-        assert (pr, pl, pv, prec, pm) == (nr, nl, nv, nrec, nm), (name, args, out)
+        if (pr, pl, pv, prec, pm) != (nr, nl, nv, nrec, nm):
+            for field, (x, y) in enumerate(zip((pr, pl, pv, prec, pm), (nr, nl, nv, nrec, nm))):
+                if x != y:
+                    x, y = str(x), str(y)
+                    k = next((i for i in range(min(len(x), len(y))) if x[i] != y[i]), min(len(x), len(y)))
+                    raise AssertionError('%s %r field %d\npinned: ...%s\nnative: ...%s' % (
+                        name, args, field, x[max(0, k - 300):k + 300], y[max(0, k - 300):k + 300]))
 
 KINDS = _COMBAT_EVENT_KINDS
 TALLY = {}
@@ -125,7 +134,19 @@ NATIVE = {
         b, r, st, attacker_id, reason_id, force_cause, attack_reason_id, suppress_combat_presentation,
         suppress_postmortem_killer, critical_damage, native_client_environment, native_client_drive),
     '_apply_record_pose': lambda b, r, pose: native.record_pose(b, r, pose, native_client_replica, _engine_rotation, BOT_MOVING_SPEED),
+    '_flush_tombstone': native.flush_tombstone,
+    '_destroy_entity': native.destroy_entity,
+    '_update_entity': native.update_entity,
+    '_apply_sync_event': native.sync_event,
+    '_queue_bot_create': native.queue_bot_create,
+    '_flush_pending_bot_create': native.flush_bot_create,
+    '_flush_pending_entities': lambda b, now: native.flush_pending_entities(b, now, native_client_replica),
+    '_create_remote': lambda b, e: native.create_remote(b, e, _marks_on_gun, _engine_rotation, bot_planner),
+    '_materialize_record': lambda b, r: native.materialize_record(b, r, set_draw_visibility),
 }
+bot_planner = None
+def _marks_on_gun(value):
+    return ('marks', value)
 native_client_environment = native_client_drive = native_client_replica = None
 BOT_MOVING_SPEED = 0.05
 def _engine_rotation(yaw, pitch=0.0, roll=0.0):
@@ -432,6 +453,129 @@ for pose_index in range(len(POSES)):
                         def bound(log, identity=identity, history=history):
                             return identity(log)
                         run('_apply_record_pose', bound, (pose_index, owned, local, history, state_index, variant)); cases += 1
+ORCH_STUBS = ('_materialize_record', '_create_remote', '_queue_bot_create', '_update_entity', '_destroy_entity',
+              '_flush_tombstone', '_clear_target_outline', '_stop_remote_visual', '_fallback_postmortem_viewpoint',
+              '_apply_record_pose', '_report_memory', '_start_team_chat_when_roster_ready', '_present_vehicle_dead',
+              '_set_record_spot_visibility', '_apply_siege_state', '_apply_vehicle_statistics', '_drain_event_journal',
+              '_apply_stun_state', '_apply_critical_state', '_reconcile_critical_authority', '_apply_health')
+def orch_battle(log, variant, records=None, worker=False):
+    global native_client_replica, set_draw_visibility, bot_planner
+    b = battle(log, worker=worker, records=records or {}, outlined=41 if variant % 3 == 1 else None)
+    for name in ORCH_STUBS:
+        stub(b, log, name)
+    stub(b, log, '_pending_event_references', variant % 2 == 1)
+    stub(b, log, '_server_entity', None if variant % 4 == 2 else Log(log, 'entity'))
+    if variant % 5 == 3:
+        def ref(engine): raise ReferenceError('gone')
+        b._server_entity = ref
+    b._records_revision = 4
+    b._pending_bot_creates = {}
+    b._pending_bot_create_order = []
+    b.state = 'running'
+    b._server = Log(log, 'server', missing=('forgetVehicleEnter', 'vehicleEnterStatus') if variant % 2 else (),
+                    answers={'vehicleEnterStatus': lambda engine: (('completed', None), ('pending', None), ('failed', 'bad'))[variant % 3]})
+    b._binding = Log(log, 'binding', {'is_vehicle_ready': lambda engine: variant % 4 != 1,
+                                      'properties_from_compact_descr': lambda cd, team, name: {'publicInfo': {}, 'cd': cd}})
+    vehicle = Log(log, 'vehicle', model=None if variant == 7 else 'model', missing=('_offlineNativeMarkerVisible',) if variant % 2 else (),
+                  _offlineNativeMarkerVisible=variant % 3 == 0)
+    b._remote_factory = Log(log, 'factory', {'get': lambda engine: vehicle, 'error': lambda engine: 'boom' if variant == 9 else None,
+                                             'is_ready': lambda engine: variant % 3 != 2, 'create': lambda *a: None if variant == 8 else 77},
+                            missing=('set_entity_interpolate_motion',) if variant == 5 else (), native_entities=variant % 2 == 0)
+    b._bots = Log(log, 'bots', {'is_authority': lambda: variant % 2 == 0}) if variant != 6 else None
+    native_client_replica = Log(log, 'replica', {'flush_pending': lambda battle, now: 'native' if variant == 4 else None})
+    set_draw_visibility = lambda v, d: log.append(('set_draw_visibility', rep(v), rep(d)))
+    bot_planner = Log(log, 'planner', {'bot_initially_visible': lambda team, own, flag: team == own})
+    globals().update(native_client_replica=native_client_replica, set_draw_visibility=set_draw_visibility, bot_planner=bot_planner)
+    b.client = Log(log, 'client', team=1)
+    b._config = {'vehicle': 'ussr:T-34', 'startupTimeoutSeconds': 20.0}
+    b._start_message = {'bot_authority_id': -1} if variant % 2 else None
+    stub(b, log, '_clock', 100.0); stub(b, log, '_vector', lambda xyz: ('vector', tuple(xyz)))
+    stub(b, log, '_resolve_player_descriptor', Log(log, 'pdesc', {'makeCompactDescr': lambda: 'PCD'}, maxHealth=900))
+    stub(b, log, '_resolve_descriptor', Log(log, 'desc', {'makeCompactDescr': lambda: 'CD'}, maxHealth=700))
+    stub(b, log, '_remote_outfit', 'outfit'); stub(b, log, '_lan_prebattle_id', 5)
+    stub(b, log, '_state_world_pose', ((1.0, 2.0, 3.0), 0.5)); stub(b, log, '_bot_authority_is_local', variant % 3 == 0)
+    stub(b, log, '_projectile_boundary_pose', lambda pos, seed: {'pos': pos})
+    stub(b, log, '_record_alive', variant % 2 == 0); stub(b, log, '_pending_combat_for_record', variant == 3)
+    stub(b, log, '_death_attacker_engine_id', 12); stub(b, log, '_should_suppress_postmortem_killer', variant % 2 == 1)
+    stub(b, log, '_ammo_bay_special_health', -7)
+    b._worker_mode = worker
+    b._bots_ready_reported = variant == 2
+    b._bot_create_started = None if variant % 2 else 1.0
+    b._last_bot_create_team = None if variant < 3 else 2
+    return b
+RECORD_SHAPES = [
+    {'engine_id': 41, 'presentation': True, 'native_remote': True, 'arena_added': True, 'ready': True},
+    {'engine_id': 41, 'presentation': True, 'native_remote': False, 'ready': False, 'state': {'team_killer': True}},
+    {'engine_id': 41, 'presentation': False, 'ready': True, 'state': {'health': 3}},
+    {'engine_id': 41, 'presentation': False, 'ready': False, 'pending_pose': {'x': 1}},
+    {'engine_id': 41, 'local': True, 'state': {'health': 5}},
+    {'engine_id': 41, 'tombstone': True, 'presentation': True, 'visible_destroy_requested': False},
+    {'engine_id': 41, 'kind': 'player', 'presentation': True, 'ready': True, 'arena_added': False,
+     'state': {'critical_revision': 1, 'critical_base_revision': 1, 'critical_ack_seq': 1, 'death_reason': 2}},
+    {'engine_id': 41, 'presentation': True, 'ready': True, 'state': {'critical': {'fire': True}, 'death_reason': None}},
+]
+EVENTS = [
+    {'type': 'destroy', 'entity': 'bot:4', 'kind': 'bot', 'keep_corpse': True, 'state': {'frags': 1}},
+    {'type': 'destroy', 'entity': 'bot:4', 'kind': 'bot'},
+    {'type': 'update', 'entity': 'bot:4', 'kind': 'bot', 'state': {'health': 7}, 'pose': {'x': 1.0}, 'presentation_time_us': 55},
+    {'type': 'update', 'entity': 'bot:4', 'kind': 'player', 'interpolated': True, 'pose': {'x': 2.0}, 'presentation_bracket': [1, 2]},
+    {'type': 'update', 'entity': 'bot:4', 'kind': 'bot', 'interpolated': True},
+    {'type': 'create', 'entity': 'bot:4', 'kind': 'bot', 'id': 4, 'state': {'team': 2, 'slot': 1, 'x': 1.0, 'z': 2.0}, 'pose': {'yaw': 0.3, 'q': 9}},
+    {'type': 'create', 'entity': 'player:9', 'kind': 'player', 'id': 9,
+     'state': {'team': 1, 'slot': 3, 'vehicle_compact_descr': 'abc', 'marks_on_gun': 2, 'shot_penalty_until': 4.5}, 'initial_state': {'health': 1200}},
+    {'type': 'create', 'entity': 'bot:5', 'kind': 'bot', 'id': 5, 'state': {'team': 1}},
+    {'type': 'other', 'entity': 'bot:4'},
+]
+for event_index in range(len(EVENTS)):
+    for shape in range(len(RECORD_SHAPES) + 2):
+        for variant in range(10):
+            for worker in (False, True):
+                def make(log, event_index=event_index, shape=shape, variant=variant, worker=worker):
+                    records = {}
+                    if shape < len(RECORD_SHAPES):
+                        records['bot:4'] = copy.deepcopy(RECORD_SHAPES[shape])
+                    b = orch_battle(log, variant, records, worker)
+                    if shape == len(RECORD_SHAPES):
+                        b._pending_bot_creates['bot:4'] = {'state': {'team': 2}}
+                        b._pending_bot_create_order[:] = ['bot:9', 'bot:4']
+                    if variant == 6: b.state = 'leaving'
+                    return b, (copy.deepcopy(EVENTS[event_index]),)
+                for name in ('_destroy_entity', '_update_entity', '_apply_sync_event', '_queue_bot_create', '_create_remote'):
+                    run(name, make, (event_index, shape, variant, worker)); cases += 1
+for shape in range(len(RECORD_SHAPES)):
+    for variant in range(10):
+        for worker in (False, True):
+            def make(log, shape=shape, variant=variant, worker=worker):
+                record = copy.deepcopy(RECORD_SHAPES[shape])
+                b = orch_battle(log, variant, {'bot:4': record}, worker)
+                return b, (record,)
+            run('_flush_tombstone', make, (shape, variant, worker)); cases += 1
+            run('_materialize_record', make, (shape, variant, worker)); cases += 1
+PENDING = [{}, {'bot:1': {'state': {'team': 1}}, 'bot:2': {'state': {'team': 2}}}, {'bot:1': {'state': {}}}, {'bot:1': None}]
+for pending_index in range(len(PENDING)):
+    for order in ([], ['bot:1'], ['bot:1', 'bot:2'], ['bot:2', 'bot:1', 'bot:3']):
+        for variant in range(10):
+            def make(log, pending_index=pending_index, order=order, variant=variant):
+                records = {'bot:2': {'engine_id': 2}} if variant == 9 else {}
+                b = orch_battle(log, variant, records)
+                b._pending_bot_creates = copy.deepcopy(PENDING[pending_index])
+                b._pending_bot_create_order = list(order)
+                def create(event):
+                    log.append(('battle', '_create_remote', rep(event)))
+                    if variant % 2 == 0 and event and event.get('state') is not None:
+                        b._records[event.get('entity', 'bot:1') if 'entity' in event else order[0]] = {'engine_id': 1}
+                b._create_remote = create
+                return b, (50.0,)
+            run('_flush_pending_bot_create', make, (pending_index, order, variant)); cases += 1
+for variant in range(10):
+    for now in (10.0, 200.0):
+        def make(log, variant=variant, now=now):
+            records = dict(('bot:%d' % i, dict(copy.deepcopy(RECORD_SHAPES[i]), ready_deadline=100.0 if i % 2 else None))
+                           for i in range(len(RECORD_SHAPES)))
+            b = orch_battle(log, variant, records)
+            stub(b, log, '_materialize_record', variant % 3 == 0)
+            return b, (now,)
+        run('_flush_pending_entities', make, (variant, now)); cases += 1
 HEALTH_STATES = [
     {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
     {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},

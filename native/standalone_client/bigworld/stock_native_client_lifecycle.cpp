@@ -18,6 +18,14 @@ namespace p = stock_native_bot_python;
 
 PyObject* fail(const std::exception& e) { if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what()); return nullptr; }
 bool truthy(const p::Ref& value) { return p::flag(value.get()); }
+// A dict built like the pinned n-entry literal (BUILD_MAP presizes it), so iteration order matches.
+p::Ref literal(Py_ssize_t entries) {
+#if PY_MAJOR_VERSION < 3
+    return p::Ref(_PyDict_NewPresized(entries));
+#else
+    return p::dict();
+#endif
+}
 // Python 2 int (not long) where the pinned code produced one through int().
 p::Ref integer(std::int64_t v) {
 #if PY_MAJOR_VERSION < 3
@@ -572,7 +580,7 @@ PyObject* presentCritical(PyObject*, PyObject* args) {
                 shown = true;
         }
         if (PyErr_Occurred()) throw p::Error("Native critical event iteration failed");
-        auto report = p::dict();
+        auto report = literal(3);
         put(report.get(), "phase", p::text("critical_present"));
         p::Ref all(PySequence_List(events));
         put(report.get(), "events", p::Ref(PyList_GetSlice(all.get(), 0, 24)));
@@ -1064,6 +1072,546 @@ PyObject* recordPose(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+void incrementRevision(PyObject* battle) {
+    auto revision = attr(battle, "_records_revision");
+    setAttr(battle, "_records_revision", p::Ref(PyNumber_Add(revision.get(), integer(1).get())).get());
+}
+// _server_entity(engine) is not None, with ReferenceError meaning "not visible".
+bool serverEntityVisible(PyObject* battle, PyObject* engine) {
+    auto fn = attr(battle, "_server_entity");
+    PyObject* entity = PyObject_CallFunctionObjArgs(fn.get(), engine, nullptr);
+    if (!entity) {
+        if (PyErr_ExceptionMatches(PyExc_ReferenceError)) { PyErr_Clear(); return false; }
+        throw p::Error("Native server entity lookup failed");
+    }
+    p::Ref held(entity);
+    return entity != Py_None;
+}
+p::Ref engineOf(PyObject* record) {
+    PyObject* engine = PyDict_GetItemString(record, "engine_id");
+    if (!engine) { PyErr_SetObject(PyExc_KeyError, p::text("engine_id").get()); throw p::Error("engine_id"); }
+    return p::retain(engine);
+}
+// try: body() finally: always() -- the Python exception from body survives.
+template<class Body, class Always> void tryFinally(Body body, Always always) {
+    try { body(); }
+    catch (...) {
+        PyObject *type, *value, *trace;
+        PyErr_Fetch(&type, &value, &trace);
+        try { always(); } catch (...) { Py_XDECREF(type); Py_XDECREF(value); Py_XDECREF(trace); throw; }
+        PyErr_Restore(type, value, trace);
+        throw;
+    }
+    always();
+}
+p::Ref deadState(PyObject* base, PyObject* event) {
+    auto state = copyDict(get(base, "state").get());
+    auto incoming = get(event, "state");
+    if (truthy(incoming)) method(state.get(), "update", incoming.get());
+    put(state.get(), "health", integer(0));
+    put(state.get(), "alive", p::boolean(false));
+    return state;
+}
+
+// BattleRuntime._flush_tombstone(record)
+PyObject* flushTombstone(PyObject*, PyObject* args) {
+    PyObject *battle, *record;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &record)) return nullptr;
+    try {
+        if (truthy(get(record, "presentation"))) {
+            auto factory = attr(battle, "_remote_factory");
+            if (factory.get() != Py_None) {
+                if (equal(attr(battle, "_outlined_engine_id").get(), get(record, "engine_id").get())) method(battle, "_clear_target_outline");
+                if (!truthy(get(record, "native_remote"))) method(battle, "_stop_remote_visual", record);
+                method(factory.get(), "destroy", engineOf(record).get());
+            }
+            put(record, "visible_destroy_requested", p::boolean(true));
+            Py_RETURN_NONE;
+        }
+        if (truthy(get(record, "visible_destroy_requested"))) Py_RETURN_NONE;
+        auto engine = engineOf(record);
+        if (!serverEntityVisible(battle, engine.get())) Py_RETURN_NONE;
+        auto binding = attr(battle, "_binding");
+        tryFinally([&] { method(binding.get(), "arena_vehicle_removed", engine.get()); },
+                   [&] { method(binding.get(), "destroy_entity", engine.get()); });
+        put(record, "visible_destroy_requested", p::boolean(true));
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._destroy_entity(event)
+PyObject* destroyEntity(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        auto records = attr(battle, "_records");
+        auto key = get(event, "entity");
+        auto record = method(records.get(), "get", key.get());
+        if (record.get() != Py_None && truthy(get(record.get(), "local"))) {
+            put(record.get(), "state", deadState(record.get(), event));
+            method(battle, "_materialize_record", record.get());
+            Py_RETURN_NONE;
+        }
+        if (record.get() == Py_None) {
+            auto pending_all = attr(battle, "_pending_bot_creates");
+            auto pending = method(pending_all.get(), "get", key.get());
+            if (pending.get() != Py_None && truthy(get(event, "keep_corpse"))) {
+                put(pending.get(), "state", deadState(pending.get(), event));
+                Py_RETURN_NONE;
+            }
+            if (pending.get() != Py_None) {
+                if (truthy(method(battle, "_pending_event_references", key.get()))) {
+                    p::Ref text(PyObject_Str(key.get()));
+                    throw p::Error("pending entity " + p::string(text.get()) + " was removed before its ordered event applied");
+                }
+                method(pending_all.get(), "pop", key.get(), Py_None);
+                auto order = attr(battle, "_pending_bot_create_order");
+                auto remove = attr(order.get(), "remove");
+                PyObject* removed = PyObject_CallFunctionObjArgs(remove.get(), key.get(), nullptr);
+                if (!removed) { if (!PyErr_ExceptionMatches(PyExc_ValueError)) throw p::Error("pending order removal failed"); PyErr_Clear(); }
+                else Py_DECREF(removed);
+            }
+            Py_RETURN_NONE;
+        }
+        PyObject* r = record.get();
+        if (!truthy(attr(battle, "_worker_mode"))) method(battle, "_fallback_postmortem_viewpoint", engineOf(r).get());
+        if (truthy(get(event, "keep_corpse"))) {
+            put(r, "state", deadState(r, event));
+            method(battle, "_materialize_record", r);
+            Py_RETURN_NONE;
+        }
+        if (truthy(get(r, "presentation"))) {
+            if (equal(attr(battle, "_outlined_engine_id").get(), get(r, "engine_id").get())) method(battle, "_clear_target_outline");
+            method(records.get(), "pop", key.get(), Py_None);
+            incrementRevision(battle);
+            if (truthy(get(r, "arena_added"))) method(attr(battle, "_binding").get(), "arena_vehicle_removed", engineOf(r).get());
+            auto factory = attr(battle, "_remote_factory");
+            if (factory.get() != Py_None) {
+                if (!truthy(get(r, "native_remote"))) method(battle, "_stop_remote_visual", r);
+                method(factory.get(), "destroy", engineOf(r).get());
+            }
+            Py_RETURN_NONE;
+        }
+        if (truthy(get(r, "ready"))) {
+            method(records.get(), "pop", key.get(), Py_None);
+            incrementRevision(battle);
+            auto server = attr(battle, "_server");
+            p::Ref forget(p::retain(Py_None));
+            if (callableAttr(server.get(), "forgetVehicleEnter", forget)) p::Ref unused(PyObject_CallFunctionObjArgs(forget.get(), engineOf(r).get(), nullptr));
+            if (serverEntityVisible(battle, engineOf(r).get())) {
+                auto binding = attr(battle, "_binding");
+                tryFinally([&] { method(binding.get(), "arena_vehicle_removed", engineOf(r).get()); },
+                           [&] { method(binding.get(), "destroy_entity", engineOf(r).get()); });
+            }
+        } else {
+            put(r, "tombstone", p::boolean(true));
+            method(r, "pop", p::text("pending_pose").get(), Py_None);
+            const bool visible = serverEntityVisible(battle, engineOf(r).get());
+            put(r, "visible_destroy_requested", p::boolean(false));
+            if (visible) method(battle, "_flush_tombstone", r);
+        }
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._update_entity(event)
+PyObject* updateEntity(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        auto records = attr(battle, "_records");
+        auto key = get(event, "entity");
+        auto record = method(records.get(), "get", key.get());
+        if (record.get() != Py_None && truthy(get(record.get(), "tombstone"))) Py_RETURN_NONE;
+        if (record.get() == Py_None) {
+            auto raw = get(event, "state");
+            auto state = truthy(raw) ? p::retain(raw.get()) : p::dict();
+            auto create = literal(5);
+            put(create.get(), "type", p::text("create"));
+            put(create.get(), "entity", p::retain(key.get()));
+            put(create.get(), "kind", get(event, "kind"));
+            put(create.get(), "id", get(event, "id"));
+            put(create.get(), "state", p::retain(state.get()));
+            method(battle, "_create_remote", create.get());
+            replace(record, method(records.get(), "get", key.get()));
+            if (record.get() == Py_None) Py_RETURN_NONE;
+        }
+        PyObject* r = record.get();
+        auto pose = get(event, "pose");
+        auto incoming_raw = get(event, "state");
+        auto incoming = truthy(incoming_raw) ? p::retain(incoming_raw.get()) : p::dict();
+        auto stamp_of = [&]() {
+            auto stamp = get(event, "presentation_time_us");
+            return stamp.get() != Py_None ? integer(strictInt(stamp.get())) : p::retain(Py_None);
+        };
+        if (truthy(get(event, "interpolated")) && !truthy(incoming)) {
+            if (pose.get() == Py_None) Py_RETURN_NONE;
+            if (truthy(get(r, "ready"))) {
+                put(r, "presented_pose", p::Ref(PyDict_Copy(pose.get())));
+                put(r, "presentation_time_us", stamp_of());
+                put(r, "presentation_bracket", get(event, "presentation_bracket"));
+                method(battle, "_apply_record_pose", r, pose.get());
+                Py_RETURN_NONE;
+            }
+        }
+        auto state = copyDict(get(r, "state").get());
+        p::Ref copied(PyDict_Copy(incoming.get()));
+        method(state.get(), "update", copied.get());
+        put(r, "state", state);
+        if (pose.get() != Py_None) {
+            put(r, "pending_pose", p::Ref(PyDict_Copy(pose.get())));
+            put(r, "presented_pose", p::Ref(PyDict_Copy(pose.get())));
+            put(r, "presentation_time_us", stamp_of());
+            put(r, "presentation_bracket", get(event, "presentation_bracket"));
+        }
+        method(battle, "_materialize_record", r);
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._apply_sync_event(event)
+PyObject* syncEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        auto phase = attr(battle, "state");
+        for (const char* stopped : {"failed", "stopped", "leaving"}) if (textIs(phase.get(), stopped)) Py_RETURN_NONE;
+        auto kind = get(event, "type");
+        const bool bot = textIs(get(event, "kind").get(), "bot");
+        if (textIs(kind.get(), "create")) {
+            method(battle, bot ? "_queue_bot_create" : "_create_remote", event);
+        } else if (textIs(kind.get(), "update")) {
+            auto records = attr(battle, "_records");
+            const int present = PySequence_Contains(records.get(), get(event, "entity").get());
+            if (present < 0) throw p::Error("Native record lookup failed");
+            if (bot && !present) method(battle, "_queue_bot_create", event);
+            else {
+                auto bots = attr(battle, "_bots");
+                if (bot && bots.get() != Py_None && truthy(method(bots.get(), "is_authority"))) {
+                    p::Ref copy(PyDict_Copy(event));
+                    method(copy.get(), "pop", p::text("pose").get(), Py_None);
+                    method(battle, "_update_entity", copy.get());
+                } else method(battle, "_update_entity", event);
+            }
+        } else if (textIs(kind.get(), "destroy")) {
+            method(battle, "_destroy_entity", event);
+        }
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._queue_bot_create(event)
+PyObject* queueBotCreate(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        auto key = get(event, "entity");
+        auto records = attr(battle, "_records");
+        if (!truthy(key)) Py_RETURN_FALSE;
+        const int present = PySequence_Contains(records.get(), key.get());
+        if (present < 0) throw p::Error("Native record lookup failed");
+        if (present) Py_RETURN_FALSE;
+        auto state = copyDict(get(event, "state").get());
+        auto pose = get(event, "pose");
+        if (PyDict_Check(pose.get()))
+            for (const char* name : {"x", "y", "z", "yaw", "pitch", "roll", "aim_yaw", "turret_yaw", "gun_pitch", "siege_state"})
+                if (PyDict_GetItemString(pose.get(), name)) put(state.get(), name, get(pose.get(), name));
+        auto pending_all = attr(battle, "_pending_bot_creates");
+        auto pending = method(pending_all.get(), "get", key.get());
+        if (pending.get() == Py_None) {
+            auto created = literal(6);
+            put(created.get(), "type", p::text("create"));
+            put(created.get(), "entity", p::retain(key.get()));
+            put(created.get(), "kind", p::text("bot"));
+            put(created.get(), "id", get(event, "id"));
+            put(created.get(), "state", p::retain(state.get()));
+            put(created.get(), "initial_state", p::Ref(PyDict_Copy(state.get())));
+            if (PyObject_SetItem(pending_all.get(), key.get(), created.get()) < 0) throw p::Error("pending create write failed");
+            method(attr(battle, "_pending_bot_create_order").get(), "append", key.get());
+        } else {
+            method(get(pending.get(), "state").get(), "update", state.get());
+        }
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._flush_pending_bot_create(now)
+PyObject* flushBotCreate(PyObject*, PyObject* args) {
+    PyObject *battle, *now;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &now)) return nullptr;
+    try {
+        auto order = attr(battle, "_pending_bot_create_order");
+        if (PyObject_IsTrue(order.get()) <= 0) Py_RETURN_FALSE;
+        if (attr(battle, "_bot_create_started").get() == Py_None) setAttr(battle, "_bot_create_started", now);
+        auto key = p::item(order.get(), 0);
+        auto pending_all = attr(battle, "_pending_bot_creates");
+        auto last_team = attr(battle, "_last_bot_create_team");
+        if (last_team.get() != Py_None) {
+            p::Ref iterator(PyObject_GetIter(order.get()));
+            while (PyObject* raw = PyIter_Next(iterator.get())) {
+                p::Ref candidate(raw);
+                auto pending = method(pending_all.get(), "get", candidate.get());
+                auto pending_state = truthy(pending) ? get(pending.get(), "state") : p::retain(Py_None);
+                auto team = truthy(pending_state) ? get(pending_state.get(), "team") : p::retain(Py_None);
+                if (team.get() != Py_None && !equal(integer(strictInt(team.get())).get(), last_team.get())) { replace(key, std::move(candidate)); break; }
+            }
+            if (PyErr_Occurred()) throw p::Error("pending create iteration failed");
+        }
+        method(order.get(), "remove", key.get());
+        auto event = method(pending_all.get(), "pop", key.get(), Py_None);
+        auto records = attr(battle, "_records");
+        if (event.get() == Py_None || PySequence_Contains(records.get(), key.get()) == 1) Py_RETURN_FALSE;
+        method(battle, "_create_remote", event.get());
+        const bool created = PySequence_Contains(records.get(), key.get()) == 1;
+        if (created) {
+            auto pending_state = get(event.get(), "state");
+            auto team = truthy(pending_state) ? get(pending_state.get(), "team") : p::retain(Py_None);
+            if (team.get() != Py_None) setAttr(battle, "_last_bot_create_team", integer(strictInt(team.get())).get());
+        }
+        if (created && PyObject_IsTrue(attr(battle, "_pending_bot_create_order").get()) <= 0 && !truthy(attr(battle, "_bots_ready_reported"))) {
+            setAttr(battle, "_bots_ready_reported", Py_True);
+            setAttr(battle, "_bot_create_finished", now);
+            method(battle, "_report_memory", p::text("bots_ready").get());
+        }
+        return p::boolean(created).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._flush_pending_entities(now) after the native replica's own flush.
+PyObject* flushPendingEntities(PyObject*, PyObject* args) {
+    PyObject *battle, *now, *replica;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &now, &replica)) return nullptr;
+    try {
+        auto native = method(replica, "flush_pending", battle, now);
+        if (native.get() != Py_None) return native.release();
+        p::Ref items(PyDict_Items(attr(battle, "_records").get()));
+        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(items.get()); ++i) {
+            PyObject* record = PyTuple_GET_ITEM(PyList_GET_ITEM(items.get(), i), 1);
+            if (truthy(get(record, "tombstone"))) { method(battle, "_flush_tombstone", record); continue; }
+            if (truthy(get(record, "ready"))) continue;
+            if (truthy(method(battle, "_materialize_record", record))) continue;
+            auto deadline = get(record, "ready_deadline");
+            if (deadline.get() != Py_None && PyObject_RichCompareBool(now, deadline.get(), Py_GE) == 1) {
+                p::Ref text(PyObject_Str(engineOf(record).get()));
+                throw p::Error("Vehicle " + p::string(text.get()) + " did not enter world before timeout");
+            }
+        }
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+
+// BattleRuntime._create_remote(event)
+PyObject* createRemote(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *marks_on_gun, *engine_rotation, *bot_planner;
+    if (!PyArg_ParseTuple(args, "OOOOO", &battle, &event, &marks_on_gun, &engine_rotation, &bot_planner)) return nullptr;
+    try {
+        auto records = attr(battle, "_records");
+        auto key = get(event, "entity");
+        const int present = PySequence_Contains(records.get(), key.get());
+        if (present < 0) throw p::Error("Native record lookup failed");
+        if (present) Py_RETURN_NONE;
+        auto state = copyDict(get(event, "state").get());
+        auto initial_raw = get(event, "initial_state");
+        auto initial = truthy(initial_raw) ? p::Ref(PyDict_Copy(initial_raw.get())) : p::Ref(PyDict_Copy(state.get()));
+        if (!PyDict_GetItemString(state.get(), "team") || !PyDict_GetItemString(state.get(), "slot")) Py_RETURN_NONE;
+        auto kind = get(event, "kind");
+        const bool bot = textIs(kind.get(), "bot"), player = textIs(kind.get(), "player");
+        if (bot && (!PyDict_GetItemString(state.get(), "x") || !PyDict_GetItemString(state.get(), "z"))) Py_RETURN_NONE;
+        const bool worker = truthy(attr(battle, "_worker_mode"));
+        p::Ref descriptor(p::retain(Py_None));
+        if (player && (worker || truthy(get(state.get(), "vehicle_compact_descr"))))
+            replace(descriptor, method(battle, "_resolve_player_descriptor", state.get()));
+        else {
+            auto config = attr(battle, "_config");
+            auto vehicle = PyDict_GetItemString(state.get(), "vehicle") ? get(state.get(), "vehicle")
+                                                                         : p::Ref(PyObject_GetItem(config.get(), p::text("vehicle").get()));
+            replace(descriptor, method(battle, "_resolve_descriptor", vehicle.get()));
+        }
+        auto binding = attr(battle, "_binding");
+        auto team = integer(strictInt(get(state.get(), "team", integer(1).get()).get()));
+        auto properties = method(binding.get(), "properties_from_compact_descr", method(descriptor.get(), "makeCompactDescr").get(),
+                                 team.get(), get(state.get(), "name", p::text("Vehicle").get()).get());
+        p::Ref info(PyObject_GetItem(properties.get(), p::text("publicInfo").get()));
+        auto set_info = [&](const char* name, p::Ref value) {
+            if (PyObject_SetItem(info.get(), p::text(name).get(), value.get()) < 0) throw p::Error("publicInfo write failed");
+        };
+        set_info("outfit", method(battle, "_remote_outfit", state.get(), kind.get()));
+        set_info("prebattleID", method(battle, "_lan_prebattle_id", state.get(), kind.get()));
+        set_info("marksOnGun", player ? p::Ref(PyObject_CallFunctionObjArgs(marks_on_gun, get(state.get(), "marks_on_gun").get(), nullptr)) : integer(0));
+        auto max_health = attr(descriptor.get(), "maxHealth");
+        const std::int64_t cap = strictInt(max_health.get());
+        const std::int64_t initial_health = strictInt(get(initial.get(), "health", max_health.get()).get());
+        if (PyObject_SetItem(properties.get(), p::text("health").get(), integer(std::max<std::int64_t>(0, std::min(initial_health, cap))).get()) < 0)
+            throw p::Error("properties health write failed");
+        auto world = method(battle, "_state_world_pose", state.get());
+        auto position = p::item(world.get(), 0), yaw = p::item(world.get(), 1);
+        if (p::size(world.get()) != 2) throw p::Error("too many values to unpack");
+        auto factory = attr(battle, "_remote_factory");
+        if (factory.get() == Py_None) throw p::Error("remote vehicle factory is unavailable");
+        p::Ref rotation(PyObject_CallFunctionObjArgs(engine_rotation, yaw.get(), nullptr));
+        auto engine = method(factory.get(), "create", descriptor.get(), properties.get(), method(battle, "_vector", position.get()).get(), rotation.get());
+        if (engine.get() == Py_None) throw p::Error("remote presentation returned no vehicle id");
+        p::Ref setter(p::retain(Py_None));
+        if (callableAttr(factory.get(), "set_entity_interpolate_motion", setter)) {
+            p::Ref interpolate(p::boolean(false));
+            if (bot) {
+                auto start = attr(battle, "_start_message");
+                auto authority = truthy(start) ? method(start.get(), "get", p::text("bot_authority_id").get()) : p::retain(Py_None);
+                replace(interpolate, method(battle, "_bot_authority_is_local", authority.get()));
+            }
+            p::Ref unused(PyObject_CallFunctionObjArgs(setter.get(), engine.get(), interpolate.get(), nullptr));
+        }
+        auto native_entities = p::boolean(truthy(optionalAttr(factory.get(), "native_entities")));
+        auto own_team = optionalAttr(attr(battle, "client").get(), "team");
+        if (own_team.get() == Py_None && !PyObject_HasAttrString(attr(battle, "client").get(), "team")) replace(own_team, integer(1));
+        auto visibility = [&]() {
+            return method(bot_planner, "bot_initially_visible", team.get(), integer(strictInt(own_team.get())).get(), Py_True);
+        };
+        auto penalty_raw = get(state.get(), "shot_penalty_until", p::number(0.).get());
+        auto record = literal(18);
+        put(record.get(), "engine_id", p::retain(engine.get()));
+        put(record.get(), "state", p::retain(state.get()));
+        put(record.get(), "kind", p::retain(kind.get()));
+        put(record.get(), "network_id", get(event, "id"));
+        put(record.get(), "local", p::boolean(false));
+        put(record.get(), "presentation", p::boolean(true));
+        put(record.get(), "ready", p::boolean(false));
+        put(record.get(), "arena_added", p::retain(native_entities.get()));
+        put(record.get(), "native_remote", p::retain(native_entities.get()));
+        put(record.get(), "properties", p::retain(properties.get()));
+        put(record.get(), "spot_visible", visibility());
+        put(record.get(), "spot_marker_visible", visibility());
+        put(record.get(), "spot_until", p::number(0.));
+        put(record.get(), "radio_spot_until", p::number(0.));
+        put(record.get(), "spot_next", p::number(0.));
+        put(record.get(), "shot_penalty_until", p::number(number(truthy(penalty_raw) ? penalty_raw.get() : p::number(0.).get())));
+        // The pinned literal evaluates each value in order: the clock follows the spotting gates.
+        auto now = method(battle, "_clock");
+        auto timeout = method(attr(battle, "_config").get(), "get", p::text("startupTimeoutSeconds").get(), p::number(30.).get());
+        put(record.get(), "ready_deadline", p::Ref(PyNumber_Add(now.get(), p::number(number(timeout.get())).get())));
+        if (PyObject_SetItem(records.get(), key.get(), record.get()) < 0) throw p::Error("record write failed");
+        incrementRevision(battle);
+        p::Ref seed(PyDict_Copy(state.get()));
+        auto placed = literal(4);
+        put(placed.get(), "x", p::item(position.get(), 0));
+        put(placed.get(), "y", p::item(position.get(), 1));
+        put(placed.get(), "z", p::item(position.get(), 2));
+        put(placed.get(), "yaw", p::retain(yaw.get()));
+        if (PyDict_Update(seed.get(), placed.get()) < 0) throw p::Error("seed pose update failed");
+        put(record.get(), "projectile_collision_pose", method(battle, "_projectile_boundary_pose", position.get(), seed.get()));
+        method(battle, "_materialize_record", record.get());
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._materialize_record(record)
+PyObject* materializeRecord(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *set_draw_visibility;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &record, &set_draw_visibility)) return nullptr;
+    try {
+        auto factory = attr(battle, "_remote_factory");
+        if (truthy(get(record, "ready"))) {
+        } else if (truthy(get(record, "presentation"))) {
+            auto engine = engineOf(record);
+            auto error = method(factory.get(), "error", engine.get());
+            if (error.get() != Py_None) {
+                p::Ref e(PyObject_Str(engine.get())), why(PyObject_Str(error.get()));
+                throw p::Error("remote vehicle " + p::string(e.get()) + " failed: " + p::string(why.get()));
+            }
+            if (!truthy(method(factory.get(), "is_ready", engine.get()))) Py_RETURN_FALSE;
+            put(record, "ready", p::boolean(true));
+        } else {
+            auto engine = engineOf(record);
+            p::Ref status(PyTuple_Pack(2, p::text("completed").get(), Py_None));
+            p::Ref getter(p::retain(Py_None));
+            if (callableAttr(attr(battle, "_server").get(), "vehicleEnterStatus", getter))
+                replace(status, p::Ref(PyObject_CallFunctionObjArgs(getter.get(), engine.get(), nullptr)));
+            auto phase = p::item(status.get(), 0);
+            if (textIs(phase.get(), "failed")) {
+                p::Ref e(PyObject_Str(engine.get())), why(PyObject_Str(p::item(status.get(), 1).get()));
+                throw p::Error("Vehicle " + p::string(e.get()) + " enter failed: " + p::string(why.get()));
+            }
+            const bool ready = textIs(phase.get(), "completed") && truthy(method(attr(battle, "_binding").get(), "is_vehicle_ready", engine.get()));
+            if (!ready) Py_RETURN_FALSE;
+            put(record, "ready", p::boolean(true));
+        }
+        const bool worker = truthy(attr(battle, "_worker_mode"));
+        const bool presentation = truthy(get(record, "presentation"));
+        p::Ref vehicle(p::retain(Py_None));
+        if (presentation) {
+            replace(vehicle, method(factory.get(), "get", engineOf(record).get()));
+            if (vehicle.get() == Py_None || attr(vehicle.get(), "model").get() == Py_None) throw p::Error("remote vehicle has no ready presentation");
+            if (!truthy(get(record, "presentation_initialized"))) {
+                const bool initially = truthy(get(record, "spot_visible", Py_True));
+                setAttr(vehicle.get(), "_spot_visible", initially ? Py_True : Py_False);
+                if (worker) put(record, "simulation_entity", p::boolean(true));
+                else if (truthy(get(record, "native_remote"))) {
+                    setAttr(vehicle.get(), "_offlineNativeDrawVisible", initially ? Py_True : Py_False);
+                    p::Ref unused(PyObject_CallFunctionObjArgs(set_draw_visibility, vehicle.get(), initially ? Py_True : Py_False, nullptr));
+                    setAttr(vehicle.get(), "targetCaps", p::list().get());
+                    auto marker = optionalAttr(vehicle.get(), "_offlineNativeMarkerVisible");
+                    const bool started = marker.get() == Py_None && !PyObject_HasAttrString(vehicle.get(), "_offlineNativeMarkerVisible")
+                        ? initially : truthy(marker);
+                    put(record, "visual_started", p::boolean(started));
+                    put(record, "world_marker_started", p::boolean(truthy(get(record, "visual_started"))));
+                    put(record, "minimap_started", p::boolean(truthy(get(record, "visual_started"))));
+                    setAttr(vehicle.get(), "_offlineNativeMarkerVisible", truthy(get(record, "world_marker_started")) ? Py_True : Py_False);
+                } else {
+                    method(attr(vehicle.get(), "appearance").get(), "changeVisibility", initially ? Py_True : Py_False);
+                }
+                put(record, "presentation_initialized", p::boolean(true));
+            }
+        }
+        if (!worker && presentation && !truthy(get(record, "arena_added"))) {
+            auto info = literal(2);
+            put(info.get(), "properties", get(record, "properties"));
+            auto state_raw = get(record, "state");
+            auto state = truthy(state_raw) ? p::retain(state_raw.get()) : p::dict();
+            put(info.get(), "team_killer", p::boolean(truthy(method(state.get(), "get", p::text("team_killer").get(), Py_False))));
+            method(attr(battle, "_binding").get(), "arena_vehicle_added", engineOf(record).get(), info.get());
+            put(record, "arena_added", p::boolean(true));
+            method(battle, "_start_team_chat_when_roster_ready");
+        }
+        if (!worker && presentation && !truthy(get(record, "native_remote")) && truthy(get(record, "arena_added")) &&
+            truthy(get(record, "spot_visible", Py_True)) && !truthy(get(record, "visual_started"))) {
+            method(attr(battle, "_binding").get(), "start_vehicle_visual", engineOf(record).get(), Py_True);
+            put(record, "visual_started", p::boolean(true));
+            put(record, "world_marker_started", p::boolean(true));
+            put(record, "minimap_started", p::boolean(true));
+            if (!truthy(method(battle, "_record_alive", record, vehicle.get()))) method(battle, "_present_vehicle_dead", record, Py_True);
+        }
+        if (presentation && !worker) {
+            auto spot = get(record, "spot_visible", Py_True);
+            auto marker = get(record, "spot_marker_visible", spot.get());
+            method(battle, "_set_record_spot_visibility", record, spot.get(), marker.get());
+        }
+        auto pose = method(record, "pop", p::text("pending_pose").get(), Py_None);
+        if (pose.get() != Py_None) method(battle, "_apply_record_pose", record, pose.get());
+        auto state_of = [&]() { auto raw = get(record, "state"); return truthy(raw) ? p::retain(raw.get()) : p::dict(); };
+        auto state = state_of();
+        method(battle, "_apply_siege_state", record, state.get());
+        method(battle, "_apply_vehicle_statistics", record, state.get());
+        method(battle, "_drain_event_journal");
+        replace(state, state_of());
+        if (truthy(method(battle, "_pending_combat_for_record", record))) Py_RETURN_TRUE;
+        method(battle, "_apply_stun_state", record, state.get());
+        auto critical = method(state.get(), "get", p::text("critical").get());
+        if (PyDict_Check(critical.get())) method(battle, "_apply_critical_state", record, critical.get(), state.get());
+        else if (textIs(get(record, "kind").get(), "player") && PySequence_Contains(state.get(), p::text("critical_revision").get()) == 1 &&
+                 PySequence_Contains(state.get(), p::text("critical_base_revision").get()) == 1 &&
+                 PySequence_Contains(state.get(), p::text("critical_ack_seq").get()) == 1)
+            method(battle, "_reconcile_critical_authority", record, state.get());
+        auto attacker = method(battle, "_death_attacker_engine_id", state.get());
+        auto reason_raw = method(state.get(), "get", p::text("death_reason").get(), integer(0).get());
+        auto reason = integer(std::max<std::int64_t>(0, strictInt(truthy(reason_raw) ? reason_raw.get() : integer(0).get())));
+        auto suppress = method(battle, "_should_suppress_postmortem_killer", record, state.get(), attacker.get());
+        callKw(battle, "_apply_health", {record, state.get(), attacker.get(), reason.get()}, {{"suppress_postmortem_killer", suppress.get()}});
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -1080,6 +1628,15 @@ PyMethodDef methods[] = {
     {"finalize_dead_wreck", finalizeDeadWreck, METH_VARARGS, "Expose one finalized corpse without re-entering spotting."},
     {"apply_health", applyHealth, METH_VARARGS, "Apply a durable health/crew transition and its #1513 presentation."},
     {"record_pose", recordPose, METH_VARARGS, "Present one remote pose sample through the matrix and aim owners."},
+    {"create_remote", createRemote, METH_VARARGS, "Create one remote vehicle entity and its record."},
+    {"materialize_record", materializeRecord, METH_VARARGS, "Finish readiness and apply a record's current state."},
+    {"flush_tombstone", flushTombstone, METH_VARARGS, "Destroy a remote vehicle that entered after its removal."},
+    {"destroy_entity", destroyEntity, METH_VARARGS, "Apply one replica destroy event."},
+    {"update_entity", updateEntity, METH_VARARGS, "Apply one replica update event."},
+    {"sync_event", syncEvent, METH_VARARGS, "Route one replica lifecycle event."},
+    {"queue_bot_create", queueBotCreate, METH_VARARGS, "Coalesce one bot until its own createEntity callback."},
+    {"flush_bot_create", flushBotCreate, METH_VARARGS, "Create the next queued bot in this render callback."},
+    {"flush_pending_entities", flushPendingEntities, METH_VARARGS, "Finish pending entity readiness and tombstones."},
     {"present_critical", presentCritical, METH_VARARGS, "Map critical transitions to stock #1513 UI callbacks."},
     {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};

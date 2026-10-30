@@ -26,6 +26,15 @@ PORTS = (
      'native_client_environment, native_client_drive)'),
     ('_apply_record_pose',
      'record_pose(self, record, pose, native_client_replica, _engine_rotation, BOT_MOVING_SPEED)'),
+    ('_flush_tombstone', 'flush_tombstone(self, record)'),
+    ('_destroy_entity', 'destroy_entity(self, event)'),
+    ('_update_entity', 'update_entity(self, event)'),
+    ('_apply_sync_event', 'sync_event(self, event)'),
+    ('_queue_bot_create', 'queue_bot_create(self, event)'),
+    ('_flush_pending_bot_create', 'flush_bot_create(self, now)'),
+    ('_flush_pending_entities', 'flush_pending_entities(self, now, native_client_replica)'),
+    ('_create_remote', 'create_remote(self, event, _marks_on_gun, _engine_rotation, bot_planner)'),
+    ('_materialize_record', 'materialize_record(self, record, set_draw_visibility)'),
 )
 
 
