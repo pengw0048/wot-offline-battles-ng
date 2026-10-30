@@ -80,7 +80,12 @@ Prepared prepare(PyObject*client,PyObject*players,PyObject*trusted){
             auto*updated=PyDict_GetItem(updates,id.get()),*trusted_value=PyDict_GetItem(prepared,id.get()),*cached=PyDict_GetItem(published,id.get()),*cached_source=PyDict_GetItem(sources,id.get());
             if(has(entry.get(),name)){auto*source=get(entry.get(),name);if(updated)cached_source=cached=updated;else if(trusted_value)cached_source=cached=trusted_value;auto value=normalize(source,cached_source?cached_source:Py_None,cached?cached:Py_None,kind?params_normalizer:outfit_normalizer);
                 if(value.get()!=Py_None&&id.get()!=Py_None){if(PyDict_SetItem(updates,id.get(),value.get())<0)throw p::Error("Admission staging failed");p::set(entry.get(),name,value);}else if(value.get()==Py_None)valid=false;
-            }else if(updated)p::set(entry.get(),name,p::retain(updated));else if(cached)p::set(entry.get(),name,p::retain(cached));else if(kind)valid=false;
+            }else if(updated)p::set(entry.get(),name,p::retain(updated));
+            else if(cached){
+                // The cache published at battle start is plain; freeze it once so rows share one version.
+                if(freeze_static&&!PyObject_HasAttrString(cached,"_StaticDict__canonical")){p::Ref frozen(PyObject_CallFunctionObjArgs(freeze_static,cached,nullptr));if(PyDict_SetItem(published,id.get(),frozen.get())<0)throw p::Error("Admission static cache freeze failed");cached=frozen.get();}
+                p::set(entry.get(),name,p::retain(cached));}
+            else if(kind)valid=false;
         }
         p::append(out.rows.get(),entry);
     }return out;
