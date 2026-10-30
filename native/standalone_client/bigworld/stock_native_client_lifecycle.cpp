@@ -1541,11 +1541,12 @@ PyMethodDef methods[] = {
 }
 
 PyMethodDef* events_methods();
+PyMethodDef* frame_methods_table();
 // Lifecycle and event-journal ports share one Python module.
 PyMethodDef* lifecycle_methods() {
     static std::vector<PyMethodDef> all;
     if (all.empty()) {
-        for (PyMethodDef* table : {methods, events_methods()})
+        for (PyMethodDef* table : {methods, events_methods(), frame_methods_table()})
             for (PyMethodDef* m = table; m->ml_name; ++m) all.push_back(*m);
         all.push_back({nullptr, nullptr, 0, nullptr});
     }

@@ -20,10 +20,11 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_known_event_state', '_merge_shot_event_state', '_merge_combat_event_state', '_merge_stun_event_state',
            '_combat_event_state', '_combat_attack_reason', '_validate_combat_event_contract',
            '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
-           '_record_is_event_ready', '_combat_event_source', '_apply_combat_event')
+           '_record_is_event_ready', '_combat_event_source', '_apply_combat_event', '_frame')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
+METHOD_NAMES = %r
 import copy, math, sys
 sys.path.insert(0, sys.argv[1])
 import offline_client_lifecycle_native as native
@@ -35,6 +36,8 @@ exec(open(sys.argv[2]).read())
 def rep(value):
     if callable(value) and not isinstance(value, Log) and hasattr(value, '__name__'):
         return '<callable %s>' % value.__name__
+    if isinstance(value, tuple) and any(callable(item) for item in value):
+        return '(' + ', '.join(rep(item) for item in value) + ')'
     return repr(value)
 
 class Log(object):
@@ -85,11 +88,14 @@ def run(name, make, args):
                 result = ('ok', NATIVE[name](b, *values))
             except Exception as error:
                 result = ('error', type(error).__name__, str(error))
-        battle_after = tuple(repr(getattr(b, name, '-')) for name in (
+        battle_after = tuple(repr(b.__dict__.get(name, '-')) for name in (
             '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
             '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity',
             '_last_health', '_local_speed', '_event_journal', '_accepted_event_ids', '_applied_event_ids',
-            '_projectile_lineage', '_pending_bot_creates', '_local_last_attacker'))
+            '_projectile_lineage', '_pending_bot_creates', '_local_last_attacker', '_last_frame_time',
+            '_worker_frame_callbacks', '_worker_probe_simulation_caps', '_soft_static_recast_budget', '_offframe_seconds',
+            '_worker_probe_authority_callbacks', '_worker_probe_bot_generated', '_worker_probe_bot_enqueued',
+            '_worker_probe_bot_send_failed', '_worker_probe_bot_count', '_local_frame_stages'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -164,7 +170,16 @@ NATIVE = {
     '_missing_projectile_attacker_allowed': native.missing_projectile_attacker_allowed,
     '_pending_event_references': native.pending_event_references,
     '_apply_combat_event': lambda b, e, update_state=True: native.apply_combat_event(b, e, update_state, globals()),
+    '_frame': lambda b: native.frame(b, globals()),
 }
+PROBE_KINDS = ('visibility', 'lane', 'cover', 'ground', 'motion')
+BOT_SOFT_RECAST_BUDGET = 8
+FRAME_SECONDS = 0.0
+def _xyz(value):
+    return tuple(float(v) for v in value)
+def _distance_2d(a, b):
+    return math.hypot(a[0] - b[0], a[2] - b[2])
+native_client_projectile = None
 native_bot_runtime = None
 _PROFILE_CLOCK = lambda: 5.0
 spotting = Log([], 'spotting', SHOT_CAMOUFLAGE_SECONDS=0.75)
@@ -787,6 +802,99 @@ for event_index in list(range(16)) + [38]:
                     args = (event,) if update else (event, False)
                     return b, args
                 run('_apply_combat_event', make, (event_index, variant, local, update)); cases += 1
+class Scope(object):
+    def __init__(self, log, suppress):
+        self.log, self.suppress = log, suppress
+    def __enter__(self):
+        self.log.append(('scope', 'enter'))
+    def __exit__(self, kind, value, trace):
+        self.log.append(('scope', 'exit', rep(kind), rep(value)))
+        return self.suppress
+class FrameBattle(Pinned):
+    """Unknown runtime methods log their call and return a scripted answer."""
+    def __getattr__(self, name):
+        if name.startswith('__'):
+            raise AttributeError(name)
+        answers = self.__dict__.setdefault('_answers', {})
+        log = self.__dict__['_log']
+        def call(*args, **kwargs):
+            log.append(('battle', name) + tuple(rep(a) for a in args) + tuple(sorted((k, rep(v)) for k, v in kwargs.items())))
+            answer = answers.get(name)
+            return answer(*args, **kwargs) if callable(answer) else answer
+        call.__name__ = 'battle.' + name
+        return call
+def frame_battle(log, variant, worker, live, profiling):
+    global native_client_projectile
+    b = FrameBattle()
+    b._log = log
+    b._records = {}
+    for name in METHOD_NAMES:
+        if name != '_frame' and not isinstance(Pinned.__dict__.get(name), staticmethod):
+            b.__dict__[name] = FrameBattle.__getattr__(b, name)
+    b._answers = {
+        '_clock': 10.0, '_run_optional_feature': lambda name, fn, args=(), disable=None, kwargs=None: (3, 1) if 'pose' in name else True,
+        '_projectile_is_authority': variant % 3 == 0, '_prebattle_transition_ready': variant % 4 == 1,
+        '_authority_players': ['p'], '_present_authority_bot_poses': (5, 2), '_drain_worker_transport': variant != 6,
+        '_enqueue_bot_message': lambda m: m.get('type') != 'bot_state' or variant % 2 == 0,
+        '_projectile_record_poses': 'poses', '_collection_counts': {'n': 1}, '_worker_control_snapshot': {'c': 1},
+        '_worker_diagnostic_totals': {'d': 1}}
+    if variant == 7:
+        def boom(now): raise RuntimeError('flush failed')
+        b._answers['_flush_pending_entities'] = boom
+    b.state = 'running' if variant != 9 else 'stopped'
+    b._worker_mode = worker
+    b._worker_frame_callbacks = 0
+    b._worker_probe = 'probe' if variant == 2 else None
+    b._worker_probe_simulation_caps = b._worker_probe_authority_callbacks = 0
+    b._worker_probe_bot_generated = b._worker_probe_bot_enqueued = b._worker_probe_bot_send_failed = 0
+    b._last_frame_time = None if variant == 0 else (9.5 if variant % 2 else 9.99)
+    b._soft_static_recast_budget = [0]
+    b._offframe_seconds = 0.25
+    b._battle_live = live
+    b._replay_mode = variant == 8
+    b._prebattle_deadline = None if variant == 3 else 9.8
+    b._destructibles = 'destructibles' if variant % 2 else None
+    b._projectiles = Log(log, 'projectiles', {'__len__': None}) if variant % 3 == 0 else None
+    b._projectile_visual_meta = {'m': 1} if variant == 5 else {}
+    b._projectile_perf = {'advance_ms': 0.1}
+    b._local_position = [1.0, 2.0, 3.0]
+    b._local_camera_velocity = (0.5, 0.0, 0.5)
+    b._local_speed = 2.5
+    b._local_airborne = False
+    b._local_grind = 0
+    b._generation = 2
+    b._last_snapshot = {'tick': 4} if variant % 2 else None
+    b._start_message = {'round_id': 3} if variant % 2 else None
+    b._config = {'map': '33_fjord'}
+    b._sync = Log(log, 'sync') if variant != 4 else None
+    b._authority_pose_writes = b._authority_pose_skips = b._authority_aim_writes = b._authority_aim_skips = 1
+    b.client = Log(log, 'client', missing=('transport_performance_snapshot',) if variant % 2 else ())
+    b._runtime = Log(log, 'runtime', compatibility=Log(log, 'compat'))
+    b._avatar = Log(log, 'avatar')
+    bot_answers = {'update': lambda dt, now, players=None: [{'type': 'bot_state'}, {'type': 'other'}],
+                   'probe_totals': (1, 2, 3, 4, 5), 'probe_duration_totals': (0.1, 0.2, 0.3, 0.4, 0.5),
+                   'is_authority': variant % 2 == 0, 'probe_timing_state': 'on', 'load_report': {'l': 1}}
+    b._bots = Log(log, 'bots', bot_answers, _shot_lane_pending_pairs=variant % 2, _sample_time_us=7) if variant != 5 else None
+    diagnostics = Log(log, 'diagnostics', {'begin': 17, 'emit_due': variant % 2 == 0}, enabled=profiling)
+    b._frame_diagnostics = diagnostics if variant != 0 else None
+    b._combat_diagnostics = Log(log, 'combat', {'drain_completed': ['c'], 'checkpoint': 'k', 'finish_frame': 'f'}) if variant % 2 else None
+    native_client_projectile = Log(log, 'native_projectile', {'enabled': variant % 2 == 0})
+    fake_module('native_client_projectile', native_client_projectile)
+    fake_module('offline_replay', Log(log, 'offline_replay'))
+    setattr(sys.modules['gui.mods.offline_lan_0922'], 'offline_replay', sys.modules['gui.mods.offline_lan_0922.offline_replay'])
+    sensor = types.ModuleType('destructibles_sensor')
+    sensor.collision_preparation_scope_1513 = lambda: Scope(log, variant == 8)
+    sys.modules['gui.mods.offline_lan_0922.destructibles_sensor'] = sensor
+    return b
+for variant in range(10):
+    for worker in (False, True):
+        for live in (False, True):
+            for profiling in (False, True):
+                def make(log, variant=variant, worker=worker, live=live, profiling=profiling):
+                    b = frame_battle(log, variant, worker, live, profiling)
+                    b._battle_probe = b
+                    return b, ()
+                run('_frame', make, (variant, worker, live, profiling)); cases += 1
 HEALTH_STATES = [
     {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
     {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},
@@ -953,7 +1061,11 @@ def pinned_source(fork):
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
     text = '\n\n'.join(chunks) + '\n'
     # Package-relative imports resolve to the fixture's fakes.
-    for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime'):
+    text = text.replace('from .destructibles_sensor import collision_preparation_scope_1513',
+                        "collision_preparation_scope_1513 = sys.modules['gui.mods.offline_lan_0922.destructibles_sensor']"
+                        ".collision_preparation_scope_1513")
+    for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime',
+                   'native_client_projectile'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 
@@ -974,7 +1086,7 @@ class LifecycleDifferential(unittest.TestCase):
                             str(ROOT / 'tests/stock_native_client_lifecycle_host.cpp'),
                             '-o', str(folder / 'offline_client_lifecycle_native.so')], check=True)
             (folder / 'pinned.py').write_text(pinned_source(fork))
-            (folder / 'fixture.py').write_text(FIXTURE)
+            (folder / 'fixture.py').write_text(FIXTURE.replace('%r', repr(METHODS), 1))
             run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder), str(folder / 'pinned.py')],
                                  capture_output=True, text=True, timeout=120)
             self.assertEqual(run.returncode, 0, run.stdout[-3000:] + run.stderr[-6000:])
