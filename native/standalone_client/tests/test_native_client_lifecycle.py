@@ -20,7 +20,7 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_known_event_state', '_merge_shot_event_state', '_merge_combat_event_state', '_merge_stun_event_state',
            '_combat_event_state', '_combat_attack_reason', '_validate_combat_event_contract',
            '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
-           '_record_is_event_ready', '_combat_event_source')
+           '_record_is_event_ready', '_combat_event_source', '_apply_combat_event')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -89,12 +89,12 @@ def run(name, make, args):
             '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
             '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity',
             '_last_health', '_local_speed', '_event_journal', '_accepted_event_ids', '_applied_event_ids',
-            '_projectile_lineage', '_pending_bot_creates'))
+            '_projectile_lineage', '_pending_bot_creates', '_local_last_attacker'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
             'stunInfo', '_offlineStunFactors', '_spot_visible', '_offlineNativeDrawVisible', 'targetCaps',
-            '_offlineNativeMarkerVisible', 'health', 'isCrewActive'))
+            '_offlineNativeMarkerVisible', 'health', 'isCrewActive', 'last_killer_id'))
         identities = [str(id(v)) for v in values if isinstance(v, dict)]
         def scrub(value):
             text = repr(value)
@@ -163,6 +163,7 @@ NATIVE = {
     '_validate_combat_event_contract': lambda b, e: native.validate_combat_event_contract(b, e, globals()),
     '_missing_projectile_attacker_allowed': native.missing_projectile_attacker_allowed,
     '_pending_event_references': native.pending_event_references,
+    '_apply_combat_event': lambda b, e, update_state=True: native.apply_combat_event(b, e, update_state, globals()),
 }
 native_bot_runtime = None
 _PROFILE_CLOCK = lambda: 5.0
@@ -754,6 +755,38 @@ for journal_index in range(len(JOURNALS)):
             b._apply_ordered_event = apply
             return b, ()
         run('_drain_event_journal', make, (journal_index, variant)); cases += 1
+for event_index in list(range(16)) + [38]:
+    for variant in range(12):
+        for local in (False, True):
+            for update in (True, False):
+                def make(log, event_index=event_index, variant=variant, local=local, update=update):
+                    global critical_damage
+                    b = event_battle(log, variant % 10)
+                    b._records['player:3']['local'] = local
+                    b._records['player:3']['critical_base_revision'] = 2
+                    b._records['bot:7']['critical_state'] = {'fire': True, 'canonical': True} if variant == 2 else None
+                    b._gun_state = Log(log, 'gun') if variant % 3 == 0 else None
+                    b._local_critical_owned = variant % 2 == 0
+                    b._local_critical_base_revision = 2
+                    critical_damage = Log(log, 'critical_damage', {'apply_payload': lambda e, pres: [
+                        {'kind': 'ammo_rack', 'state': 'destroyed', 'cause': 'fire'}, {'kind': 'device', 'state': 'critical'}]})
+                    globals()['critical_damage'] = critical_damage
+                    entity = Log(log, 'entity')
+                    stub(b, log, '_server_entity', lambda engine: None if (variant == 4 and engine == 30) or (variant == 5 and engine == 70) else entity)
+                    for name in ('_present_damage_sticker', '_present_combat_hit', '_present_combat_feedback', '_present_environment_feedback',
+                                 '_advance_local_gun_to', '_present_critical', '_apply_health'):
+                        stub(b, log, name)
+                    stub(b, log, '_advance_local_gun_edge', (0, 'edge'))
+                    stub(b, log, '_is_blind_local_attack', variant % 2 == 1)
+                    stub(b, log, '_should_suppress_postmortem_killer', variant == 7)
+                    stub(b, log, '_reconcile_critical_authority', variant != 8)
+                    event = copy.deepcopy(COMBAT_EVENTS[event_index])
+                    if variant == 10: event['critical'] = {'devices': ['a'], 'destroyed': [], 'events': [{'name': 'leftTrackHealth'}, {'name': 'gun'}]}
+                    if variant == 11 and 'display_health' not in event: event['display_health'] = 15
+                    b._entity_probe = entity
+                    args = (event,) if update else (event, False)
+                    return b, args
+                run('_apply_combat_event', make, (event_index, variant, local, update)); cases += 1
 HEALTH_STATES = [
     {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
     {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},

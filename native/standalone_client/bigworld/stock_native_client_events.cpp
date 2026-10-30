@@ -587,7 +587,127 @@ PyObject* drainEventJournal(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._apply_combat_event(event, update_state=True)
+PyObject* applyCombatEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *update_raw = Py_True, *g;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &event, &update_raw, &g)) return nullptr;
+    try {
+        auto contract = method(battle, "_validate_combat_event_contract", event);
+        if (p::size(contract.get()) != 2) raise("too many values to unpack");
+        auto source = p::item(contract.get(), 0), attack_reason = p::item(contract.get(), 1);
+        auto target_key = eventEntityKey(event, false);
+        if (target_key.get() == Py_None) raise("ordered combat event has no target");
+        auto record = recordsGet(battle, target_key.get());
+        if (record.get() == Py_None) raise("ordered combat event target is unavailable: " + keyText(target_key.get()));
+        PyObject* r = record.get();
+        auto latest_raw = get(r, "state");
+        auto latest = truthy(latest_raw) ? p::retain(latest_raw.get()) : p::dict();
+        const bool cosmetic = truthy(get(event, "cosmetic_only", Py_False));
+        auto state = cosmetic ? p::retain(latest.get()) : method(battle, "_combat_event_state", event, latest.get(), target_key.get());
+        const bool update_state = p::flag(update_raw);
+        if (update_state && !cosmetic) put(r, "state", p::retain(state.get()));
+        auto attacker = get(event, "attacker_bot");
+        const char* attacker_kind = "bot";
+        if (attacker.get() == Py_None) { replace(attacker, get(event, "attacker")); attacker_kind = "player"; }
+        auto attacker_record = recordsGet(battle, key(attacker_kind, attacker.get()).get());
+        auto attacker_text = [&]() { return std::string(attacker_kind) + ":" + keyText(attacker.get()); };
+        if (attacker.get() != Py_None && attacker_record.get() == Py_None &&
+            !truthy(method(battle, "_missing_projectile_attacker_allowed", event)))
+            raise("ordered combat event attacker is unavailable: " + attacker_text());
+        auto attacker_id = attacker_record.get() != Py_None ? get(attacker_record.get(), "engine_id") : integer(0);
+        auto entity = method(battle, "_server_entity", p::Ref(PyObject_GetItem(r, p::text("engine_id").get())).get());
+        if (entity.get() == Py_None) raise("ordered combat event target has no native entity: " + keyText(target_key.get()));
+        if (attacker_record.get() != Py_None &&
+            method(battle, "_server_entity", p::Ref(PyObject_GetItem(attacker_record.get(), p::text("engine_id").get())).get()).get() == Py_None)
+            raise("ordered combat event attacker has no native entity: " + attacker_text());
+        method(battle, "_present_damage_sticker", event, r);
+        const bool blind = attacker_record.get() != Py_None && truthy(method(battle, "_is_blind_local_attack", r, attacker_record.get()));
+        const bool dead_target = number(method(state.get(), "get", p::text("health").get(), p::number(0.).get()).get()) <= 0. ||
+                                 !truthy(method(state.get(), "get", p::text("alive").get(), Py_True));
+        auto suppress_postmortem = method(battle, "_should_suppress_postmortem_killer", r, state.get(), attacker_id.get());
+        const bool local = truthy(get(r, "local"));
+        if (attacker.get() != Py_None && !local && !cosmetic)
+            setAttr(entity.get(), "last_killer_id", integer(strictInt(truthy(attacker_id) ? attacker_id.get() : integer(0).get())).get());
+        if (local && attacker.get() != Py_None && !cosmetic) {
+            p::Ref last(PyTuple_Pack(2, p::text(attacker_kind).get(), integer(strictInt(attacker.get())).get()));
+            setAttr(battle, "_local_last_attacker", last.get());
+        }
+        if (textIn(source.get(), {"player_left"}) && attacker_record.get() != Py_None) raise("player_left event has an attacker");
+        if (attacker_record.get() != Py_None) {
+            method(battle, "_present_combat_hit", event, r, attacker_record.get(), attacker_id.get());
+            method(battle, "_present_combat_feedback", event, r, attacker_record.get(), attack_reason.get());
+        } else if (textIn(source.get(), {"environment", "fire"})) {
+            method(battle, "_present_environment_feedback", event, r, attack_reason.get());
+        }
+        if (cosmetic) {
+            std::string line = "[Offline LAN 0.9.22] COSMETIC HIT PRESENT projectile=" + keyText(get(event, "projectile_id").get()) +
+                " target=" + keyText(target_key.get()) + " current_health=" + keyText(method(latest.get(), "get", p::text("health").get()).get()) +
+                " event_health=" + keyText(get(event, "health").get()) + "\n";
+            method(attr(module("sys").get(), "stdout").get(), "write", p::text(line).get());
+            Py_RETURN_TRUE;
+        }
+        auto critical = get(event, "critical");
+        if (PyDict_Check(critical.get())) {
+            auto canonical = method(battle, "_critical_state", critical.get());
+            const bool apply = truthy(method(battle, "_reconcile_critical_authority", r, event, canonical.get()));
+            if (entity.get() != Py_None && apply && !equal(canonical.get(), get(r, "critical_state").get())) {
+                auto gun_edge = p::retain(Py_None);
+                auto gun = attr(battle, "_gun_state");
+                if (local && gun.get() != Py_None) replace(gun_edge, method(battle, "_advance_local_gun_edge", gun.get()));
+                p::Ref presentation(PyDict_Copy(critical.get()));
+                auto keywords = p::dict();
+                put(keywords.get(), "devices", p::Ref(PyObject_GetItem(canonical.get(), p::text("devices").get())));
+                put(keywords.get(), "destroyed", p::Ref(PyObject_GetItem(canonical.get(), p::text("destroyed").get())));
+                if (PyDict_Merge(presentation.get(), keywords.get(), 1) < 0) throw p::Error("critical presentation merge failed");
+                if (local && truthy(attr(battle, "_local_critical_owned")) &&
+                    equal(integer(strictInt(get(r, "critical_base_revision", integer(-1).get()).get())).get(), attr(battle, "_local_critical_base_revision").get())) {
+                    auto filtered = p::list();
+                    auto items = method(critical.get(), "get", p::text("events").get(), p::Ref(PyTuple_New(0)).get());
+                    p::Ref iterator(PyObject_GetIter(items.get()));
+                    while (PyObject* raw = PyIter_Next(iterator.get())) {
+                        p::Ref item(raw);
+                        if (!textIn(method(item.get(), "get", p::text("name").get()).get(), {"leftTrackHealth", "rightTrackHealth"}))
+                            p::append(filtered.get(), item);
+                    }
+                    if (PyErr_Occurred()) throw p::Error("critical events iteration failed");
+                    put(presentation.get(), "events", filtered);
+                }
+                auto events = method(global(g, "critical_damage").get(), "apply_payload", entity.get(), presentation.get());
+                if (gun_edge.get() != Py_None) method(battle, "_advance_local_gun_to", entity.get(), p::item(gun_edge.get(), 1).get());
+                if (PyObject_SetItem(state.get(), p::text("critical").get(), canonical.get()) < 0) throw p::Error("state critical write failed");
+                put(r, "critical_state", p::retain(canonical.get()));
+                p::Ref iterator(PyObject_GetIter(events.get()));
+                while (PyObject* raw = PyIter_Next(iterator.get())) {
+                    p::Ref item(raw);
+                    if (textIn(method(item.get(), "get", p::text("kind").get()).get(), {"ammo_rack"}) &&
+                        textIn(method(item.get(), "get", p::text("state").get()).get(), {"destroyed"}))
+                        put(r, "ammo_death_cause", method(item.get(), "get", p::text("cause").get()));
+                }
+                if (PyErr_Occurred()) throw p::Error("critical events iteration failed");
+                method(battle, "_present_critical", r, events.get(), attacker_id.get());
+            }
+        }
+        if (PyDict_GetItemString(event, "display_health")) {
+            auto health = p::Ref(PyObject_GetItem(state.get(), p::text("health").get()));
+            put(state.get(), "display_health", integer(std::max<std::int64_t>(0, strictInt(get(event, "display_health", health.get()).get()))));
+        }
+        const std::int64_t death_reason = strictInt(p::Ref(PyObject_GetItem(event, p::text("death_reason").get())).get());
+        auto damage = get(event, "damage", integer(0).get());
+        const bool force = std::max<std::int64_t>(0, strictInt(truthy(damage) ? damage.get() : integer(0).get())) > 0 ||
+                           truthy(get(event, "dead", Py_False));
+        callKw(battle, "_apply_health", {r, state.get(), attacker_id.get(), integer(death_reason).get()},
+               {{"force_cause", force ? Py_True : Py_False},
+                {"attack_reason_id", attack_reason.get() == Py_None ? integer(0).get() : attack_reason.get()},
+                {"suppress_combat_presentation", (blind && !dead_target) ? Py_True : Py_False},
+                {"suppress_postmortem_killer", suppress_postmortem.get()}});
+        if (!update_state) put(r, "state", p::retain(latest.get()));
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef event_methods[] = {
+    {"apply_combat_event", applyCombatEvent, METH_VARARGS, "Apply one ordered combat event to its target."},
     {"on_events", onEvents, METH_VARARGS, "Accept one ordered events message into the journal."},
     {"prepare_ordered_event", prepareOrderedEvent, METH_VARARGS, "Validate and merge one event's durable state."},
     {"event_is_ready", eventIsReady, METH_VARARGS, "Whether one journaled event may apply now."},

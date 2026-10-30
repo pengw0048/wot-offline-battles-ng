@@ -49,6 +49,7 @@ PORTS = (
     ('_validate_combat_event_contract', 'validate_combat_event_contract(self, event, globals())'),
     ('_missing_projectile_attacker_allowed', 'missing_projectile_attacker_allowed(self, event)'),
     ('_pending_event_references', 'pending_event_references(self, key)'),
+    ('_apply_combat_event', 'apply_combat_event(self, event, update_state, globals())'),
 )
 
 
