@@ -20,6 +20,7 @@ namespace {
 const char magic[8] = {'W', 'O', 'T', 'L', 'A', 'N', 'R', '2'};
 const std::size_t record_header = 13;
 const std::size_t max_record = 16u * 1024u * 1024u;
+const int wire_kind = 1, frame_kind = 4;
 const char* writer_name = "offline_client_wire_native.ReplayWriter";
 const char* reader_name = "offline_client_wire_native.ReplayReader";
 
@@ -202,7 +203,12 @@ PyObject* writeRecord(PyObject*, PyObject* args) {
     if (!writer) return nullptr;
     if (kind < 0 || kind > 255) { PyErr_SetString(PyExc_ValueError, "bad replay record kind"); return nullptr; }
     std::string payload;
-    if (!stock_wire::encode_any(value, payload)) return nullptr;
+    // Gameplay messages use the compact schema frame when they fit it.
+    if (kind == wire_kind && stock_wire::encode(value, payload)) kind = frame_kind;
+    else {
+        PyErr_Clear();
+        if (!stock_wire::encode_any(value, payload)) return nullptr;
+    }
     if (payload.size() > max_record) { PyErr_SetString(PyExc_ValueError, "replay record exceeds size bound"); return nullptr; }
     std::string record(record_header, '\0');
     record[0] = static_cast<char>(kind);
@@ -264,9 +270,12 @@ PyObject* readRecord(PyObject*, PyObject* args) {
         PyErr_SetString(PyExc_ValueError, "truncated or oversized replay record");
         return nullptr;
     }
-    PyObject* value = stock_wire::decode_any(reinterpret_cast<const unsigned char*>(payload.data()), payload.size());
+    int kind = static_cast<unsigned char>(head[0]);
+    const auto* bytes = reinterpret_cast<const unsigned char*>(payload.data());
+    PyObject* value = kind == frame_kind ? stock_wire::decode(bytes, payload.size())
+                                         : stock_wire::decode_any(bytes, payload.size());
     if (!value) return nullptr;
-    return Py_BuildValue("(idN)", static_cast<unsigned char>(head[0]), t, value);
+    return Py_BuildValue("(idN)", kind == frame_kind ? wire_kind : kind, t, value);
 }
 
 PyObject* readerTrailing(PyObject*, PyObject* args) {

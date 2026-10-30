@@ -196,7 +196,10 @@ header = {'welcome': {'type': u'welcome'}, 'start': {'type': u'battle_start', 'r
           'snapshot': {'type': u'snapshot', 'round_id': 3, 'players': [], 'bots': []}, 'config': {u'map': u'33_fjord'},
           'player_id': 4, 'live': None}
 recorder = native_replay.NativeRecorder(sys.argv[4], 1, header, lambda: clock[0])
-rows = []
+import json
+events = json.load(open(sys.argv[5]))
+rows = [('wire', events)]
+recorder.append('wire', events)
 for i in range(200):
     clock[0] += 0.033
     wire = {'type': u'snapshot', 'round_id': 3, 'server_tick': i, 'x': 1.5 * i, 'bots': [{'id': 1, 'hp': 2 ** 63 + i}]}
@@ -211,7 +214,7 @@ for kind, data in rows:
     row = reader.next()
     assert row['type'] == kind and row['data'] == data, (row, kind)
 end = reader.next()
-assert end['type'] == 'end' and end['records'] == 400 and end['reason'] == 'round_finished'
+assert end['type'] == 'end' and end['records'] == 401 and end['reason'] == 'round_finished'
 assert reader.next() is None
 data = open(path, 'rb').read()
 open(path + '.cut.wotlanreplay', 'wb').write(data[:len(data) // 2])
@@ -251,9 +254,12 @@ class NativeReplay(unittest.TestCase):
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             (folder / 'fixture.py').write_text(REPLAY_FIXTURE)
+            events = next(m for m in samples() if m['type'] == 'events')
+            (folder / 'events.json').write_text(json.dumps(events))
             run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder),
                                   str(Path(fork) / 'src/res/scripts/client'), str(folder / 'pkg'),
-                                  str(folder / 'replays')], capture_output=True, text=True)
+                                  str(folder / 'replays'), str(folder / 'events.json')],
+                                 capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('native replay ok', run.stdout)
 
