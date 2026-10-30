@@ -73,6 +73,8 @@ REPLAY_EDITS = (
      '        client._offline_replay_recorder = NativeRecorder(\n', 1),
     ("        log('record_start_requested mode=%s independent_process=True path=%s' %\n",
      "        log('record_start_requested mode=%s native_writer=True path=%s' %\n", 1),
+    ("            clock=runtime._clock)\n",
+     "            clock=runtime._clock)\n        client._offline_replay_recorder.attach(client)\n", 1),
 )
 TRANSPORT_EDITS = (
     ('from gui.mods.offline_lan_0922 import offline_replay, replay_reader, replay_resources\n',

@@ -147,6 +147,8 @@ def serve():
     conn.close()
 thread = threading.Thread(target=serve); thread.start()
 sock = lan_client._NativeSocket('127.0.0.1', port, 3.0)
+writer = wire.replay_writer(sys.argv[1] + '/frames.wotlanreplay')
+wire.net_record(sock._handle, writer, 2.0)
 sock.sendall(wire.encode({'type': 'hello', 'name': u'T'}))
 received, state = [], 'connecting'
 deadline = time.time() + 10
@@ -166,6 +168,14 @@ for frame, age, native in received:
     assert view['type'] == 'snapshot' and view['bots'] == [] and len(view['players']) == 1, view
     assert view['_native_snapshot'] is native and complete['bots'], complete
 assert replicas == 1, replicas
+wire.net_record(sock._handle, None)
+assert wire.replay_count(writer) == len(frames) and wire.replay_finish(writer)[0]
+reader = wire.replay_reader(sys.argv[1] + '/frames.wotlanreplay')
+played = [wire.replay_read(reader) for unused in frames]
+assert wire.replay_read(reader) is None
+assert all(kind == 1 and t >= 2.0 for kind, t, value in played), played
+assert [value['type'] for kind, t, value in played] == [
+    'snapshot' if wire.decode(frame)['type'] == 'replica_snapshot' else wire.decode(frame)['type'] for frame in frames]
 sock.sendall(wire.encode({'type': 'leave'}))
 sock.close()
 thread.join(10)
@@ -251,14 +261,15 @@ header = {'welcome': {'type': u'welcome'}, 'start': {'type': u'battle_start', 'r
 recorder = native_replay.NativeRecorder(sys.argv[4], 1, header, lambda: clock[0])
 import json
 events = json.load(open(sys.argv[5]))
-rows = [('wire', events)]
-recorder.append('wire', events)
+rows = []
+# Wire frames are recorded by the native receive thread; a Python wire append is a no-op.
+assert recorder.append('wire', events) is True
 for i in range(200):
     clock[0] += 0.033
     wire = {'type': u'snapshot', 'round_id': 3, 'server_tick': i, 'x': 1.5 * i, 'bots': [{'id': 1, 'hp': 2 ** 63 + i}]}
     local = {'position': [0.5, 1.0, i * 0.25], 'health': 500 - i, 'visibility': {'bot:1': [True, False]}}
     recorder.append('wire', wire); recorder.append('local', local)
-    rows.append(('wire', wire)); rows.append(('local', local))
+    rows.append(('local', local))
 path = recorder.close('round_finished')
 assert path and os.path.exists(path) and not os.path.exists(recorder.temp)
 reader = native_replay.NativeReader(path)
@@ -267,7 +278,7 @@ for kind, data in rows:
     row = reader.next()
     assert row['type'] == kind and row['data'] == data, (row, kind)
 end = reader.next()
-assert end['type'] == 'end' and end['records'] == 401 and end['reason'] == 'round_finished'
+assert end['type'] == 'end' and end['records'] == 200 and end['reason'] == 'round_finished'
 assert reader.next() is None
 data = open(path, 'rb').read()
 open(path + '.cut.wotlanreplay', 'wb').write(data[:len(data) // 2])

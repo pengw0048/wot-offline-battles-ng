@@ -32,6 +32,8 @@ private:
 PyObject* snapshot_capsule(std::shared_ptr<const stock_native_client_state::Value> snapshot);
 // The merged snapshot, or empty when the object is not such a capsule.
 std::shared_ptr<const stock_native_client_state::Value> snapshot_from_capsule(PyObject* capsule);
+// The Python view of a merged snapshot: envelope, the recipient's own row and the capsule.
+PyObject* replica_view(PyObject* capsule);
 PyMethodDef* replica_methods();
 
 }

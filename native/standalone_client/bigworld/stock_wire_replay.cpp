@@ -1,6 +1,7 @@
 // Offline replay files: tagged binary records, gzip-compressed on a native writer thread.
 #include "stock_wire_replay.hpp"
 #include "stock_wire_codec.hpp"
+#include "stock_wire_replica_store.hpp"
 #if defined(WOT_WIRE_HOST_BUILD)
 #include <zlib.h>
 #else
@@ -20,9 +21,11 @@ namespace {
 const char magic[8] = {'W', 'O', 'T', 'L', 'A', 'N', 'R', '2'};
 const std::size_t record_header = 13;
 const std::size_t max_record = 16u * 1024u * 1024u;
-const int wire_kind = 1, frame_kind = 4;
+const int wire_kind = 1, frame_kind = 4, raw_kind = 5;
 const char* writer_name = "offline_client_wire_native.ReplayWriter";
 const char* reader_name = "offline_client_wire_native.ReplayReader";
+
+}
 
 class Writer {
 public:
@@ -34,9 +37,15 @@ public:
     }
     ~Writer() { finish(); }
 
+    // Records from the main and receive threads share one clock; keep it monotonic.
     bool push(std::string record) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closing_ || failed_) return false;
+        double t; std::memcpy(&t, &record[1], 8);
+        t = std::max(t, last_t_); last_t_ = t;
+        std::memcpy(&record[1], &t, 8);
+        const int kind = static_cast<unsigned char>(record[0]);
+        if (kind != 0 && kind != 3) ++records_;
         bytes_ += record.size();
         queued_.push_back(std::move(record));
         ready_.notify_one();
@@ -61,6 +70,7 @@ public:
     bool failed() { std::lock_guard<std::mutex> lock(mutex_); return failed_; }
     std::string error() { std::lock_guard<std::mutex> lock(mutex_); return error_; }
     unsigned long long bytes() { std::lock_guard<std::mutex> lock(mutex_); return bytes_; }
+    unsigned long long records() { std::lock_guard<std::mutex> lock(mutex_); return records_; }
 
 private:
     void run() {
@@ -109,9 +119,20 @@ private:
     std::deque<std::string> queued_;
     bool closing_ = false, failed_ = false;
     std::string error_;
-    unsigned long long bytes_ = 0;
+    unsigned long long bytes_ = 0, records_ = 0;
+    double last_t_ = 0.;
     std::thread thread_;
 };
+
+namespace {
+std::string recordHeader(int kind, double t, std::size_t size) {
+    std::string record(record_header, '\0');
+    record[0] = static_cast<char>(kind);
+    uint32_t length = static_cast<uint32_t>(size);
+    std::memcpy(&record[1], &t, 8);
+    std::memcpy(&record[9], &length, 4);
+    return record;
+}
 
 class Reader {
 public:
@@ -169,6 +190,9 @@ private:
     unsigned char input_[65536];
     std::string pending_;
     std::size_t consumed_ = 0;
+public:
+    // Replica deltas recorded from the wire merge here exactly as on the live receive thread.
+    stock_wire::ReplicaStore replicas;
 };
 
 std::FILE* openFile(PyObject* path, const char* mode) {
@@ -185,7 +209,11 @@ std::FILE* openFile(PyObject* path, const char* mode) {
     return std::fopen(narrow, mode);
 }
 
-void destroyWriter(PyObject* capsule) { delete static_cast<Writer*>(PyCapsule_GetPointer(capsule, writer_name)); }
+void destroyWriter(PyObject* capsule) { delete static_cast<std::shared_ptr<Writer>*>(PyCapsule_GetPointer(capsule, writer_name)); }
+Writer* writerPointer(PyObject* capsule) {
+    auto* held = static_cast<std::shared_ptr<Writer>*>(PyCapsule_GetPointer(capsule, writer_name));
+    return held ? held->get() : nullptr;
+}
 void destroyReader(PyObject* capsule) { delete static_cast<Reader*>(PyCapsule_GetPointer(capsule, reader_name)); }
 
 PyObject* openWriter(PyObject*, PyObject* args) {
@@ -193,13 +221,13 @@ PyObject* openWriter(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "O", &path)) return nullptr;
     std::FILE* file = openFile(path, "wb");
     if (!file) { if (!PyErr_Occurred()) PyErr_SetString(PyExc_IOError, "cannot create replay file"); return nullptr; }
-    return PyCapsule_New(new Writer(file), writer_name, destroyWriter);
+    return PyCapsule_New(new std::shared_ptr<Writer>(std::make_shared<Writer>(file)), writer_name, destroyWriter);
 }
 
 PyObject* writeRecord(PyObject*, PyObject* args) {
     PyObject* capsule; int kind; double t; PyObject* value;
     if (!PyArg_ParseTuple(args, "OidO", &capsule, &kind, &t, &value)) return nullptr;
-    auto* writer = static_cast<Writer*>(PyCapsule_GetPointer(capsule, writer_name));
+    auto* writer = writerPointer(capsule);
     if (!writer) return nullptr;
     if (kind < 0 || kind > 255) { PyErr_SetString(PyExc_ValueError, "bad replay record kind"); return nullptr; }
     std::string payload;
@@ -210,11 +238,7 @@ PyObject* writeRecord(PyObject*, PyObject* args) {
         if (!stock_wire::encode_any(value, payload)) return nullptr;
     }
     if (payload.size() > max_record) { PyErr_SetString(PyExc_ValueError, "replay record exceeds size bound"); return nullptr; }
-    std::string record(record_header, '\0');
-    record[0] = static_cast<char>(kind);
-    uint32_t length = static_cast<uint32_t>(payload.size());
-    std::memcpy(&record[1], &t, 8);
-    std::memcpy(&record[9], &length, 4);
+    std::string record = recordHeader(kind, t, payload.size());
     record += payload;
     if (!writer->push(std::move(record))) {
         PyErr_SetString(PyExc_IOError, ("replay writer stopped: " + writer->error()).c_str());
@@ -226,7 +250,7 @@ PyObject* writeRecord(PyObject*, PyObject* args) {
 PyObject* finishWriter(PyObject*, PyObject* args) {
     PyObject* capsule; int aborted = 0;
     if (!PyArg_ParseTuple(args, "O|i", &capsule, &aborted)) return nullptr;
-    auto* writer = static_cast<Writer*>(PyCapsule_GetPointer(capsule, writer_name));
+    auto* writer = writerPointer(capsule);
     if (!writer) return nullptr;
     bool ok;
     Py_BEGIN_ALLOW_THREADS
@@ -272,10 +296,38 @@ PyObject* readRecord(PyObject*, PyObject* args) {
     }
     int kind = static_cast<unsigned char>(head[0]);
     const auto* bytes = reinterpret_cast<const unsigned char*>(payload.data());
+    if (kind == raw_kind) {
+        // A received frame; a replica delta before its full snapshot reads as None.
+        if (stock_wire::frame_message(bytes, payload.size()) != stock_wire::message_id("replica_snapshot")) {
+            PyObject* message = stock_wire::decode(bytes, payload.size());
+            return message ? Py_BuildValue("(idN)", wire_kind, t, message) : nullptr;
+        }
+        stock_native_client_state::Value message; std::string error;
+        if (!stock_wire::decode_value(bytes, payload.size(), message, error)) {
+            PyErr_SetString(PyExc_ValueError, error.c_str());
+            return nullptr;
+        }
+        try {
+            PyObject* capsule = stock_wire::snapshot_capsule(reader->replicas.apply(std::move(message)));
+            PyObject* view = capsule ? stock_wire::replica_view(capsule) : nullptr;
+            Py_XDECREF(capsule);
+            return view ? Py_BuildValue("(idN)", wire_kind, t, view) : nullptr;
+        } catch (const std::exception&) {
+            return Py_BuildValue("(idO)", raw_kind, t, Py_None);
+        }
+    }
     PyObject* value = kind == frame_kind ? stock_wire::decode(bytes, payload.size())
                                          : stock_wire::decode_any(bytes, payload.size());
     if (!value) return nullptr;
     return Py_BuildValue("(idN)", kind == frame_kind ? wire_kind : kind, t, value);
+}
+
+PyObject* writerRecords(PyObject*, PyObject* args) {
+    PyObject* capsule;
+    if (!PyArg_ParseTuple(args, "O", &capsule)) return nullptr;
+    auto* writer = writerPointer(capsule);
+    if (!writer) return nullptr;
+    return PyLong_FromUnsignedLongLong(writer->records());
 }
 
 PyObject* readerTrailing(PyObject*, PyObject* args) {
@@ -288,6 +340,18 @@ PyObject* readerTrailing(PyObject*, PyObject* args) {
 }
 }
 
+std::shared_ptr<Writer> writer(PyObject* capsule) {
+    auto* held = PyCapsule_IsValid(capsule, writer_name)
+        ? static_cast<std::shared_ptr<Writer>*>(PyCapsule_GetPointer(capsule, writer_name)) : nullptr;
+    return held ? *held : std::shared_ptr<Writer>();
+}
+
+bool record_frame(Writer& target, const std::string& frame, double t) {
+    std::string record = recordHeader(raw_kind, t, frame.size());
+    record += frame;
+    return target.push(std::move(record));
+}
+
 PyMethodDef* methods() {
     static PyMethodDef table[] = {
         {"replay_writer", openWriter, METH_VARARGS, "Open a replay file for the native writer thread."},
@@ -296,6 +360,7 @@ PyMethodDef* methods() {
         {"replay_reader", openReader, METH_VARARGS, "Open a replay file for reading."},
         {"replay_read", readRecord, METH_VARARGS, "Read the next replay record."},
         {"replay_trailing", readerTrailing, METH_VARARGS, "Whether bytes follow the read records."},
+        {"replay_count", writerRecords, METH_VARARGS, "Records queued so far, from every thread."},
         {nullptr, nullptr, 0, nullptr}};
     return table;
 }

@@ -153,6 +153,8 @@ PyObject* completeSnapshot(PyObject*, PyObject* capsule) {
 }
 }
 
+PyObject* replica_view(PyObject* capsule) { return replicaMessage(nullptr, capsule); }
+
 PyObject* snapshot_capsule(std::shared_ptr<const stock_native_client_state::Value> snapshot) {
     return PyCapsule_New(new std::shared_ptr<const V>(std::move(snapshot)), snapshot_name, destroySnapshot);
 }

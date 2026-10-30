@@ -7,6 +7,7 @@ void* operator new[](std::size_t size){return ::operator new(size);}
 void operator delete[](void*value)noexcept{::operator delete(value);}
 #define WOT_CLIENT_REPLICA_HOST_BUILD
 #include "../bigworld/stock_native_client_state.cpp"
+#include "../bigworld/stock_wire_replica_store.cpp"
 #include "../bigworld/stock_native_client_replica.cpp"
 #include "../bigworld/stock_native_client_drive_presentation_python.cpp"
 namespace stock_native_client_replica {namespace {

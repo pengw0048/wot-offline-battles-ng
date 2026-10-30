@@ -10,12 +10,14 @@ import offline_client_wire_native as _native
 from gui.mods.offline_lan_0922 import offline_replay
 
 HEADER, WIRE, LOCAL, END = range(4)
+# A received replica delta that cannot be merged before the recording's first full snapshot.
+UNMERGED = 5
 _KINDS = {'wire': WIRE, 'local': LOCAL}
 _NAMES = {WIRE: 'wire', LOCAL: 'local', END: 'end'}
 
 
 class NativeRecorder(object):
-    """Same records as the former recorder; encoding and gzip run in native code."""
+    """Records local state from the main thread; the receive thread records every wire frame."""
 
     def __init__(self, directory, mode, header, clock):
         if mode not in (1, 2):
@@ -35,6 +37,12 @@ class NativeRecorder(object):
         self.path = os.path.abspath(os.path.join(directory, basename + offline_replay.EXTENSION))
         self.temp = self.path + '.' + uuid.uuid4().hex[:8] + '.part'
         self._writer = _native.replay_writer(self.temp)
+        self._handle = None
+        snapshot = header.get('snapshot') or {}
+        if '_native_snapshot' in snapshot:
+            # The receive thread merged the rows; the header seeds playback with all of them.
+            header = dict(header, snapshot=dict(_native.complete_snapshot(snapshot['_native_snapshot']),
+                                                type='snapshot'))
         value = dict(header, magic=offline_replay.MAGIC, schema=offline_replay.SCHEMA,
                      client=offline_replay.CLIENT, created=datetime.datetime.now().isoformat())
         self._write(HEADER, 0.0, value)
@@ -47,9 +55,28 @@ class NativeRecorder(object):
         if self.bytes > offline_replay.MAX_TOTAL:
             raise ValueError('recording exceeded total byte limit')
 
+    def attach(self, client):
+        """Hand the writer to the native receive thread and start from a full snapshot."""
+        handle = getattr(getattr(client, 'sock', None), '_handle', None)
+        if handle is None:
+            raise ValueError('recording requires the native transport')
+        _native.net_record(handle, self._writer, float(self.clock()) - self.started)
+        self._handle = handle
+        client._request_snapshot_resync({'round_id': client.round_id,
+                                         'authority_epoch': client.authority_epoch},
+                                        client._transport_generation)
+
+    def _detach(self):
+        if self._handle is not None:
+            _native.net_record(self._handle, None)
+            self._handle = None
+
     def append(self, kind, data, moment=None):
         if self.closed:
             return False
+        if kind == 'wire':
+            # Wire frames are recorded in arrival order by the receive thread.
+            return True
         elapsed = (float(self.clock()) - self.started if moment is None else float(moment))
         if math.isnan(elapsed) or math.isinf(elapsed) or elapsed < 0 or elapsed > offline_replay.MAX_DURATION:
             raise ValueError('invalid recording timestamp')
@@ -63,6 +90,8 @@ class NativeRecorder(object):
         if self.closed:
             return None if self.failed else self.path
         try:
+            self._detach()
+            self.count = _native.replay_count(self._writer)
             self._write(END, self.last_time, {'records': self.count, 'reason': str(reason)[:80]})
             self.closed = True
             ok, error = _native.replay_finish(self._writer)
@@ -76,6 +105,10 @@ class NativeRecorder(object):
             raise
 
     def abort(self):
+        try:
+            self._detach()
+        except Exception:
+            pass
         self.failed = True
         self.closed = True
         try:
@@ -110,6 +143,13 @@ class NativeReader(object):
             raise ValueError('invalid replay battle start')
 
     def next(self):
+        while True:
+            row = self._next()
+            if row is not False:
+                return row
+
+    def _next(self):
+        """One playable record, or False for a record playback does not consume."""
         if self.ended:
             return None
         row = _native.replay_read(self._reader)
@@ -126,11 +166,13 @@ class NativeReader(object):
                 raise ValueError('data follows replay end')
             self.ended = True
             return dict(data, type='end', t=stamp)
+        self.count += 1
+        if kind == UNMERGED:
+            return False
         if kind not in (WIRE, LOCAL) or not isinstance(data, dict):
             raise ValueError('unsupported replay record')
         if kind == WIRE and data.get('type') not in offline_replay.MESSAGE_TYPES:
-            raise ValueError('non-gameplay message in replay')
-        self.count += 1
+            return False
         return {'type': _NAMES[kind], 't': stamp, 'data': data}
 
     def close(self):

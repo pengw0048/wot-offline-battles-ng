@@ -2,6 +2,7 @@
 #include "stock_wire_net.hpp"
 #include "stock_wire_codec.hpp"
 #include "stock_wire_replica_store.hpp"
+#include "stock_wire_replay.hpp"
 #if defined(_WIN32)
 #if !defined(NOMINMAX)
 #define NOMINMAX
@@ -66,6 +67,10 @@ struct Shared {
     std::deque<std::string> outgoing;
     std::size_t outgoing_bytes = 0;
     std::deque<Received> frames;
+    // Replay recording: every received frame in arrival order, on the replay clock.
+    std::shared_ptr<stock_wire_replay::Writer> recorder;
+    Clock::time_point record_origin;
+    double record_offset = 0.;
     bool closing = false;
     double flush_seconds = 0.5;
 
@@ -224,8 +229,16 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
         }
         buffer.erase(0, used);
         if (!ready.empty()) {
-            std::lock_guard<std::mutex> lock(shared->mutex);
-            for (auto& item : ready) shared->frames.push_back(std::move(item));
+            std::shared_ptr<stock_wire_replay::Writer> recorder;
+            double t = 0.;
+            {
+                std::lock_guard<std::mutex> lock(shared->mutex);
+                recorder = shared->recorder;
+                t = shared->record_offset + std::chrono::duration<double>(now - shared->record_origin).count();
+                for (auto& item : ready) shared->frames.push_back(item);
+            }
+            if (recorder)
+                for (const auto& item : ready) stock_wire_replay::record_frame(*recorder, item.frame, t);
         }
     }
 }
@@ -328,6 +341,24 @@ PyObject* receivePython(PyObject*, PyObject* args) {
     return Py_BuildValue("(Nss)", list, name, error.c_str());
 }
 
+// Start (writer, elapsed replay seconds) or stop (None) recording received frames.
+PyObject* recordPython(PyObject*, PyObject* args) {
+    PyObject* capsule; PyObject* writer; double elapsed = 0.;
+    if (!PyArg_ParseTuple(args, "OO|d", &capsule, &writer, &elapsed)) return nullptr;
+    Connection* value = connection(capsule);
+    if (!value) return nullptr;
+    std::shared_ptr<stock_wire_replay::Writer> target;
+    if (writer != Py_None) {
+        target = stock_wire_replay::writer(writer);
+        if (!target) { PyErr_SetString(PyExc_ValueError, "not a replay writer"); return nullptr; }
+    }
+    std::lock_guard<std::mutex> lock(value->shared->mutex);
+    value->shared->recorder = std::move(target);
+    value->shared->record_origin = Clock::now();
+    value->shared->record_offset = elapsed;
+    Py_RETURN_NONE;
+}
+
 PyObject* closePython(PyObject*, PyObject* args) {
     PyObject* capsule; double flush = 0.5;
     if (!PyArg_ParseTuple(args, "O|d", &capsule, &flush)) return nullptr;
@@ -345,6 +376,7 @@ PyMethodDef* methods() {
         {"net_send", sendPython, METH_VARARGS, "Queue one encoded frame; False once the transport ended or is full."},
         {"net_receive", receivePython, METH_VARARGS, "Take received frames with their ages and the transport state."},
         {"net_close", closePython, METH_VARARGS, "Flush queued frames briefly, then close the transport."},
+        {"net_record", recordPython, METH_VARARGS, "Record every received frame into a replay writer, or stop."},
         {nullptr, nullptr, 0, nullptr}};
     return table;
 }
