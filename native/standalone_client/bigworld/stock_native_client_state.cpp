@@ -5,6 +5,7 @@
 #include "stock_native_bot_python.hpp"
 #include <algorithm>
 #include <set>
+#include <unordered_set>
 #include <cctype>
 namespace stock_native_client_state {
 namespace p=stock_native_bot_python;
@@ -46,12 +47,21 @@ std::shared_ptr<Actor> install(State&s,const std::string&kind,const Value&state,
 // Python materialization owns stock lifecycle/health/UI edges. Accepted motion,
 // checkpoint/frontier data and running clocks remain canonical in Actor.state;
 // their native consumers ingest every snapshot independently of this decision.
+// Both field maps are sorted by name: walk them together instead of looking
+// every name up in the other map. Missing fields compare as null, as get() does.
+template<class Changed> bool anyFieldChanged(const ObjectFields& a, const ObjectFields& b, Changed changed){
+    auto ia=a.begin(),ea=a.end(),ib=b.begin(),eb=b.end();
+    while(ia!=ea||ib!=eb){
+        if(ib==eb||(ia!=ea&&ia->first<ib->first)){if(changed(ia->first,ia->second,null))return true;++ia;}
+        else if(ia==ea||ib->first<ia->first){if(changed(ib->first,null,ib->second))return true;++ib;}
+        else{if(changed(ia->first,ia->second,ib->second))return true;++ia;++ib;}
+    }
+    return false;
+}
 bool presentationObjectChanged(const Value&first,const Value&second,const std::set<std::string>&clocks){
     const auto&a=first.resolved();const auto&b=second.resolved();
     if(a.kind!=Value::Kind::Object||b.kind!=Value::Kind::Object)return a!=b;
-    for(const auto&entry:a.object)if(!clocks.count(entry.first)&&entry.second!=b.get(entry.first))return true;
-    for(const auto&entry:b.object)if(!clocks.count(entry.first)&&entry.second!=a.get(entry.first))return true;
-    return false;
+    return anyFieldChanged(a.object,b.object,[&](const std::string&name,const Value&x,const Value&y){return !clocks.count(name)&&x!=y;});
 }
 bool equipmentPresentationChanged(const Value&first,const Value&second){
     const auto&a=first.resolved();const auto&b=second.resolved();
@@ -64,16 +74,16 @@ bool equipmentPresentationChanged(const Value&first,const Value&second){
 bool presentationChanged(const Value&first,const Value&second){
     const auto&a=first.resolved();const auto&b=second.resolved();
     if(a.kind!=Value::Kind::Object||b.kind!=Value::Kind::Object)return a!=b;
-    static const std::set<std::string>native={
+    if(&a==&b)return false;
+    static const std::unordered_set<std::string>native={
         "x","y","z","yaw","pitch","roll","aim_yaw","gun_pitch","speed","movement_dir","rotation_dir","airborne","vertical_speed","ram_vx","ram_vy","ram_vz","ram_motion","ram_motion_seq","contact_push_acks","push_x","push_z","push_yaw","input_seq","last_input_seq",
         "forward","turn","up_cosine","reload_time","siege_time_left_ms","combat_fire_elapsed","combat_fire_timer","gun_checkpoint","gun_checkpoint_seq",
         "input_processed_seq","landing_observation_seq","ram_contact_admitted_seq","ram_contact_resolved_seq","destructible_contact_admitted_seq","destructible_contact_resolved_seq","destructible_contact_resolved_seqs","destructible_contact_rejected_seqs","ram_contact","ram_contacts","destructible_contacts"};
-    auto changed=[&](const std::string&name){if(native.count(name))return false;return name=="equipment_states"?equipmentPresentationChanged(a.get(name),b.get(name)):a.get(name)!=b.get(name);};
     // Unknown fields stay conservative: only the reviewed native consumers
     // above bypass Python. Fire/death/critical/stock descriptor edges remain.
-    for(const auto&entry:a.object)if(changed(entry.first))return true;
-    for(const auto&entry:b.object)if(changed(entry.first))return true;
-    return false;
+    return anyFieldChanged(a.object,b.object,[&](const std::string&name,const Value&x,const Value&y){
+        if(native.count(name))return false;
+        return name=="equipment_states"?equipmentPresentationChanged(x,y):x!=y;});
 }
 void liveAnchor(Actor&a,double time,double now){if(!a.has_target&&!a.has_current)return;const auto v=a.has_target?a.target:a.current;a.target=v;a.has_target=true;a.target_time=now;a.sample_time=time;a.previous_sample=time;a.anchor_time=time;a.anchor_local=now;a.has_anchor=true;a.snapshot_interval.reset();a.resume=false;a.has_resume_sample=false;a.render_delta=0.;a.has_observed=a.has_ideal=a.has_delay=false;a.warmup_intervals=0;a.warmup_active=true;a.samples={Sample{time,{},v,a.state}};a.cursor=time;a.teleport=false;a.timed=true;}
 bool setTarget(Actor&a,const Pose&v,double now,std::optional<std::int64_t> sample,bool live,std::optional<std::int64_t> revision){

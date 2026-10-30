@@ -1,0 +1,128 @@
+{
+ "*": [
+  "GetDevice"
+ ],
+ "WDevice": [
+  "SetRenderState",
+  "SetTexture",
+  "SetSamplerState",
+  "SetTextureStageState",
+  "SetVertexShader",
+  "SetPixelShader",
+  "SetIndices",
+  "SetVertexDeclaration",
+  "SetDepthStencilSurface",
+  "SetFVF",
+  "SetNPatchMode",
+  "SetVertexShaderConstantF",
+  "SetVertexShaderConstantI",
+  "SetVertexShaderConstantB",
+  "SetPixelShaderConstantF",
+  "SetPixelShaderConstantI",
+  "SetPixelShaderConstantB",
+  "SetStreamSource",
+  "SetStreamSourceFreq",
+  "SetRenderTarget",
+  "SetViewport",
+  "SetScissorRect",
+  "SetTransform",
+  "SetClipPlane",
+  "Clear",
+  "BeginScene",
+  "EndScene",
+  "DrawIndexedPrimitive",
+  "DrawPrimitive",
+  "DrawPrimitiveUP",
+  "DrawIndexedPrimitiveUP",
+  "StretchRect",
+  "ColorFill",
+  "UpdateTexture",
+  "UpdateSurface",
+  "Present",
+  "PresentEx",
+  "GetViewport",
+  "GetScissorRect",
+  "GetDepthStencilSurface",
+  "GetStreamSource",
+  "GetStreamSourceFreq",
+  "GetVertexDeclaration",
+  "GetFVF",
+  "GetNPatchMode",
+  "GetRenderTarget",
+  "GetIndices",
+  "GetTexture",
+  "GetVertexShader",
+  "GetPixelShader",
+  "TestCooperativeLevel",
+  "CheckDeviceState",
+  "CreateQuery",
+  "CreateStateBlock",
+  "GetDirect3D",
+  "SetMaterial",
+  "SetLight",
+  "LightEnable",
+  "SetSoftwareVertexProcessing",
+  "GetAvailableTextureMem",
+  "GetDeviceCaps",
+  "GetCreationParameters",
+  "Reset",
+  "ResetEx",
+  "EndStateBlock"
+ ],
+ "WSwap": [
+  "Present"
+ ],
+ "WTexture": [
+  "GetLevelDesc",
+  "GetLevelCount",
+  "GetType",
+  "LockRect",
+  "UnlockRect",
+  "GetSurfaceLevel"
+ ],
+ "WCube": [
+  "GetLevelDesc",
+  "GetLevelCount",
+  "GetType",
+  "LockRect",
+  "UnlockRect"
+ ],
+ "WVolTex": [
+  "GetLevelDesc",
+  "GetLevelCount",
+  "GetType"
+ ],
+ "WSurface": [
+  "GetDesc",
+  "GetType",
+  "LockRect",
+  "UnlockRect",
+  "GetContainer"
+ ],
+ "WVolume": [
+  "GetDesc",
+  "GetContainer"
+ ],
+ "WVB": [
+  "GetDesc",
+  "GetType",
+  "Lock",
+  "Unlock"
+ ],
+ "WIB": [
+  "GetDesc",
+  "GetType",
+  "Lock",
+  "Unlock"
+ ],
+ "WSB": [
+  "Capture",
+  "Apply"
+ ],
+ "WQuery": [
+  "GetType",
+  "GetDataSize",
+  "Issue",
+  "GetData"
+ ]
+}

@@ -152,6 +152,7 @@ int main(){Context owner;owner.check();}
             return source[start:end+1]
         methods = '\n'.join(body('HRESULT STDMETHODCALLTYPE StockEffectAdapter::' + name) for name in (
             'Begin(', 'BeginPass(', 'CommitChanges()', 'EndPass()', 'End()'))
+        methods += '\n' + body('HRESULT StockEffectAdapter::begin_pass(')
         probe = r'''#include <cassert>
 #include <memory>
 #include <optional>
@@ -164,7 +165,7 @@ struct Binary{struct Technique{std::vector<int> passes{1,2};};std::vector<Techni
 struct Reflection{std::optional<unsigned> technique_source_index(unsigned v){return v==1?std::optional<unsigned>(0):std::nullopt;}};
 class StockEffectAdapter{public:std::unique_ptr<int> material_=std::make_unique<int>(1);std::optional<unsigned> pass_;bool begun_=false,failApply=false;unsigned applies=0,technique_=1;Reflection reflection_;std::shared_ptr<Binary> definition_=std::make_shared<Binary>();
 unsigned technique_number(unsigned v){return v;}HRESULT apply_current(){assert(begun_&&pass_);++applies;return failApply?E_FAIL:S_OK;}
-HRESULT Begin(UINT*,DWORD);HRESULT BeginPass(UINT);HRESULT CommitChanges();HRESULT EndPass();HRESULT End();};
+HRESULT Begin(UINT*,DWORD);HRESULT BeginPass(UINT);HRESULT begin_pass(UINT,bool);HRESULT CommitChanges();HRESULT EndPass();HRESULT End();};
 @PRODUCTION@
 int main(){StockEffectAdapter fx;unsigned passes=999;assert(fx.BeginPass(0)==D3DERR_INVALIDCALL&&!fx.pass_&&!fx.begun_);assert(fx.Begin(nullptr,1)==D3DERR_INVALIDCALL);assert(fx.Begin(&passes,0)==E_NOTIMPL&&!fx.begun_);assert(fx.Begin(&passes,1)==S_OK&&passes==2);assert(fx.BeginPass(99)==E_INVALIDARG&&!fx.pass_&&fx.begun_);assert(fx.End()==S_OK);
 for(bool retry:{false,true}){assert(fx.Begin(&passes,1)==S_OK);fx.failApply=true;assert(fx.BeginPass(0)==E_FAIL);assert(!fx.pass_&&fx.begun_);assert(fx.EndPass()==D3DERR_INVALIDCALL);assert(fx.CommitChanges()==D3DERR_INVALIDCALL);fx.failApply=false;if(retry){assert(fx.BeginPass(1)==S_OK&&fx.pass_==1);assert(fx.EndPass()==S_OK);}assert(fx.End()==S_OK&&!fx.begun_);assert(fx.Begin(&passes,1)==S_OK);assert(fx.BeginPass(0)==S_OK);fx.failApply=true;assert(fx.CommitChanges()==E_FAIL&&fx.pass_==0);assert(fx.End()==D3DERR_INVALIDCALL&&fx.begun_);assert(fx.EndPass()==S_OK&&fx.End()==S_OK);fx.failApply=false;}

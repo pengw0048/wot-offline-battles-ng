@@ -297,6 +297,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-python-profile-hook-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_memory_debug.py"),
         $EngineRoot) "stock-memory-debug-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_heap_allocator.py"),
+        $EngineRoot) "stock-heap-allocator-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_shader_compiler.py"),
         $EngineRoot) "shader-compiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_resource_write_overlay.py"),
@@ -527,6 +529,17 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-occlusion-profiler-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_modelnode_identity.py"),
         $EngineRoot) "stock-modelnode-identity-patch.log"
+    # Frame-cost changes run last, on the profiled sources they replace.
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_occlusion_poll.py"),
+        $EngineRoot) "stock-occlusion-poll-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_effect_pass_for_commit.py"),
+        $EngineRoot) "stock-effect-pass-for-commit-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_dynamic_octree.py"),
+        $EngineRoot) "stock-dynamic-octree-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_render_thread.py"),
+        $EngineRoot) "stock-render-thread-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_render_thread.py"),
+        $EngineRoot, $ScaleformRoot) "stock-scaleform-render-thread-patch.log"
 
     # Microsoft's D3DX package supplies the legacy headers/import libraries
     # alongside the runner's Windows SDK, without installing the old SDK.

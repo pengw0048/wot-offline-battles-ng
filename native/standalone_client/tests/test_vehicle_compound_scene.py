@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from native_test_compile_flags import native_test_compile_flags
-from test_vehicle_compound_bounds import block, sdk_sources
+from test_vehicle_compound_bounds import block, compound_helpers, sdk_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +54,7 @@ def harness(before=False):
     maths = maths.replace('@SDK_BOUNDS@', definitions)
     host = (ROOT / 'tests/stock_vehicle_compound_scene_host.hpp').read_text()
     host = host.replace('@MATHS@', maths)
+    host = host.replace('using CompoundStatePtr=std::shared_ptr<CompoundState>;\n', 'using CompoundStatePtr=std::shared_ptr<CompoundState>;\n' + compound_helpers(production), 1)
     for token, signature in (
             ('NODE', 'struct CompoundNode'), ('PART', 'struct CompoundPart'),
             ('STATE', 'struct CompoundState'), ('ITEM', 'struct CompoundAttachment :'),

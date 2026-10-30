@@ -67,6 +67,26 @@ private:
     void register_material();
     enum class ShaderApply { uniforms, textures, samplers };
     bool apply_shader(std::uint32_t shader, ShaderApply mode, std::string& error);
+    // Resolved slot/state layout of one pass for one $Selection version. Live
+    // uniform bytes and textures are still read on every apply.
+    struct ShaderPlan {
+        std::uint32_t shader = 0;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> uniform_buffers;   // slot, UBB
+        std::vector<std::optional<std::uint32_t>> resource_slots;
+        std::uint32_t resource_first = 0xffffffff;
+        std::vector<std::optional<std::uint32_t>> sampler_slots;
+    };
+    struct PassPlan {
+        std::size_t technique = 0, pass = 0; std::uint64_t version = 0;
+        std::uint32_t vertex_shader = 0, pixel_shader = 0;
+        std::vector<StockDx9StateValue> render_states;
+        ShaderPlan stages[2];
+    };
+    bool build_plan(std::size_t technique, std::size_t pass, PassPlan& plan, std::string& error);
+    bool build_shader_plan(std::uint32_t shader, ShaderPlan& plan, std::string& error);
+    bool apply_plan(const PassPlan& plan, std::string& error);
+    bool apply_original(std::size_t technique, std::size_t pass, std::string& error);
+    std::vector<PassPlan> plans_;
     std::shared_ptr<StockDx9EffectRuntime> runtime_;
     StockEffectBinding binding_;
     std::vector<std::shared_ptr<IDirect3DBaseTexture9>> textures_;

@@ -251,7 +251,10 @@ bool StockEffectBinding::set_uniform(std::size_t buffer, std::size_t uniform,
         // byte count without per-parameter clamping; retain the enclosing bound.
         if ((!data && size) || !contains(selection_, parameter.byte_offset, size))
             return invalid(error, "Selection write is outside its storage");
-        if (size) std::memcpy(selection_.data()+parameter.byte_offset, data, size);
+        if (size && std::memcmp(selection_.data()+parameter.byte_offset, data, size)) {
+            std::memcpy(selection_.data()+parameter.byte_offset, data, size);
+            ++selection_version_;
+        }
         error.clear(); return true;
     }
     return uniform_buffer(buffer)->write_uniform(parameter, type, data, size, error);
@@ -259,7 +262,15 @@ bool StockEffectBinding::set_uniform(std::size_t buffer, std::size_t uniform,
 
 bool StockEffectBinding::select_pass(std::size_t technique, std::size_t pass,
     StockDx9PassSelection& output, std::string& error) const {
-    return select_stock_dx9_pass(*definition_, selection_, technique, pass, output, error);
+    for (const auto& entry : selected_)
+        if (entry.technique == technique && entry.pass == pass && entry.version == selection_version_) {
+            output = entry.value; error.clear(); return true;
+        }
+    if (!select_stock_dx9_pass(*definition_, selection_, technique, pass, output, error)) return false;
+    for (auto& entry : selected_)
+        if (entry.technique == technique && entry.pass == pass) { entry.version = selection_version_; entry.value = output; return true; }
+    selected_.push_back({technique, pass, selection_version_, output});
+    return true;
 }
 
 bool StockEffectBinding::copy_values_from(const StockEffectBinding& source, std::string& error) {
@@ -271,6 +282,7 @@ bool StockEffectBinding::copy_values_from(const StockEffectBinding& source, std:
         if (!buffers_[i].storage->write(0, bytes.data(), bytes.size(), error)) return false;
     }
     selection_ = source.selection_;
+    ++selection_version_;
     error.clear(); return true;
 }
 

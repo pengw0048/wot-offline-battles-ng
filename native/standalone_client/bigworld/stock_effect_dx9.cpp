@@ -271,7 +271,134 @@ bool StockDx9EffectMaterial::apply_shader(std::uint32_t shader_index, ShaderAppl
     return true;
 }
 
+bool StockDx9EffectMaterial::build_shader_plan(std::uint32_t shader_index, ShaderPlan& plan, std::string& error) {
+    const auto& definition = *runtime_->definition_;
+    const auto& shader = definition.shaders.at(shader_index);
+    plan = ShaderPlan(); plan.shader = shader_index;
+    for (const auto& resource : shader.resources) {
+        StockEffectResourceTable table;
+        if (resource.kind == 1) table = StockEffectResourceTable::sampler_state;
+        else if (resource.kind == 2) table = StockEffectResourceTable::resource_view;
+        else if (resource.kind == 3) table = StockEffectResourceTable::uniform_buffer;
+        else if (resource.kind == 11) return invalid("DX9 shader requires an unordered view", error);
+        else continue;
+        std::optional<std::uint32_t> index;
+        if (!resolve_stock_effect_reference(definition, binding_.selection(), table,
+                resource.resource_index, index, error)) return false;
+        if (!index) return invalid("Shader resource reference is absent", error);
+        const auto slot = resource.shader_slot;
+        if (resource.kind == 3) {
+            if (*index >= definition.uniform_buffers.size() || !binding_.uniform_buffer(*index))
+                return invalid("Shader refers to an invalid uniform buffer", error);
+            plan.uniform_buffers.emplace_back(slot, *index);
+        } else if (resource.kind == 2) {
+            if (*index >= textures_.size()) return invalid("Shader refers to an invalid texture view", error);
+            if (slot >= plan.resource_slots.size()) plan.resource_slots.resize(std::size_t(slot)+1);
+            plan.resource_slots[slot] = index;
+            plan.resource_first = (std::min)(plan.resource_first, slot);
+        } else {
+            if (*index >= definition.sampler_states.size())
+                return invalid("Shader refers to an invalid sampler state", error);
+            if (slot >= plan.sampler_slots.size()) plan.sampler_slots.resize(std::size_t(slot)+1);
+            plan.sampler_slots[slot] = index;
+        }
+    }
+    return true;
+}
+
+bool StockDx9EffectMaterial::build_plan(std::size_t technique, std::size_t pass, PassPlan& plan, std::string& error) {
+    StockDx9PassSelection selected;
+    if (!binding_.select_pass(technique, pass, selected, error)) return false;
+    if (!selected.vertex_shader || !selected.pixel_shader)
+        return invalid("DX9 material pass has no vertex or pixel shader", error);
+    plan.technique = technique; plan.pass = pass; plan.version = binding_.selection_version();
+    plan.vertex_shader = *selected.vertex_shader; plan.pixel_shader = *selected.pixel_shader;
+    const auto descriptor = selected.render_state ?
+        runtime_->definition_->render_states[*selected.render_state] : stock_dx9_default_render_descriptor();
+    plan.render_states.clear();
+    if (!stock_dx9_render_states(descriptor, plan.render_states, error)) return false;
+    return build_shader_plan(plan.vertex_shader, plan.stages[0], error) &&
+        build_shader_plan(plan.pixel_shader, plan.stages[1], error);
+}
+
+// Same device call order as apply_original: VS, PS, VS/PS registers, render
+// states, VS/PS textures, VS/PS samplers.
+bool StockDx9EffectMaterial::apply_plan(const PassPlan& plan, std::string& error) {
+    const auto& definition = *runtime_->definition_;
+    auto* device = runtime_->state_manager_.get();
+    if (failed(device->SetVertexShader(runtime_->vertex_shaders_[plan.vertex_shader].get()), "SetVertexShader", error) ||
+        failed(device->SetPixelShader(runtime_->pixel_shaders_[plan.pixel_shader].get()), "SetPixelShader", error)) return false;
+    for (const auto& stage : plan.stages) {
+        const auto& shader = definition.shaders[stage.shader];
+        std::vector<StockShaderUniformView> uniform_views;
+        std::vector<std::shared_ptr<StockEffectUniformStorage>> storage_owners;
+        storage_owners.reserve(stage.uniform_buffers.size());
+        for (const auto& entry : stage.uniform_buffers) {
+            if (entry.first >= uniform_views.size()) uniform_views.resize(std::size_t(entry.first)+1);
+            auto storage = binding_.uniform_buffer(entry.second);
+            uniform_views[entry.first] = {storage->bytes().data(), storage->bytes().size()};
+            storage_owners.push_back(std::move(storage));
+        }
+        StockShaderRegisters registers;
+        if (!stage_stock_shader_registers(shader, uniform_views, registers, error)) return false;
+        for (unsigned kind = 0; kind < registers.size(); ++kind) {
+            const auto& block = registers[kind];
+            if (!block.range.end) continue;
+            const auto count = block.range.end-block.range.first;
+            const auto* bytes = block.words.data()+block.range.first*(kind == 0 ? 1 : 4);
+            HRESULT result;
+            if (kind == 0) result = shader.stage == 1 ?
+                device->SetVertexShaderConstantB(block.range.first, reinterpret_cast<const BOOL*>(bytes), count) :
+                device->SetPixelShaderConstantB(block.range.first, reinterpret_cast<const BOOL*>(bytes), count);
+            else if (kind == 1) result = shader.stage == 1 ?
+                device->SetVertexShaderConstantI(block.range.first, reinterpret_cast<const int*>(bytes), count) :
+                device->SetPixelShaderConstantI(block.range.first, reinterpret_cast<const int*>(bytes), count);
+            else result = shader.stage == 1 ?
+                device->SetVertexShaderConstantF(block.range.first, reinterpret_cast<const float*>(bytes), count) :
+                device->SetPixelShaderConstantF(block.range.first, reinterpret_cast<const float*>(bytes), count);
+            if (failed(result, "SetShaderConstant", error)) return false;
+        }
+    }
+    for (const auto& state : plan.render_states)
+        if (failed(device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state.state), state.value),
+                   "SetRenderState", error)) return false;
+    for (const auto& stage : plan.stages) {
+        if (stage.resource_first == 0xffffffff) continue;
+        const auto stage_base = definition.shaders[stage.shader].stage == 1 ? D3DVERTEXTEXTURESAMPLER0 : 0;
+        for (std::size_t slot = stage.resource_first; slot < stage.resource_slots.size(); ++slot) {
+            auto* texture = stage.resource_slots[slot] ? textures_[*stage.resource_slots[slot]].get() : nullptr;
+            if (failed(device->SetTexture(stage_base+static_cast<DWORD>(slot), texture), "SetTexture", error)) return false;
+        }
+    }
+    for (const auto& stage : plan.stages) {
+        const auto stage_base = definition.shaders[stage.shader].stage == 1 ? D3DVERTEXTEXTURESAMPLER0 : 0;
+        for (std::size_t slot = 0; slot < stage.sampler_slots.size(); ++slot) {
+            if (!stage.sampler_slots[slot]) continue;
+            const auto states = stock_dx9_sampler_states(definition.sampler_states[*stage.sampler_slots[slot]]);
+            for (const auto& state : states)
+                if (failed(device->SetSamplerState(stage_base+static_cast<DWORD>(slot),
+                        static_cast<D3DSAMPLERSTATETYPE>(state.state), state.value), "SetSamplerState", error)) return false;
+        }
+    }
+    error.clear(); return true;
+}
+
 bool StockDx9EffectMaterial::apply(std::size_t technique, std::size_t pass, std::string& error) {
+    const auto version = binding_.selection_version();
+    for (const auto& plan : plans_)
+        if (plan.technique == technique && plan.pass == pass && plan.version == version)
+            return apply_plan(plan, error);
+    PassPlan plan;
+    std::string ignored;
+    // A plan that cannot be built takes the original path, preserving its partial-apply failure.
+    if (!build_plan(technique, pass, plan, ignored)) return apply_original(technique, pass, error);
+    for (auto& existing : plans_)
+        if (existing.technique == technique && existing.pass == pass) { existing = std::move(plan); return apply_plan(existing, error); }
+    plans_.push_back(std::move(plan));
+    return apply_plan(plans_.back(), error);
+}
+
+bool StockDx9EffectMaterial::apply_original(std::size_t technique, std::size_t pass, std::string& error) {
     StockDx9PassSelection selected;
     if (!binding_.select_pass(technique, pass, selected, error)) return false;
     if (!selected.vertex_shader || !selected.pixel_shader)

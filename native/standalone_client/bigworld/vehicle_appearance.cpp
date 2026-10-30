@@ -247,8 +247,13 @@ struct CompoundState
     bool active;
     uint32 frame;
     uint32 spaceID;
+    // Inside a CompoundEvaluationScope the first successful evaluate() is
+    // reused: every sticker of one query reads the same node poses.
+    int evaluationScope;
+    bool scopeEvaluated;
 
-    CompoundState() : active( true ), frame( 0 ), spaceID( 0 ) {}
+    CompoundState() : active( true ), frame( 0 ), spaceID( 0 ),
+        evaluationScope( 0 ), scopeEvaluated( false ) {}
 
     bool evaluate( size_t index, std::vector<unsigned char> & visiting )
     {
@@ -285,15 +290,54 @@ struct CompoundState
 
     bool evaluate()
     {
+        if (evaluationScope && scopeEvaluated)
+            return true;
         std::vector<unsigned char> visiting( nodes.size(), 0 );
         for (size_t index = 0; index < nodes.size(); ++index)
             if (!evaluate( index, visiting ))
                 return false;
+        scopeEvaluated = evaluationScope != 0;
         return true;
     }
 };
 
 typedef std::shared_ptr<CompoundState> CompoundStatePtr;
+
+// The models and mounts of the current parts, without their names and bones,
+// so per-frame loops keep iterating the set they started with.
+struct CompoundPartRef
+{
+    PyModelPtr model;
+    size_t mount;
+};
+
+inline std::vector<CompoundPartRef> compoundPartRefs( const CompoundState & state )
+{
+    std::vector<CompoundPartRef> refs;
+    refs.reserve( state.parts.size() );
+    for (size_t index = 0; index < state.parts.size(); ++index)
+    {
+        const CompoundPartRef ref = { state.parts[index].model, state.parts[index].mount };
+        refs.push_back( ref );
+    }
+    return refs;
+}
+
+struct CompoundEvaluationScope
+{
+    CompoundStatePtr state;
+    explicit CompoundEvaluationScope( const CompoundStatePtr & owner ) : state( owner )
+    {
+        ++state->evaluationScope;
+    }
+    ~CompoundEvaluationScope()
+    {
+        if (--state->evaluationScope == 0)
+            state->scopeEvaluated = false;
+    }
+    CompoundEvaluationScope( const CompoundEvaluationScope & ) = delete;
+    CompoundEvaluationScope & operator=( const CompoundEvaluationScope & ) = delete;
+};
 
 // #1513 AttachmentList::NodeProvider (008db160/008fd4a0) is a real
 // MatrixLiaison. Its setter acknowledges the attachment's initial transform
@@ -415,19 +459,33 @@ public:
         if (!state || !state->active)
             return;
         const CompoundPart & part = state->parts[part_];
-        for (size_t index = 0; index < part.bones.size(); ++index)
+        // findNode hashes the name and locks the node catalogue: resolve each
+        // bone once per (super model, top model, part model).
+        Model * top = model.nModels() ? model.topModel( 0 ).get() : NULL;
+        if (nodesModel_ != &model || nodesTop_ != top || nodesPart_ != part.model.get() ||
+            nodes_.size() != part.bones.size())
         {
-            const std::pair<BW::string, size_t> & bone = part.bones[index];
-            Moo::NodePtr node = model.findNode( bone.first );
-            if (node)
-                node->blendClobber( Model::blendCookie(), state->nodes[bone.second].local );
+            nodes_.clear();
+            for (size_t index = 0; index < part.bones.size(); ++index)
+                nodes_.push_back( model.findNode( part.bones[index].first ) );
+            nodesModel_ = &model;
+            nodesTop_ = top;
+            nodesPart_ = part.model.get();
         }
+        for (size_t index = 0; index < part.bones.size(); ++index)
+            if (nodes_[index])
+                nodes_[index]->blendClobber( Model::blendCookie(),
+                    state->nodes[part.bones[index].second].local );
     }
     virtual bool needsRedress() const { return false; }
 
 private:
     std::weak_ptr<CompoundState> state_;
     size_t part_;
+    std::vector<Moo::NodePtr> nodes_;
+    const SuperModel * nodesModel_ = NULL;
+    const Model * nodesTop_ = NULL;
+    const PyObject * nodesPart_ = NULL;
 };
 }
 
@@ -612,7 +670,7 @@ public:
     virtual void tick( float elapsed )
     {
         if (!state_->active || !state_->evaluate()) return;
-        std::vector<CompoundPart> parts = state_->parts;
+        std::vector<CompoundPartRef> parts = compoundPartRefs( *state_ );
         for (size_t index = 0; index < parts.size() && state_->active; ++index)
             parts[index].model->tick( elapsed );
         visitCompoundAttachments( state_, [elapsed]( CompoundAttachment & item )
@@ -640,10 +698,10 @@ public:
     {
         if (!state_->active || !state_->evaluate())
             return;
-        std::vector<CompoundPart> parts = state_->parts;
+        std::vector<CompoundPartRef> parts = compoundPartRefs( *state_ );
         for (size_t index = 0; index < parts.size() && state_->active; ++index)
         {
-            CompoundPart & part = parts[index];
+            CompoundPartRef & part = parts[index];
             const Matrix pose = state_->nodes[part.mount].world;
             part.model->worldTransform( pose );
             if (!state_->active) return;
@@ -661,7 +719,8 @@ public:
             return;
         if (this->visible())
         {
-            std::vector<CompoundPart> parts = state_->parts;
+            CompoundEvaluationScope evaluation( state_ );
+            std::vector<CompoundPartRef> parts = compoundPartRefs( *state_ );
             // 008de410 approves the complete compound at its root once, then
             // charges all parts. It never consumes a separate budget slot per
             // part or lets a budget boundary reflect only half the vehicle.
@@ -689,7 +748,7 @@ public:
                 CompoundStippleScope scope( context, override );
                 for (size_t index = 0; index < parts.size() && state_->active; ++index)
                 {
-                    CompoundPart & part = parts[index];
+                    CompoundPartRef & part = parts[index];
                     CompoundReflectionScope approved( context, reflection ? part.model.get() : NULL );
                     part.model->draw( context, state_->nodes[part.mount].world );
                 }
@@ -751,16 +810,17 @@ public:
         Matrix inverse;
         if (!state_->active || !inverse.invert( state_->nodes[0].world ))
             return;
-        std::vector<CompoundPart> parts = state_->parts;
-        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+        CompoundEvaluationScope scope( state_ );
+        for (size_t index = 0; index < state_->parts.size() && state_->active; ++index)
         {
-            CompoundPart & part = parts[index];
+            PyModelPtr model = state_->parts[index].model;
+            const size_t mount = state_->parts[index].mount;
             BoundingBox local;
-            part.model->localBoundingBox( local, skinny );
+            model->localBoundingBox( local, skinny );
             if (!state_->active) return;
             if (local.insideOut()) continue;
             Matrix relative;
-            relative.multiply( state_->nodes[part.mount].world, inverse );
+            relative.multiply( state_->nodes[mount].world, inverse );
             local.transformBy( relative );
             bounds.addBounds( local );
         }
@@ -786,11 +846,11 @@ public:
     {
         if (state_->active)
         {
-            std::vector<CompoundPart> parts = state_->parts;
-            for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            CompoundEvaluationScope scope( state_ );
+            for (size_t index = 0; index < state_->parts.size() && state_->active; ++index)
             {
-                CompoundPart & part = parts[index];
-                part.model->worldBoundingBox( bounds, state_->nodes[part.mount].world, skinny );
+                PyModelPtr model = state_->parts[index].model;
+                model->worldBoundingBox( bounds, state_->nodes[state_->parts[index].mount].world, skinny );
             }
             visitCompoundAttachments( state_, [&bounds, skinny]( CompoundAttachment & item )
                 { item.object->worldBoundingBox( bounds, item.world, skinny ); } );

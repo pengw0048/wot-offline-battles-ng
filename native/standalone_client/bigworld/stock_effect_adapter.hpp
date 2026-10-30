@@ -54,6 +54,8 @@ create_stock_effect(IDirect3DDevice9 *device,
 HRESULT create_stock_effect_material(ID3DXEffect *definition,
                                      ID3DXEffect **output);
 bool is_stock_effect(ID3DXEffect *effect);
+// BeginPass whose full apply is left to the CommitChanges every draw issues.
+HRESULT begin_stock_effect_pass_for_commit(ID3DXEffect *effect, UINT pass);
 // Masks match Moo CONSTANTS_PER_FRAME/PER_SCREEN/PER_VIEW (1/2/4).
 bool update_stock_effect_shared_constants(StockEffectSharedContext &context,
                                           unsigned mask, std::string &error);

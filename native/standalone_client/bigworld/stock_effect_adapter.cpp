@@ -56,6 +56,8 @@ struct StockEffectSharedContext::Impl {
     std::shared_ptr<const StockEffectBinary> definition;
     std::size_t buffer = 0;
     bool initialised = false;
+    // Producer writer for this declaration, built once and reused per update.
+    std::shared_ptr<class StockEffectAdapter> writer;
   };
   std::map<std::size_t, Shared> declarations;
   std::map<std::pair<std::size_t, std::size_t>, std::string> failures;
@@ -240,6 +242,8 @@ private:
   HRESULT read(D3DXHANDLE parameter, void *data, UINT bytes,
                unsigned annotation_type = 0);
   HRESULT apply_current();
+  HRESULT begin_pass(UINT pass, bool apply);
+  friend HRESULT begin_stock_effect_pass_for_commit(ID3DXEffect *, UINT);
   bool update_resources();
   bool validate_shared(const StockDx9PassSelection &selected,
                        std::string &error);
@@ -1045,6 +1049,9 @@ HRESULT STDMETHODCALLTYPE StockEffectAdapter::Begin(UINT *passes, DWORD flags) {
   return S_OK;
 }
 HRESULT STDMETHODCALLTYPE StockEffectAdapter::BeginPass(UINT pass) {
+  return begin_pass(pass, true);
+}
+HRESULT StockEffectAdapter::begin_pass(UINT pass, bool apply) {
   if (!begun_ || pass_)
     return D3DERR_INVALIDCALL;
   const auto source =
@@ -1052,6 +1059,8 @@ HRESULT STDMETHODCALLTYPE StockEffectAdapter::BeginPass(UINT pass) {
   if (!source || pass >= definition_->techniques[*source].passes.size())
     return E_INVALIDARG;
   pass_ = pass;
+  if (!apply)
+    return S_OK;
   const auto result = apply_current();
   // A failed BeginPass has not established an active pass. Retain Begin so
   // the caller can End the technique or retry after repairing its inputs.
@@ -1215,6 +1224,16 @@ HRESULT create_stock_effect_material(ID3DXEffect *definition,
   source->Release();
   return result;
 }
+HRESULT begin_stock_effect_pass_for_commit(ID3DXEffect *effect, UINT pass) {
+  void *value = nullptr;
+  if (!effect || FAILED(effect->QueryInterface(stock_effect_iid, &value)))
+    return E_INVALIDARG;
+  auto *adapter =
+      static_cast<StockEffectAdapter *>(static_cast<ID3DXEffect *>(value));
+  const auto result = adapter->begin_pass(pass, false);
+  adapter->Release();
+  return result;
+}
 bool is_stock_effect(ID3DXEffect *effect) {
   if (!effect)
     return false;
@@ -1246,7 +1265,9 @@ bool update_stock_effect_shared_constants(StockEffectSharedContext &context,
     if (!(mask & flag))
       continue;
     entry.second.initialised = true;
-    StockEffectAdapter writer(shared.definition, context);
+    if (!entry.second.writer)
+      entry.second.writer = std::make_shared<StockEffectAdapter>(shared.definition, context);
+    StockEffectAdapter &writer = *entry.second.writer;
     for (std::size_t i = 0; i < buffer.uniforms.size(); ++i) {
       const auto &member = buffer.uniforms[i];
       if (!member.semantic_present ||

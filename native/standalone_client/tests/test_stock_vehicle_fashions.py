@@ -66,10 +66,12 @@ struct EffectMaterial {
     std::map<std::string,Vector4> vectors;
     std::map<std::string,bool> booleans;
     std::map<std::string,BaseTexturePtr> textures;
-    std::map<std::string,EffectPropertyPtr> properties;
+    using Properties=std::map<std::string,EffectPropertyPtr>;
+    Properties values;
     unsigned missingWrites=0;
+    Properties& properties() { return values; }
     EffectPropertyPtr expose(const std::string& n) {
-        return properties[n]=std::make_shared<Property>(this,n);
+        return values[n]=std::make_shared<Property>(this,n);
     }
     template<class Value> bool setProperty(const std::string& n,const Value& v,bool) {
         auto property=getProperty(n);
@@ -77,8 +79,8 @@ struct EffectMaterial {
         ++missingWrites;return false;
     }
     EffectPropertyPtr getProperty(const std::string& n) {
-        auto found=properties.find(n);
-        return found==properties.end()?EffectPropertyPtr():found->second;
+        auto found=values.find(n);
+        return found==values.end()?EffectPropertyPtr():found->second;
     }
 };
 bool Property::be(const Vector4& v) { owner->vectors[name]=v;return true; }
@@ -87,6 +89,9 @@ bool Property::be(const BaseTexturePtr& v) { owner->textures[name]=v;return true
 }
 '''
         cases = r'''
+#include <vector>
+std::map<const Moo::EffectMaterial*,MaterialPropertyCache> caches;
+MaterialPropertyCache& cacheOf(const Moo::EffectMaterial& material) { return caches[&material]; }
 int main() {
     auto red=packedVehicleColour(0xff0000ffU);
     assert(red.x==1.f && red.y==0.f && red.z==0.f && red.w==1.f);
@@ -97,13 +102,13 @@ int main() {
     Moo::EffectMaterial legacy;
     for(const char* name:{"tintMap","exclusionMap","tintTiling","colorTint1",
         "colorTint2","colorTint3","colorTint4","g_useOldCamoDetail"}) legacy.expose(name);
-    camo.apply(legacy);
+    camo.apply(legacy,cacheOf(legacy));
     assert(legacy.textures.at("tintMap")==camo.tint);
     assert(legacy.vectors.at("tintTiling").w==5.f);
     assert(legacy.vectors.at("colorTint1").w==0.1f);
     assert(legacy.booleans.at("g_useOldCamoDetail"));
     legacy.expose("colorIdMap")->texture=std::make_shared<int>(2);
-    camo.apply(legacy);
+    camo.apply(legacy,cacheOf(legacy));
     assert(!legacy.booleans.at("g_useOldCamoDetail"));
     VehicleRepaintState repaint;
     repaint.base=packedVehicleColour(0xff0000ffU);
@@ -111,12 +116,12 @@ int main() {
     for(const char* name:{"g_useRepaint","g_baseColor","g_repaintColor1",
         "g_repaintColor2","g_repaintColor3","g_repaintMetallic","g_repaintGloss"})
         disabled.expose(name);
-    repaint.apply(disabled);
+    repaint.apply(disabled,cacheOf(disabled));
     assert(!disabled.booleans.at("g_useRepaint"));
     assert(disabled.vectors.size()==1);
     repaint.enabled=true;repaint.metallic={1,2,3,4};repaint.gloss={5,6,7,8};
     repaint.fading=0.25f;repaint.quality=0.75f;
-    repaint.apply(disabled);
+    repaint.apply(disabled,cacheOf(disabled));
     assert(disabled.booleans.at("g_useRepaint"));
     assert(disabled.vectors.at("g_repaintMetallic").w==0.75f);
     assert(disabled.vectors.at("g_repaintGloss").w==0.25f);
@@ -130,20 +135,20 @@ int main() {
     const auto unrelatedProperty=unrelated.getProperty("diffuseMap");
     for(unsigned frame=0;frame<200;++frame) {
         for(auto* material:{&track,&partial,&unrelated}) {
-            camo.apply(*material);repaint.apply(*material);
+            camo.apply(*material,cacheOf(*material));repaint.apply(*material,cacheOf(*material));
         }
     }
     if(track.missingWrites || partial.missingWrites || unrelated.missingWrites) return 11;
-    assert(track.properties.size()==1 && track.vectors.empty() && track.textures.empty());
+    assert(track.values.size()==1 && track.vectors.empty() && track.textures.empty());
     assert(track.booleans.at("g_useRepaint"));
-    assert(partial.properties.size()==2 && partial.vectors.size()==2);
+    assert(partial.values.size()==2 && partial.vectors.size()==2);
     assert(partial.vectors.at("colorTint2").w==0.2f);
     assert(partial.vectors.at("g_repaintGloss").w==0.25f);
-    assert(unrelated.properties.size()==1 && unrelated.vectors.empty() &&
+    assert(unrelated.values.size()==1 && unrelated.vectors.empty() &&
         unrelated.booleans.empty() && unrelated.textures.empty());
     assert(unrelated.getProperty("diffuseMap")==unrelatedProperty);
     // A later material binding can expose a previously absent property.
-    track.expose("g_baseColor");repaint.apply(track);
+    track.expose("g_baseColor");repaint.apply(track,cacheOf(track));
     assert(track.vectors.at("g_baseColor").x==1.f);
     assert(!legacy.missingWrites && !disabled.missingWrites);
 }
@@ -159,10 +164,10 @@ int main() {
             # Restore the former unconditional writer in the actual handler
             # path. The realistic missing-property guard must reject it.
             body = source[begin:end]
-            old = ('Moo::EffectPropertyPtr property = material.getProperty( name );\n'
+            old = ('Moo::EffectPropertyPtr property = cache.get( material, name );\n'
                    '    if (property)\n        property->be( value );')
             self.assertEqual(body.count(old), 1)
-            body = body.replace(old, 'material.setProperty( name, value, false );')
+            body = body.replace(old, '(void)cache; material.setProperty( name, value, false );')
             (path / 'probe.cpp').write_text(host + body + cases)
             subprocess.run([
                 os.environ.get('CXX', 'clang++'), '-std=c++17', '-Wall',
@@ -172,6 +177,8 @@ int main() {
 
     def test_optional_track_properties_and_lod_restoration(self):
         source = (ROOT / 'bigworld/stock_vehicle_fashions.cpp').read_text()
+        cache_begin = source.index('struct MaterialPropertyCache\n')
+        cache_end = source.index('\nclass VehicleMaterialHandlerState', cache_begin)
         binding_begin = source.index('struct VehicleTrackMaterialBinding\n')
         binding_end = source.index('\n// WGBaseFashion embeds', binding_begin)
         clone_begin = source.index('Moo::ComplexEffectMaterialPtr cloneMaterial(')
@@ -256,7 +263,7 @@ struct Visual { struct PrimitiveGroup { ComplexEffectMaterialPtr material_; }; }
 }
 """
         state = r"""
-struct Handler { void apply(Moo::EffectMaterial&) {} };
+struct Handler { void apply(Moo::EffectMaterial&,MaterialPropertyCache&) {} };
 struct HandlerEntry { std::shared_ptr<Handler> state; };
 struct VehicleFashionState {
     std::vector<VehicleMaterialBinding> bindings;
@@ -348,7 +355,7 @@ int main() {
         with tempfile.TemporaryDirectory(prefix='stock-track-binding-') as directory:
             path = Path(directory)
             (path / 'probe.cpp').write_text(host + source[clone_begin:clone_end] +
-                source[binding_begin:binding_end] + state + source[dress_begin:dress_end] + cases)
+                source[cache_begin:cache_end] + source[binding_begin:binding_end] + state + source[dress_begin:dress_end] + cases)
             subprocess.run([
                 os.environ.get('CXX', 'clang++'), '-std=c++17', '-Wall',
                 '-Wextra', '-Werror', str(path / 'probe.cpp'), '-o', str(path / 'probe')], check=True)

@@ -12,6 +12,7 @@ set(WOT_NUMERICAL_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/stock_gun_history.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_effect_dx9.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_effect_adapter.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_d3d9_render_thread.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/stock_shader_binary.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/stock_effect_binding.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/stock_effect_reflection.cpp"
@@ -314,6 +315,8 @@ target_include_directories(romp PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")
 target_include_directories(particle PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")
+# Scaleform display jobs post to the D3D9 render thread owner.
+target_include_directories(scaleform PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 include("${CMAKE_CURRENT_LIST_DIR}/wwise_sdk.cmake")
 target_link_libraries(bwclient WotWwiseSdk)
 include("${CMAKE_CURRENT_LIST_DIR}/gloox_sdk.cmake")
@@ -350,6 +353,12 @@ if(MSVC)
     set_property(SOURCE
         ${WOT_STOCK_ADAPTER_SOURCES}
         APPEND PROPERTY COMPILE_OPTIONS "/wd5033")
+    # The ARIE effect owners include the engine profiler under BW_CLIENT.
+    set_property(SOURCE
+        "${CMAKE_CURRENT_LIST_DIR}/stock_effect_dx9.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/stock_effect_adapter.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS
+        "_HAS_AUTO_PTR_ETC=1;_HAS_TR1_NAMESPACE=1;_ENFORCE_MATCHING_ALLOCATORS=0")
 else()
     set_source_files_properties(${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES}
         PROPERTIES COMPILE_OPTIONS "-std=c++17;-fno-fast-math;-ffp-contract=off")

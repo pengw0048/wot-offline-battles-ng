@@ -149,20 +149,81 @@ Vector4 packedVehicleColour( uint32 colour )
         static_cast<float>( colour >> 24 ) * scale );
 }
 
+// Per-material getProperty results keyed by the caller's literal name. An entry
+// stays valid while the material still maps its key to the same property.
+struct MaterialPropertyCache
+{
+    typedef Moo::EffectMaterial::Properties::key_type Key;
+    struct Entry
+    {
+        const char * name;
+        Key key;
+        bool keyed;
+        Moo::EffectPropertyPtr property;
+        size_t count;
+    };
+    std::vector<Entry> entries;
+
+    Moo::EffectPropertyPtr get( Moo::EffectMaterial & material, const char * name )
+    {
+        Moo::EffectMaterial::Properties & properties = material.properties();
+        Entry * entry = NULL;
+        for (size_t index = 0; index < entries.size() && !entry; ++index)
+            if (entries[index].name == name)
+                entry = &entries[index];
+        if (entry)
+        {
+            if (!entry->property && entry->count == properties.size())
+                return Moo::EffectPropertyPtr();
+            if (entry->keyed)
+            {
+                Moo::EffectMaterial::Properties::iterator it = properties.find( entry->key );
+                if (it != properties.end() && it->second == entry->property)
+                    return entry->property;
+            }
+        }
+        else
+        {
+            entries.push_back( Entry() );
+            entry = &entries.back();
+            entry->name = name;
+        }
+        const Moo::EffectPropertyPtr resolved = material.getProperty( name );
+        entry->property = resolved;
+        entry->keyed = false;
+        entry->count = properties.size();
+        for (Moo::EffectMaterial::Properties::iterator it = properties.begin();
+            resolved && it != properties.end(); ++it)
+            if (it->second == resolved)
+            {
+                entry->key = it->first;
+                entry->keyed = true;
+                break;
+            }
+        if (resolved && !entry->keyed)
+        {
+            // Not addressable by key: resolve by name every time.
+            entry->property = Moo::EffectPropertyPtr();
+            entry->count = size_t( -1 );
+        }
+        return resolved;
+    }
+};
+
 class VehicleMaterialHandlerState
 {
 public:
     virtual ~VehicleMaterialHandlerState() {}
-    virtual void apply( Moo::EffectMaterial & material ) const = 0;
+    virtual void apply( Moo::EffectMaterial & material, MaterialPropertyCache & cache ) const = 0;
 };
 
 template<class Value>
 void setVehicleMaterialProperty( Moo::EffectMaterial & material,
-    const char * name, const Value & value )
+    MaterialPropertyCache & cache, const char * name, const Value & value )
 {
     // #1513's handler binder (96d8d0) only replaces properties exposed by
     // this effect. A handler also visits track and non-colourised materials.
-    Moo::EffectPropertyPtr property = material.getProperty( name );
+    Moo::EffectPropertyPtr property = cache.get( material, name );
     if (property)
         property->be( value );
 }
@@ -175,24 +236,24 @@ struct VehicleCamoState : public VehicleMaterialHandlerState
     Vector4 weights = Vector4( 0.f, 0.f, 0.f, 0.f );
     uint32 colours[4] = { 0, 0, 0, 0 };
 
-    virtual void apply( Moo::EffectMaterial & material ) const
+    virtual void apply( Moo::EffectMaterial & material, MaterialPropertyCache & cache ) const
     {
         if (tint)
-            setVehicleMaterialProperty( material, "tintMap", tint );
+            setVehicleMaterialProperty( material, cache, "tintMap", tint );
         if (exclusion)
-            setVehicleMaterialProperty( material, "exclusionMap", exclusion );
-        setVehicleMaterialProperty( material, "tintTiling", tiling );
+            setVehicleMaterialProperty( material, cache, "exclusionMap", exclusion );
+        setVehicleMaterialProperty( material, cache, "tintTiling", tiling );
         Moo::BaseTexturePtr ids;
-        Moo::EffectPropertyPtr idProperty = material.getProperty( "colorIdMap" );
+        Moo::EffectPropertyPtr idProperty = cache.get( material, "colorIdMap" );
         if (idProperty)
             idProperty->getTexture( ids );
-        setVehicleMaterialProperty( material, "g_useOldCamoDetail", !ids );
+        setVehicleMaterialProperty( material, cache, "g_useOldCamoDetail", !ids );
         static const char * names[] = { "colorTint1", "colorTint2", "colorTint3", "colorTint4" };
         for (size_t index = 0; index < 4; ++index)
         {
             Vector4 colour = packedVehicleColour( colours[index] );
             colour.w = weights[index];
-            setVehicleMaterialProperty( material, names[index], colour );
+            setVehicleMaterialProperty( material, cache, names[index], colour );
         }
     }
 };
@@ -207,18 +268,18 @@ struct VehicleRepaintState : public VehicleMaterialHandlerState
     float fading = 0.f;
     float quality = 1.f;
 
-    virtual void apply( Moo::EffectMaterial & material ) const
+    virtual void apply( Moo::EffectMaterial & material, MaterialPropertyCache & cache ) const
     {
-        setVehicleMaterialProperty( material, "g_useRepaint", enabled );
-        setVehicleMaterialProperty( material, "g_baseColor", base );
+        setVehicleMaterialProperty( material, cache, "g_useRepaint", enabled );
+        setVehicleMaterialProperty( material, cache, "g_baseColor", base );
         if (!enabled)
             return;
         static const char * names[] = { "g_repaintColor1", "g_repaintColor2", "g_repaintColor3" };
         for (size_t index = 0; index < 3; ++index)
-            setVehicleMaterialProperty( material, names[index], colours[index] );
-        setVehicleMaterialProperty( material, "g_repaintMetallic",
+            setVehicleMaterialProperty( material, cache, names[index], colours[index] );
+        setVehicleMaterialProperty( material, cache, "g_repaintMetallic",
             Vector4( metallic.x, metallic.y, metallic.z, quality ) );
-        setVehicleMaterialProperty( material, "g_repaintGloss",
+        setVehicleMaterialProperty( material, cache, "g_repaintGloss",
             Vector4( gloss.x, gloss.y, gloss.z, fading ) );
     }
 };
@@ -233,12 +294,23 @@ struct VehicleTrackMaterialBinding
 {
     Moo::EffectPropertyPtr authoredUV;
     Moo::EffectPropertyPtr scrollingUV;
+    // authoredUV's slot, replaced in place every frame.
+    Moo::EffectMaterial::Properties::key_type key = Moo::EffectMaterial::Properties::key_type();
+    bool keyed = false;
 
     bool bind( Moo::EffectMaterial & material )
     {
         authoredUV = material.getProperty( "vTransform_diffuse" );
         if (!authoredUV)
             return true;
+        Moo::EffectMaterial::Properties & properties = material.properties();
+        for (Moo::EffectMaterial::Properties::iterator it = properties.begin();
+            it != properties.end() && !keyed; ++it)
+            if (it->second == authoredUV)
+            {
+                key = it->first;
+                keyed = true;
+            }
         // #1513 af07a0 calls 96d8d0 with a vector property and ignores an
         // absent slot. It does not require the previous property to be a
         // vector. Keep its identity for the distance-LOD restoration.
@@ -258,7 +330,14 @@ struct VehicleTrackMaterialBinding
             return;
         if (!beyondLod)
             scrollingUV->be( value );
-        material.replaceProperty( "vTransform_diffuse", beyondLod ? authoredUV : scrollingUV );
+        const Moo::EffectPropertyPtr & current = beyondLod ? authoredUV : scrollingUV;
+        Moo::EffectMaterial::Properties & properties = material.properties();
+        Moo::EffectMaterial::Properties::iterator it = keyed ? properties.find( key ) : properties.end();
+        if (it != properties.end() &&
+            (it->second == authoredUV || it->second == scrollingUV))
+            it->second = current;
+        else
+            material.replaceProperty( "vTransform_diffuse", current );
     }
 };
 
@@ -271,6 +350,8 @@ struct VehicleMaterialBinding
     int trackSide;
     VehicleTrackMaterialBinding normalTracks;
     VehicleTrackMaterialBinding alphaTracks;
+    MaterialPropertyCache normalProperties;
+    MaterialPropertyCache alphaProperties;
 };
 
 // WGBaseFashion embeds a Svarog ComponentSystem (#1513 native +0x0c).
@@ -447,7 +528,8 @@ struct VehicleFashionState
             if (trackConfigured && crashed && binding.trackSide != 0)
                 effect->setProperty( "crash_coefficient", crashCoefficient[binding.trackSide - 1], false );
             for (size_t handler = 0; handler < handlers.size(); ++handler)
-                handlers[handler].state->apply( *effect );
+                handlers[handler].state->apply( *effect,
+                    binding.alpha && alpha != 1.f ? binding.alphaProperties : binding.normalProperties );
             binding.group->material_ = material;
         }
     }

@@ -102,6 +102,8 @@ public:
         std::size_t size, std::optional<std::uint32_t> basic_type, std::string& error);
     bool select_pass(std::size_t technique, std::size_t pass,
                      StockDx9PassSelection& output, std::string& error) const;
+    // Increments whenever $Selection bytes change; selector results depend only on them.
+    std::uint64_t selection_version() const { return selection_version_; }
     bool copy_values_from(const StockEffectBinding& source, std::string& error);
 private:
     struct Buffer {
@@ -113,6 +115,9 @@ private:
     std::vector<Buffer> buffers_;
     std::vector<unsigned char> selection_;
     std::optional<std::size_t> selection_buffer_;
+    std::uint64_t selection_version_ = 1;
+    struct SelectedPass { std::size_t technique, pass; std::uint64_t version; StockDx9PassSelection value; };
+    mutable std::vector<SelectedPass> selected_;
 };
 
 } // namespace wot

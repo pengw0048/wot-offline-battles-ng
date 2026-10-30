@@ -21,6 +21,12 @@ def block(source, signature):
         depth += (source[cursor] == '{') - (source[cursor] == '}')
     return source[start:cursor + 1]
 
+def compound_helpers(source):
+    """Production per-frame part refs and evaluation scope, spliced after CompoundStatePtr."""
+    return '\n'.join((block(source, 'struct CompoundPartRef') + ';',
+                      block(source, 'inline std::vector<CompoundPartRef> compoundPartRefs('),
+                      block(source, 'struct CompoundEvaluationScope') + ';', ''))
+
 
 def sdk_sources(test):
     configured = os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE') or os.environ.get('WOT_BIGWORLD_SOURCE_ARCHIVE')
@@ -59,6 +65,7 @@ def harness(sdk, before=False):
     definitions += '\n' + block(sdk['lib/math/boundbox.cpp'], 'void AABB::transformBy(')
     host = (ROOT / 'tests/stock_vehicle_compound_bounds_host.hpp').read_text()
     owners = source[source.index('class PyCompoundModel :'):]
+    host = host.replace('using CompoundStatePtr=std::shared_ptr<CompoundState>;\n', 'using CompoundStatePtr=std::shared_ptr<CompoundState>;\n' + compound_helpers(source), 1)
     replacements = {
         'SDK_BOUNDS': definitions,
         'SDK_PARTICLE': block(sdk['lib/particle/particle_system.cpp'], 'void ParticleSystem::localBoundingBox('),

@@ -7,6 +7,7 @@ import shutil
 import struct
 import subprocess
 from native_test_compile_flags import native_test_compile_flags
+from test_vehicle_compound_bounds import compound_helpers
 import sys
 import tempfile
 import tarfile
@@ -426,6 +427,7 @@ int main(){
     }
     for name, signature in replacements.items():
         host = host.replace('@' + name + '@', block(source, signature))
+    host = host.replace('using CompoundStatePtr=std::shared_ptr<CompoundState>;\n', 'using CompoundStatePtr=std::shared_ptr<CompoundState>;\n' + compound_helpers(source), 1)
     compound = source[source.index('class PyCompoundModel :'):]
     host = host.replace('@OWNER_POSITION_GET@', block(compound, 'Vector3 position() const'))
     host = host.replace('@OWNER_POSITION_SET@', block(compound, 'void position( const Vector3 & value )'))

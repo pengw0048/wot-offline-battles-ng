@@ -104,7 +104,7 @@ struct CompoundAttachment {
     bool ownsObject(){return object->attached && object->liaison==this;}
 };
 using CompoundAttachmentPtr=std::shared_ptr<CompoundAttachment>;
-struct CompoundState {bool active=true;std::vector<CompoundNode> nodes;std::vector<CompoundPart> parts;std::vector<CompoundAttachmentPtr> attachments;};
+struct CompoundState {bool active=true;std::vector<CompoundNode> nodes;std::vector<CompoundPart> parts;std::vector<CompoundAttachmentPtr> attachments;int evaluationScope=0;bool scopeEvaluated=false;};
 using CompoundStatePtr=std::shared_ptr<CompoundState>;
 @VISIT@
 struct Owner:Attachment {
