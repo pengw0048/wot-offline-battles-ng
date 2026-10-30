@@ -95,7 +95,7 @@ class StockWireCodec(unittest.TestCase):
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                             '-Wno-missing-field-initializers', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
-                            str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_wire_host_module.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'), str(ROOT / 'tests/stock_wire_host_module.cpp'),
                             '-o', str(folder / 'wire_test.so')], check=True)
             frames = [{'frame': SCHEMA.encode(m).hex(), 'type': m['type']} for m in messages]
             (folder / 'frames.json').write_text(json.dumps(frames))
@@ -210,7 +210,7 @@ class StagedClientTransport(unittest.TestCase):
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                             '-Wno-missing-field-initializers', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
-                            '-DWOT_WIRE_HOST_BUILD', str(ROOT / 'bigworld/stock_wire_codec.cpp'),
+                            '-DWOT_WIRE_HOST_BUILD', str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'),
                             str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
@@ -292,7 +292,7 @@ class NativeReplay(unittest.TestCase):
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                             '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
                             '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
-                            '-I' + str(ROOT / 'bigworld'), str(ROOT / 'bigworld/stock_wire_codec.cpp'),
+                            '-I' + str(ROOT / 'bigworld'), str(ROOT / 'bigworld/stock_wire_codec.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'),
                             str(ROOT / 'bigworld/stock_wire_replay.cpp'), str(ROOT / 'bigworld/stock_wire_net.cpp'),
                             str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)

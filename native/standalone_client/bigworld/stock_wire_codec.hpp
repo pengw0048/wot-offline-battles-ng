@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+namespace stock_native_client_state { struct Value; }
+
 namespace stock_wire {
 
 const std::size_t frame_header_bytes = 8;
@@ -18,6 +20,12 @@ PyObject* decode_any(const unsigned char* data, std::size_t size);
 bool encode_any(PyObject* value, std::string& out);
 // Total frame size from the 8-byte header, or 0 when the header is incomplete.
 std::size_t frame_size(const unsigned char* data, std::size_t size);
+// Decode one frame into owned native values without the GIL; false with a reason on failure.
+bool decode_value(const unsigned char* data, std::size_t size, stock_native_client_state::Value& out,
+                  std::string& error);
+// Message id for a schema message name (0 when absent), and the id in a frame header.
+uint16_t message_id(const char* name);
+uint16_t frame_message(const unsigned char* data, std::size_t size);
 PyMethodDef* methods();
 
 }

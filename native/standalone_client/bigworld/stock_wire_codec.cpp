@@ -1,4 +1,5 @@
 #include "stock_wire_codec.hpp"
+#include "stock_native_client_state.hpp"
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -389,6 +390,153 @@ PyObject* frameSizePython(PyObject*, PyObject* args) {
     if (!buffer(args, data, size)) return nullptr;
     return PyInt_FromSize_t(frame_size(data, size));
 }
+}
+
+// ---- GIL-free decoding into owned native values -----------------------------------------
+namespace {
+namespace cs = stock_native_client_state;
+using V = cs::Value;
+V nativeInteger(long long value) { V out; out.kind = V::Kind::Integer; out.integer = value; return out; }
+V nativeNumber(double value) { V out; out.kind = V::Kind::Number; out.number = value; return out; }
+V nativeBoolean(bool value) { V out; out.kind = V::Kind::Boolean; out.boolean = value; return out; }
+V nativeText(Reader& r, std::size_t n) {
+    r.need(n); V out; out.kind = V::Kind::Text;
+    out.text.assign(reinterpret_cast<const char*>(r.data + r.at), n); r.at += n; return out;
+}
+V nativeValue(Reader& r, uint32_t type);
+
+V nativeAny(Reader& r) {
+    switch (r.read<unsigned char>()) {
+    case A_NULL: return V{};
+    case A_FALSE: return nativeBoolean(false);
+    case A_TRUE: return nativeBoolean(true);
+    case A_INT: return nativeInteger(r.read<long long>());
+    case A_UINT: return nativeInteger(static_cast<long long>(r.read<unsigned long long>()));
+    case A_FLOAT: return nativeNumber(r.read<double>());
+    case A_STR: return nativeText(r, r.read<uint32_t>());
+    case A_LIST: {
+        uint32_t n = r.read<uint32_t>(); V out; out.kind = V::Kind::Array; out.array.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) out.array.push_back(nativeAny(r));
+        return out;
+    }
+    case A_MAP: {
+        uint32_t n = r.read<uint32_t>(); V out; out.kind = V::Kind::Object;
+        for (uint32_t i = 0; i < n; ++i) { V key = nativeText(r, r.read<uint32_t>()); out.object[key.text] = nativeAny(r); }
+        return out;
+    }
+    }
+    throw Failure("bad any tag");
+}
+
+void nativeRecord(Reader& r, uint32_t index, V& out) {
+    const RecordDesc& rec = records[index];
+    std::size_t bytes = (2 * rec.flagged + 7) / 8;
+    r.need(bytes);
+    const unsigned char* bits = r.data + r.at;
+    r.at += bytes;
+    uint32_t flag = 0;
+    for (uint32_t f = 0; f < rec.count; ++f) {
+        const FieldDesc& field = fields[rec.first + f];
+        if (field.flags) {
+            uint32_t bit = 2 * flag;
+            bool present = (bits[bit / 8] >> (bit % 8)) & 1, null = (bits[(bit + 1) / 8] >> ((bit + 1) % 8)) & 1;
+            ++flag;
+            if (!present) continue;
+            if (null) { out.object[field.name] = V{}; continue; }
+        }
+        out.object[field.name] = nativeValue(r, field.type);
+    }
+}
+
+V nativeValue(Reader& r, uint32_t index) {
+    const Type& t = types[index];
+    switch (t.kind) {
+    case U8: return nativeInteger(r.read<uint8_t>());
+    case U16: return nativeInteger(r.read<uint16_t>());
+    case U32: return nativeInteger(r.read<uint32_t>());
+    case U64: return nativeInteger(static_cast<long long>(r.read<unsigned long long>()));
+    case I8: return nativeInteger(r.read<int8_t>());
+    case I16: return nativeInteger(r.read<int16_t>());
+    case I32: return nativeInteger(r.read<int32_t>());
+    case I64: return nativeInteger(r.read<long long>());
+    case F32: return nativeNumber(r.read<float>());
+    case F64: return nativeNumber(r.read<double>());
+    case BOOL: return nativeBoolean(r.read<unsigned char>() != 0);
+    case STR: return nativeText(r, r.read<uint16_t>());
+    case LIST: case TUPLE: {
+        uint32_t n = t.kind == LIST ? r.read<uint16_t>() : t.b;
+        V out; out.kind = V::Kind::Array; out.array.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) out.array.push_back(nativeValue(r, t.kind == LIST ? t.a : children[t.a + i]));
+        return out;
+    }
+    case MAP: {
+        uint16_t n = r.read<uint16_t>(); V out; out.kind = V::Kind::Object;
+        for (uint16_t i = 0; i < n; ++i) { V key = nativeText(r, r.read<uint16_t>()); out.object[key.text] = nativeValue(r, t.a); }
+        return out;
+    }
+    case ENUM: {
+        unsigned char i = r.read<unsigned char>();
+        if (i >= t.b) throw Failure("enum index out of range");
+        const EnumValue& e = enums[t.a + i];
+        switch (e.kind) {
+        case 0: return V{};
+        case 1: return nativeBoolean(false);
+        case 2: return nativeBoolean(true);
+        case 3: return nativeInteger(e.integer);
+        default: { V out; out.kind = V::Kind::Text; out.text = e.text; return out; }
+        }
+    }
+    case ANY: return nativeAny(r);
+    case REF: { V out; out.kind = V::Kind::Object; nativeRecord(r, t.a, out); return out; }
+    case ONEOF: {
+        unsigned char i = r.read<unsigned char>();
+        if (i >= t.b) throw Failure("alternative out of range");
+        return nativeValue(r, children[t.a + i]);
+    }
+    case VARIANT: {
+        unsigned char i = r.read<unsigned char>();
+        if (i >= t.b) throw Failure("variant out of range");
+        const VariantEntry& entry = variants[t.a + i];
+        V out; out.kind = V::Kind::Object; out.object[t.key].kind = V::Kind::Text; out.object[t.key].text = entry.tag;
+        nativeRecord(r, entry.record, out);
+        return out;
+    }
+    }
+    throw Failure("bad schema type");
+}
+}
+
+uint16_t message_id(const char* name) {
+    for (uint32_t i = 0; i < message_count; ++i) if (std::strcmp(name, messages[i].name) == 0) return static_cast<uint16_t>(i + 1);
+    return 0;
+}
+
+uint16_t frame_message(const unsigned char* data, std::size_t size) {
+    if (size < frame_header_bytes) return 0;
+    uint16_t id; std::memcpy(&id, data + 4, sizeof(id)); return id;
+}
+
+bool decode_value(const unsigned char* data, std::size_t size, cs::Value& out, std::string& error) {
+    try {
+        Reader r{data, size, 0};
+        uint32_t length = r.read<uint32_t>(); uint16_t id = r.read<uint16_t>(); r.read<uint16_t>();
+        if (length + frame_header_bytes != size) throw Failure("frame length mismatch");
+        if (id == 0 || id > message_count) throw Failure("unknown message id");
+        const MessageDesc& m = messages[id - 1];
+        if (m.layout == 0) { out = nativeAny(r); if (out.kind != V::Kind::Object) throw Failure("control body is not a dict"); }
+        else {
+            out = V{}; out.kind = V::Kind::Object;
+            uint32_t record = m.a;
+            if (m.layout == 2) { unsigned char i = r.read<unsigned char>(); if (i >= m.b) throw Failure("layout out of range"); record = types[children[m.a + i]].a; }
+            nativeRecord(r, record, out);
+        }
+        out.object["type"].kind = V::Kind::Text; out.object["type"].text = m.name;
+        if (r.at != size) throw Failure("trailing bytes");
+        return true;
+    } catch (const std::exception& failure) {
+        error = failure.what();
+        return false;
+    }
 }
 
 std::size_t frame_size(const unsigned char* data, std::size_t size) {

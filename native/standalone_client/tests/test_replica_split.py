@@ -54,7 +54,7 @@ def server_snapshot():
     return None
 
 
-class ReplicaSplit(unittest.TestCase):
+class _Stream(unittest.TestCase):
     def setUp(self):
         self.base = server_snapshot()
         if self.base is None:
@@ -84,6 +84,7 @@ class ReplicaSplit(unittest.TestCase):
         got = dict((key, comparable(row, key[0])) for key, row in model.items())
         self.assertEqual(got, expected)
 
+class ReplicaSplit(_Stream):
     def test_first_snapshot_is_full_and_complete(self):
         message, decoded, model = next(self.stream([self.base]))
         self.assertTrue(decoded['full'])
@@ -133,3 +134,55 @@ class ReplicaSplit(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+NATIVE_MERGE = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import wire_replica_host
+frames = [line.strip().decode('hex') for line in open(sys.argv[2])]
+json.dump(wire_replica_host.merge(frames), open(sys.argv[3], 'w'))
+'''
+
+
+class NativeReplicaStore(_Stream):
+    """The C++ receiver (GIL-free decode + merge) rebuilds the complete rows."""
+
+    def test_native_merge_rebuilds_complete_snapshots(self):
+        import subprocess
+        import tempfile
+        hit = copy.deepcopy(self.base)
+        hit['server_tick'] += 1
+        hit['bots'][0]['health'] -= 25
+        hit['bots'][1]['x'] += 2.0
+        gone = copy.deepcopy(hit)
+        gone['server_tick'] += 1
+        gone['bots'].pop()
+        messages = [self.base, copy.deepcopy(self.base), hit, gone]
+        baseline, frames = None, []
+        for message in messages:
+            out, baseline = replica_split.encode(message, baseline, self.own, False)
+            frames.append(SCHEMA.encode(out))
+        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
+                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
+        with tempfile.TemporaryDirectory(prefix='wire-replica-') as folder:
+            folder = Path(folder)
+            subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                            '-Wno-missing-field-initializers', '-Wno-register', '-bundle', '-undefined',
+                            'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
+                            '-I' + str(ROOT / 'bigworld'), str(ROOT / 'tests/stock_wire_replica_host.cpp'),
+                            '-o', str(folder / 'wire_replica_host.so')], check=True)
+            (folder / 'frames.txt').write_text('\n'.join(frame.hex() for frame in frames))
+            (folder / 'merge.py').write_text(NATIVE_MERGE)
+            subprocess.run([py27, '-B', str(folder / 'merge.py'), str(folder), str(folder / 'frames.txt'),
+                            str(folder / 'out.json')], check=True)
+            snapshots = json.loads((folder / 'out.json').read_text())
+        for message, snapshot in zip(messages, snapshots):
+            self.assertEqual(snapshot['type'], 'snapshot')
+            self.assertEqual(snapshot['server_tick'], message['server_tick'])
+            own = [row for row in snapshot['players'] if row['id'] == self.own]
+            self.assertEqual(own, [r for r in message['players'] if r['id'] == self.own])
+            model = dict((('player', row['id']), row) for row in snapshot['players'] if row['id'] != self.own)
+            model.update((('bot', row['id']), row) for row in snapshot['bots'])
+            self.assertMerged(message, model)
