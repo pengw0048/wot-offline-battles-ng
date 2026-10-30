@@ -22,7 +22,12 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
            '_record_is_event_ready', '_combat_event_source', '_apply_combat_event', '_frame',
            '_optional_feature_enabled', '_run_optional_feature', '_schedule', '_maintain_standard_space_visibility',
-           '_start_team_chat_when_roster_ready', '_prewarm_critical_layout', '_maybe_send_battle_ready', '_retry_bot_manifest')
+           '_start_team_chat_when_roster_ready', '_prewarm_critical_layout', '_maybe_send_battle_ready', '_retry_bot_manifest',
+           '_attack_reason', '_is_blind_local_attack', '_apply_vehicle_statistics_event', '_present_direct_spot',
+           '_apply_detection_event', '_apply_assist_event', '_apply_environment_critical_feedback',
+           '_apply_destructible_event', '_feedback_entity_key', '_combat_record_team', '_combat_target_is_spotted',
+           '_present_damage_sticker', '_apply_battle_result', '_present_combat_feedback')
+CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES',)
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -99,7 +104,8 @@ def run(name, make, args):
             '_worker_probe_authority_callbacks', '_worker_probe_bot_generated', '_worker_probe_bot_enqueued',
             '_worker_probe_bot_send_failed', '_worker_probe_bot_count', '_local_frame_stages',
             '_standard_space_visibility', '_next_space_visibility_check', '_team_chat_initialized', '_ready_sent',
-            '_next_bot_manifest_retry', '_bot_manifest_retry_deadline', '_bot_manifest_retry_identity'))
+            '_next_bot_manifest_retry', '_bot_manifest_retry_deadline', '_bot_manifest_retry_identity',
+            '_battle_result', '_round_finished_notified', '_battle_live'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -184,6 +190,17 @@ NATIVE = {
     '_prewarm_critical_layout': lambda b: native.prewarm_critical_layout(b, globals()),
     '_maybe_send_battle_ready': native.maybe_send_battle_ready,
     '_retry_bot_manifest': native.retry_bot_manifest,
+    '_attack_reason': native.attack_reason,
+    '_is_blind_local_attack': native.blind_local_attack,
+    '_apply_vehicle_statistics_event': native.vehicle_statistics_event,
+    '_present_direct_spot': native.present_direct_spot,
+    '_apply_detection_event': native.detection_event,
+    '_apply_assist_event': native.assist_event,
+    '_apply_environment_critical_feedback': lambda b, e: native.environment_critical_feedback(b, e, globals()),
+    '_apply_destructible_event': lambda b, e: native.destructible_event(b, e, native_client_drive),
+    '_present_damage_sticker': native.present_damage_sticker,
+    '_apply_battle_result': native.battle_result,
+    '_present_combat_feedback': lambda b, e, t, a, reason_id=None: native.present_combat_feedback(b, e, t, a, reason_id),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -1229,6 +1246,191 @@ for siege in (0, 1, 2, 3, 7, True, None):
                                 b._battle_probe = b
                                 return b, args
                             run('_apply_siege_state', checked, (siege, left, presented, pending, seq, local, variant)); cases += 1
+# Event-kind feedback handlers.
+class Group(object):
+    SHOT = 'shot_member'
+class FeedbackTypes(Log):
+    SPOTTED, TARGET_VISIBILITY, RADIO_ASSIST, TRACK_ASSIST, STUN_ASSIST = 11, 12.5, 21, 22, 23
+def feedback_battle(log, variant, worker=False, records=None):
+    b = battle(log, worker=worker, records=records if records is not None else {
+        'player:3': {'engine_id': 30, 'local': True, 'state': {'team': 1, 'frags': 2}, 'spot_marker_visible': variant % 3 == 0},
+        'bot:7': {'engine_id': 70, 'state': {'team': 2}, 'spot_visible': variant % 2 == 0},
+        'bot:8': {'engine_id': '80', 'state': {'team': '2'}, 'spot_feedback_sent': variant % 5 == 0},
+        'bot:9': {'engine_id': 90, 'state': {'team': 1 if variant % 4 else 'x'}},
+        'player:4': {'engine_id': 40, 'state': None}})
+    constants = Log(log, 'constants', ATTACK_REASON=Group() if variant % 3 else None,
+                    ATTACK_REASON_INDICES={'shot_member': 6, None: 4} if variant % 4 else [1])
+    types = FeedbackTypes(log, 'types', {'packDamage': lambda d, r: d * 4 + r, 'packVisibility': lambda a, c: 3})
+    common = Log(log, 'common', BATTLE_EVENT_TYPE=types if variant % 7 else None)
+    b._runtime = Log(log, 'runtime', constants=constants, battle_feedback_common=common)
+    b._avatar = Log(log, 'avatar', missing=('onBattleEvents',) if variant % 11 == 10 else ())
+    stub(b, log, '_run_optional_feature', lambda name, fn, args: fn(*args) if variant % 2 else None)
+    stub(b, log, '_apply_vehicle_statistics', variant % 3 == 1)
+    stub(b, log, '_present_combat_feedback', 'presented' if variant % 2 else None)
+    stub(b, log, '_apply_destructible_event_visible', 'visible')
+    fake_module('native_input_diagnostics', Log(log, 'diagnostics'))
+    return b
+for variant in range(24):
+    for member, fallback in (('SHOT', 0), ('MISSING', 3), ('SHOT', '7'), ('SHOT', 'x')):
+        run('_attack_reason', lambda log, v=variant: (feedback_battle(log, v), (member, fallback)), (variant, member, fallback)); cases += 1
+    for target, attacker in (('bot:7', 'player:3'), ('bot:8', 'player:3'), ('bot:9', 'player:3'), ('player:3', 'bot:7'),
+                             ('bot:7', 'bot:9'), ('player:4', 'player:3')):
+        def make(log, v=variant, t=target, a=attacker):
+            b = feedback_battle(log, v)
+            return b, (b._records[t], b._records[a])
+        run('_is_blind_local_attack', make, (variant, target, attacker)); cases += 1
+    for event in ({'actor_kind': 'player', 'actor_id': 3, 'frags': 4}, {'actor_kind': 'bot', 'actor_id': '7', 'team_killer': 1},
+                  {'actor_kind': 'bot', 'actor_id': 7.9, 'frags': '6', 'team_killer': 0}, {'actor_kind': 'bot', 'actor_id': None},
+                  {'actor_kind': 'bot', 'actor_id': 'x'}, {'actor_kind': 'player', 'actor_id': 4}, {'actor_kind': 'bot', 'actor_id': 5},
+                  {'actor_kind': 'player', 'actor_id': 3, 'frags': 'bad'}):
+        run('_apply_vehicle_statistics_event', lambda log, v=variant, e=event: (feedback_battle(log, v), (dict(e),)),
+            (variant, event)); cases += 1
+    for key in ('bot:7', 'bot:8', 'player:4'):
+        def make(log, v=variant, k=key):
+            b = feedback_battle(log, v)
+            if v % 6 == 5: del b._records[k]['engine_id']
+            return b, (b._records[k],)
+        run('_present_direct_spot', make, (variant, key)); cases += 1
+    for worker in (False, True):
+        for event in ({'observer_kind': 'player', 'observer_id': 3, 'target_kind': 'bot', 'target_id': 7},
+                      {'observer_kind': 'bot', 'observer_id': 7, 'target_kind': 'bot', 'target_id': 8},
+                      {'observer_kind': 'player', 'observer_id': 3, 'target_kind': 'bot', 'target_id': 99},
+                      {'observer_kind': 'tank', 'observer_id': 3}, {'observer_kind': 'player', 'observer_id': None},
+                      {'observer_kind': 'player', 'observer_id': 3, 'target_kind': 'bot'}):
+            run('_apply_detection_event', lambda log, v=variant, w=worker, e=event: (feedback_battle(log, v, w), (dict(e),)),
+                (variant, worker, event)); cases += 1
+        for event in ({'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 7, 'category': 'radio', 'damage': 40},
+                      {'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 8, 'category': 'track', 'damage': -5},
+                      {'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 7, 'category': 'stun', 'damage': None},
+                      {'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 7, 'category': 'smoke'},
+                      {'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 99, 'category': 'radio'},
+                      {'assister_kind': 'bot', 'assister_id': 7, 'target_kind': 'player', 'target_id': 3, 'category': 'radio'},
+                      {'assister_kind': 'player', 'assister_id': 3, 'target_kind': 'bot', 'target_id': 7, 'category': 'radio', 'damage': '9'}):
+            run('_apply_assist_event', lambda log, v=variant, w=worker, e=event: (feedback_battle(log, v, w), (dict(e),)),
+                (variant, worker, event)); cases += 1
+        for event in ({'critical_count': 2, 'cause': 'fire', 'target_bot': 7, 'attacker': 3, 'event_id': 'e1', 'critical_mask': 5},
+                      {'critical_count': 1, 'cause': 'drowning', 'target': 3, 'attacker_bot': 7},
+                      {'critical_count': 2, 'cause': 'world_collision', 'target_bot': 7, 'attacker_bot': 9},
+                      {'critical_count': True, 'cause': 'fire', 'target_bot': 7, 'attacker': 3},
+                      {'critical_count': 2.0, 'cause': 'fire', 'target_bot': 7, 'attacker': 3},
+                      {'critical_count': 0, 'cause': 'fire', 'target_bot': 7, 'attacker': 3},
+                      {'critical_count': 65536, 'cause': 'fire', 'target_bot': 7, 'attacker': 3},
+                      {'critical_count': 3L, 'cause': 'lava', 'target_bot': 7, 'attacker': 3},
+                      {'critical_count': 3, 'cause': 'fire', 'target_bot': 99, 'attacker': 3},
+                      {'critical_count': 3, 'cause': 'fire', 'target_bot': 7}):
+            run('_apply_environment_critical_feedback', lambda log, v=variant, w=worker, e=event: (feedback_battle(log, v, w), (dict(e),)),
+                (variant, worker, event)); cases += 1
+    def make(log, v=variant):
+        global native_client_drive
+        native_client_drive = Log(log, 'drive', {'enabled': v % 2 == 0, 'ingress': 'ingested'})
+        fake_module('native_client_drive', native_client_drive)
+        return feedback_battle(log, v), ({'kind': 'destructible', 'id': v},)
+    run('_apply_destructible_event', make, (variant,)); cases += 1
+# Damage stickers and the round result.
+class Finish(object):
+    EXTERMINATION, BASE, TIMEOUT, UNKNOWN = 1, 2, 3, 9
+class FinishFailure(Finish):
+    FAILURE = 7
+STICKER_DECODES = [('hull', 3, 'a', 'b'), ('chassis', 3, 'a', 'b'), ('', 3, 'a', 'b'), ('turret', 3, None, 'b'),
+                   ('gun', 3, 'a', 'a'), ('hull', 3, 'a'), ('hull', 3, 'a', 'b', 'c'), 17, ('turret', 4, 'x', 'y')]
+for variant in range(36):
+    decode = STICKER_DECODES[variant % len(STICKER_DECODES)]
+    for event in ({'damage_sticker': 55}, {'damage_sticker': 55, 'splash': True}, {'damage': 1}, {}):
+        def make(log, v=variant, e=event, d=decode):
+            b = battle(log, worker=v % 13 == 12)
+            stub(b, log, '_optional_feature_enabled', v % 11 != 10)
+            stub(b, log, '_warn_optional_failure')
+            appearance = Log(log, 'appearance', missing=('addDamageSticker',) if v % 7 == 6 else ())
+            target = Log(log, 'target', isStarted=v % 5 != 4, typeDescriptor=None if v % 17 == 16 else 'descriptor',
+                         appearance=appearance)
+            stub(b, log, '_server_entity', None if v % 19 == 18 else target)
+            decoder = Log(log, 'decoder', {'decodeSegment': lambda code, desc: d})
+            sys.modules['VehicleEffects'] = Log(log, 'VehicleEffects', DamageFromShotDecoder=decoder)
+            return b, (dict(e), {'engine_id': 70})
+        run('_present_damage_sticker', make, (variant, event)); cases += 1
+for variant in range(48):
+    for result in ({'reason': 'Team_Eliminated', 'winner': 1, 'base_team': 2}, {'reason': 'base captured', 'winner': '2', 'base_team': 1},
+                   {'reason': 'time_out', 'winner': 5, 'base_team': -1}, {'reason': u'odd', 'winner': 0},
+                   {'reason': None, 'winner': 'x'}, {}, ['not', 'dict'], {'reason': 'exterminated', 'winner': 2.9, 'base_team': 0}):
+        def make(log, v=variant, r=result):
+            b = battle(log, worker=v % 9 == 8)
+            b.state = 'leaving' if v % 10 == 9 else 'running'
+            b._round_finished_notified = v % 8 == 7
+            b._battle_live = True
+            arena = Log(log, 'arena', missing=('onTeamBaseCaptured',) if v % 3 == 2 else ())
+            b._avatar = None if v % 12 == 11 else Log(log, 'avatar', missing=('onRoundFinished',) if v % 14 == 13 else (), arena=arena)
+            finish = None if v % 15 == 14 else (FinishFailure() if v % 2 else Finish())
+            b._runtime = Log(log, 'runtime', constants=Log(log, 'constants', FINISH_REASON=finish))
+            stub(b, log, '_report_memory')
+            stub(b, log, '_publish_afterbattle_period')
+            stub(b, log, '_run_optional_feature', lambda name, fn, args: fn(*args))
+            return b, (copy.deepcopy(r),)
+        run('_apply_battle_result', make, (variant, result)); cases += 1
+# Stock combat feedback RPCs.
+class HitFlags(object):
+    pass
+for index, name in enumerate(('ATTACK_IS_EXTERNAL_EXPLOSION', 'ATTACK_IS_DIRECT_PROJECTILE',
+                              'MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_EXPLOSION', 'MATERIAL_WITH_POSITIVE_DF_NOT_PIERCED_BY_PROJECTILE',
+                              'MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_PROJECTILE', 'RICOCHET', 'DEVICE_PIERCED_BY_EXPLOSION',
+                              'DEVICE_DAMAGED_BY_EXPLOSION', 'CHASSIS_DAMAGED_BY_EXPLOSION', 'GUN_DAMAGED_BY_EXPLOSION',
+                              'DEVICE_PIERCED_BY_PROJECTILE', 'DEVICE_DAMAGED_BY_PROJECTILE', 'CHASSIS_DAMAGED_BY_PROJECTILE',
+                              'GUN_DAMAGED_BY_PROJECTILE', 'FIRE_STARTED', 'VEHICLE_KILLED')):
+    setattr(HitFlags, name, 1 << (index * 2 if index < 15 else 31))
+class CombatTypes(FeedbackTypes):
+    DAMAGE, CRIT, KILL, TANKING, RECEIVED_DAMAGE, RECEIVED_CRIT = 31, 32, 33.2, 34, 35, 36
+CRITICAL_SETS = [
+    None, {'events': [{'kind': 'crew', 'state': 'destroyed'}, {'kind': 'device', 'state': 'critical', 'name': 'engineHealth'}]},
+    {'events': [{'kind': 'device', 'state': 'destroyed', 'name': 'gunHealth', 'old_state': 'critical'},
+                {'kind': 'device', 'state': 'critical', 'name': 'leftTrackHealth', 'cause': 'explosion'},
+                {'kind': 'fire', 'state': True}, {'kind': 'device', 'state': 'destroyed', 'old_state': 'destroyed'}]},
+    {'events': [{'kind': 'device', 'state': 'destroyed', 'name': 'ammoBayHealth'}, {'kind': 'fire', 'state': 0, 'cause': 'explosion'}]},
+    {'events': None}, {'events': [{'kind': 'device', 'state': 'repaired'}, {'kind': 'crew', 'state': 'critical'}]},
+    {'events': [{'kind': 'device', 'state': 'critical', 'name': 'rightTrackHealth'},
+                {'kind': 'device', 'state': 'critical', 'name': 'turretRotatorHealth', 'old_state': 'destroyed'},
+                {'kind': 'device', 'state': 'destroyed', 'name': 'rightTrackHealth', 'cause': 'explosion'}]},
+]
+FEEDBACK_EVENTS = [
+    {'kind': 'hit', 'source': 'shot', 'damage': 120, 'shot_result': 2},
+    {'kind': 'bot_hit', 'source': 'shot', 'damage': 0, 'shot_result': 2, 'blocked_damage': 40},
+    {'kind': 'bot_human_hit', 'source': 'shot', 'damage': 0, 'shot_result': 1, 'splash': True},
+    {'kind': 'hit', 'source': 'shot', 'damage': 15, 'splash': 1, 'dead': True},
+    {'kind': 'bot_bot_hit', 'source': 'shot', 'damage': None, 'shot_result': 0},
+    {'kind': 'hit', 'source': 'ram', 'damage': 30, 'blocked_damage': '5'},
+    {'kind': 'hit', 'source': 'environment', 'push_attributed': True, 'damage': 50},
+    {'kind': 'environment_critical', 'source': 'environment', 'critical_count': '3', 'damage': -4},
+    {'kind': 'hit', 'source': 'shot', 'damage': 9, 'shot_result': '7', 'critical_feedback_separate': True},
+    {'kind': 'health', 'source': 'fire', 'damage': 3},
+    {'kind': 'hit', 'source': 'shot', 'damage': 0, 'shot_result': 1},
+]
+for variant in range(30):
+    for event_index, base_event in enumerate(FEEDBACK_EVENTS):
+        for roles in (('player:3', 'bot:7'), ('bot:7', 'player:3'), ('bot:9', 'player:3'), ('player:3', 'bot:9')):
+            def make(log, v=variant, e=base_event, roles=roles):
+                b = feedback_battle(log, v)
+                b._records['bot:7']['spot_marker_visible'] = v % 4 != 3
+                types = CombatTypes(log, 'types', {'packDamage': lambda *a: sum(x for x in a[:2] if isinstance(x, int)) * 8,
+                                                   'packCrits': lambda *a: a[0] * 3, 'packVisibility': lambda a, c: 3})
+                indices = {'HIGH_EXPLOSIVE': '2'} if v % 5 else {}
+                constants = Log(log, 'constants', ATTACK_REASON=Group(), ATTACK_REASON_INDICES={'shot_member': 6},
+                                VEHICLE_HIT_FLAGS=None if v % 23 == 22 else HitFlags, SHELL_TYPES_INDICES=indices)
+                compatibility = Log(log, 'compatibility', missing=('assert_vehicle_marker_damage_type',) if v % 19 == 18 else ())
+                b._runtime = Log(log, 'runtime', constants=constants, compatibility=compatibility,
+                                 battle_feedback_common=Log(log, 'common', BATTLE_EVENT_TYPE=None if v % 29 == 28 else types))
+                b._avatar = Log(log, 'avatar', missing=('showShotResults',) if v % 17 == 16 else ())
+                stub(b, log, '_feedback_shell_fields', (2, v % 2 == 1) if v % 3 else (1, False))
+                stub(b, log, '_assert_player_identity')
+                stub(b, log, '_combat_attack_reason', 4)
+                voice = Log(log, 'critical_voice')
+                sys.modules['gui.mods.offline_lan_0922.critical_voice'] = voice
+                sys.modules['gui.mods.offline_lan_0922'].critical_voice = voice
+                fake_module('native_input_diagnostics', Log(log, 'diagnostics'))
+                event = copy.deepcopy(e)
+                event['critical'] = copy.deepcopy(CRITICAL_SETS[v % len(CRITICAL_SETS)])
+                event['dead'] = event.get('dead') or v % 7 == 6
+                event['event_id'] = 'e%d' % v
+                target, attacker = roles
+                return b, (event, b._records[target], b._records[attacker]) + ((None,) if v % 2 else (v,))
+            run('_present_combat_feedback', make, (variant, event_index, roles)); cases += 1
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
@@ -1257,6 +1459,8 @@ def pinned_source(fork):
             chunks.insert(1, '\n'.join(lines[node.lineno - 1:node.end_lineno]))
         if isinstance(node, ast.ClassDef) and node.name == 'BattleRuntime':
             for item in node.body:
+                if isinstance(item, ast.Assign) and any(getattr(t, 'id', None) in CLASS_ATTRIBUTES for t in item.targets):
+                    chunks.append('\n'.join(lines[item.lineno - 1:item.end_lineno]))
                 if isinstance(item, ast.FunctionDef) and item.name in METHODS:
                     start = min([d.lineno for d in item.decorator_list] + [item.lineno])
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
@@ -1268,6 +1472,9 @@ def pinned_source(fork):
     for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime',
                    'native_client_projectile'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
+    text = text.replace('from .native_input_diagnostics import write_json_record',
+                        "write_json_record = sys.modules['gui.mods.offline_lan_0922.native_input_diagnostics']"
+                        ".write_json_record")
     return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 
 

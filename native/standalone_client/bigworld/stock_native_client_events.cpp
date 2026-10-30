@@ -237,7 +237,7 @@ PyObject* combatAttackReason(PyObject*, PyObject* args) {
         if (!pyInt(get(event, "attack_reason").get(), reason)) raise("ordered combat event has invalid attack_reason");
         if (reason < 0) raise("ordered combat event has invalid attack_reason");
         auto reasonOf = [&](const char* name, std::int64_t fallback) {
-            return method(battle, "_attack_reason", p::text(name).get(), integer(fallback).get());
+            return dispatch(battle, "_attack_reason", "attack_reason", {p::text(name).get(), integer(fallback).get()});
         };
         auto shot = reasonOf("SHOT", 0), fire = reasonOf("FIRE", 1), ram = reasonOf("RAM", 2);
         auto value = integer(reason);
@@ -493,20 +493,25 @@ PyObject* applyOrderedEvent(PyObject*, PyObject* args) {
             method(battle, "_accept_projectile_event", event);
         } else if (member(global(g, "_COMBAT_EVENT_KINDS").get(), kind.get())) {
             callKw(battle, "_apply_combat_event", {event}, {{"update_state", Py_False}});
-        } else if (textIn(kind.get(), {"vehicle_statistics"})) method(battle, "_apply_vehicle_statistics_event", event);
-        else if (textIn(kind.get(), {"environment_critical"})) method(battle, "_apply_environment_critical_feedback", event);
-        else if (textIn(kind.get(), {"assist"})) method(battle, "_apply_assist_event", event);
-        else if (textIn(kind.get(), {"detection"})) method(battle, "_apply_detection_event", event);
+        } else if (textIn(kind.get(), {"vehicle_statistics"})) dispatch(battle, "_apply_vehicle_statistics_event", "vehicle_statistics_event", {event});
+        else if (textIn(kind.get(), {"environment_critical"})) dispatch(battle, "_apply_environment_critical_feedback", "environment_critical_feedback", {event}, {g});
+        else if (textIn(kind.get(), {"assist"})) dispatch(battle, "_apply_assist_event", "assist_event", {event});
+        else if (textIn(kind.get(), {"detection"})) dispatch(battle, "_apply_detection_event", "detection_event", {event});
         else if (textIn(kind.get(), {"stun"})) {
             auto target = recordsGet(battle, stunEntityKey(event).get());
             if (target.get() == Py_None) raise("stun event has no ready target");
             auto state = get(target.get(), "state");
             method(battle, "_apply_stun_state", target.get(), truthy(state) ? state.get() : p::dict().get());
         } else if (textIn(kind.get(), {"destructible"})) {
-            if (method(battle, "_apply_destructible_event", event).get() == Py_None) Py_RETURN_FALSE;
+            PyObject** own = _PyObject_GetDictPtr(battle);
+            const bool overridden = own && *own && PyDict_GetItemString(*own, "_apply_destructible_event");
+            auto applied = overridden ? method(battle, "_apply_destructible_event", event) :
+                dispatch(battle, "_apply_destructible_event", "destructible_event", {event},
+                         {module("gui.mods.offline_lan_0922.native_client_drive").get()});
+            if (applied.get() == Py_None) Py_RETURN_FALSE;
         } else if (textIn(kind.get(), {"projectile_ricochet"})) method(battle, "_apply_projectile_ricochet_event", event);
         else if (textIn(kind.get(), {"projectile_impact"})) method(battle, "_apply_projectile_terminal_event", event);
-        else if (textIn(kind.get(), {"battle_result"})) method(battle, "_apply_battle_result", event);
+        else if (textIn(kind.get(), {"battle_result"})) dispatch(battle, "_apply_battle_result", "battle_result", {event});
         else if (textIn(kind.get(), {"bot_manifest"})) {
         } else raise("ordered LAN event kind is unsupported: " + p::string(str(kind.get()).get()));
         Py_RETURN_TRUE;
@@ -623,8 +628,8 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
         if (attacker_record.get() != Py_None &&
             method(battle, "_server_entity", p::Ref(PyObject_GetItem(attacker_record.get(), p::text("engine_id").get())).get()).get() == Py_None)
             raise("ordered combat event attacker has no native entity: " + attacker_text());
-        method(battle, "_present_damage_sticker", event, r);
-        const bool blind = attacker_record.get() != Py_None && truthy(method(battle, "_is_blind_local_attack", r, attacker_record.get()));
+        dispatch(battle, "_present_damage_sticker", "present_damage_sticker", {event, r});
+        const bool blind = attacker_record.get() != Py_None && truthy(dispatch(battle, "_is_blind_local_attack", "blind_local_attack", {r, attacker_record.get()}));
         const bool dead_target = number(method(state.get(), "get", p::text("health").get(), p::number(0.).get()).get()) <= 0. ||
                                  !truthy(method(state.get(), "get", p::text("alive").get(), Py_True));
         auto suppress_postmortem = method(battle, "_should_suppress_postmortem_killer", r, state.get(), attacker_id.get());
@@ -638,7 +643,7 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
         if (textIn(source.get(), {"player_left"}) && attacker_record.get() != Py_None) raise("player_left event has an attacker");
         if (attacker_record.get() != Py_None) {
             method(battle, "_present_combat_hit", event, r, attacker_record.get(), attacker_id.get());
-            method(battle, "_present_combat_feedback", event, r, attacker_record.get(), attack_reason.get());
+            dispatch(battle, "_present_combat_feedback", "present_combat_feedback", {event, r, attacker_record.get(), attack_reason.get()});
         } else if (textIn(source.get(), {"environment", "fire"})) {
             method(battle, "_present_environment_feedback", event, r, attack_reason.get());
         }
@@ -708,6 +713,632 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+// '%s:%s' % (first, second)
+p::Ref formatKey(PyObject* first, PyObject* second) {
+    p::Ref values(PyTuple_Pack(2, first, second));
+    return p::Ref(PyString_Format(p::text("%s:%s").get(), values.get()));
+}
+// BattleRuntime._feedback_entity_key (staticmethod)
+p::Ref feedbackEntityKey(PyObject* event, const char* role, const char* label) {
+    auto kind = method(event, "get", p::text(std::string(role) + "_kind").get());
+    auto actor = method(event, "get", p::text(std::string(role) + "_id").get());
+    if (!textIn(kind.get(), {"player", "bot"}) || actor.get() == Py_None)
+        raise(std::string(label) + " event has an invalid " + role + " identity");
+    return formatKey(kind.get(), actor.get());
+}
+// BattleRuntime._combat_record_team (staticmethod)
+std::int64_t combatRecordTeam(PyObject* record) {
+    auto state = method(record, "get", p::text("state").get());
+    if (!truthy(state)) replace(state, p::dict());
+    const int has = PySequence_Contains(state.get(), p::text("team").get());
+    if (has < 0) throw p::Error("Native team lookup failed");
+    if (!has) raise("combat feedback record has no team");
+    p::Ref value(PyObject_GetItem(state.get(), p::text("team").get()));
+    std::int64_t team;
+    if (!pyInt(value.get(), team)) raise("combat feedback record has invalid team");
+    if (team <= 0) raise("combat feedback record has invalid team");
+    return team;
+}
+// BattleRuntime._combat_target_is_spotted (staticmethod)
+bool combatTargetIsSpotted(PyObject* record) {
+    auto fallback = method(record, "get", p::text("spot_visible").get(), Py_True);
+    return truthy(method(record, "get", p::text("spot_marker_visible").get(), fallback.get()));
+}
+// self._run_optional_feature(name, fn, args)
+p::Ref optionalFeature(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
+    auto label = p::text(name);
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature"))
+        return callKw(battle, "_run_optional_feature", {label.get(), fn, call_args}, {});
+    return dispatch(battle, "_run_optional_feature", "run_optional_feature", {}, {},
+                    {label.get(), fn, call_args, Py_None, Py_True, Py_None});
+}
+// The stock BATTLE_EVENT_TYPE group, or the pinned RuntimeError.
+p::Ref battleEventTypes(PyObject* battle, const char* missing) {
+    auto runtime = attr(battle, "_runtime");
+    auto common = optionalAttr(runtime.get(), "battle_feedback_common");
+    auto types = optionalAttr(common.get(), "BATTLE_EVENT_TYPE");
+    if (types.get() == Py_None) raise(missing);
+    return types;
+}
+p::Ref battleEventsCallback(PyObject* battle) {
+    p::Ref callback = p::retain(Py_None);
+    if (!callableAttr(attr(battle, "_avatar").get(), "onBattleEvents", callback))
+        raise("#1513 battle-event feedback boundary is unavailable");
+    return callback;
+}
+// int(value) with Python's int/long result.
+p::Ref toInt(PyObject* value) { return p::Ref(PyNumber_Int(value)); }
+p::Ref feedbackRow(PyObject* type, PyObject* target, PyObject* details) {
+    auto row = literal(4);
+    put(row.get(), "eventType", p::retain(type));
+    put(row.get(), "targetID", p::retain(target));
+    put(row.get(), "count", integer(1));
+    put(row.get(), "details", p::retain(details));
+    return row;
+}
+
+PyObject* attackReason(PyObject*, PyObject* args) {
+    PyObject *battle, *member, *fallback;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &member, &fallback)) return nullptr;
+    try {
+        auto runtime = attr(battle, "_runtime");
+        auto constants = attr(runtime.get(), "constants");
+        auto group = optionalAttr(constants.get(), "ATTACK_REASON");
+        PyObject* raw = PyObject_GetAttrString(constants.get(), "ATTACK_REASON_INDICES");
+        if (!raw) {
+            if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr;
+            PyErr_Clear(); raw = PyDict_New();
+        }
+        p::Ref indices(raw);
+        PyObject* named = PyObject_GetAttr(group.get(), member);
+        if (!named) {
+            if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr;
+            PyErr_Clear(); named = p::retain(Py_None).release();
+        }
+        p::Ref name(named);
+        PyObject* value = PyObject_GetItem(indices.get(), name.get());
+        PyObject* index = value ? PyNumber_Int(value) : nullptr;
+        Py_XDECREF(value);
+        if (index) return index;
+        if (!PyErr_ExceptionMatches(PyExc_KeyError) && !PyErr_ExceptionMatches(PyExc_TypeError) &&
+            !PyErr_ExceptionMatches(PyExc_ValueError)) return nullptr;
+        PyErr_Clear();
+        return PyNumber_Int(fallback);
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* blindLocalAttack(PyObject*, PyObject* args) {
+    PyObject *battle, *target, *attacker;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &target, &attacker)) return nullptr;
+    try {
+        if (!truthy(method(attacker, "get", p::text("local").get())) || truthy(method(target, "get", p::text("local").get())))
+            Py_RETURN_FALSE;
+        const auto target_team = combatRecordTeam(target);
+        if (target_team == combatRecordTeam(attacker)) Py_RETURN_FALSE;
+        return p::boolean(!combatTargetIsSpotted(target)).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* vehicleStatisticsEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        auto kind = method(event, "get", p::text("actor_kind").get());
+        auto raw_id = method(event, "get", p::text("actor_id").get());
+        PyObject* converted = PyNumber_Int(raw_id.get());
+        if (!converted) {
+            if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError)) return nullptr;
+            PyErr_Clear(); Py_RETURN_FALSE;
+        }
+        p::Ref actor(converted);
+        auto record = recordsGet(battle, formatKey(kind.get(), actor.get()).get());
+        if (record.get() == Py_None) Py_RETURN_FALSE;
+        auto previous = method(record.get(), "get", p::text("state").get());
+        if (!truthy(previous)) replace(previous, p::dict());
+        p::Ref state(PyObject_CallFunctionObjArgs(reinterpret_cast<PyObject*>(&PyDict_Type), previous.get(), nullptr));
+        auto frags_default = method(state.get(), "get", p::text("frags").get(), integer(0).get());
+        auto frags = method(event, "get", p::text("frags").get(), frags_default.get());
+        put(state.get(), "frags", toInt(frags.get()));
+        auto killer_default = method(state.get(), "get", p::text("team_killer").get(), Py_False);
+        auto killer = method(event, "get", p::text("team_killer").get(), killer_default.get());
+        put(state.get(), "team_killer", p::boolean(truthy(killer)));
+        if (PyObject_SetItem(record.get(), p::text("state").get(), state.get()) < 0) return nullptr;
+        return dispatch(battle, "_apply_vehicle_statistics", "vehicle_statistics", {record.get(), state.get()}).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* presentDirectSpot(PyObject*, PyObject* args) {
+    PyObject *battle, *record;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &record)) return nullptr;
+    try {
+        if (truthy(method(record, "get", p::text("spot_feedback_sent").get()))) Py_RETURN_FALSE;
+        auto types = battleEventTypes(battle, "#1513 spotting feedback constants are unavailable");
+        p::Ref pack = p::retain(Py_None);
+        if (!callableAttr(types.get(), "packVisibility", pack)) raise("#1513 visibility feedback packer is unavailable");
+        auto callback = battleEventsCallback(battle);
+        p::Ref engine(PyObject_GetItem(record, p::text("engine_id").get()));
+        auto target = toInt(engine.get());
+        auto spotted = toInt(attr(types.get(), "SPOTTED").get());
+        auto first = feedbackRow(spotted.get(), target.get(), integer(0).get());
+        auto visibility = toInt(attr(types.get(), "TARGET_VISIBILITY").get());
+        auto packed = toInt(p::Ref(PyObject_CallFunctionObjArgs(pack.get(), Py_True, Py_True, nullptr)).get());
+        auto second = feedbackRow(visibility.get(), target.get(), packed.get());
+        p::Ref rows(PyList_New(2));
+        PyList_SET_ITEM(rows.get(), 0, first.release());
+        PyList_SET_ITEM(rows.get(), 1, second.release());
+        p::Ref(PyObject_CallFunctionObjArgs(callback.get(), rows.get(), nullptr));
+        if (PyObject_SetItem(record, p::text("spot_feedback_sent").get(), Py_True) < 0) return nullptr;
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* detectionEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        auto observer = recordsGet(battle, feedbackEntityKey(event, "observer", "detection").get());
+        if (observer.get() == Py_None || !truthy(method(observer.get(), "get", p::text("local").get()))) Py_RETURN_FALSE;
+        auto target = recordsGet(battle, feedbackEntityKey(event, "target", "detection").get());
+        if (target.get() == Py_None) raise("detection event has no known target");
+        p::Ref call_args(PyTuple_Pack(1, target.get()));
+        optionalFeature(battle, "spotting feedback", attr(battle, "_present_direct_spot").get(), call_args.get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* assistEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &event)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        auto assister = recordsGet(battle, feedbackEntityKey(event, "assister", "assist").get());
+        if (assister.get() == Py_None || !truthy(method(assister.get(), "get", p::text("local").get()))) Py_RETURN_FALSE;
+        auto target = recordsGet(battle, feedbackEntityKey(event, "target", "assist").get());
+        if (target.get() == Py_None) raise("assist event has no known target");
+        auto category = method(event, "get", p::text("category").get());
+        auto name = method(attr(battle, "_ASSIST_EVENT_TYPES").get(), "get", category.get());
+        if (name.get() == Py_None) raise("assist category is unsupported: " + p::string(str(category.get()).get()));
+        auto types = battleEventTypes(battle, "#1513 battle feedback constants are unavailable");
+        auto callback = battleEventsCallback(battle);
+        auto raw_damage = method(event, "get", p::text("damage").get(), integer(0).get());
+        auto damage = toInt(truthy(raw_damage) ? raw_damage.get() : integer(0).get());
+        if (PyObject_RichCompareBool(integer(0).get(), damage.get(), Py_GT) == 1) replace(damage, integer(0));
+        auto row = literal(4);
+        put(row.get(), "eventType", toInt(p::Ref(PyObject_GetAttr(types.get(), name.get())).get()));
+        p::Ref engine(PyObject_GetItem(target.get(), p::text("engine_id").get()));
+        put(row.get(), "targetID", toInt(engine.get()));
+        put(row.get(), "count", integer(1));
+        auto pack = attr(types.get(), "packDamage");
+        auto reason = dispatch(battle, "_attack_reason", "attack_reason", {p::text("SHOT").get(), integer(0).get()});
+        put(row.get(), "details", toInt(p::Ref(PyObject_CallFunctionObjArgs(pack.get(), damage.get(), reason.get(), nullptr)).get()));
+        p::Ref rows(PyList_New(1));
+        PyList_SET_ITEM(rows.get(), 0, row.release());
+        p::Ref(PyObject_CallFunctionObjArgs(callback.get(), rows.get(), nullptr));
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* environmentCriticalFeedback(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *g;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &event, &g)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        auto count = method(event, "get", p::text("critical_count").get());
+        auto reasons = literal(3);
+        put(reasons.get(), "world_collision", integer(3));
+        put(reasons.get(), "drowning", integer(5));
+        put(reasons.get(), "fire", integer(1));
+        auto reason = method(reasons.get(), "get", method(event, "get", p::text("cause").get()).get());
+        const int typed = PyObject_IsInstance(count.get(), global(g, "_INTEGER_TYPES").get());
+        if (typed < 0) return nullptr;
+        if (PyBool_Check(count.get()) || !typed ||
+            PyObject_RichCompareBool(integer(1).get(), count.get(), Py_LE) != 1 ||
+            PyObject_RichCompareBool(count.get(), integer(65535).get(), Py_LE) != 1 || reason.get() == Py_None)
+            Py_RETURN_FALSE;
+        auto target = recordsGet(battle, eventEntityKey(event, false).get());
+        auto attacker = recordsGet(battle, eventEntityKey(event, true).get());
+        if (target.get() == Py_None || attacker.get() == Py_None) Py_RETURN_FALSE;
+        auto result = dispatch(battle, "_present_combat_feedback", "present_combat_feedback", {event, target.get(), attacker.get(), reason.get()});
+        if (truthy(method(attacker.get(), "get", p::text("local").get())) || truthy(method(target.get(), "get", p::text("local").get()))) {
+            auto writer = attr(module("gui.mods.offline_lan_0922.native_input_diagnostics").get(), "write_json_record");
+            auto values = p::dict();
+            put(values.get(), "event_id", method(event, "get", p::text("event_id").get()));
+            put(values.get(), "cause", method(event, "get", p::text("cause").get()));
+            put(values.get(), "mask", method(event, "get", p::text("critical_mask").get()));
+            put(values.get(), "count", p::retain(count.get()));
+            put(values.get(), "reason", p::retain(reason.get()));
+            put(values.get(), "target", eventEntityKey(event, false));
+            put(values.get(), "presented", p::retain(result.get()));
+            p::Ref copied(PyObject_Call(reinterpret_cast<PyObject*>(&PyDict_Type), p::Ref(PyTuple_New(0)).get(), values.get()));
+            p::Ref(PyObject_CallFunctionObjArgs(writer.get(), p::text("ENV CRITICAL FEEDBACK").get(), copied.get(), nullptr));
+        }
+        return result.release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* destructibleEvent(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *drive;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &event, &drive)) return nullptr;
+    try {
+        if (truthy(method(drive, "enabled", battle))) return method(drive, "ingress", battle, event).release();
+        return method(battle, "_apply_destructible_event_visible", event).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// `a, b, ... = value` with Python 2's iteration and error messages.
+std::vector<p::Ref> unpack(PyObject* value, std::size_t count) {
+    p::Ref iterator(PyObject_GetIter(value));
+    std::vector<p::Ref> items;
+    while (items.size() <= count) {
+        PyObject* item = PyIter_Next(iterator.get());
+        if (!item) { if (PyErr_Occurred()) throw p::Error("unpack"); break; }
+        items.emplace_back(item);
+    }
+    if (items.size() != count) {
+        if (items.size() > count) PyErr_SetString(PyExc_ValueError, "too many values to unpack");
+        else PyErr_Format(PyExc_ValueError, "need more than %d value%s to unpack", int(items.size()), items.size() == 1 ? "" : "s");
+        throw p::Error("unpack");
+    }
+    return items;
+}
+// max(0, value): the value only when it is greater.
+p::Ref positive(p::Ref value) {
+    const int greater = PyObject_RichCompareBool(value.get(), integer(0).get(), Py_GT);
+    if (greater < 0) throw p::Error("Native comparison failed");
+    return greater ? std::move(value) : integer(0);
+}
+bool greaterThanZero(PyObject* value) {
+    const int greater = PyObject_RichCompareBool(value, integer(0).get(), Py_GT);
+    if (greater < 0) throw p::Error("Native comparison failed");
+    return greater != 0;
+}
+// int(event.get(name, 0) or 0), clamped below at zero.
+p::Ref nonNegative(PyObject* event, const char* name) {
+    auto raw = method(event, "get", p::text(name).get(), integer(0).get());
+    return positive(toInt(truthy(raw) ? raw.get() : integer(0).get()));
+}
+p::Ref eventRow(PyObject* types, const char* type, PyObject* target, p::Ref details) {
+    auto row = literal(4);
+    put(row.get(), "eventType", toInt(attr(types, type).get()));
+    put(row.get(), "targetID", p::retain(target));
+    put(row.get(), "count", integer(1));
+    put(row.get(), "details", std::move(details));
+    return row;
+}
+std::int64_t flag(PyObject* flags, const char* name) { return strictInt(attr(flags, name).get()); }
+
+PyObject* presentCombatFeedback(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *target_record, *attacker_record, *reason_argument;
+    if (!PyArg_ParseTuple(args, "OOOOO", &battle, &event, &target_record, &attacker_record, &reason_argument)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        const bool attributed_terrain = equal(method(event, "get", p::text("source").get()).get(), p::text("environment").get()) &&
+            method(event, "get", p::text("push_attributed").get()).get() == Py_True;
+        // A confirmed shove's terrain outcome remains credited after the target falls out of spotting.
+        if (truthy(dispatch(battle, "_is_blind_local_attack", "blind_local_attack", {target_record, attacker_record})) && !attributed_terrain)
+            Py_RETURN_FALSE;
+        auto types = battleEventTypes(battle, "#1513 battle feedback constants are unavailable");
+        auto damage = nonNegative(event, "damage");
+        auto reason = p::retain(reason_argument);
+        if (reason.get() == Py_None) replace(reason, dispatch(battle, "_combat_attack_reason", "combat_attack_reason", {event}));
+        auto shell = unpack(method(battle, "_feedback_shell_fields", event, attacker_record).get(), 2);
+        PyObject *shell_type = shell[0].get(), *shell_is_gold = shell[1].get();
+        auto critical = method(event, "get", p::text("critical").get());
+        auto critical_items = [&]() {
+            auto owner = truthy(critical) ? p::retain(critical.get()) : p::dict();
+            auto items = method(owner.get(), "get", p::text("events").get());
+            return truthy(items) ? std::move(items) : p::Ref(PyTuple_New(0));
+        };
+        // CRIT counts newly damaged devices/crew, not fire, ammo-rack death effects or repairs.
+        auto critical_events = p::list();
+        {
+            p::Ref iterator(PyObject_GetIter(critical_items().get()));
+            while (PyObject* raw = PyIter_Next(iterator.get())) {
+                p::Ref item(raw);
+                auto kind = method(item.get(), "get", p::text("kind").get());
+                auto state = method(item.get(), "get", p::text("state").get());
+                if (equal(kind.get(), p::text("crew").get()) && equal(state.get(), p::text("destroyed").get())) {
+                    p::append(critical_events.get(), item);
+                } else if (equal(kind.get(), p::text("device").get()) && textIn(state.get(), {"critical", "destroyed"})) {
+                    auto old_state = method(item.get(), "get", p::text("old_state").get(), p::text("normal").get());
+                    if (!equal(old_state.get(), state.get()) && !equal(old_state.get(), p::text("destroyed").get()))
+                        p::append(critical_events.get(), item);
+                }
+            }
+            if (PyErr_Occurred()) throw p::Error("critical events iteration failed");
+        }
+        auto critical_count = integer(PyList_GET_SIZE(critical_events.get()));
+        if (method(event, "get", p::text("critical_feedback_separate").get()).get() == Py_True) replace(critical_count, integer(0));
+        if (equal(method(event, "get", p::text("kind").get()).get(), p::text("environment_critical").get()))
+            replace(critical_count, toInt(p::Ref(PyObject_GetItem(event, p::text("critical_count").get())).get()));
+        const bool attacker_local = truthy(method(attacker_record, "get", p::text("local").get()));
+        if (attacker_local)
+            method(battle, "_assert_player_identity", p::Ref(PyObject_GetItem(attacker_record, p::text("engine_id").get())).get());
+        const auto target_team = combatRecordTeam(target_record);
+        const bool enemy = target_team != combatRecordTeam(attacker_record);
+        auto runtime = attr(battle, "_runtime");
+        auto avatar = attr(battle, "_avatar");
+        auto engine_id = [](PyObject* record) { return toInt(p::Ref(PyObject_GetItem(record, p::text("engine_id").get())).get()); };
+        if (attacker_local && enemy) {
+            p::Ref assert_damage = p::retain(Py_None);
+            if (!callableAttr(attr(runtime.get(), "compatibility").get(), "assert_vehicle_marker_damage_type", assert_damage))
+                raise("#1513 vehicle-marker damage boundary is unavailable");
+            p::Ref(PyObject_CallFunctionObjArgs(assert_damage.get(), avatar.get(), engine_id(attacker_record).get(), nullptr));
+        }
+        auto output = p::list();
+        auto pack_damage = [&](PyObject* amount) {
+            return toInt(method(types.get(), "packDamage", amount, reason.get(), Py_False, shell_type, shell_is_gold).get());
+        };
+        auto pack_crits = [&]() {
+            return toInt(method(types.get(), "packCrits", critical_count.get(), reason.get(), shell_type, shell_is_gold).get());
+        };
+        if (attacker_local && enemy) {
+            auto target_id = engine_id(target_record);
+            if (greaterThanZero(damage.get())) {
+                auto type = toInt(attr(types.get(), "DAMAGE").get());
+                auto row = literal(4);
+                put(row.get(), "eventType", std::move(type));
+                put(row.get(), "targetID", p::retain(target_id.get()));
+                put(row.get(), "count", integer(1));
+                put(row.get(), "details", pack_damage(damage.get()));
+                p::append(output.get(), row);
+            }
+            if (greaterThanZero(critical_count.get())) {
+                auto type = toInt(attr(types.get(), "CRIT").get());
+                auto row = literal(4);
+                put(row.get(), "eventType", std::move(type));
+                put(row.get(), "targetID", p::retain(target_id.get()));
+                put(row.get(), "count", integer(1));
+                put(row.get(), "details", pack_crits());
+                p::append(output.get(), row);
+            }
+            if (truthy(method(event, "get", p::text("dead").get())))
+                p::append(output.get(), eventRow(types.get(), "KILL", target_id.get(), integer(0)));
+        }
+        if (attacker_local) {
+            auto target_id = engine_id(target_record);
+            if (equal(combatEventSource(event).get(), p::text("shot").get()) &&
+                textIn(method(event, "get", p::text("kind").get()).get(), {"hit", "bot_hit", "bot_human_hit", "bot_bot_hit"})) {
+                auto constants = attr(runtime.get(), "constants");
+                auto flags_type = optionalAttr(constants.get(), "VEHICLE_HIT_FLAGS");
+                if (flags_type.get() == Py_None) raise("#1513 VEHICLE_HIT_FLAGS are unavailable");
+                const auto shot_result = std::max<std::int64_t>(0, std::min<std::int64_t>(
+                    strictInt(method(event, "get", p::text("shot_result").get(), integer(2).get()).get()), 2));
+                bool direct_he = false;
+                if (!truthy(method(event, "get", p::text("splash").get()))) {
+                    p::Ref indices = attr(constants.get(), "SHELL_TYPES_INDICES");
+                    p::Ref he(PyObject_GetItem(indices.get(), p::text("HIGH_EXPLOSIVE").get()));
+                    direct_he = equal(shell_type, toInt(he.get()).get());
+                }
+                // Origin (direct / nearby) is independent of blast damage.
+                const bool external_blast = truthy(method(event, "get", p::text("splash").get()));
+                const bool blast_damage = external_blast || (direct_he && shot_result != 2);
+                const bool has_damage = greaterThanZero(damage.get());
+                auto flags = flag(flags_type.get(), external_blast ? "ATTACK_IS_EXTERNAL_EXPLOSION" : "ATTACK_IS_DIRECT_PROJECTILE");
+                if (external_blast) {
+                    if (has_damage) flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_EXPLOSION");
+                } else if (direct_he) {
+                    if (!has_damage) flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_NOT_PIERCED_BY_PROJECTILE");
+                    else if (shot_result == 2) flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_PROJECTILE");
+                    else flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_EXPLOSION");
+                } else if (shot_result == 2) flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_PIERCED_BY_PROJECTILE");
+                else if (shot_result == 1) flags |= flag(flags_type.get(), "MATERIAL_WITH_POSITIVE_DF_NOT_PIERCED_BY_PROJECTILE");
+                else flags |= flag(flags_type.get(), "RICOCHET");
+                const char* critical_cause = blast_damage ? "explosion" : "shot";
+                const auto pierced_flag = flag(flags_type.get(), blast_damage ? "DEVICE_PIERCED_BY_EXPLOSION" : "DEVICE_PIERCED_BY_PROJECTILE");
+                const auto device_flag = flag(flags_type.get(), blast_damage ? "DEVICE_DAMAGED_BY_EXPLOSION" : "DEVICE_DAMAGED_BY_PROJECTILE");
+                const auto chassis_flag = flag(flags_type.get(), blast_damage ? "CHASSIS_DAMAGED_BY_EXPLOSION" : "CHASSIS_DAMAGED_BY_PROJECTILE");
+                const auto gun_flag = flag(flags_type.get(), blast_damage ? "GUN_DAMAGED_BY_EXPLOSION" : "GUN_DAMAGED_BY_PROJECTILE");
+                {
+                    p::Ref iterator(PyObject_GetIter(critical_items().get()));
+                    while (PyObject* raw = PyIter_Next(iterator.get())) {
+                        p::Ref item(raw);
+                        if (!equal(method(item.get(), "get", p::text("cause").get(), p::text("shot").get()).get(), p::text(critical_cause).get()))
+                            continue;
+                        auto kind = method(item.get(), "get", p::text("kind").get());
+                        auto state = method(item.get(), "get", p::text("state").get());
+                        if (equal(kind.get(), p::text("fire").get()) && truthy(state)) {
+                            flags |= flag(flags_type.get(), "FIRE_STARTED");
+                        } else if (member(critical_events.get(), item.get())) {
+                            // #1513's voice selector tests DEVICE_PIERCED for module-only hits and ricochets.
+                            flags |= pierced_flag;
+                            if (!equal(kind.get(), p::text("device").get())) continue;
+                            const auto name = p::string(str(method(item.get(), "get", p::text("name").get(), p::text("").get()).get()).get());
+                            flags |= device_flag;
+                            if (name == "leftTrackHealth" || name == "rightTrackHealth") flags |= chassis_flag;
+                            else if (name == "gunHealth") flags |= gun_flag;
+                        }
+                    }
+                    if (PyErr_Occurred()) throw p::Error("critical events iteration failed");
+                }
+                // A module hit must not replace the requested plain HE voice.
+                if (direct_he)
+                    flags &= ~(flag(flags_type.get(), "GUN_DAMAGED_BY_PROJECTILE") | flag(flags_type.get(), "GUN_DAMAGED_BY_EXPLOSION") |
+                               flag(flags_type.get(), "CHASSIS_DAMAGED_BY_PROJECTILE") | flag(flags_type.get(), "CHASSIS_DAMAGED_BY_EXPLOSION"));
+                if (truthy(method(event, "get", p::text("dead").get()))) flags |= flag(flags_type.get(), "VEHICLE_KILLED");
+                p::Ref callback = p::retain(Py_None);
+                if (!callableAttr(avatar.get(), "showShotResults", callback)) raise("#1513 shot-result feedback boundary is unavailable");
+                bool internal_destroyed = false;
+                for (Py_ssize_t i = 0; i < PyList_GET_SIZE(critical_events.get()) && !internal_destroyed; ++i) {
+                    PyObject* item = PyList_GET_ITEM(critical_events.get(), i);
+                    if (!equal(method(item, "get", p::text("state").get()).get(), p::text("destroyed").get())) continue;
+                    const bool internal = equal(method(item, "get", p::text("kind").get()).get(), p::text("crew").get()) ||
+                        (equal(method(item, "get", p::text("kind").get()).get(), p::text("device").get()) &&
+                         !textIn(method(item, "get", p::text("name").get()).get(), {"leftTrackHealth", "rightTrackHealth", "gunHealth"}));
+                    internal_destroyed = internal &&
+                        equal(method(item, "get", p::text("cause").get(), p::text("shot").get()).get(), p::text("shot").get());
+                }
+                p::Ref shifted(PyNumber_Lshift(integer(flags).get(), integer(32).get()));
+                p::Ref packed(PyNumber_Or(shifted.get(), target_id.get()));
+                p::Ref results(PyList_New(1));
+                PyList_SET_ITEM(results.get(), 0, packed.release());
+                if (enemy && !greaterThanZero(damage.get()) && shot_result == 2 && internal_destroyed && !direct_he &&
+                    !external_blast && !truthy(method(event, "get", p::text("dead").get()))) {
+                    auto voice = module("gui.mods.offline_lan_0922.critical_voice");
+                    method(voice.get(), "present", avatar.get(), callback.get(), results.get());
+                } else {
+                    p::Ref(PyObject_CallFunctionObjArgs(callback.get(), results.get(), nullptr));
+                }
+            }
+        }
+        if (truthy(method(target_record, "get", p::text("local").get())) &&
+            (enemy || method(event, "get", p::text("push_attributed").get()).get() == Py_True)) {
+            auto attacker_id = engine_id(attacker_record);
+            auto blocked = nonNegative(event, "blocked_damage");
+            if (greaterThanZero(blocked.get())) {
+                auto type = toInt(attr(types.get(), "TANKING").get());
+                auto row = literal(4);
+                put(row.get(), "eventType", std::move(type));
+                put(row.get(), "targetID", p::retain(attacker_id.get()));
+                put(row.get(), "count", integer(1));
+                put(row.get(), "details", pack_damage(blocked.get()));
+                p::append(output.get(), row);
+            }
+            if (greaterThanZero(damage.get())) {
+                auto type = toInt(attr(types.get(), "RECEIVED_DAMAGE").get());
+                auto row = literal(4);
+                put(row.get(), "eventType", std::move(type));
+                put(row.get(), "targetID", p::retain(attacker_id.get()));
+                put(row.get(), "count", integer(1));
+                put(row.get(), "details", pack_damage(damage.get()));
+                p::append(output.get(), row);
+            }
+            if (greaterThanZero(critical_count.get())) {
+                auto type = toInt(attr(types.get(), "RECEIVED_CRIT").get());
+                auto row = literal(4);
+                put(row.get(), "eventType", std::move(type));
+                put(row.get(), "targetID", p::retain(attacker_id.get()));
+                put(row.get(), "count", integer(1));
+                put(row.get(), "details", pack_crits());
+                p::append(output.get(), row);
+            }
+        }
+        const bool any = PyList_GET_SIZE(output.get()) != 0;
+        if (any) p::Ref(PyObject_CallFunctionObjArgs(battleEventsCallback(battle).get(), output.get(), nullptr));
+        if (attacker_local && greaterThanZero(damage.get())) {
+            auto writer = attr(module("gui.mods.offline_lan_0922.native_input_diagnostics").get(), "write_json_record");
+            auto values = p::dict();
+            put(values.get(), "event_id", method(event, "get", p::text("event_id").get()));
+            put(values.get(), "source", method(event, "get", p::text("source").get()));
+            put(values.get(), "reason", p::retain(reason.get()));
+            put(values.get(), "damage", p::retain(damage.get()));
+            put(values.get(), "enemy", p::boolean(enemy));
+            put(values.get(), "target", method(target_record, "get", p::text("network_id").get()));
+            put(values.get(), "spotted", p::boolean(combatTargetIsSpotted(target_record)));
+            auto native_types = p::list();
+            for (Py_ssize_t i = 0; i < PyList_GET_SIZE(output.get()); ++i)
+                p::append(native_types.get(), p::Ref(PyObject_GetItem(PyList_GET_ITEM(output.get(), i), p::text("eventType").get())));
+            put(values.get(), "native_types", std::move(native_types));
+            p::Ref copied(PyObject_Call(reinterpret_cast<PyObject*>(&PyDict_Type), p::Ref(PyTuple_New(0)).get(), values.get()));
+            p::Ref(PyObject_CallFunctionObjArgs(writer.get(), p::text("DAMAGE FEEDBACK").get(), copied.get(), nullptr));
+        }
+        return p::boolean(any).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* presentDamageSticker(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *target_record;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &event, &target_record)) return nullptr;
+    try {
+        const char* feature_name = "projectile damage stickers";
+        if (truthy(attr(battle, "_worker_mode")) || !member(event, p::text("damage_sticker").get()) ||
+            truthy(method(event, "get", p::text("splash").get(), Py_False)) ||
+            !truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text(feature_name).get()})))
+            Py_RETURN_FALSE;
+        auto target = method(battle, "_server_entity", method(target_record, "get", p::text("engine_id").get()).get());
+        if (target.get() == Py_None) Py_RETURN_FALSE;
+        if (!truthy(optionalAttr(target.get(), "isStarted")) || optionalAttr(target.get(), "typeDescriptor").get() == Py_None)
+            Py_RETURN_FALSE;
+        try {
+            auto decoder = attr(module("VehicleEffects").get(), "DamageFromShotDecoder");
+            p::Ref code(PyObject_GetItem(event, p::text("damage_sticker").get()));
+            auto decoded = method(decoder.get(), "decodeSegment", code.get(), attr(target.get(), "typeDescriptor").get());
+            auto items = unpack(decoded.get(), 4);
+            PyObject *component = items[0].get(), *sticker = items[1].get(), *start = items[2].get(), *end = items[3].get();
+            // #1513 VehicleStickers creates only hull/turret/gun owners.
+            if (equal(component, p::text("chassis").get())) Py_RETURN_FALSE;
+            auto appearance = optionalAttr(target.get(), "appearance");
+            auto add = optionalAttr(appearance.get(), "addDamageSticker");
+            if (!PyObject_IsTrue(component) || start == Py_None || end == Py_None || equal(start, end) || !PyCallable_Check(add.get()))
+                raise("#1513 damage-sticker boundary is unavailable");
+            p::Ref(PyObject_CallFunctionObjArgs(add.get(), code.get(), component, sticker, start, end, nullptr));
+        } catch (const std::exception& e) {
+            if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
+            auto error = caught(e);
+            callKw(battle, "_warn_optional_failure", {p::text(feature_name).get(), error.get()}, {{"disable", Py_False}});
+            Py_RETURN_FALSE;
+        }
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+PyObject* battleResult(PyObject*, PyObject* args) {
+    PyObject *battle, *result;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &result)) return nullptr;
+    try {
+        if (!PyDict_Check(result)) Py_RETURN_FALSE;
+        setAttr(battle, "_battle_result", p::Ref(PyDict_Copy(result)).get());
+        if (truthy(attr(battle, "_worker_mode"))) {
+            // Stop authority simulation during the server's result-publication window.
+            setAttr(battle, "_battle_live", Py_False);
+            setAttr(battle, "_round_finished_notified", Py_True);
+            method(battle, "_report_memory", p::text("round_end").get());
+            Py_RETURN_TRUE;
+        }
+        if (truthy(attr(battle, "_round_finished_notified")) || attr(battle, "_avatar").get() == Py_None ||
+            !equal(attr(battle, "state").get(), p::text("running").get()))
+            Py_RETURN_FALSE;
+        auto finish = optionalAttr(attr(attr(battle, "_runtime").get(), "constants").get(), "FINISH_REASON");
+        if (finish.get() == Py_None) raise("FINISH_REASON is unavailable");
+        auto reason_value = method(result, "get", p::text("reason").get(), p::text("").get());
+        auto lowered = method(str(reason_value.get()).get(), "lower");
+        const auto name = p::string(lowered.get());
+        auto has = [&](const char* part) { return name.find(part) != std::string::npos; };
+        p::Ref reason = p::retain(Py_None);
+        if (has("eliminat") || has("exterminat") || name == "team_eliminated") replace(reason, attr(finish.get(), "EXTERMINATION"));
+        else if (has("base") || has("captur")) replace(reason, attr(finish.get(), "BASE"));
+        else if (has("timeout") || has("time_out")) replace(reason, attr(finish.get(), "TIMEOUT"));
+        else {
+            PyObject* unknown = PyObject_GetAttrString(finish.get(), "UNKNOWN");
+            if (!unknown) {
+                if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr;
+                PyErr_Clear(); unknown = integer(4).release();
+            }
+            p::Ref fallback(unknown);
+            PyObject* failure = PyObject_GetAttrString(finish.get(), "FAILURE");
+            if (!failure) {
+                if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr;
+                PyErr_Clear(); failure = fallback.release();
+            }
+            replace(reason, p::Ref(failure));
+        }
+        auto avatar = attr(battle, "_avatar");
+        p::Ref callback = p::retain(Py_None);
+        if (!callableAttr(avatar.get(), "onRoundFinished", callback)) raise("Avatar.onRoundFinished is unavailable");
+        auto clamp = [&](const char* field) {
+            const auto value = strictInt(method(result, "get", p::text(field).get(), integer(0).get()).get());
+            return integer(std::max<std::int64_t>(0, std::min<std::int64_t>(value, 2)));
+        };
+        auto winner = clamp("winner");
+        auto base_team = clamp("base_team");
+        const auto base = PyInt_AsLong(base_team.get());
+        if (base == 1 || base == 2) {
+            p::Ref captured = p::retain(Py_None);
+            if (callableAttr(attr(avatar.get(), "arena").get(), "onTeamBaseCaptured", captured))
+                p::Ref(PyObject_CallFunctionObjArgs(captured.get(), base_team.get(), integer(0).get(), nullptr));
+        }
+        // Publish the afterbattle period first so its owners hold the outcome before the notification runs.
+        p::Ref period_args(PyTuple_Pack(2, winner.get(), reason.get()));
+        optionalFeature(battle, "afterbattle arena period", attr(battle, "_publish_afterbattle_period").get(), period_args.get());
+        p::Ref(PyObject_CallFunctionObjArgs(callback.get(), winner.get(), reason.get(), nullptr));
+        setAttr(battle, "_round_finished_notified", Py_True);
+        method(battle, "_report_memory", p::text("round_end").get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef event_methods[] = {
     {"apply_combat_event", applyCombatEvent, METH_VARARGS, "Apply one ordered combat event to its target."},
     {"on_events", onEvents, METH_VARARGS, "Accept one ordered events message into the journal."},
@@ -724,6 +1355,17 @@ PyMethodDef event_methods[] = {
     {"validate_combat_event_contract", validateCombatEventContract, METH_VARARGS, "Validate a combat event's source contract."},
     {"missing_projectile_attacker_allowed", missingProjectileAttackerAllowed, METH_VARARGS, "Whether delayed damage may outlive its shooter."},
     {"pending_event_references", pendingEventReferences, METH_VARARGS, "Whether the journal still references an entity."},
+    {"attack_reason", attackReason, METH_VARARGS, "The #1513 ATTACK_REASON index of one member."},
+    {"blind_local_attack", blindLocalAttack, METH_VARARGS, "Whether a local hit on an unspotted enemy stays silent."},
+    {"vehicle_statistics_event", vehicleStatisticsEvent, METH_VARARGS, "Apply one frags/team-killer event."},
+    {"present_direct_spot", presentDirectSpot, METH_VARARGS, "Publish the stock ribbon for a credited detection."},
+    {"detection_event", detectionEvent, METH_VARARGS, "Draw the spotting ribbon the server credited."},
+    {"assist_event", assistEvent, METH_VARARGS, "Feed one server-attributed assist to the damage log."},
+    {"environment_critical_feedback", environmentCriticalFeedback, METH_VARARGS, "Present an environment critical checkpoint."},
+    {"destructible_event", destructibleEvent, METH_VARARGS, "Route one destructible event to its owner."},
+    {"present_damage_sticker", presentDamageSticker, METH_VARARGS, "Add one admitted direct hit to the sticker owner."},
+    {"battle_result", battleResult, METH_VARARGS, "Publish the round result to the stock avatar."},
+    {"present_combat_feedback", presentCombatFeedback, METH_VARARGS, "Feed accepted combat through stock feedback RPCs."},
     {nullptr, nullptr, 0, nullptr}};
 }
 

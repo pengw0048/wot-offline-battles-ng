@@ -778,7 +778,7 @@ PyObject* applyHealth(PyObject*, PyObject* args) {
         if (dead && !previous_dead && outlined()) method(battle, "_clear_target_outline");
         if (dead && !previous_dead && !crew_knockout) {
             auto is = [&](const char* name, std::int64_t fallback) {
-                return equal(method(battle, "_attack_reason", p::text(name).get(), integer(fallback).get()).get(), reason_value.get());
+                return equal(dispatch(battle, "_attack_reason", "attack_reason", {p::text(name).get(), integer(fallback).get()}).get(), reason_value.get());
             };
             const char* cause = is("FIRE", 1) ? "fire" : is("RAM", 2) ? "ramming" : is("WORLD_COLLISION", 3) ? "world_collision"
                               : is("DROWNING", 5) ? "drowning" : is("OVERTURN", 7) ? "overturn" : "shot";

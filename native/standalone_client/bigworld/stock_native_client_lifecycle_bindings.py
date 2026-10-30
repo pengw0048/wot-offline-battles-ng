@@ -60,6 +60,17 @@ PORTS = (
     ('_prewarm_critical_layout', 'prewarm_critical_layout(self, globals())'),
     ('_maybe_send_battle_ready', 'maybe_send_battle_ready(self)'),
     ('_retry_bot_manifest', 'retry_bot_manifest(self, now)'),
+    ('_attack_reason', 'attack_reason(self, member, fallback)'),
+    ('_is_blind_local_attack', 'blind_local_attack(self, target_record, attacker_record)'),
+    ('_apply_vehicle_statistics_event', 'vehicle_statistics_event(self, event)'),
+    ('_present_direct_spot', 'present_direct_spot(self, record)'),
+    ('_apply_detection_event', 'detection_event(self, event)'),
+    ('_apply_assist_event', 'assist_event(self, event)'),
+    ('_apply_environment_critical_feedback', 'environment_critical_feedback(self, event, globals())'),
+    ('_apply_destructible_event', 'destructible_event(self, event, native_client_drive)'),
+    ('_present_damage_sticker', 'present_damage_sticker(self, event, target_record)'),
+    ('_apply_battle_result', 'battle_result(self, result)'),
+    ('_present_combat_feedback', 'present_combat_feedback(self, event, target_record, attacker_record, reason_id)'),
 )
 
 
