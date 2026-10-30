@@ -73,6 +73,6 @@ def battle(source):
         imports = ''.join('        from . import %s\n' % module for module in (
             'native_client_query', 'native_client_environment', 'native_client_drive',
             'native_client_replica') if module in call)
-        source = (source[:index] + imports + '        import offline_client_lifecycle_native\n'
-                  '        return offline_client_lifecycle_native.' + call + '\n' + source[index:])
-    return source
+        source = (source[:index] + imports + '        return _offline_lifecycle_native.' + call + '\n' + source[index:])
+    # One module-level import; each routed method only reads the global.
+    return source + '\nimport offline_client_lifecycle_native as _offline_lifecycle_native\n'

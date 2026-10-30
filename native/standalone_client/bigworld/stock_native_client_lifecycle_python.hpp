@@ -5,11 +5,14 @@
 #include <climits>
 #include <cmath>
 #include <initializer_list>
+#include <map>
+#include <vector>
 #include <new>
 #include <string>
 #include <utility>
 
 namespace stock_native_client_lifecycle {
+PyMethodDef* lifecycle_methods();
 namespace py {
 namespace p = stock_native_bot_python;
 
@@ -117,5 +120,44 @@ inline p::Ref eventEntityKey(PyObject* event, bool attacker) {
 }
 
 
+
+// The native port registered under `port` in this module.
+inline PyCFunction nativePort(const char* port) {
+    for (PyMethodDef* m = lifecycle_methods(); m->ml_name; ++m)
+        if (std::string(m->ml_name) == port) return m->ml_meth;
+    throw p::Error(std::string("native lifecycle port is missing: ") + port);
+}
+// battle.<method>(*args, **keywords) with its Python signature, or its native port called directly with
+// `native` (the port's complete argument list after battle) unless this instance overrides the method.
+inline p::Ref dispatch(PyObject* battle, const char* name, const char* port, std::initializer_list<PyObject*> args,
+                       std::initializer_list<std::pair<const char*, PyObject*>> keywords,
+                       std::initializer_list<PyObject*> native) {
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, name)) return callKw(battle, name, args, keywords);
+    p::Ref tuple(PyTuple_New(Py_ssize_t(native.size()) + 1));
+    Py_INCREF(battle); PyTuple_SET_ITEM(tuple.get(), 0, battle);
+    Py_ssize_t i = 1;
+    for (PyObject* v : native) { Py_INCREF(v); PyTuple_SET_ITEM(tuple.get(), i++, v); }
+    static std::map<std::string, PyCFunction> cache;
+    auto& fn = cache[port];
+    if (!fn) fn = nativePort(port);
+    return p::Ref(fn(nullptr, tuple.get()));
+}
+// The common case: the port takes the Python arguments, plus `extra` (such as globals()).
+inline p::Ref dispatch(PyObject* battle, const char* name, const char* port, std::initializer_list<PyObject*> args,
+                       std::initializer_list<PyObject*> extra = {}) {
+    std::vector<PyObject*> all(args);
+    all.insert(all.end(), extra.begin(), extra.end());
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, name)) return callKw(battle, name, args, {});
+    p::Ref tuple(PyTuple_New(Py_ssize_t(all.size()) + 1));
+    Py_INCREF(battle); PyTuple_SET_ITEM(tuple.get(), 0, battle);
+    Py_ssize_t i = 1;
+    for (PyObject* v : all) { Py_INCREF(v); PyTuple_SET_ITEM(tuple.get(), i++, v); }
+    static std::map<std::string, PyCFunction> cache;
+    auto& fn = cache[port];
+    if (!fn) fn = nativePort(port);
+    return p::Ref(fn(nullptr, tuple.get()));
+}
 }
 }

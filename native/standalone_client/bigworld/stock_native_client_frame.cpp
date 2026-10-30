@@ -27,17 +27,33 @@ Py_ssize_t length(PyObject* v) {
     if (n < 0) throw p::Error("len() failed");
     return n;
 }
-// self._run_optional_feature(name, fn, args[, disable][, disable=...][, kwargs=...])
+// self._run_optional_feature(name, fn, args[, on_error][, disable=...][, kwargs=...]) through its native port.
 p::Ref feature(PyObject* battle, const char* name, PyObject* fn, std::initializer_list<PyObject*> args,
-               PyObject* disable_positional = nullptr, std::initializer_list<std::pair<const char*, PyObject*>> keywords = {}) {
+               PyObject* on_error = nullptr, PyObject* disable = nullptr, PyObject* kwargs = nullptr) {
     p::Ref tuple(PyTuple_New(Py_ssize_t(args.size())));
     Py_ssize_t i = 0;
     for (PyObject* v : args) { Py_INCREF(v); PyTuple_SET_ITEM(tuple.get(), i++, v); }
-    if (disable_positional) return callKw(battle, "_run_optional_feature", {p::text(name).get(), fn, tuple.get(), disable_positional}, keywords);
-    return callKw(battle, "_run_optional_feature", {p::text(name).get(), fn, tuple.get()}, keywords);
+    auto label = p::text(name);
+    std::vector<std::pair<const char*, PyObject*>> keywords;
+    if (disable) keywords.push_back({"disable", disable});
+    if (kwargs) keywords.push_back({"kwargs", kwargs});
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature")) {
+        auto fn_attr = attr(battle, "_run_optional_feature");
+        p::Ref positional(on_error ? PyTuple_Pack(4, label.get(), fn, tuple.get(), on_error) : PyTuple_Pack(3, label.get(), fn, tuple.get()));
+        auto kw = p::dict();
+        for (const auto& item : keywords) put(kw.get(), item.first, p::retain(item.second));
+        return p::Ref(PyObject_Call(fn_attr.get(), positional.get(), kw.get()));
+    }
+    return dispatch(battle, "_run_optional_feature", "run_optional_feature", {}, {},
+                    {label.get(), fn, tuple.get(), on_error ? on_error : Py_None, disable ? disable : Py_True, kwargs ? kwargs : Py_None});
 }
 p::Ref feature(PyObject* battle, const char* name, PyObject* fn) {
-    return callKw(battle, "_run_optional_feature", {p::text(name).get(), fn}, {});
+    auto label = p::text(name);
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature")) return callKw(battle, "_run_optional_feature", {label.get(), fn}, {});
+    return dispatch(battle, "_run_optional_feature", "run_optional_feature", {}, {},
+                    {label.get(), fn, p::Ref(PyTuple_New(0)).get(), Py_None, Py_True, Py_None});
 }
 // `try: body() except Exception: pass`
 template<class Body> void swallow(Body body) {
@@ -158,13 +174,13 @@ PyObject* frame(PyObject*, PyObject* args) {
         try {
             feature(battle, "map visibility filtering", attr(battle, "_maintain_standard_space_visibility").get(), {now.get()},
                     attr(battle, "_disable_standard_space_visibility").get());
-            method(battle, "_flush_pending_bot_create", now.get());
+            dispatch(battle, "_flush_pending_bot_create", "flush_bot_create", {now.get()});
             method(battle, "_flush_pending_entities", now.get());
-            method(battle, "_start_team_chat_when_roster_ready");
-            method(battle, "_drain_event_journal");
+            dispatch(battle, "_start_team_chat_when_roster_ready", "start_team_chat", {});
+            dispatch(battle, "_drain_event_journal", "drain_event_journal", {}, {g});
             feature(battle, "foliage camouflage", attr(battle, "_refresh_fallen_tree_foliage").get(), {now.get()});
-            method(battle, "_retry_bot_manifest", now.get());
-            method(battle, "_maybe_send_battle_ready");
+            dispatch(battle, "_retry_bot_manifest", "retry_bot_manifest", {now.get()});
+            dispatch(battle, "_maybe_send_battle_ready", "maybe_send_battle_ready", {});
             replace(offline_replay, p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.offline_replay")));
             method(offline_replay.get(), "ensure_recording", battle);
             stage("house");
@@ -180,8 +196,7 @@ PyObject* frame(PyObject*, PyObject* args) {
             if (!worker && !replay)
                 feature(battle, "Expert damaged-device presentation", attr(battle, "_tick_expert_target").get(), {now.get()},
                         attr(battle, "_disable_expert_presentation").get());
-            feature(battle, "detached turret lifecycle", attr(battle, "_advance_detached_turrets").get(), {now.get()}, nullptr,
-                    {{"disable", Py_False}});
+            feature(battle, "detached turret lifecycle", attr(battle, "_advance_detached_turrets").get(), {now.get()}, nullptr, Py_False);
             stage("critical");
             if (truthy(attr(battle, "_battle_live")) && !worker && !replay) {
                 method(battle, "_tick_drowning", rule_dt.get(), now.get());
@@ -225,7 +240,7 @@ PyObject* frame(PyObject*, PyObject* args) {
                 method(battle, "_warn_optional_failure", p::text(what).get(), error.get());
             };
             try { method(battle, "_prewarm_bot_destructible_registries", now.get()); } catch (const std::exception& e) { warn("bot destructible prewarm", e); }
-            try { method(battle, "_prewarm_critical_layout"); } catch (const std::exception& e) { warn("critical layout prewarm", e); }
+            try { dispatch(battle, "_prewarm_critical_layout", "prewarm_critical_layout", {}, {g}); } catch (const std::exception& e) { warn("critical layout prewarm", e); }
             stage("prewarm");
             if (!truthy(attr(battle, "_battle_live")) && truthy(method(battle, "_projectile_is_authority")) &&
                 attr(battle, "_projectiles").get() != Py_None) {
@@ -327,7 +342,7 @@ PyObject* frame(PyObject*, PyObject* args) {
                 if (!isCallable(states)) throw p::Error("authority bot presentation boundary is unavailable");
                 auto presented = worker ? method(battle, "_present_authority_bot_poses", states.get(), now.get())
                                         : feature(battle, "bot pose presentation", attr(battle, "_present_authority_bot_poses").get(),
-                                                  {states.get(), now.get()}, nullptr, {{"disable", Py_False}});
+                                                  {states.get(), now.get()}, nullptr, Py_False);
                 if (truthy(presented)) replace(bot_count, p::item(presented.get(), 0));
             }
             stage("bot_present");
@@ -352,18 +367,17 @@ PyObject* frame(PyObject*, PyObject* args) {
             stage("bot_events");
             if (!worker && !replay) {
                 if (truthy(attr(battle, "_battle_live")))
-                    feature(battle, "spotting", attr(battle, "_update_spotting").get(), {now.get()}, nullptr, {{"disable", Py_False}});
+                    feature(battle, "spotting", attr(battle, "_update_spotting").get(), {now.get()}, nullptr, Py_False);
                 else if (attr(battle, "_prebattle_deadline").get() != Py_None) {
                     auto kwargs = p::dict(); put(kwargs.get(), "hud_only", p::boolean(true));
-                    feature(battle, "spotting", attr(battle, "_update_spotting").get(), {now.get()}, nullptr,
-                            {{"disable", Py_False}, {"kwargs", kwargs.get()}});
+                    feature(battle, "spotting", attr(battle, "_update_spotting").get(), {now.get()}, nullptr, Py_False, kwargs.get());
                 }
             }
             stage("spot");
             if (truthy(attr(battle, "_battle_live")) && !worker && !replay) {
                 auto validate = optionalAttr(attr(attr(battle, "_runtime").get(), "compatibility").get(), "validate_target_lock");
                 if (!isCallable(validate)) throw p::Error("#1513 target-lock lifecycle boundary is unavailable");
-                feature(battle, "target lock validation", validate.get(), {attr(battle, "_avatar").get()}, nullptr, {{"disable", Py_False}});
+                feature(battle, "target lock validation", validate.get(), {attr(battle, "_avatar").get()}, nullptr, Py_False);
             }
             if (replay) method(battle, "_present_replay_local", dt.get());
             else method(offline_replay.get(), "record_local", battle);
@@ -380,7 +394,7 @@ PyObject* frame(PyObject*, PyObject* args) {
             Py_RETURN_NONE;
         }
         const double schedule_start = profiling ? clockNow(g) : 0.;
-        method(battle, "_schedule", frameGlobal(g, "FRAME_SECONDS").get(), attr(battle, "_frame").get());
+        dispatch(battle, "_schedule", "schedule", {frameGlobal(g, "FRAME_SECONDS").get(), attr(battle, "_frame").get()}, {Py_False, g});
         if (!profiling) Py_RETURN_NONE;
         const double schedule_end = clockNow(g);
         put(stages.get(), "schedule", p::number(std::max(0., schedule_end - schedule_start)));
@@ -468,7 +482,7 @@ PyObject* runOptionalFeature(PyObject*, PyObject* args) {
     PyObject *battle, *name, *callback, *call_args, *on_error, *disable, *kwargs;
     if (!PyArg_ParseTuple(args, "OOOOOOO", &battle, &name, &callback, &call_args, &on_error, &disable, &kwargs)) return nullptr;
     try {
-        if (!truthy(method(battle, "_optional_feature_enabled", name))) Py_RETURN_FALSE;
+        if (!truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {name}))) Py_RETURN_FALSE;
         p::Ref positional(PySequence_Tuple(call_args));
         p::Ref keywords(PyObject_IsTrue(kwargs) > 0 ? PyDict_Copy(kwargs) : PyDict_New());
         PyObject* result = PyObject_Call(callback, positional.get(), keywords.get());
