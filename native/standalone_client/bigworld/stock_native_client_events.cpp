@@ -437,8 +437,10 @@ PyObject* eventIsReady(PyObject*, PyObject* args) {
                     auto started = method(event, "pop", p::text("_pose_wait_started").get());
                     const double waited = std::max(0., p::scalar(clock.get()) - p::scalar(started.get()));
                     p::Ref line(PyString_FromFormat("[Offline LAN 0.9.22] BOT SHOT POSE READY projectile=%s wait_ms=", p::string(str(get(event, "projectile_id").get()).get()).c_str()));
-                    char buffer[64]; std::snprintf(buffer, sizeof(buffer), "%.3f", waited * 1000.);
-                    std::string text = p::string(line.get()) + buffer + " pose_launch_us=" + p::string(str(launch.get()).get()) +
+                    // Python formats the wait; the engine's precompiled header redefines snprintf.
+                    p::Ref format(PyString_FromString("%.3f")), value(PyTuple_Pack(1, p::number(waited * 1000.).get()));
+                    p::Ref wait(PyString_Format(format.get(), value.get()));
+                    std::string text = p::string(line.get()) + p::string(wait.get()) + " pose_launch_us=" + p::string(str(launch.get()).get()) +
                                        " presented_us=" + p::string(str(presented.get()).get()) + "\n";
                     method(attr(module("sys").get(), "stdout").get(), "write", p::text(text).get());
                 }
