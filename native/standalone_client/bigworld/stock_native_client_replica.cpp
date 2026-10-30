@@ -132,11 +132,14 @@ cs::Value readStateMessage(Owner&o,PyObject*raw,bool is_manifest){
     if(!PyDict_Check(raw))return readMessage(o,raw);
     cs::Value out;out.kind=cs::Value::Kind::Object;
     auto field=[&](const char*name){auto*value=PyDict_GetItemString(raw,name);if(value)out.object.emplace(name,(std::string(name)=="players"||std::string(name)=="bots")?readActorRows(o,value):readMessage(o,value,name));};
-    field("round_id");if(is_manifest||!PyDict_GetItemString(raw,"_native_snapshot"))for(const char*name:{"players","bots"})field(name);
+    field("round_id");for(const char*name:{"players","bots"})field(name);
     if(!is_manifest)for(const char*name:{"sequence","server_tick","bot_state_revision","motion_time_us","bot_state_time_us","timing","server_time_ms","_client_dispatch_delay","_client_coalesced_timing","bot_orders","bot_order_revision"})field(name);
     // Replica snapshots were merged on the receive thread; their rows never became Python.
     auto*native=is_manifest?nullptr:PyDict_GetItemString(raw,"_native_snapshot");
-    if(native){auto complete=stock_wire::snapshot_from_capsule(native);if(!complete)throw p::Error("Native replica snapshot capsule is invalid");for(const char*name:{"players","bots"})out.object[name]=complete->get(name);}
+    // Admission completed only the recipient's own row (static inputs); it stays authoritative.
+    if(native){auto complete=stock_wire::snapshot_from_capsule(native);if(!complete)throw p::Error("Native replica snapshot capsule is invalid");
+        auto&players=out.object["players"];if(players.kind!=cs::Value::Kind::Array)players.kind=cs::Value::Kind::Array;std::set<std::int64_t>own;for(const auto&row:players.array)own.insert(std::int64_t(row.get("id").numeric()));
+        for(const auto&row:complete->get("players").array)if(!own.count(std::int64_t(row.get("id").numeric())))players.array.push_back(row);out.object["bots"]=complete->get("bots");}
     return out;
 }
 void ensureOpen(const Owner&o){if(o.closed)throw Retired{};}
