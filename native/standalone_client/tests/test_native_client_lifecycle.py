@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = 'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py'
 METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_attacker_engine_id',
            '_should_suppress_postmortem_killer', '_sync_fire_effect', '_stop_remote_visual',
-           '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components')
+           '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
+           '_apply_critical_state', '_apply_stun_state')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -21,16 +22,17 @@ exec(open(sys.argv[2]).read())
 
 class Log(object):
     """Fake engine object: records every call and answers from a script."""
-    def __init__(self, log, name, answers=None, **attrs):
-        self._log, self._name, self._answers = log, name, answers or {}
+    def __init__(self, log, name, answers=None, missing=(), **attrs):
+        self._log, self._name, self._answers, self._missing = log, name, answers or {}, missing
         self.__dict__.update(attrs)
     def __repr__(self):
         return '<%s>' % self._name
     def __getattr__(self, attr):
-        if attr.startswith('__'):
+        if attr.startswith('__') or attr in self._missing:
             raise AttributeError(attr)
-        def call(*args):
-            self._log.append((self._name, attr) + tuple(repr(a) for a in args))
+        def call(*args, **kwargs):
+            self._log.append((self._name, attr) + tuple(repr(a) for a in args) +
+                             tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
             answer = self._answers.get(attr)
             return answer(*args) if callable(answer) else answer
         return call
@@ -58,21 +60,27 @@ def run(name, make, args):
             try:
                 result = ('ok', fn(*values))
             except Exception as error:
-                result = ('error', type(error).__name__)
+                result = ('error', type(error).__name__, str(error))
         else:
             try:
                 result = ('ok', NATIVE[name](b, *values))
             except Exception as error:
-                result = ('error', 'native')
+                result = ('error', type(error).__name__, str(error))
+        probe = getattr(b, '_entity_probe', None)
+        entity_after = None if probe is None else (getattr(probe, 'stunInfo', None),
+                                                   copy.deepcopy(probe.__dict__.get('_offlineStunFactors')))
         out.append((result, log, copy.deepcopy([v for v in values if isinstance(v, dict)]),
-                    copy.deepcopy(b._records), getattr(b, '_marker', None)))
+                    copy.deepcopy(b._records), entity_after))
     (pr, pl, pv, prec, pm), (nr, nl, nv, nrec, nm) = out
+    TALLY.setdefault(name, [0, 0, 0])[0 if pr[0] == 'error' else 1 if not pl else 2] += 1
     if pr[0] == 'error':
-        assert nr[0] == 'error', (name, args, pr, nr)
+        # Pinned validation errors keep their type and message; other failures only need to fail.
+        assert nr[0] == 'error' and (pr[1] != 'RuntimeError' or pr == nr), (name, args, pr, nr)
     else:
-        assert (pr, pl, pv, prec) == (nr, nl, nv, nrec), (name, args, out)
+        assert (pr, pl, pv, prec, pm) == (nr, nl, nv, nrec, nm), (name, args, out)
 
 KINDS = _COMBAT_EVENT_KINDS
+TALLY = {}
 NATIVE = {
     '_pending_combat_for_record': lambda b, r: native.pending_combat(b, r, KINDS),
     '_apply_vehicle_statistics': native.vehicle_statistics,
@@ -80,7 +88,16 @@ NATIVE = {
     '_should_suppress_postmortem_killer': native.suppress_postmortem_killer,
     '_sync_fire_effect': lambda b, e, burning=None: native.sync_fire_effect(b, e, burning),
     '_stop_remote_visual': native.stop_remote_visual,
+    '_apply_critical_state': lambda b, r, payload, authority=None: native.critical_state(b, r, payload, authority, critical_damage),
+    '_apply_stun_state': native.stun_state,
 }
+critical_damage = None
+
+def stub(b, log, name, answer=None):
+    def call(*args, **kwargs):
+        log.append(('battle', name) + tuple(repr(a) for a in args) + tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
+        return answer(*args) if callable(answer) else answer
+    setattr(b, name, call)
 cases = 0
 frag_values = [0, 3, 3.7, '5', 'x', None, True]
 for worker in (False, True):
@@ -152,7 +169,77 @@ for outlined in (41, 5, None):
                 record = dict(components, engine_id=41, native_remote=native_remote)
                 return battle(log, outlined=outlined), (record,)
             run('_stop_remote_visual', make, (outlined, components, native_remote)); cases += 1
+for canonical in (None, {'fire': True}):
+    for authority in (None, {'critical_revision': 2}):
+        for reconciled in (True, False):
+            for local in (True, False):
+                for existing in (None, {'fire': True}, {'fire': False}):
+                    for entity_ok in (True, False):
+                        for gun in (None, 'gun'):
+                            for worker in (False, True):
+                                def make(log, canonical=canonical, authority=authority, reconciled=reconciled, local=local,
+                                         existing=existing, entity_ok=entity_ok, gun=gun, worker=worker):
+                                    global critical_damage
+                                    b = battle(log, worker=worker)
+                                    critical_damage = Log(log, 'critical_damage', {'apply_payload': lambda e, c: ['event']})
+                                    globals()['critical_damage'] = critical_damage
+                                    stub(b, log, '_critical_state', lambda payload: None if canonical is None else dict(canonical))
+                                    stub(b, log, '_reconcile_critical_authority', reconciled)
+                                    stub(b, log, '_server_entity', Log(log, 'entity') if entity_ok else None)
+                                    stub(b, log, '_advance_local_gun_edge', (0, 'edge'))
+                                    stub(b, log, '_advance_local_gun_to')
+                                    stub(b, log, '_present_critical')
+                                    b._gun_state = gun
+                                    record = {'engine_id': 41, 'local': local, 'state': {'health': 5}}
+                                    if existing is not None: record['critical_state'] = existing
+                                    args = (record, {'raw': 1}) if authority is None else (record, {'raw': 1}, authority)
+                                    return b, args
+                                run('_apply_critical_state', make, (canonical, authority, reconciled, local, existing, entity_ok, gun, worker)); cases += 1
+for end in (0, 5000, -1, True, 2.5):
+    for kind in ('', 'bot', u'player', 'x'):
+        for attacker in (0, 7, True):
+            for factors in (None, {'reload': 1.2, 'dispersion': 1.5}):
+                for presented in ('none', 'same', 'other'):
+                    for estimated in (None, 1000.0):
+                        for local in (True, False):
+                            for variant in range(4):
+                                def make(log, end=end, kind=kind, attacker=attacker, factors=factors, presented=presented,
+                                         estimated=estimated, local=local, variant=variant):
+                                    worker, entity_ok, gun, native_cb = variant == 3, variant != 2, variant == 1, variant == 0
+                                    b = battle(log, worker=worker)
+                                    stub(b, log, '_clock', 50.0)
+                                    stub(b, log, '_projectile_estimated_server_time', estimated)
+                                    stub(b, log, '_server_clock', 200.0)
+                                    entity = Log(log, 'entity', missing=() if native_cb else ('set_stunInfo',), stunInfo=1.5)
+                                    stub(b, log, '_server_entity', entity if entity_ok else None)
+                                    stub(b, log, '_advance_local_gun_edge'); stub(b, log, '_apply_current_reload_factor', True)
+                                    stub(b, log, '_publish_reload_event'); stub(b, log, '_publish_targeting_info')
+                                    b._gun_state = Log(log, 'gun', reload_time=1.0, reload_duration=4.0) if gun else None
+                                    view = Log(log, 'view', STUN=12)
+                                    b._runtime = Log(log, 'runtime', vehicle_view_state=view)
+                                    feedback = Log(log, 'feedback')
+                                    provider = Log(log, 'provider', shared=Log(log, 'shared', feedback=feedback))
+                                    b._avatar = Log(log, 'avatar', guiSessionProvider=provider)
+                                    state = {'stun_end_server_time_ms': end, 'stun_attacker_kind': kind, 'stun_attacker_id': attacker}
+                                    if factors is not None: state['stun_factors'] = dict(factors)
+                                    record = {'engine_id': 41, 'local': local}
+                                    signature = (int(end), str(kind), int(attacker), tuple(sorted((factors or {}).items())))
+                                    if presented == 'same': record['presented_stun_state'] = signature
+                                    if presented == 'other': record['presented_stun_state'] = (1, 'bot', 2, ())
+                                    return b, (record, state)
+                                def make_checked(log, make=make):
+                                    b, args = make(log)
+                                    entity = b._server_entity(41)
+                                    del log[:]
+                                    original = b._server_entity
+                                    b._server_entity = lambda engine: (log.append(('battle', '_server_entity', repr(engine))), entity)[1]
+                                    b._entity_probe = entity
+                                    return b, args
+                                run('_apply_stun_state', make_checked, (end, kind, attacker, factors, presented, estimated, local, variant)); cases += 1
 print('lifecycle differential ok %d' % cases)
+for name, (errors, quiet, effects) in sorted(TALLY.items()):
+    print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
+    assert quiet + effects, name
 '''
 
 
@@ -160,7 +247,7 @@ def pinned_source(fork):
     source = (Path(fork) / RUNTIME).read_text()
     tree = ast.parse(source)
     lines = source.splitlines()
-    chunks = ['import math', 'class Pinned(object):']
+    chunks = ['import math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):']
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) in GLOBALS for t in node.targets):
             chunks.insert(1, '\n'.join(lines[node.lineno - 1:node.end_lineno]))
@@ -195,6 +282,7 @@ class LifecycleDifferential(unittest.TestCase):
                                  capture_output=True, text=True, timeout=120)
             self.assertEqual(run.returncode, 0, run.stdout[-3000:] + run.stderr[-6000:])
             self.assertIn('lifecycle differential ok', run.stdout)
+            print(run.stdout)
 
 
 if __name__ == '__main__':

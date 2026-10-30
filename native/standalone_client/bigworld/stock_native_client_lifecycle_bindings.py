@@ -9,6 +9,8 @@ PORTS = (
      'suppress_postmortem_killer(self, victim_record, death_state, attacker_id)'),
     ('_sync_fire_effect', 'sync_fire_effect(self, entity, burning)'),
     ('_stop_remote_visual', 'stop_remote_visual(self, record)'),
+    ('_apply_critical_state', 'critical_state(self, record, payload, authority, critical_damage)'),
+    ('_apply_stun_state', 'stun_state(self, record, state)'),
 )
 
 

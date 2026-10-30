@@ -6,6 +6,8 @@
 #endif
 #include "stock_native_bot_python.hpp"
 #include <climits>
+#include <new>
+#include <utility>
 #include <cmath>
 #include <string>
 
@@ -62,6 +64,15 @@ double number(PyObject* v, double fallback = 0.) {
     const double out = PyFloat_AS_DOUBLE(f);
     return std::isfinite(out) ? out : fallback;
 }
+bool exactInteger(PyObject* v) { return !PyBool_Check(v) && (PyInt_Check(v) || PyLong_Check(v)); }
+bool equal(PyObject* a, PyObject* b) {
+    const int same = PyObject_RichCompareBool(a, b, Py_EQ);
+    if (same < 0) throw p::Error("Native lifecycle comparison failed");
+    return same != 0;
+}
+void replace(p::Ref& target, p::Ref value) { target.~Ref(); new (&target) p::Ref(std::move(value)); }
+void setAttr(PyObject* o, const char* name, PyObject* v) { if (PyObject_SetAttrString(o, name, v) < 0) throw p::Error("Native lifecycle attribute write failed"); }
+p::Ref copyDict(PyObject* v) { return v == Py_None || PyObject_IsTrue(v) <= 0 ? p::dict() : p::Ref(PyDict_Copy(v)); }
 p::Ref key(const char* kind, PyObject* id) {
     p::Ref text(PyObject_Str(id));
     return p::text(std::string(kind) + ":" + p::string(text.get()));
@@ -239,6 +250,127 @@ PyObject* stopRemoteVisual(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._apply_critical_state(record, payload, authority=None)
+PyObject* criticalState(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *payload, *authority = Py_None, *critical_damage;
+    if (!PyArg_ParseTuple(args, "OOOOO", &battle, &record, &payload, &authority, &critical_damage)) return nullptr;
+    try {
+        auto canonical = method(battle, "_critical_state", payload);
+        if (canonical.get() == Py_None) Py_RETURN_FALSE;
+        if (authority != Py_None) {
+            auto apply = method(battle, "_reconcile_critical_authority", record, authority, canonical.get());
+            if (!truthy(apply)) {
+                if (truthy(get(record, "local")) && truthy(get(record, "critical_state"))) {
+                    auto state = copyDict(get(record, "state").get());
+                    put(state.get(), "critical", get(record, "critical_state"));
+                    put(record, "state", state);
+                }
+                Py_RETURN_FALSE;
+            }
+        }
+        if (equal(canonical.get(), get(record, "critical_state").get())) Py_RETURN_FALSE;
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        auto entity = method(battle, "_server_entity", engine);
+        if (entity.get() == Py_None) Py_RETURN_FALSE;
+        auto gun_edge = p::retain(Py_None);
+        auto gun = attr(battle, "_gun_state");
+        if (truthy(get(record, "local")) && gun.get() != Py_None) replace(gun_edge, method(battle, "_advance_local_gun_edge", gun.get()));
+        auto events = method(critical_damage, "apply_payload", entity.get(), canonical.get());
+        if (gun_edge.get() != Py_None) method(battle, "_advance_local_gun_to", entity.get(), p::item(gun_edge.get(), 1).get());
+        put(record, "critical_state", canonical);
+        auto state = copyDict(get(record, "state").get());
+        put(state.get(), "critical", canonical);
+        put(record, "state", state);
+        if (!truthy(attr(battle, "_worker_mode"))) method(battle, "_present_critical", record, events.get(), integer(0).get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._apply_stun_state(record, state)
+PyObject* stunState(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *state;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &record, &state)) return nullptr;
+    try {
+        auto end = get(state, "stun_end_server_time_ms", integer(0).get());
+        if (!exactInteger(end.get()) || PyObject_RichCompareBool(end.get(), integer(0).get(), Py_LT) == 1)
+            throw p::Error("LAN snapshot has an invalid stun end time");
+        auto kind = get(state, "stun_attacker_kind", p::text("").get());
+        auto attacker = get(state, "stun_attacker_id", integer(0).get());
+        const bool stunned = PyObject_IsTrue(end.get()) > 0;
+        if (stunned) {
+            const bool valid_kind = equal(kind.get(), p::text("player").get()) || equal(kind.get(), p::text("bot").get());
+            if (!valid_kind || !exactInteger(attacker.get()) || PyObject_RichCompareBool(attacker.get(), integer(0).get(), Py_LE) == 1)
+                throw p::Error("LAN snapshot has an invalid stun attacker");
+        } else if (PyObject_IsTrue(kind.get()) > 0 || PyObject_IsTrue(attacker.get()) > 0) {
+            throw p::Error("cleared LAN stun retains an attacker");
+        }
+        auto factors_raw = get(state, "stun_factors");
+        auto factors = PyObject_IsTrue(factors_raw.get()) > 0 ? p::retain(factors_raw.get()) : p::dict();
+        auto items = method(factors.get(), "items");
+        if (PyList_Sort(items.get()) < 0) throw p::Error("Native stun factor sort failed");
+        p::Ref sorted(PyList_AsTuple(items.get()));
+        std::int64_t end_value = 0, attacker_value = 0;
+        if (!pyInt(end.get(), end_value) || !pyInt(attacker.get(), attacker_value)) throw p::Error("Native stun integers are invalid");
+        p::Ref kind_text(PyObject_Str(kind.get()));
+        p::Ref signature(PyTuple_Pack(4, integer(end_value).get(), kind_text.get(), integer(attacker_value).get(), sorted.get()));
+        auto presented = get(record, "presented_stun_state");
+        if (presented.get() == Py_None && !stunned) { put(record, "presented_stun_state", p::retain(signature.get())); Py_RETURN_FALSE; }
+        if (equal(presented.get(), signature.get())) Py_RETURN_FALSE;
+        auto now = method(battle, "_clock");
+        auto estimated = method(battle, "_projectile_estimated_server_time", now.get());
+        if (stunned && estimated.get() == Py_None) throw p::Error("LAN stun has no server-time anchor");
+        const double remaining = stunned ? std::max(0., (number(end.get()) - p::scalar(estimated.get())) / 1000.) : 0.;
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        auto entity = method(battle, "_server_entity", engine);
+        if (entity.get() == Py_None) throw p::Error("stunned LAN vehicle is unavailable");
+        const bool worker = truthy(attr(battle, "_worker_mode"));
+        auto local_gun = p::retain(Py_None);
+        if (truthy(get(record, "local")) && !worker) {
+            replace(local_gun, attr(battle, "_gun_state"));
+            if (local_gun.get() != Py_None) method(battle, "_advance_local_gun_edge", local_gun.get());
+        }
+        PyObject* raw_previous = PyObject_GetAttrString(entity.get(), "stunInfo");
+        if (!raw_previous) { if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("Native stun read failed"); PyErr_Clear(); }
+        p::Ref previous(raw_previous ? raw_previous : p::number(0.).release());
+        auto stun_info = remaining > 0. ? p::number(p::scalar(method(battle, "_server_clock").get()) + remaining) : p::number(0.);
+        setAttr(entity.get(), "stunInfo", stun_info.get());
+        auto copied = remaining > 0. ? p::Ref(PyDict_Copy(factors.get())) : p::dict();
+        setAttr(entity.get(), "_offlineStunFactors", copied.get());
+        if (local_gun.get() != Py_None) {
+            auto rescaled = method(battle, "_apply_current_reload_factor", local_gun.get(), entity.get());
+            if (truthy(rescaled)) {
+                auto publish = attr(battle, "_publish_reload_event");
+                p::Ref positional(PyTuple_Pack(2, attr(local_gun.get(), "reload_time").get(), attr(local_gun.get(), "reload_duration").get()));
+                auto keywords = p::dict(); put(keywords.get(), "force", p::boolean(true));
+                p::Ref unused(PyObject_Call(publish.get(), positional.get(), keywords.get()));
+            }
+            method(battle, "_publish_targeting_info", entity.get(), local_gun.get());
+        }
+        if (!worker) {
+            auto native_callback = optionalAttr(entity.get(), "set_stunInfo");
+            auto left = p::number(remaining);
+            if (native_callback.get() != Py_None && PyCallable_Check(native_callback.get())) {
+                p::Ref unused(PyObject_CallFunctionObjArgs(native_callback.get(), previous.get(), nullptr));
+            } else if (truthy(get(record, "local"))) {
+                auto provider = attr(attr(battle, "_avatar").get(), "guiSessionProvider");
+                auto view = attr(attr(battle, "_runtime").get(), "vehicle_view_state");
+                method(provider.get(), "invalidateVehicleState", attr(view.get(), "STUN").get(), left.get());
+            } else {
+                auto feedback = attr(attr(attr(attr(battle, "_avatar").get(), "guiSessionProvider").get(), "shared").get(), "feedback");
+                auto callback = optionalAttr(feedback.get(), "invalidateStun");
+                if (callback.get() == Py_None || !PyCallable_Check(callback.get()))
+                    throw p::Error("#1513 remote stun feedback boundary is unavailable");
+                p::Ref unused(PyObject_CallFunctionObjArgs(callback.get(), engine, left.get(), nullptr));
+            }
+        }
+        put(record, "presented_stun_state", p::retain(signature.get()));
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -246,6 +378,8 @@ PyMethodDef methods[] = {
     {"suppress_postmortem_killer", suppressPostmortemKiller, METH_VARARGS, "Whether a local death hides its killer."},
     {"sync_fire_effect", syncFireEffect, METH_VARARGS, "Match the stock fire extra to the burning state."},
     {"stop_remote_visual", stopRemoteVisual, METH_VARARGS, "Stop a remote vehicle's marker and minimap entry."},
+    {"critical_state", criticalState, METH_VARARGS, "Apply a canonical critical payload to a vehicle."},
+    {"stun_state", stunState, METH_VARARGS, "Present the #1513 stunInfo absolute-time contract."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
