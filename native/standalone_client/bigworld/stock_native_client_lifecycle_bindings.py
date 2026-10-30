@@ -18,6 +18,12 @@ PORTS = (
     ('_set_record_spot_visibility',
      'spot_visibility(self, record, visible, marker_visible, native_client_query, set_draw_visibility, ENGINE_MODE_IDLE)'),
     ('_apply_spot_presentation', 'spot_presentation(self, record, entity, remembered)'),
+    ('_apply_turret_detachment', 'turret_detachment(self, record, entity, state)'),
+    ('_finalize_dead_remote_wreck', 'finalize_dead_wreck(self, record, entity)'),
+    ('_apply_health',
+     'apply_health(self, record, state, attacker_id, reason_id, force_cause, attack_reason_id, '
+     'suppress_combat_presentation, suppress_postmortem_killer, critical_damage, '
+     'native_client_environment, native_client_drive)'),
 )
 
 
@@ -28,8 +34,8 @@ def battle(source):
         if len(matches) != 1:
             raise ValueError('The pinned lifecycle seam changed: ' + name)
         index = matches[0].end()
-        imports = ('        from . import native_client_query\n'
-                   if 'native_client_query' in call else '')
+        imports = ''.join('        from . import %s\n' % module for module in (
+            'native_client_query', 'native_client_environment', 'native_client_drive') if module in call)
         source = (source[:index] + imports + '        import offline_client_lifecycle_native\n'
                   '        return offline_client_lifecycle_native.' + call + '\n' + source[index:])
     return source

@@ -12,7 +12,8 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_should_suppress_postmortem_killer', '_sync_fire_effect', '_stop_remote_visual',
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
            '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical',
-           '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation')
+           '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation',
+           '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -78,12 +79,13 @@ def run(name, make, args):
                 result = ('error', type(error).__name__, str(error))
         battle_after = tuple(repr(getattr(b, name, '-')) for name in (
             '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
-            '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity'))
+            '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity',
+            '_last_health', '_local_speed'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
             'stunInfo', '_offlineStunFactors', '_spot_visible', '_offlineNativeDrawVisible', 'targetCaps',
-            '_offlineNativeMarkerVisible'))
+            '_offlineNativeMarkerVisible', 'health', 'isCrewActive'))
         out.append((result, log, copy.deepcopy([v for v in values if isinstance(v, dict)]),
                     copy.deepcopy(b._records), entity_after))
     (pr, pl, pv, prec, pm), (nr, nl, nv, nrec, nm) = out
@@ -110,7 +112,14 @@ NATIVE = {
     '_sync_remote_visual_components': native.remote_visual_components,
     '_set_record_spot_visibility': lambda b, r, v, m=None: native.spot_visibility(b, r, v, m, NATIVE_QUERY, set_draw_visibility, ENGINE_MODE_IDLE),
     '_apply_spot_presentation': native.spot_presentation,
+    '_apply_turret_detachment': lambda b, r, e, st=None: native.turret_detachment(b, r, e, st),
+    '_finalize_dead_remote_wreck': native.finalize_dead_wreck,
+    '_apply_health': lambda b, r, st, attacker_id=0, reason_id=None, force_cause=False, attack_reason_id=None,
+                            suppress_combat_presentation=False, suppress_postmortem_killer=False: native.apply_health(
+        b, r, st, attacker_id, reason_id, force_cause, attack_reason_id, suppress_combat_presentation,
+        suppress_postmortem_killer, critical_damage, native_client_environment, native_client_drive),
 }
+native_client_environment = native_client_drive = None
 vehicle_physics = None
 critical_damage = None
 
@@ -331,6 +340,97 @@ for alive in (True, False):
                         if spot is not None: record['spot_visible'] = spot
                         return b, (record, Log(log, 'entity'), remembered)
                     run('_apply_spot_presentation', make, (alive, dead_known, remembered, spot, failing)); cases += 1
+for worker in (False, True):
+    for detached in (True, False, None):
+        def make(log, worker=worker, detached=detached):
+            b = battle(log, worker=worker)
+            stub(b, log, '_mark_turret_detached'); stub(b, log, '_queue_detached_turret')
+            entity = Log(log, 'entity', missing=() if detached is not None else ('isTurretDetached',), isTurretDetached=detached)
+            return b, ({'engine_id': 41}, entity, {'health': 0})
+        run('_apply_turret_detachment', make, (worker, detached)); cases += 1
+for factory_kind in ('none', 'no_get', 'returns_none', 'vehicle'):
+    for model in (True, False):
+        for native_remote in (True, False):
+            for spot in (None, True, False):
+                for marker in (None, True):
+                    for failing in (False, True):
+                        def make(log, factory_kind=factory_kind, model=model, native_remote=native_remote, spot=spot, marker=marker, failing=failing):
+                            b = battle(log)
+                            vehicle = Log(log, 'vehicle', model='m' if model else None)
+                            if factory_kind == 'none': b._remote_factory = None
+                            elif factory_kind == 'no_get': b._remote_factory = Log(log, 'factory', missing=('get',))
+                            else: b._remote_factory = Log(log, 'factory', {'get': lambda engine: None if factory_kind == 'returns_none' else vehicle})
+                            if failing:
+                                def boom(*a): raise ValueError('spot failed')
+                                b._set_record_spot_visibility = boom
+                            else:
+                                stub(b, log, '_set_record_spot_visibility', 'spotted')
+                            stub(b, log, '_warn_optional_failure')
+                            record = {'engine_id': 41, 'native_remote': native_remote, 'wreck_known': 1, 'deferred_health_presentation': True,
+                                      '_spot_presentation_signature': (1,)}
+                            if spot is not None: record['spot_visible'] = spot
+                            if marker is not None: record['spot_marker_visible'] = marker
+                            entity = Log(log, 'entity', model='m' if model else None)
+                            b._entity_probe = vehicle
+                            return b, (record, entity)
+                        run('_finalize_dead_remote_wreck', make, (factory_kind, model, native_remote, spot, marker, failing)); cases += 1
+HEALTH_STATES = [
+    {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
+    {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},
+    {'health': 120, 'alive': False}, {'health': 0, 'display_health': None, 'death_reason': 5},
+    {'health': 50, 'display_health': 45}, {}, {'health': 'x'}, {'health': 0, 'death_reason': 2, 'critical': {}},
+    {'health': 120, 'alive': False, 'display_health': 0}, {'health': 0, 'alive': True, 'display_health': 40, 'death_reason': 7},
+]
+for state_index in range(len(HEALTH_STATES)):
+    for previous in (None, 'alive', 'dead'):
+        for local in (True, False):
+            for args_index in range(4):
+                for variant in range(8):
+                    def make(log, state_index=state_index, previous=previous, local=local, args_index=args_index, variant=variant):
+                        global critical_damage, native_client_environment, native_client_drive
+                        b = battle(log, worker=variant == 7, outlined=41 if variant in (1, 5) else None)
+                        critical_damage = Log(log, 'critical_damage', {'apply_death': lambda e, cause: None if variant == 2 else {'cause': cause}})
+                        native_client_environment = Log(log, 'environment'); native_client_drive = Log(log, 'drive')
+                        globals().update(critical_damage=critical_damage, native_client_environment=native_client_environment,
+                                         native_client_drive=native_client_drive)
+                        constants = Log(log, 'constants', SPECIAL_VEHICLE_HEALTH=Log(log, 'special', TURRET_DETACHED=-5))
+                        compatibility = Log(log, 'compat', missing=('clear_postmortem_killer',) if variant == 6 else ())
+                        b._runtime = Log(log, 'runtime', constants=constants, compatibility=compatibility)
+                        b._avatar = Log(log, 'avatar', guiSessionProvider=Log(log, 'provider'))
+                        b._binding = Log(log, 'binding', missing=('arena_vehicle_killed',) if variant == 3 else ())
+                        def boom(engine): raise RuntimeError('wreck failed')
+                        b._remote_factory = Log(log, 'factory', {'request_wreck': boom} if variant == 4 else {})
+                        b._sender = Log(log, 'sender', forward=1.0, turn=1.0) if variant != 5 else None
+                        b._local_speed = 7.0
+                        b._last_health = {}
+                        if previous == 'alive': b._last_health[41] = (300, 300, True, 0)
+                        if previous == 'dead': b._last_health[41] = (0, 0, False, 1)
+                        attrs = {'health': 300, 'isCrewActive': True}
+                        missing = ()
+                        if variant == 1: attrs['isAlive'] = False
+                        elif variant == 5: missing = ('onHealthChanged', 'isAlive')
+                        else: attrs['isAlive'] = Log(log, 'alive_fn', {'__call__': None}) if False else (lambda: variant % 2 == 0)
+                        entity = Log(log, 'entity', missing=missing, **attrs)
+                        stub(b, log, '_server_entity', None if variant == 6 and state_index == 0 else entity)
+                        for name in ('_detach_late_ammo_turret', '_combat_target_is_spotted', '_clear_target_outline', '_sync_fire_effect',
+                                     '_queue_local_damage_report', '_release_target_lock', '_present_vehicle_dead',
+                                     '_report_local_kill_contract', '_fallback_postmortem_viewpoint', '_finalize_dead_remote_wreck',
+                                     '_apply_turret_detachment', '_warn_optional_failure'):
+                            stub(b, log, name, True if name == '_combat_target_is_spotted' else None)
+                        stub(b, log, '_ammo_bay_special_health', -7)
+                        stub(b, log, '_attack_reason', lambda name, default: default)
+                        stub(b, log, '_critical_state', lambda payload: dict(payload, canonical=True))
+                        record = {'engine_id': 41, 'local': local, 'presentation': variant != 0, 'native_remote': variant % 2 == 1}
+                        if state_index == 2 and variant in (1, 3): record['ammo_death_cause'] = 'fire' if variant == 1 else 'world_collision'
+                        state = copy.deepcopy(HEALTH_STATES[state_index])
+                        b._entity_probe = entity
+                        args = [(record, state), (record, state, 9), (record, state, 9, 2, True, 3, True, True),
+                                (record, state, 0, None, False, None, True, False)][args_index]
+                        return b, args
+                    def checked(log, make=make):
+                        b, args = make(log)
+                        return b, args
+                    run('_apply_health', checked, (state_index, previous, local, args_index, variant)); cases += 1
 EVENT_SETS = [
     [], [{'kind': 'ammo_rack', 'state': 'destroyed'}],
     [{'kind': 'device', 'name': 'engine', 'state': 'destroyed', 'cause': 'fire'},
@@ -440,6 +540,8 @@ def pinned_source(fork):
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
     text = '\n\n'.join(chunks) + '\n'
     # Package-relative imports resolve to the fixture's fakes.
+    for module in ('native_client_environment', 'native_client_drive'):
+        text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 
 

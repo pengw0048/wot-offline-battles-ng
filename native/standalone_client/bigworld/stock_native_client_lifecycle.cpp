@@ -6,6 +6,7 @@
 #endif
 #include "stock_native_bot_python.hpp"
 #include <climits>
+#include <initializer_list>
 #include <new>
 #include <utility>
 #include <cmath>
@@ -73,6 +74,27 @@ bool equal(PyObject* a, PyObject* b) {
 void replace(p::Ref& target, p::Ref value) { target.~Ref(); new (&target) p::Ref(std::move(value)); }
 void setAttr(PyObject* o, const char* name, PyObject* v) { if (PyObject_SetAttrString(o, name, v) < 0) throw p::Error("Native lifecycle attribute write failed"); }
 p::Ref copyDict(PyObject* v) { return v == Py_None || PyObject_IsTrue(v) <= 0 ? p::dict() : p::Ref(PyDict_Copy(v)); }
+// Python int(value) where the pinned code lets the conversion error propagate unchanged.
+std::int64_t strictInt(PyObject* v) {
+    p::Ref n(PyNumber_Int(v));
+    const std::int64_t out = PyLong_Check(n.get()) ? PyLong_AsLongLong(n.get()) : PyInt_AsLong(n.get());
+    if (PyErr_Occurred()) throw p::Error("Native lifecycle integer overflow");
+    return out;
+}
+p::Ref callKw(PyObject* o, const char* name, std::initializer_list<PyObject*> positional,
+              std::initializer_list<std::pair<const char*, PyObject*>> keywords) {
+    auto fn = attr(o, name);
+    p::Ref args(PyTuple_New(Py_ssize_t(positional.size())));
+    Py_ssize_t i = 0;
+    for (PyObject* v : positional) { Py_INCREF(v); PyTuple_SET_ITEM(args.get(), i++, v); }
+    auto kw = p::dict();
+    for (const auto& item : keywords) put(kw.get(), item.first, p::retain(item.second));
+    return p::Ref(PyObject_Call(fn.get(), args.get(), kw.get()));
+}
+bool callableAttr(PyObject* o, const char* name, p::Ref& out) {
+    replace(out, optionalAttr(o, name));
+    return out.get() != Py_None && PyCallable_Check(out.get());
+}
 p::Ref key(const char* kind, PyObject* id) {
     p::Ref text(PyObject_Str(id));
     return p::text(std::string(kind) + ":" + p::string(text.get()));
@@ -718,6 +740,244 @@ PyObject* spotPresentation(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._apply_turret_detachment(record, entity, state=None)
+PyObject* turretDetachment(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *entity, *state = Py_None;
+    if (!PyArg_ParseTuple(args, "OOO|O", &battle, &record, &entity, &state)) return nullptr;
+    try {
+        const bool changed = !truthy(optionalAttr(entity, "isTurretDetached"));
+        method(battle, "_mark_turret_detached", entity);
+        if (truthy(attr(battle, "_worker_mode"))) method(battle, "_queue_detached_turret", record, entity, state);
+        return p::boolean(changed).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._finalize_dead_remote_wreck(record, entity)
+PyObject* finalizeDeadWreck(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *entity;
+    if (!PyArg_ParseTuple(args, "OOO", &battle, &record, &entity)) return nullptr;
+    try {
+        method(record, "pop", p::text("wreck_known").get(), Py_None);
+        method(record, "pop", p::text("deferred_health_presentation").get(), Py_None);
+        auto factory = attr(battle, "_remote_factory");
+        if (factory.get() == Py_None) Py_RETURN_FALSE;
+        p::Ref getter(p::retain(Py_None));
+        if (!callableAttr(factory.get(), "get", getter)) Py_RETURN_FALSE;
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        p::Ref vehicle(PyObject_CallFunctionObjArgs(getter.get(), engine, nullptr));
+        if (PyObject_IsTrue(vehicle.get()) <= 0) replace(vehicle, p::retain(entity));
+        if (vehicle.get() == Py_None) Py_RETURN_FALSE;
+        if (truthy(get(record, "native_remote"))) {
+            setAttr(vehicle.get(), "_offlineNativeDrawVisible", Py_True);
+            setAttr(vehicle.get(), "targetCaps", p::list().get());
+        }
+        if (optionalAttr(vehicle.get(), "model").get() == Py_None) {
+            method(record, "pop", p::text("_spot_presentation_signature").get(), Py_None);
+            Py_RETURN_FALSE;
+        }
+        try {
+            auto spot = get(record, "spot_visible", Py_False);
+            auto marker = get(record, "spot_marker_visible", spot.get());
+            return method(battle, "_set_record_spot_visibility", record, p::boolean(truthy(spot)).get(), p::boolean(truthy(marker)).get()).release();
+        } catch (const p::Error&) {
+            PyObject *type, *value, *trace;
+            PyErr_Fetch(&type, &value, &trace);
+            PyErr_NormalizeException(&type, &value, &trace);
+            p::Ref held_type(type ? type : p::retain(Py_None).release()), held_value(value ? value : p::retain(Py_None).release());
+            Py_XDECREF(trace);
+            method(record, "pop", p::text("_spot_presentation_signature").get(), Py_None);
+            callKw(battle, "_warn_optional_failure", {p::text("dead wreck presentation").get(), held_value.get()}, {{"disable", Py_False}});
+            Py_RETURN_FALSE;
+        }
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._apply_health(record, state, attacker_id=0, reason_id=None, force_cause=False,
+//                             attack_reason_id=None, suppress_combat_presentation=False,
+//                             suppress_postmortem_killer=False)
+PyObject* applyHealth(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *state, *attacker_raw, *reason_raw, *force_raw, *attack_raw, *suppress_raw, *postmortem_raw;
+    PyObject *critical_damage, *environment, *drive;
+    if (!PyArg_ParseTuple(args, "OOOOOOOOOOOO", &battle, &record, &state, &attacker_raw, &reason_raw, &force_raw, &attack_raw,
+                          &suppress_raw, &postmortem_raw, &critical_damage, &environment, &drive)) return nullptr;
+    try {
+        if (!PyDict_GetItemString(state, "health")) Py_RETURN_NONE;
+        const bool local = truthy(get(record, "local"));
+        const bool requested = p::flag(suppress_raw) && !local;
+        const std::int64_t health = std::max<std::int64_t>(0, strictInt(get(state, "health", integer(0).get()).get()));
+        std::int64_t reason = 0;
+        if (reason_raw == Py_None) { auto r = get(state, "death_reason", integer(0).get()); reason = std::max<std::int64_t>(0, strictInt(truthy(r) ? r.get() : integer(0).get())); }
+        else reason = std::max<std::int64_t>(0, strictInt(reason_raw));
+        const std::int64_t attack_reason = attack_raw == Py_None ? reason : std::max<std::int64_t>(0, strictInt(attack_raw));
+        PyObject* engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) { PyErr_SetObject(PyExc_KeyError, p::text("engine_id").get()); throw p::Error("engine_id"); }
+        auto display_raw = get(state, "display_health", integer(health).get());
+        const std::int64_t display = std::max<std::int64_t>(0, strictInt(truthy(display_raw) ? display_raw.get() : integer(0).get()));
+        const bool crew_active = truthy(get(state, "alive", p::boolean(health > 0).get())) && health > 0;
+        const bool dead = health <= 0 || !crew_active;
+        const bool crew_knockout = health > 0 && !crew_active;
+        auto critical_raw = get(state, "critical");
+        auto critical = truthy(critical_raw) ? p::retain(critical_raw.get()) : p::dict();
+        const bool ammo_rack_death = health <= 0 && truthy(method(critical.get(), "get", p::text("ammo_rack_death").get(), Py_False));
+        if (ammo_rack_death && reason == 0) {
+            auto cause = get(record, "ammo_death_cause");
+            if (textIs(cause.get(), "fire")) reason = 1;
+            else if (textIs(cause.get(), "world_collision")) reason = 3;
+        }
+        std::int64_t native_health = dead && display > 0 ? display : health;
+        auto constants = [&]() { return attr(attr(battle, "_runtime").get(), "constants"); };
+        if (ammo_rack_death) native_health = strictInt(attr(attr(constants().get(), "SPECIAL_VEHICLE_HEALTH").get(), "TURRET_DETACHED").get());
+        const bool suppress = requested && !dead;
+        p::Ref signature(PyTuple_Pack(4, integer(health).get(), integer(display).get(), p::boolean(crew_active).get(), integer(reason).get()));
+        auto last = attr(battle, "_last_health");
+        auto previous_signature = method(last.get(), "get", engine);
+        const bool durable_changed = !equal(previous_signature.get(), signature.get());
+        bool previous_dead = false;
+        if (previous_signature.get() != Py_None) {
+            auto first = p::item(previous_signature.get(), 0), third = p::item(previous_signature.get(), 2);
+            previous_dead = PyObject_RichCompareBool(first.get(), integer(0).get(), Py_LE) == 1 || !truthy(third);
+        }
+        const bool worker = truthy(attr(battle, "_worker_mode"));
+        // int(attacker_id) is evaluated only where the pinned code converts it.
+        auto attackerId = [&]() { return integer(strictInt(attacker_raw)); };
+        auto attack = integer(attack_reason), reason_value = integer(reason);
+        if (previous_dead && dead) {
+            if (ammo_rack_death) {
+                auto entity = method(battle, "_server_entity", engine);
+                if (entity.get() == Py_None) Py_RETURN_NONE;
+                auto previous_native = attr(entity.get(), "health");
+                method(battle, "_detach_late_ammo_turret", record, entity.get(), state);
+                auto special = method(battle, "_ammo_bay_special_health", entity.get());
+                if (!equal(previous_native.get(), special.get()) && !worker) {
+                    auto provider = attr(attr(battle, "_avatar").get(), "guiSessionProvider");
+                    method(provider.get(), "setVehicleHealth", p::boolean(local).get(), engine, special.get(), attackerId().get(), attack.get());
+                }
+            }
+            if (PyObject_SetItem(last.get(), engine, signature.get()) < 0) throw p::Error("Native health signature write failed");
+            Py_RETURN_NONE;
+        }
+        if (!durable_changed && !p::flag(force_raw)) Py_RETURN_NONE;
+        auto entity = method(battle, "_server_entity", engine);
+        if (entity.get() == Py_None) Py_RETURN_NONE;
+        if (dead && !previous_dead && !local) {
+            put(record, "dead_marker_known", method(battle, "_combat_target_is_spotted", record));
+            method(environment, "lifecycle", battle, record);
+        }
+        if (PyObject_SetItem(last.get(), engine, signature.get()) < 0) throw p::Error("Native health signature write failed");
+        auto previous = optionalAttr(entity.get(), "health");
+        if (previous.get() == Py_None && !PyObject_HasAttrString(entity.get(), "health")) replace(previous, integer(health));
+        auto outlined = [&]() { return equal(attr(battle, "_outlined_engine_id").get(), engine); };
+        if (dead && !previous_dead && outlined()) method(battle, "_clear_target_outline");
+        if (dead && !previous_dead && !crew_knockout) {
+            auto is = [&](const char* name, std::int64_t fallback) {
+                return equal(method(battle, "_attack_reason", p::text(name).get(), integer(fallback).get()).get(), reason_value.get());
+            };
+            const char* cause = is("FIRE", 1) ? "fire" : is("RAM", 2) ? "ramming" : is("WORLD_COLLISION", 3) ? "world_collision"
+                              : is("DROWNING", 5) ? "drowning" : is("OVERTURN", 7) ? "overturn" : "shot";
+            auto payload = method(critical_damage, "apply_death", entity.get(), p::text(cause).get());
+            if (payload.get() != Py_None) {
+                auto canonical = method(battle, "_critical_state", payload.get());
+                if (PyObject_SetItem(state, p::text("critical").get(), canonical.get()) < 0) throw p::Error("Native death critical write failed");
+                put(record, "critical_state", p::retain(canonical.get()));
+                put(record, "state", p::retain(state));
+                if (!worker && !suppress) method(battle, "_sync_fire_effect", entity.get());
+                if (local) {
+                    const std::string c = cause;
+                    const bool attribute = c != "drowning" && c != "world_collision" && c != "overturn";
+                    callKw(battle, "_queue_local_damage_report", {}, {{"critical", payload.get()}, {"attribute_attacker", attribute ? Py_True : Py_False}});
+                }
+            }
+        }
+        auto crewActive = p::boolean(crew_active);
+        p::Ref fn(p::retain(Py_None));
+        if (worker) {
+            setAttr(entity.get(), "health", integer(native_health).get());
+            if (ammo_rack_death) method(battle, "_apply_turret_detachment", record, entity.get(), state);
+            if (callableAttr(entity.get(), "set_health", fn)) p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), previous.get(), nullptr));
+            auto previous_crew = optionalAttr(entity.get(), "isCrewActive");
+            if (previous_crew.get() == Py_None && !PyObject_HasAttrString(entity.get(), "isCrewActive")) replace(previous_crew, p::retain(crewActive.get()));
+            setAttr(entity.get(), "isCrewActive", crewActive.get());
+            if (callableAttr(entity.get(), "set_isCrewActive", fn)) p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), previous_crew.get(), nullptr));
+            if (callableAttr(entity.get(), "retain_wreck_model", fn) && truthy(get(record, "presentation")) && dead)
+                p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), nullptr));
+            Py_RETURN_NONE;
+        }
+        setAttr(entity.get(), "health", integer(native_health).get());
+        if (ammo_rack_death) method(battle, "_apply_turret_detachment", record, entity.get(), state);
+        const bool native_remote = truthy(get(record, "native_remote"));
+        if (!suppress && callableAttr(entity.get(), "onHealthChanged", fn))
+            p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), integer(native_health).get(), attackerId().get(), attack.get(), nullptr));
+        else if (!native_remote && callableAttr(entity.get(), "set_health", fn))
+            p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), previous.get(), nullptr));
+        auto previous_crew = optionalAttr(entity.get(), "isCrewActive");
+        if (previous_crew.get() == Py_None && !PyObject_HasAttrString(entity.get(), "isCrewActive")) replace(previous_crew, p::retain(crewActive.get()));
+        setAttr(entity.get(), "isCrewActive", crewActive.get());
+        if (!equal(previous_crew.get(), crewActive.get()) && (!suppress || !native_remote) && callableAttr(entity.get(), "set_isCrewActive", fn))
+            p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), previous_crew.get(), nullptr));
+        const bool presentation = truthy(get(record, "presentation"));
+        if (presentation && !suppress) {
+            auto provider = optionalAttr(attr(battle, "_avatar").get(), "guiSessionProvider");
+            if (!callableAttr(provider.get(), "setVehicleHealth", fn)) throw p::Error("#1513 remote vehicle health presenter is unavailable");
+            p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), Py_False, engine, integer(native_health).get(), attackerId().get(), attack.get(), nullptr));
+            method(record, "pop", p::text("deferred_health_presentation").get(), Py_None);
+        } else if (presentation) {
+            put(record, "deferred_health_presentation", p::boolean(true));
+        }
+        auto alive_attr = optionalAttr(entity.get(), "isAlive");
+        const bool entity_alive = alive_attr.get() != Py_None && PyCallable_Check(alive_attr.get())
+            ? truthy(p::Ref(PyObject_CallFunctionObjArgs(alive_attr.get(), nullptr))) : truthy(alive_attr);
+        if (!entity_alive) {
+            if (outlined()) method(battle, "_clear_target_outline");
+            if (!suppress) {
+                method(battle, "_release_target_lock", engine);
+                if (!native_remote) method(battle, "_present_vehicle_dead", record, Py_False);
+            }
+        }
+        if (local) {
+            if (dead) {
+                method(drive, "local_death", battle);
+                setAttr(battle, "_local_speed", p::number(0.).get());
+                auto sender = attr(battle, "_sender");
+                if (sender.get() != Py_None) { setAttr(sender.get(), "forward", p::number(0.).get()); setAttr(sender.get(), "turn", p::number(0.).get()); }
+            }
+            method(attr(battle, "_avatar").get(), "updateVehicleHealth", engine, integer(ammo_rack_death ? native_health : display).get(),
+                   reason_value.get(), crewActive.get(), Py_False);
+        }
+        if (!previous_dead && dead) {
+            if (!suppress) {
+                if (callableAttr(attr(battle, "_binding").get(), "arena_vehicle_killed", fn)) {
+                    p::Ref unused(PyObject_CallFunctionObjArgs(fn.get(), engine, attackerId().get(), reason_value.get(), nullptr));
+                    method(battle, "_report_local_kill_contract", record, attackerId().get(), reason_value.get());
+                    if (local && p::flag(postmortem_raw)) {
+                        p::Ref clear(p::retain(Py_None));
+                        if (!callableAttr(attr(attr(battle, "_runtime").get(), "compatibility").get(), "clear_postmortem_killer", clear))
+                            throw p::Error("#1513 postmortem killer compatibility boundary is unavailable");
+                        p::Ref unused2(PyObject_CallFunctionObjArgs(clear.get(), attr(battle, "_avatar").get(), nullptr));
+                    }
+                }
+            }
+            if (!local) method(battle, "_fallback_postmortem_viewpoint", engine);
+        }
+        auto factory = attr(battle, "_remote_factory");
+        if (!previous_dead && dead && presentation && factory.get() != Py_None) {
+            try {
+                method(factory.get(), "request_wreck", engine);
+            } catch (const p::Error&) {
+                PyObject *type, *value, *trace;
+                PyErr_Fetch(&type, &value, &trace);
+                PyErr_NormalizeException(&type, &value, &trace);
+                p::Ref held_type(type ? type : p::retain(Py_None).release()), held_value(value ? value : p::retain(Py_None).release());
+                Py_XDECREF(trace);
+                callKw(battle, "_warn_optional_failure", {p::text("dead wreck replacement").get(), held_value.get()}, {{"disable", Py_False}});
+            }
+            method(battle, "_finalize_dead_remote_wreck", record, entity.get());
+        }
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -730,6 +990,9 @@ PyMethodDef methods[] = {
     {"remote_visual_components", remoteVisualComponentsPython, METH_VARARGS, "Split the #1513 marker and minimap signals."},
     {"spot_visibility", spotVisibility, METH_VARARGS, "Apply model and team-knowledge presentation gates."},
     {"spot_presentation", spotPresentation, METH_VARARGS, "Publish a split spotting state through the legacy seam."},
+    {"turret_detachment", turretDetachment, METH_VARARGS, "Remove attached turret armour; the worker plans debris."},
+    {"finalize_dead_wreck", finalizeDeadWreck, METH_VARARGS, "Expose one finalized corpse without re-entering spotting."},
+    {"apply_health", applyHealth, METH_VARARGS, "Apply a durable health/crew transition and its #1513 presentation."},
     {"present_critical", presentCritical, METH_VARARGS, "Map critical transitions to stock #1513 UI callbacks."},
     {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};
