@@ -244,6 +244,87 @@ p::Ref get(PyObject* compatibility, PyObject* vehicle, PyObject* key, PyObject* 
     }
     return original(compatibility, vehicle, key);
 }
+PyObject* interned(PyObject*& slot, const char* text) {
+    if (!slot) slot = PyString_InternFromString(text);
+    return slot;
+}
+// The original getter for the common path, without C++ exceptions: stock
+// getattr(..., default) probes make AttributeError a routine result.
+PyObject* callOriginal(PyObject* compatibility, PyObject* getter, PyObject* self, PyObject* key) {
+    PyObject* get = getter ? PyObject_GetAttr(compatibility, getter) : nullptr;
+    if (!get) return nullptr;
+    PyObject* value = PyObject_CallFunctionObjArgs(get, self, key, nullptr);
+    Py_DECREF(get); return value;
+}
+int battleActive(PyObject* compatibility) {
+    static PyObject* key;
+    PyObject* value = interned(key, "_battle_active") ? PyObject_GetAttr(compatibility, key) : nullptr;
+    if (!value) return -1;
+    const int active = PyObject_IsTrue(value); Py_DECREF(value); return active;
+}
+bool isName(PyObject* key, const char* name) {
+    if (PyString_Check(key)) return std::strcmp(PyString_AS_STRING(key), name) == 0 &&
+        std::size_t(PyString_GET_SIZE(key)) == std::strlen(name);
+    return p::string(key) == name;
+}
+PyObject* callerCode() {
+    auto* frame = PyEval_GetFrame(); return frame ? reinterpret_cast<PyObject*>(frame->f_code) : Py_None;
+}
+PyObject* avatarGet(PyObject* compatibility, PyObject* avatar, PyObject* key) {
+    static PyObject* original_name;
+    PyObject* original_key = interned(original_name, "_original_avatar_getattribute");
+    const bool server = isName(key, "base") || isName(key, "cell") || isName(key, "server") || isName(key, "bwProto");
+    const bool vehicle = !server && isName(key, "vehicle");
+    if (!server && !vehicle) return callOriginal(compatibility, original_key, avatar, key);
+    const int active = battleActive(compatibility);
+    if (active < 0) return nullptr;
+    if (active && server) {
+        auto fake = p::text("fakeServer");
+        if (PyObject* value = callOriginal(compatibility, original_key, avatar, fake.get())) return value;
+        if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr;
+        PyErr_Clear();
+    }
+    if (active && vehicle) {
+        auto lookup = [&]() { auto runtime = attr(compatibility, "_runtime"); auto bigworld = attr(runtime.get(), "bigworld"); return attr(bigworld.get(), "entity"); };
+        auto postmortem = attr(compatibility, "_postmortem_vehicle_id");
+        if (p::flag(postmortem.get())) {
+            auto entity = call(lookup().get(), postmortem.get());
+            // Retail changes Avatar.vehicle before it publishes onSwitchViewpoint.
+            if (entity.get() != Py_None) return entity.release();
+        }
+        if (same(compatibility, "_sniper_oscillator_acceleration_code", callerCode())) {
+            p::Ref selected = [&]() -> p::Ref {
+                try {
+                    auto getter = attr(compatibility, "_original_avatar_getattribute"); auto name = p::text("playerVehicleID");
+                    p::Ref vehicle_id(PyObject_CallFunctionObjArgs(getter.get(), avatar, name.get(), nullptr));
+                    auto entity = call(lookup().get(), vehicle_id.get());
+                    auto row = overlay(compatibility, entity.get());
+                    return entity.get() != Py_None && row.get() != Py_None && activePose(row.get()) ? std::move(entity) : p::retain(Py_None);
+                } catch (const std::exception&) {
+                    if (!PyErr_ExceptionMatches(PyExc_AttributeError) && !PyErr_ExceptionMatches(PyExc_ReferenceError) && !PyErr_ExceptionMatches(PyExc_TypeError)) throw;
+                    PyErr_Clear(); return p::retain(Py_None);
+                }
+            }();
+            // Exact SniperCamera reads player().vehicle without an engine attachment.
+            if (selected.get() != Py_None) return selected.release();
+        }
+    }
+    return callOriginal(compatibility, original_key, avatar, key);
+}
+PyObject* compoundGet(PyObject* compatibility, PyObject* appearance, PyObject* key) {
+    static PyObject* original_name;
+    PyObject* value = callOriginal(compatibility, interned(original_name, "_original_compound_getattribute"), appearance, key);
+    if (!value || !isName(key, "_CompoundAppearance__filter")) return value;
+    p::Ref held(value);
+    const int active = battleActive(compatibility);
+    if (active < 0) return nullptr;
+    // Only the direct LOAD_ATTR in the original __onModelsRefresh gets the proxy.
+    if (!active || !same(compatibility, "_compound_refreshing_models", appearance) ||
+        !same(compatibility, "_compound_models_refresh_code", callerCode())) return held.release();
+    auto fields = p::dict();
+    for (const char* name : {"_pose_matrix", "_velocity", "_acceleration"}) p::set(fields.get(), name, p::retain(Py_None));
+    return newProxy(0, held.get(), fields.get());
+}
 int hookTraverse(PyObject* object, visitproc visit, void* arg) {
     auto* value = reinterpret_cast<Hook*>(object); Py_VISIT(value->compatibility); Py_VISIT(value->instance); return 0;
 }
@@ -271,11 +352,13 @@ PyObject* hookCall(PyObject* self, PyObject* args, PyObject* kwargs) {
         if (kwargs && PyDict_Size(kwargs) && (hook->kind != 3 || PyDict_Size(kwargs) != 1 || !PyDict_GetItemString(kwargs, "get_instantaneous")))
             throw p::Error("Vehicle hook takes positional arguments");
         const Py_ssize_t count = PyTuple_GET_SIZE(args), offset = hook->instance ? 0 : 1;
-        const Py_ssize_t wanted = hook->kind == 0 ? 1 : hook->kind == 1 ? 2 : 0;
+        const Py_ssize_t wanted = hook->kind == 0 || hook->kind >= 4 ? 1 : hook->kind == 1 ? 2 : 0;
         if (count - offset < 0 || (hook->kind == 3 ? count - offset > 1 : count - offset != wanted)) {
             PyErr_SetString(PyExc_TypeError, "Vehicle hook argument count differs"); return nullptr;
         }
         PyObject* vehicle = hook->instance ? hook->instance : PyTuple_GET_ITEM(args, 0);
+        if (hook->kind == 4) return avatarGet(compatibility, vehicle, PyTuple_GET_ITEM(args, offset));
+        if (hook->kind == 5) return compoundGet(compatibility, vehicle, PyTuple_GET_ITEM(args, offset));
         if (hook->kind == 3) {
             PyObject* instantaneous = count - offset ? PyTuple_GET_ITEM(args, offset) : Py_False;
             if (kwargs && PyDict_Size(kwargs)) {
@@ -331,7 +414,7 @@ PyObject* create(PyObject*, PyObject* args) {
     try {
         PyObject* compatibility; int kind;
         if (!PyArg_ParseTuple(args, "Oi", &compatibility, &kind)) return nullptr;
-        if (kind < 0 || kind > 3) throw p::Error("Unknown Vehicle hook kind");
+        if (kind < 0 || kind > 5) throw p::Error("Unknown stock hook kind");
         p::Ref weak(PyWeakref_NewRef(compatibility, nullptr)); return newHook(weak.get(), nullptr, kind);
     } catch (const std::exception& e) { return fail(e); }
 }

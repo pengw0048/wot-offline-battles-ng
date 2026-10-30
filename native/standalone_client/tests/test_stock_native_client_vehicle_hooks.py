@@ -111,7 +111,57 @@ reference=weakref.ref(c);del c;gc.collect();assert reference() is None
 try:v.ordinary
 except RuntimeError:pass
 else:raise AssertionError('retired descriptor owner was used')
-print('1200 pinned Vehicle hook traces, caller identity, proxy lifetimes passed')
+# Avatar and CompoundAppearance __getattribute__ against the pinned closures.
+names2=('avatar_getattribute','compound_getattribute')
+factory2=ast.parse('def factory2(compatibility,runtime):\n pass').body[0]
+factory2.body=[n for n in install.body if isinstance(n,ast.FunctionDef) and n.name in names2]+[ast.Return(ast.Tuple([ast.Name(n,ast.Load()) for n in names2],ast.Load()))]
+exec(compile(ast.fix_missing_locations(ast.Module([factory2])),path,'exec'),env)
+class StockAvatar(object):
+ playerVehicleID=7
+ def __init__(self):self.base='base';self.cell='cell';self.server='server';self.bwProto='proto';self.vehicle='attached';self.ordinary=5
+class StockCompound(object):
+ def __init__(self,f):self._CompoundAppearance__filter=f;self.ordinary=6
+def sniper(avatar):return avatar.vehicle
+def refresh(appearance):return appearance._CompoundAppearance__filter
+def nested(appearance):return refresh(appearance)
+def describe(value):
+ if isinstance(value,Vehicle):return 'vehicle'
+ if isinstance(value,Filter):return 'filter'
+ if hasattr(value,'syncGunAngles') and hasattr(value,'_vehicle_filter'):
+  return ('proxy',value.syncGunAngles(1,2),value.syncStabilisedYPR(1,2,3),value.velocity,value.acceleration,value.groundPlacingMatrix,describe(value._vehicle_filter),value._pose_matrix)
+ return value
+def probe(obj,name):
+ try:return describe(getattr(obj,name))
+ except AttributeError as e:return ('AttributeError',str(e))
+random.seed(1514)
+for iteration in range(1500):
+ results=[]
+ for use_native in (False,True):
+  c=Bag();c._runtime=runtime;c._vehicle_property_overlays={}
+  c._original_avatar_getattribute=object.__getattribute__;c._original_compound_getattribute=object.__getattribute__
+  c._battle_active=bool(iteration%3);c._postmortem_vehicle_id=iteration%4 and 9;c._sniper_oscillator_acceleration_code=None
+  c._compound_refreshing_models=None;c._compound_models_refresh_code=None
+  hooks=[native.create(c,4),native.create(c,5)] if use_native else env['factory2'](c,runtime)
+  A=type('FixtureStockAvatar',(StockAvatar,),{'__getattribute__':hooks[0]})
+  C=type('FixtureStockCompound',(StockCompound,),{'__getattribute__':hooks[1]})
+  trace=[];v=Vehicle(trace);a=A();f=Filter();ap=C(f)
+  if iteration%5:object.__setattr__(a,'fakeServer','fake server')
+  if iteration%7==0:object.__delattr__(a,'vehicle')
+  entities={9:v if iteration%10<7 else None,7:v if iteration%8 else None}
+  runtime.bigworld=Bag();runtime.bigworld.entity=lambda i:entities.get(i)
+  if iteration%9:c._vehicle_property_overlays[id(v)]={'_pose_active':bool(iteration%2)}
+  if iteration%10>2:c._sniper_oscillator_acceleration_code=sniper.func_code
+  if iteration%11>3:c._compound_refreshing_models=ap
+  if iteration%13>2:c._compound_models_refresh_code=refresh.func_code
+  out=[probe(a,n) for n in ('base','cell','server','bwProto','vehicle','ordinary','missing','playerVehicleID')]
+  try:out.append(describe(sniper(a)))
+  except AttributeError as e:out.append(('AttributeError',str(e)))
+  out.extend(probe(ap,n) for n in ('_CompoundAppearance__filter','ordinary','missing'))
+  out.extend((describe(refresh(ap)),describe(nested(ap))))
+  out.append(describe(type(a).__getattribute__(a,'cell')))
+  results.append(out)
+ assert results[0]==results[1],(iteration,results)
+print('1200 pinned Vehicle hook traces, 1500 Avatar/CompoundAppearance traces, caller identity, proxy lifetimes passed')
 '''
 
 

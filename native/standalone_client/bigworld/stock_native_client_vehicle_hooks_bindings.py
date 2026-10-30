@@ -11,4 +11,12 @@ def compat(source):
 ''' + before
     if source.count(before) != 1:
         raise ValueError('The pinned Vehicle descriptor install boundary changed')
+    source = source.replace(before, after, 1)
+    before = '        self._avatar_getattribute_wrapper = avatar_getattribute\n'
+    after = '''        import offline_client_vehicle_hooks_native
+        avatar_getattribute = offline_client_vehicle_hooks_native.create(self, 4)
+        compound_getattribute = offline_client_vehicle_hooks_native.create(self, 5)
+''' + before
+    if source.count(before) != 1:
+        raise ValueError('The pinned Avatar descriptor install boundary changed')
     return source.replace(before, after, 1)
