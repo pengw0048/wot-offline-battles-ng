@@ -35,6 +35,20 @@ PORTS = (
     ('_flush_pending_entities', 'flush_pending_entities(self, now, native_client_replica)'),
     ('_create_remote', 'create_remote(self, event, _marks_on_gun, _engine_rotation, bot_planner)'),
     ('_materialize_record', 'materialize_record(self, record, set_draw_visibility)'),
+    ('on_events', 'on_events(self, message)'),
+    ('_prepare_ordered_event', 'prepare_ordered_event(self, event, globals())'),
+    ('_event_is_ready', 'event_is_ready(self, event, globals())'),
+    ('_apply_ordered_event', 'apply_ordered_event(self, event, globals())'),
+    ('_drain_event_journal', 'drain_event_journal(self, globals())'),
+    ('_known_event_state', 'known_event_state(self, key)'),
+    ('_merge_shot_event_state', 'merge_shot_event_state(self, event, globals())'),
+    ('_merge_combat_event_state', 'merge_combat_event_state(self, event)'),
+    ('_merge_stun_event_state', 'merge_stun_event_state(self, event)'),
+    ('_combat_event_state', 'combat_event_state(self, event, state, target_key)'),
+    ('_combat_attack_reason', 'combat_attack_reason(self, event)'),
+    ('_validate_combat_event_contract', 'validate_combat_event_contract(self, event, globals())'),
+    ('_missing_projectile_attacker_allowed', 'missing_projectile_attacker_allowed(self, event)'),
+    ('_pending_event_references', 'pending_event_references(self, key)'),
 )
 
 

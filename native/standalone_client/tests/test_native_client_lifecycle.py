@@ -15,8 +15,13 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation',
            '_apply_turret_detachment', '_finalize_dead_remote_wreck', '_apply_health', '_apply_record_pose',
            '_flush_tombstone', '_destroy_entity', '_update_entity', '_apply_sync_event', '_queue_bot_create',
-           '_flush_pending_bot_create', '_flush_pending_entities', '_create_remote', '_materialize_record')
-GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
+           '_flush_pending_bot_create', '_flush_pending_entities', '_create_remote', '_materialize_record',
+           'on_events', '_prepare_ordered_event', '_event_is_ready', '_apply_ordered_event', '_drain_event_journal',
+           '_known_event_state', '_merge_shot_event_state', '_merge_combat_event_state', '_merge_stun_event_state',
+           '_combat_event_state', '_combat_attack_reason', '_validate_combat_event_contract',
+           '_missing_projectile_attacker_allowed', '_pending_event_references', '_stun_entity_key',
+           '_record_is_event_ready', '_combat_event_source')
+GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
 
 FIXTURE = r'''
 import copy, math, sys
@@ -83,7 +88,8 @@ def run(name, make, args):
         battle_after = tuple(repr(getattr(b, name, '-')) for name in (
             '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
             '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity',
-            '_last_health', '_local_speed'))
+            '_last_health', '_local_speed', '_event_journal', '_accepted_event_ids', '_applied_event_ids',
+            '_projectile_lineage', '_pending_bot_creates'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -143,7 +149,31 @@ NATIVE = {
     '_flush_pending_entities': lambda b, now: native.flush_pending_entities(b, now, native_client_replica),
     '_create_remote': lambda b, e: native.create_remote(b, e, _marks_on_gun, _engine_rotation, bot_planner),
     '_materialize_record': lambda b, r: native.materialize_record(b, r, set_draw_visibility),
+    'on_events': native.on_events,
+    '_prepare_ordered_event': lambda b, e: native.prepare_ordered_event(b, e, globals()),
+    '_event_is_ready': lambda b, e: native.event_is_ready(b, e, globals()),
+    '_apply_ordered_event': lambda b, e: native.apply_ordered_event(b, e, globals()),
+    '_drain_event_journal': lambda b: native.drain_event_journal(b, globals()),
+    '_known_event_state': native.known_event_state,
+    '_merge_shot_event_state': lambda b, e: native.merge_shot_event_state(b, e, globals()),
+    '_merge_combat_event_state': native.merge_combat_event_state,
+    '_merge_stun_event_state': native.merge_stun_event_state,
+    '_combat_event_state': native.combat_event_state,
+    '_combat_attack_reason': native.combat_attack_reason,
+    '_validate_combat_event_contract': lambda b, e: native.validate_combat_event_contract(b, e, globals()),
+    '_missing_projectile_attacker_allowed': native.missing_projectile_attacker_allowed,
+    '_pending_event_references': native.pending_event_references,
 }
+native_bot_runtime = None
+_PROFILE_CLOCK = lambda: 5.0
+spotting = Log([], 'spotting', SHOT_CAMOUFLAGE_SECONDS=0.75)
+lan_protocol = Log([], 'lan_protocol', MAX_PROJECTILE_DAMAGE_STICKER=1000)
+import types
+def fake_module(name, value):
+    sys.modules['gui.mods.offline_lan_0922.' + name] = value
+    globals()[name] = value
+for name in ('gui', 'gui.mods', 'gui.mods.offline_lan_0922'):
+    sys.modules.setdefault(name, types.ModuleType(name))
 bot_planner = None
 def _marks_on_gun(value):
     return ('marks', value)
@@ -576,6 +606,154 @@ for variant in range(10):
             stub(b, log, '_materialize_record', variant % 3 == 0)
             return b, (now,)
         run('_flush_pending_entities', make, (variant, now)); cases += 1
+def event_battle(log, variant=0, worker=False, records=None, journal=None):
+    b = battle(log, worker=worker, records=records if records is not None else {
+        'bot:7': {'engine_id': 70, 'ready': True, 'presentation': True, 'arena_added': True, 'state': {'health': 300, 'alive': True}},
+        'player:3': {'engine_id': 30, 'ready': True, 'state': {'health': 500}, 'presentation_time_us': 900},
+        'bot:8': {'engine_id': 80, 'ready': False, 'state': {'health': 0, 'alive': False}}},
+        journal=journal if journal is not None else [])
+    b._pending_bot_creates = {'bot:9': {'state': {'team': 1}}}
+    b._projectile_lineage = set(['p1'])
+    b._accepted_event_ids = set(['seen'])
+    b._applied_event_ids = set()
+    b._projectile_meta = {'p2': {'bot_presentation_time_us': 100, 'bot_visual_launch_time': 1.0 if variant % 2 else None}}
+    b._replay_mode = variant == 3
+    b.state = 'leaving' if variant == 9 else 'running'
+    b._start_message = {'round_id': 4} if variant % 2 else None
+    b._last_snapshot = {'tick': 1} if variant % 3 else None
+    b._bots = Log(log, 'bots') if variant % 4 else None
+    for name in ('_ignore_live_payload', '_observe_projectile_message', '_show_shot', '_accept_projectile_event',
+                 '_apply_combat_event', '_apply_vehicle_statistics_event', '_apply_environment_critical_feedback',
+                 '_apply_assist_event', '_apply_detection_event', '_apply_stun_state', '_apply_projectile_ricochet_event',
+                 '_apply_projectile_terminal_event', '_apply_battle_result', '_set_projectile_epoch'):
+        stub(b, log, name)
+    def observe(message):
+        log.append(('battle', '_observe_destructibles_disabled', rep(message)))
+        if variant == 7: raise ValueError('observe failed')
+    b._observe_destructibles_disabled = observe
+    stub(b, log, '_apply_destructible_event', None if variant == 5 else True)
+    stub(b, log, '_reconcile_bot_authority', variant % 2 == 0)
+    stub(b, log, '_clock', 3.0)
+    stub(b, log, '_critical_state', lambda c: dict(c, canonical=True))
+    stub(b, log, '_attack_reason', lambda name, default: default)
+    stub(b, log, '_projectile_wire_meta', lambda e: {'projectile_id': 'p9'} if e.get('projectile_id') else None)
+    fake_module('native_client_environment', Log(log, 'environment'))
+    fake_module('native_bot_runtime', Log(log, 'bot_runtime'))
+    return b
+COMBAT_EVENTS = [
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 0, 'attacker_bot': 7, 'target': 3, 'health': 250, 'death_reason': 0, 'damage': 50,
+     'shot_result': 1, 'critical': {'fire': True}, 'critical_revision': 4, 'combat_revision': 2},
+    {'kind': 'bot_hit', 'source': 'shot', 'attack_reason': 0, 'attacker': 3, 'target_bot': 7, 'health': 0, 'dead': True,
+     'death_reason': 0, 'critical': {'ammo_rack_death': True}, 'display_health': 20, 'blocked_damage': 30, 'shot_result': 1},
+    {'kind': 'health', 'source': 'fire', 'attack_reason': 1, 'target_bot': 7, 'health': 10, 'death_reason': 0},
+    {'kind': 'health', 'source': 'player_left', 'attack_reason': None, 'target': 3, 'health': 0, 'death_reason': 0},
+    {'kind': 'hit', 'source': 'environment', 'attack_reason': 3, 'target': 3, 'health': 0, 'dead': True, 'death_reason': 3,
+     'attacker_bot': 7, 'push_attributed': True},
+    {'kind': 'health', 'source': 'environment', 'attack_reason': 5, 'target': 3, 'health': 0, 'dead': True, 'death_reason': 5},
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 0, 'attacker_bot': 99, 'target': 3, 'health': 100, 'death_reason': 0,
+     'projectile_id': 'p1', 'cosmetic_only': True, 'damage': 0, 'shot_result': 0},
+    {'kind': 'hit', 'source': 'ram', 'attack_reason': 2, 'attacker': 3, 'target_bot': 7, 'health': 'bad', 'death_reason': 0},
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 'x', 'attacker': 3, 'target_bot': 7, 'health': 100, 'death_reason': 0},
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 0, 'attacker': 3, 'target_bot': 7, 'health': 100, 'death_reason': 2},
+    {'kind': 'bot_hit', 'source': 'shot', 'attack_reason': 0, 'attacker': 3, 'target_bot': 7, 'health': 50, 'death_reason': 0,
+     'damage_sticker': 77, 'cosmetic_only': 1},
+    {'kind': 'hit', 'source': 'client_simulation', 'attack_reason': 9, 'target': 3, 'health': 40, 'death_reason': 0, 'damage_sticker': 5},
+    {'kind': 'health', 'source': 'fire', 'attack_reason': 1, 'attacker_bot': 7, 'target': 3, 'health': 0, 'dead': True, 'death_reason': 1},
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 0, 'target': 3, 'health': 0, 'death_reason': 0, 'dead': True},
+    {'kind': 'hit', 'source': 'lava', 'attack_reason': 0, 'target': 3, 'health': 0, 'death_reason': 0},
+    {'kind': 'hit', 'target': 3, 'health': 0},
+    {'kind': 'stun', 'target_kind': 'bot', 'target_id': 7, 'active': True, 'stun_end_server_time_ms': 5000,
+     'stun_factors': {'reload': 1.2}, 'attacker_kind': 'player', 'attacker_id': 3},
+    {'kind': 'stun', 'target_kind': 'player', 'target_id': 3, 'active': False, 'stun_end_server_time_ms': 0},
+    {'kind': 'stun', 'target_kind': 'bot', 'target_id': 9, 'active': True, 'stun_end_server_time_ms': 0},
+    {'kind': 'stun', 'target_kind': 'tank', 'target_id': 7, 'active': True, 'stun_end_server_time_ms': 10},
+    {'kind': 'stun', 'target_kind': 'bot', 'target_id': 7, 'active': True, 'stun_end_server_time_ms': 10, 'attacker_kind': 'bot', 'attacker_id': True},
+    {'kind': 'shot', 'attacker_bot': 7, 'projectile_id': 'p2', 'bot_presentation_time_us': 1000},
+    {'kind': 'bot_shot', 'attacker': 3, 'bot_presentation_time_us': 800},
+    {'kind': 'shot', 'attacker_bot': 8, 'bot_presentation_time_us': 10, '_pose_wait_started': 2.0},
+    {'kind': 'shot', 'attacker_bot': 55},
+    {'kind': 'shot'},
+    {'kind': 'projectile_impact', 'projectile_id': 'p2', 'resolved_time_ms': 1500},
+    {'kind': 'projectile_ricochet', 'projectile_id': 'p2', 'segment_start_time_ms': 3000},
+    {'kind': 'environment_critical', 'target': 3, 'attacker_bot': 8},
+    {'kind': 'environment_critical', 'target_bot': 9},
+    {'kind': 'authority', 'authority_epoch': 3, 'player_id': 3},
+    {'kind': 'destructible', 'destructible_kind': 'tree'},
+    {'kind': 'vehicle_statistics'}, {'kind': 'assist'}, {'kind': 'detection'}, {'kind': 'battle_result'}, {'kind': 'bot_manifest'},
+    {'kind': 'mystery'},
+    {'kind': 'hit', 'source': 'shot', 'attack_reason': 0, 'attacker': 3, 'target_bot': 7, 'health': 50, 'dead': True,
+     'death_reason': 0, 'shot_result': 1},
+]
+EVENT_FUNCTIONS = ('_combat_event_state', '_merge_combat_event_state', '_validate_combat_event_contract', '_combat_attack_reason',
+                   '_missing_projectile_attacker_allowed', '_merge_stun_event_state', '_merge_shot_event_state',
+                   '_prepare_ordered_event', '_event_is_ready', '_apply_ordered_event')
+for event_index in range(len(COMBAT_EVENTS)):
+    for variant in range(10):
+        for worker in (False, True):
+            def make(log, event_index=event_index, variant=variant, worker=worker):
+                b = event_battle(log, variant, worker)
+                return b, (copy.deepcopy(COMBAT_EVENTS[event_index]),)
+            for name in EVENT_FUNCTIONS:
+                if name == '_combat_event_state':
+                    def make_state(log, make=make, variant=variant):
+                        b, (event,) = make(log)
+                        return b, (event, {'health': 300, 'display_health': 300} if variant % 2 else None,
+                                   'bot:7' if variant % 3 else 'player:3')
+                    run(name, make_state, (event_index, variant, worker)); cases += 1
+                else:
+                    run(name, make, (event_index, variant, worker)); cases += 1
+for key in ('bot:7', 'bot:9', 'bot:1', 'player:3'):
+    for variant in range(3):
+        def make(log, key=key, variant=variant):
+            journal = [copy.deepcopy(e) for e in COMBAT_EVENTS[:6]] if variant else []
+            return event_battle(log, variant, journal=journal), (key,)
+        run('_known_event_state', make, (key, variant)); cases += 1
+        run('_pending_event_references', make, (key, variant)); cases += 1
+MESSAGES = [None, {}, {'events': None}, {'events': [COMBAT_EVENTS[0], {'event_id': 'seen', 'kind': 'hit'}, 'junk',
+                                                     {'kind': 'hit'}, dict(COMBAT_EVENTS[37], event_id=7),
+                                                     dict(COMBAT_EVENTS[2], event_id='e2'), dict(COMBAT_EVENTS[16], event_id='e3')]}]
+for message_index in range(len(MESSAGES)):
+    for variant in range(10):
+        def make(log, message_index=message_index, variant=variant):
+            b = event_battle(log, variant)
+            stub(b, log, '_prepare_ordered_event', lambda e: (_ for _ in ()).throw(RuntimeError('bad event')) if e.get('kind') == 'mystery' else None)
+            stub(b, log, '_drain_event_journal')
+            message = copy.deepcopy(MESSAGES[message_index])
+            if message and message.get('events') and variant % 2: message['events'][0] = dict(message['events'][0], event_id='e1')
+            return b, (message,)
+        run('on_events', make, (message_index, variant)); cases += 1
+JOURNALS = [
+    [dict(COMBAT_EVENTS[i], event_id='j%d' % i) for i in (0, 2, 30, 31, 16, 21, 26)],
+    [dict(COMBAT_EVENTS[i], event_id='j%d' % i) for i in (21, 0, 2, 30, 6)],
+    [dict(COMBAT_EVENTS[i], event_id='j%d' % i) for i in (31, 31, 32, 33)],
+    [],
+]
+for journal_index in range(len(JOURNALS)):
+    for variant in range(10):
+        def make(log, journal_index=journal_index, variant=variant):
+            b = event_battle(log, variant, journal=copy.deepcopy(JOURNALS[journal_index]))
+            def ready(event):
+                log.append(('battle', '_event_is_ready', rep(event.get('event_id'))))
+                k = event.get('kind')
+                if k == 'shot' and variant % 3 == 0:
+                    event['_presentation_wait'] = True
+                    return False
+                if k == 'stun' and variant == 4:
+                    raise RuntimeError('lost entity')
+                if k == 'authority' and variant == 6:
+                    return False
+                return True
+            b._event_is_ready = ready
+            def apply(event):
+                log.append(('battle', '_apply_ordered_event', rep(event.get('event_id'))))
+                if event.get('kind') == 'destructible' and variant % 2:
+                    return False
+                if event.get('kind') == 'health' and variant == 8:
+                    raise ValueError('apply failed')
+                return True
+            b._apply_ordered_event = apply
+            return b, ()
+        run('_drain_event_journal', make, (journal_index, variant)); cases += 1
 HEALTH_STATES = [
     {'health': 300, 'alive': True}, {'health': 0, 'alive': False, 'death_reason': 1},
     {'health': 0, 'display_health': 25, 'death_reason': 0, 'critical': {'ammo_rack_death': True}},
@@ -742,7 +920,7 @@ def pinned_source(fork):
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
     text = '\n\n'.join(chunks) + '\n'
     # Package-relative imports resolve to the fixture's fakes.
-    for module in ('native_client_environment', 'native_client_drive', 'native_client_replica'):
+    for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 
