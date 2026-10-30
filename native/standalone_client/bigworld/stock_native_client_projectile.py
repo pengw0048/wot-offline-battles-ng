@@ -31,6 +31,24 @@ def bind(battle, now=None):
     return owner
 
 
+def _install(battle, event):
+    # Store the runtime's canonical spelling so later shot echoes compare equal.
+    normalized = battle._projectile_wire_meta(event)
+    if normalized is None:
+        battle._warn_optional_failure(
+            'native projectile presentation',
+            RuntimeError('invalid native launch %s' % event.get('projectile_id')),
+            disable=False)
+        return None
+    meta = dict(event)
+    meta.update(normalized)
+    meta['manager_key'] = meta['projectile_id']
+    meta['presentation_offsets'] = {}
+    meta['destructibles_pending'] = []
+    battle._projectile_meta[meta['projectile_id']] = meta
+    return meta
+
+
 def _publish(battle, now):
     # Both calls decide native deltas and emit only actual stock HUD edges.
     # The source postcommit checkpoint is retained after the transaction.
@@ -48,10 +66,7 @@ def _accepted(battle, owner, event, now):
         return battle._reject_local_fire(event)
     # This is the presentation record consumed by stock muzzle/tracer edges.
     # Physics, CAS, damage and ammunition never consult this compatibility map.
-    event['manager_key'] = event['projectile_id']
-    event['destructibles_pending'] = []
-    event['presentation_offsets'] = {}
-    battle._projectile_meta[event['projectile_id']] = event
+    _install(battle, event)
     battle._local_fire_intent = None
     try:
         _publish(battle, now)
@@ -139,11 +154,9 @@ def ingress(battle, message):
         current = battle._projectile_meta.get(projectile_id)
         # These discrete records belong only to stock native tracer lifecycle.
         if current is None:
-            event['manager_key'] = projectile_id
-            event['presentation_offsets'] = {}
-            event['destructibles_pending'] = []
-            battle._projectile_meta[projectile_id] = event
-            current = event
+            current = _install(battle, event)
+            if current is None:
+                continue
         if event['ricochet_count'] > current['ricochet_count']:
             # Ordered ricochet feedback owns the visual segment transition.
             continue

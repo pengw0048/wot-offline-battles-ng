@@ -120,6 +120,51 @@ print('CPython 2.7 visible native trigger, two advances, queue failure, deferred
 '''
 
 
+CANONICAL_META_FIXTURE = r'''
+import ast,copy,math,sys,types
+root,glue,runtime=sys.argv[1:4]
+for name,path in (('gui',root+'/gui'),('gui.mods',root+'/gui/mods'),('gui.mods.offline_lan_0922',root+'/gui/mods/offline_lan_0922')):
+    module=types.ModuleType(name);module.__path__=[path];sys.modules[name]=module
+from gui.mods.offline_lan_0922 import lan_client,combat_rules
+tree=ast.parse(open(runtime).read())
+fields=next(node for node in tree.body if isinstance(node,ast.Assign) and node.targets[0].id=='_PROJECTILE_IMMUTABLE_FIELDS')
+cls=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=='BattleRuntime')
+cls.body=[node for node in cls.body if isinstance(node,ast.FunctionDef) and node.name in ('_projectile_wire_meta','_projectile_launch_mismatches')]
+namespace=dict(lan_protocol=lan_client,combat_rules=combat_rules,math=math,_INTEGER_TYPES=(int,long),PROJECTILE_MAX_TIME_MS=20000)
+exec compile(ast.Module(body=[fields,cls]),'staged-projectile-meta','exec') in namespace
+Runtime=namespace['BattleRuntime']
+rows=[]
+native=types.ModuleType('offline_client_projectile_native')
+native.now=lambda battle:1.
+native.ingress=lambda owner,battle,message,now:[copy.deepcopy(row) for row in rows]
+sys.modules[native.__name__]=native
+for name in ('offline_client_weapon_runtime_native','offline_client_transport_native'):sys.modules[name]=types.ModuleType(name)
+glue_module=types.ModuleType('gui.mods.offline_lan_0922.native_client_projectile');glue_module.__package__='gui.mods.offline_lan_0922'
+exec compile(open(glue,'rb').read(),glue,'exec') in glue_module.__dict__
+class Battle(Runtime):
+    def __init__(self):
+        self._native_client_projectile=object();self._projectile_epoch=7;self._projectile_meta={};self.visuals=[];self.warnings=[]
+    def _ensure_projectile_visual(self,meta,now):self.visuals.append(meta)
+    def _warn_optional_failure(self,label,error,disable=True):self.warnings.append(str(error))
+source=dict(speed=100.,gravity=10.,maxDistance=500.,piercingPower=[100.,80.],deadeye=False,shell=dict(kind='ARMOR_PIERCING',caliber=100.,damage=[200.,80.],explosionRadius=0.))
+row=dict(projectile_id='1:b:11:1',shooter_kind='bot',shooter_id=11,source_vehicle='ussr:T-34',source_shot=source,shot_seq=1,
+         burst_group_seq=1,burst_index=0,burst_count=1,shell_index=0,origin=[1.,2.,3.],velocity=[0.,0.,100.],range_origin=[1.,2.,3.],
+         gravity=10.,maxDistance=500.,max_time_ms=6000,is_he=False,splash_radius=0.,penetration_factor=1.,launch_server_time_ms=1160,
+         segment_origin=[1.,2.,3.],segment_velocity=[0.,0.,100.],segment_start_time_ms=0,ricochet_count=0,
+         base_penetration_multiplier=1.,bot_presentation_time_us=90431779)
+rows.append(row)
+# The ordered shot echo normalizes the same launch; it must not see a change.
+battle=Battle();assert glue_module.ingress(battle,dict(projectiles=[row]))
+meta=battle._projectile_meta[row['projectile_id']];echo=Runtime._projectile_wire_meta(row)
+assert echo is not None and Runtime._projectile_launch_mismatches(meta,echo)==(),Runtime._projectile_launch_mismatches(meta,echo)
+assert battle.visuals==[meta] and meta['max_distance']==500. and meta['bot_presentation_time_us']==90431779
+assert meta['manager_key']==row['projectile_id'] and meta['destructibles_pending']==[] and not battle.warnings
+# A row the runtime cannot normalize is reported and never installed.
+battle=Battle();del rows[0]['source_shot'];assert glue_module.ingress(battle,dict(projectiles=[]))
+assert battle._projectile_meta=={} and battle.visuals==[] and len(battle.warnings)==1
+print('native projectile metadata matches the runtime canonical launch')
+'''
+
 @unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'), 'Pinned gameplay source is required')
 class NativeClientProjectile(unittest.TestCase):
     def test_lifecycle_and_wire_rounding(self):
@@ -212,6 +257,13 @@ class NativeClientProjectile(unittest.TestCase):
             binding=importlib.util.module_from_spec(spec);spec.loader.exec_module(binding)
             staged=folder/'battle_runtime.py';staged.write_text(binding.battle((fork/'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py').read_text()))
             subprocess.run([py27, '-B', str(script),str(staged)], check=True)
+
+    def test_native_projectile_meta_matches_canonical_launch(self):
+        fork = Path(os.environ['WOT_FORK_0101_SOURCE'])
+        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()
+        client = fork/'src/res/scripts/client'
+        subprocess.run([py27, '-B', '-c', CANONICAL_META_FIXTURE, str(client), str(ROOT/'bigworld/stock_native_client_projectile.py'),
+                        str(client/'gui/mods/offline_lan_0922/battle_runtime.py')], check=True)
 
     def test_pinned_staged_seams_parse_python27(self):
         import importlib.util
