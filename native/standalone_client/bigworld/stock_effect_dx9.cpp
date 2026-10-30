@@ -165,10 +165,12 @@ bool StockDx9EffectMaterial::set_texture(std::size_t resource_view,
     const auto type = definition.resource_views[resource_view].type_index;
     if (type >= definition.types.size() || definition.types[type].basic_type != 5)
         return invalid("Effect resource is not a texture view", error);
+    automatic_textures_[resource_view]=automatic;
+    // Moo rebinds the same texture on every draw; keep the existing reference.
+    if (textures_[resource_view].get() == texture) { error.clear(); return true; }
     if (texture) texture->AddRef();
     textures_[resource_view] = std::shared_ptr<IDirect3DBaseTexture9>(texture,
         [](IDirect3DBaseTexture9* object) { if (object) object->Release(); });
-    automatic_textures_[resource_view]=automatic;
     error.clear(); return true;
 }
 
@@ -328,18 +330,18 @@ bool StockDx9EffectMaterial::apply_plan(const PassPlan& plan, std::string& error
     auto* device = runtime_->state_manager_.get();
     if (failed(device->SetVertexShader(runtime_->vertex_shaders_[plan.vertex_shader].get()), "SetVertexShader", error) ||
         failed(device->SetPixelShader(runtime_->pixel_shaders_[plan.pixel_shader].get()), "SetPixelShader", error)) return false;
+    // Reused per thread: a draw issues one apply per pass.
+    thread_local std::vector<StockShaderUniformView> uniform_views;
+    thread_local StockShaderRegisters registers;
     for (const auto& stage : plan.stages) {
         const auto& shader = definition.shaders[stage.shader];
-        std::vector<StockShaderUniformView> uniform_views;
-        std::vector<std::shared_ptr<StockEffectUniformStorage>> storage_owners;
-        storage_owners.reserve(stage.uniform_buffers.size());
+        uniform_views.clear();
+        // binding_ owns every planned storage for the duration of this apply.
         for (const auto& entry : stage.uniform_buffers) {
             if (entry.first >= uniform_views.size()) uniform_views.resize(std::size_t(entry.first)+1);
-            auto storage = binding_.uniform_buffer(entry.second);
+            const auto* storage = binding_.uniform_buffer(entry.second).get();
             uniform_views[entry.first] = {storage->bytes().data(), storage->bytes().size()};
-            storage_owners.push_back(std::move(storage));
         }
-        StockShaderRegisters registers;
         if (!stage_stock_shader_registers(shader, uniform_views, registers, error)) return false;
         for (unsigned kind = 0; kind < registers.size(); ++kind) {
             const auto& block = registers[kind];

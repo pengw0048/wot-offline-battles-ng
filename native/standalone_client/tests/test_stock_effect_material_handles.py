@@ -101,10 +101,20 @@ void draw(ID3DXEffect* binding, ID3DXEffectStateManager* states) {
 // Definition loads; they are then removed or registered before the Bindings.
 void exercise(const Effect& effect, bool producersAtLoad) {
     bool registered = producersAtLoad;
+    ID3DXEffect* binding = nullptr;
+    IDirect3DBaseTexture9* texture = nullptr;
+    unsigned live = 0;
+    bool accepted = true;
     auto context = std::make_shared<wot::StockEffectSharedContext>(
-        [&](const std::string& semantic, ID3DXEffect*, D3DXHANDLE) {
-            return registered && std::find(effect.resources.begin(), effect.resources.end(), semantic) !=
+        [&](const std::string& semantic, ID3DXEffect* target, D3DXHANDLE handle) {
+            const bool known = registered && std::find(effect.resources.begin(), effect.resources.end(), semantic) !=
                 effect.resources.end();
+            // A live producer writes through the resource destination handle it was given.
+            if (known && target && handle) {
+                ++live;
+                accepted = accepted && target->SetTexture(handle, target == binding ? texture : nullptr) == S_OK;
+            }
+            return known;
         });
     auto* device = new IDirect3DDevice9;
     auto* states = new ID3DXEffectStateManager;
@@ -143,7 +153,6 @@ void exercise(const Effect& effect, bool producersAtLoad) {
               "seed Definition texture before material creation");
         definitionTexture->Release();
     }
-    ID3DXEffect* binding = nullptr;
     ID3DXEffect* sibling = nullptr;
     check(SUCCEEDED(wot::create_stock_effect_material(definition, &binding)) &&
           SUCCEEDED(wot::create_stock_effect_material(definition, &sibling)), "material bindings");
@@ -152,7 +161,7 @@ void exercise(const Effect& effect, bool producersAtLoad) {
     for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) matrix.m[r][c] = float(1 + 4*r + c);
     const D3DXVECTOR4 colour = {0.25f, 0.5f, 0.75f, 0.875f}, screen = {1024, 768, 1.f/1024, 1.f/768};
     const D3DXVECTOR4 other = {0.125f, 0.25f, 0.375f, 0.5f};
-    auto* texture = new IDirect3DBaseTexture9;
+    texture = new IDirect3DBaseTexture9;
     // AshesProjSetter, TFactorSetter/FontColourSetter, Screen, pixel-snap and UV-divisor producers.
     check(binding->SetMatrix(at(handles, std::string("worldViewProj"), "worldViewProj"), &matrix) == S_OK, "worldViewProj handle");
     check(binding->SetVector(at(handles, std::string("factor"), "factor"), &colour) == S_OK, "factor handle");
@@ -195,6 +204,8 @@ void exercise(const Effect& effect, bool producersAtLoad) {
     draw(binding, states);
     for (int c = 0; c < 4; ++c)
         check(at(states->pixelFloats, 0, "PS register")[c] == (&colour.x)[c], "Binding factor must survive sibling writes");
+    check(accepted, "Resource producers must write through their destination handles");
+    check(producersAtLoad || live, "Bindings created after producer registration apply their resources");
     texture->Release();
     sibling->Release(); binding->Release(); definition->Release(); context->detach_providers();
     states->Release(); device->Release();

@@ -253,7 +253,9 @@ private:
   StockEffectSharedContext &context_;
   StockEffectReflection reflection_;
   std::unique_ptr<StockDx9EffectMaterial> material_;
-  std::vector<std::unique_ptr<Destination>> destinations_;
+  // Filled once by initialise(); handles point into this contiguous storage.
+  std::vector<Destination> destinations_;
+  std::size_t first_resource_ = 0;
   LONG references_ = 1;
   D3DXHANDLE technique_ = nullptr;
   bool begun_ = false;
@@ -329,31 +331,35 @@ void StockEffectAdapter::initialise() {
     const auto declaration = context_.impl_->pool.register_buffer(buffer);
     if (runtime_)
       context_.impl_->declarations.emplace(
-          declaration, StockEffectSharedContext::Impl::Shared{definition_, i});
+          declaration, StockEffectSharedContext::Impl::Shared{definition_, i, false, nullptr});
     for (std::size_t j = 0; j < buffer.uniforms.size(); ++j)
-      destinations_.emplace_back(new Destination{false, i, j, declaration});
+      destinations_.push_back(Destination{false, i, j, declaration});
   }
+  first_resource_ = destinations_.size();
   if (runtime_ && context_.impl_->provider)
     for (std::size_t i = 0; i < definition_->resource_views.size(); ++i) {
       const auto &resource = definition_->resource_views[i];
       if (resource.semantic_present &&
           context_.impl_->provider(resource.semantic, nullptr, nullptr))
-        destinations_.emplace_back(new Destination{true, i, 0, 0});
+        destinations_.push_back(Destination{true, i, 0, 0});
     }
 }
 const StockEffectAdapter::Destination *
 StockEffectAdapter::destination(D3DXHANDLE handle) const {
-  for (const auto &target : destinations_)
-    if (reinterpret_cast<D3DXHANDLE>(target.get()) == handle)
-      return target.get();
-  return nullptr;
+  const auto value = reinterpret_cast<std::uintptr_t>(handle);
+  const auto first = reinterpret_cast<std::uintptr_t>(destinations_.data());
+  const auto offset = value - first;
+  if (value < first || offset >= destinations_.size() * sizeof(Destination) ||
+      offset % sizeof(Destination))
+    return nullptr;
+  return &destinations_[offset / sizeof(Destination)];
 }
 D3DXHANDLE StockEffectAdapter::capture(std::size_t buffer,
                                        std::size_t member) const {
   for (const auto &target : destinations_)
-    if (!target->resource && target->owner == buffer &&
-        target->member == member)
-      return reinterpret_cast<D3DXHANDLE>(target.get());
+    if (!target.resource && target.owner == buffer &&
+        target.member == member)
+      return reinterpret_cast<D3DXHANDLE>(&target);
   return nullptr;
 }
 std::uint32_t StockEffectAdapter::parameter_number(D3DXHANDLE handle) const {
@@ -460,15 +466,14 @@ bool StockEffectAdapter::update_resources() {
   capture_error_.clear();
   if (!context_.impl_->provider)
     return true;
-  for (const auto &target : destinations_)
-    if (target->resource) {
-      const auto &resource = definition_->resource_views[target->owner];
-      if (!context_.impl_->provider(
-              resource.semantic, this,
-              reinterpret_cast<D3DXHANDLE>(target.get())) ||
-          !capture_error_.empty())
-        return false;
-    }
+  for (auto target = destinations_.begin() + first_resource_;
+       target != destinations_.end(); ++target) {
+    const auto &resource = definition_->resource_views[target->owner];
+    if (!context_.impl_->provider(resource.semantic, this,
+                                  reinterpret_cast<D3DXHANDLE>(&*target)) ||
+        !capture_error_.empty())
+      return false;
+  }
   return true;
 }
 bool StockEffectAdapter::validate_shared(const StockDx9PassSelection &selected,

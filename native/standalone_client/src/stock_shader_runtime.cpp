@@ -12,13 +12,14 @@ bool invalid(std::string& error, const char* message) { error = message; return 
 bool stage_stock_shader_registers(const StockShaderBinary& shader,
     const std::vector<StockShaderUniformView>& uniforms,
     StockShaderRegisters& output, std::string& error) {
-    StockShaderRegisters staged;
+    // Staged apart from output so a failure leaves it unchanged; the swap keeps both buffers' capacity.
+    thread_local StockShaderRegisters staged;
     for (unsigned kind = 0; kind < staged.size(); ++kind) {
         staged[kind].range = shader.register_ranges[kind];
         const auto words = std::uint64_t(staged[kind].range.end)*(kind == 0 ? 1 : 4);
         if (words > std::numeric_limits<std::size_t>::max()/sizeof(std::uint32_t))
             return invalid(error, "Shader register buffer exceeds the host address space");
-        staged[kind].words.resize(static_cast<std::size_t>(words), 0);
+        staged[kind].words.assign(static_cast<std::size_t>(words), 0);
     }
     for (const auto& copy : shader.register_copies) {
         const auto kind = static_cast<std::size_t>(copy.kind);
@@ -38,7 +39,7 @@ bool stage_stock_shader_registers(const StockShaderBinary& shader,
             convert_stock_shader_register_words(copy.conversion, at, copy.size/4);
         }
     }
-    output = std::move(staged); error.clear(); return true;
+    output.swap(staged); error.clear(); return true;
 }
 
 bool stock_dx9_render_states(const std::array<std::uint32_t, 6>& d,
