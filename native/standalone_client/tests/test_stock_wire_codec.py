@@ -104,5 +104,81 @@ class StockWireCodec(unittest.TestCase):
                 self.assertTrue(same(native, original), original.get('type'))
 
 
+CLIENT_FIXTURE = r'''
+import json, sys, types
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+root = sys.argv[2]
+for name in ('gui', 'gui.mods'):
+    module = types.ModuleType(name); module.__path__ = [root + '/' + name.replace('.', '/')]; sys.modules[name] = module
+package = types.ModuleType('gui.mods.offline_lan_0922')
+package.__path__ = [sys.argv[3]] + [root + '/gui/mods/offline_lan_0922']
+sys.modules[package.__name__] = package
+from gui.mods.offline_lan_0922 import lan_client
+import offline_client_wire_native as wire
+frames = [item['frame'].decode('hex') for item in json.load(open(sys.argv[4]))]
+stream = ''.join(frames)
+decoder = lan_client._WireStreamDecoder()
+received = []
+for start in range(0, len(stream), 7):
+    received.extend(decoder.feed(stream[start:start + 7], 0.0))
+assert [wire.encode(m) for m in received] and len(received) == len(frames), (len(received), len(frames))
+for message, frame in zip(received, frames):
+    assert message == wire.decode(frame)
+oversized = bytearray(frames[0]); oversized[0:4] = b'\x00\x00\x80\x00'
+try:
+    lan_client._WireStreamDecoder().feed(bytes(oversized) + b'\x00' * (8 + 0x800000 - len(oversized)), 0.0)
+except ValueError:
+    pass
+else:
+    raise AssertionError('oversized frame accepted')
+print('staged lan_client frame stream ok %d' % len(received))
+'''
+
+
+class StagedClientTransport(unittest.TestCase):
+    def test_staged_lan_client_splits_and_decodes_frames(self):
+        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        if not fork:
+            self.skipTest('Pinned gameplay source is required')
+        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
+                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
+        client = Path(fork) / 'src/res/scripts/client'
+        import importlib.util
+        bindings = {}
+        for name in ('stock_snapshot_bindings', 'stock_native_client_transport_bindings',
+                     'stock_native_client_wire_bindings'):
+            spec = importlib.util.spec_from_file_location(name, ROOT / 'bigworld' / (name + '.py'))
+            bindings[name] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(bindings[name])
+        source = (client / 'gui/mods/offline_lan_0922/lan_client.py').read_text()
+        staged = bindings['stock_native_client_wire_bindings'].client(
+            bindings['stock_native_client_transport_bindings'].client(
+                bindings['stock_snapshot_bindings'].client(source)))
+        with tempfile.TemporaryDirectory(prefix='wire-client-') as folder:
+            folder = Path(folder)
+            (folder / 'pkg').mkdir()
+            (folder / 'pkg/lan_client.py').write_text(staged)
+            (folder / 'offline_client_transport_native.py').write_text(
+                'def _ignore(*args, **kwargs):\n    return None\n'
+                'configure_admission = configure_input = landing_configure = _ignore\n')
+            (folder / 'pkg/stock_snapshot_static.py').write_text(
+                (ROOT / 'bigworld/stock_snapshot_static.py').read_text())
+            subprocess.run(['c++', '-std=c++17', '-O1', '-bundle', '-undefined', 'dynamic_lookup',
+                            '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
+                            str(ROOT / 'bigworld/stock_wire_codec.cpp'),
+                            str(ROOT / 'tests/stock_wire_host_client_module.cpp'),
+                            '-o', str(folder / 'offline_client_wire_native.so')], check=True)
+            frames = [{'frame': SCHEMA.encode(m).hex()} for m in samples()]
+            (folder / 'frames.json').write_text(json.dumps(frames))
+            (folder / 'fixture.py').write_text(CLIENT_FIXTURE)
+            run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder), str(client),
+                                  str(folder / 'pkg'), str(folder / 'frames.json')],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('frame stream ok', run.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()
