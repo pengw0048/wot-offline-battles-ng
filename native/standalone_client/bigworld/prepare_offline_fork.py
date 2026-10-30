@@ -73,6 +73,10 @@ _spec = importlib.util.spec_from_file_location(
 transport_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(transport_bindings)
 _spec = importlib.util.spec_from_file_location(
+    'stock_native_client_wire_bindings', Path(__file__).with_name('stock_native_client_wire_bindings.py'))
+wire_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(wire_bindings)
+_spec = importlib.util.spec_from_file_location(
     'stock_native_client_environment_bindings', Path(__file__).with_name('stock_native_client_environment_bindings.py'))
 client_environment_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(client_environment_bindings)
@@ -295,7 +299,7 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
     lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
-    lambda source: transport_bindings.client(snapshot_bindings.client(source)))
+    lambda source: wire_bindings.client(transport_bindings.client(snapshot_bindings.client(source))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snapshot
 ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
 ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/turret_obstacles.py'] = client_query_bindings.turrets

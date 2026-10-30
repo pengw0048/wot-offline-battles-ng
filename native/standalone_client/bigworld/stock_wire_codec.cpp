@@ -1,4 +1,5 @@
 #include "stock_wire_codec.hpp"
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -219,7 +220,11 @@ void encodeAny(Writer& w, PyObject* value) {
         if (overflow < 0) throw Failure("int below i64");
         w.put<unsigned char>(A_INT); w.put(v); return;
     }
-    if (PyFloat_Check(value)) { w.put<unsigned char>(A_FLOAT); w.put(PyFloat_AS_DOUBLE(value)); return; }
+    if (PyFloat_Check(value)) {
+        double v = PyFloat_AS_DOUBLE(value);
+        if (!std::isfinite(v)) throw Failure("non-finite float");
+        w.put<unsigned char>(A_FLOAT); w.put(v); return;
+    }
     if (PyUnicode_Check(value) || PyString_Check(value)) {
         std::string s = utf8(value); w.put<unsigned char>(A_STR); w.put(static_cast<uint32_t>(s.size())); w.out += s; return;
     }
@@ -290,6 +295,7 @@ void encodeValue(Writer& w, uint32_t index, PyObject* value) {
     case F32: case F64: {
         if (!PyFloat_Check(value)) throw Failure("expected float");
         double v = PyFloat_AS_DOUBLE(value);
+        if (!std::isfinite(v)) throw Failure("non-finite float");
         if (t.kind == F32) { float f = static_cast<float>(v); if (f != v) throw Failure("float not exact in f32"); w.put(f); }
         else w.put(v);
         return;
