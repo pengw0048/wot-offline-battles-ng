@@ -101,6 +101,10 @@ _spec = importlib.util.spec_from_file_location(
 client_critical_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(client_critical_bindings)
 _spec = importlib.util.spec_from_file_location(
+    'stock_native_client_lifecycle_bindings', Path(__file__).with_name('stock_native_client_lifecycle_bindings.py'))
+client_lifecycle_bindings = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(client_lifecycle_bindings)
+_spec = importlib.util.spec_from_file_location(
     'stock_native_client_turret_presentation_bindings', Path(__file__).with_name('stock_native_client_turret_presentation_bindings.py'))
 client_turret_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(client_turret_bindings)
@@ -292,9 +296,9 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
     lambda source: drive_bindings.authority(
         query_bindings.ADAPTERS['destructibles_authority.py'](source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = (
-    lambda source: client_query_bindings.targeting_cleanup(client_turret_bindings.battle(client_critical_bindings.battle(client_projectile_bindings.battle(client_input_bindings.battle(client_weapon_bindings.battle(
+    lambda source: client_lifecycle_bindings.battle(client_query_bindings.targeting_cleanup(client_turret_bindings.battle(client_critical_bindings.battle(client_projectile_bindings.battle(client_input_bindings.battle(client_weapon_bindings.battle(
         client_environment_bindings.battle(replica_bindings.battle(drive_bindings.battle(
-            client_query_bindings.battle(bot_bindings.battle(rotation_bindings.runtime(source)))))))))))))
+            client_query_bindings.battle(bot_bindings.battle(rotation_bindings.runtime(source))))))))))))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
     lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
