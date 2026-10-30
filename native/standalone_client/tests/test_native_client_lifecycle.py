@@ -11,7 +11,7 @@ RUNTIME = 'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py'
 METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_attacker_engine_id',
            '_should_suppress_postmortem_killer', '_sync_fire_effect', '_stop_remote_visual',
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
-           '_apply_critical_state', '_apply_stun_state')
+           '_apply_critical_state', '_apply_stun_state', '_apply_siege_state')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
@@ -66,6 +66,10 @@ def run(name, make, args):
                 result = ('ok', NATIVE[name](b, *values))
             except Exception as error:
                 result = ('error', type(error).__name__, str(error))
+        battle_after = tuple(repr(getattr(b, name, '-')) for name in (
+            '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
+            '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity'))
+        log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else (getattr(probe, 'stunInfo', None),
                                                    copy.deepcopy(probe.__dict__.get('_offlineStunFactors')))
@@ -90,7 +94,9 @@ NATIVE = {
     '_stop_remote_visual': native.stop_remote_visual,
     '_apply_critical_state': lambda b, r, payload, authority=None: native.critical_state(b, r, payload, authority, critical_damage),
     '_apply_stun_state': native.stun_state,
+    '_apply_siege_state': lambda b, r, st: native.siege_state(b, r, st, vehicle_physics),
 }
+vehicle_physics = None
 critical_damage = None
 
 def stub(b, log, name, answer=None):
@@ -236,6 +242,45 @@ for end in (0, 5000, -1, True, 2.5):
                                     b._entity_probe = entity
                                     return b, args
                                 run('_apply_stun_state', make_checked, (end, kind, attacker, factors, presented, estimated, local, variant)); cases += 1
+SIEGE = Log([], 'siege', DISABLED=0, SWITCHING_ON=1, ENABLED=2, SWITCHING_OFF=3)
+for siege in (0, 1, 2, 3, 7, True, None):
+    for left in (0, 1500, -5, 2.0):
+        for presented in (None, 0, 2):
+            for pending in (None, (True, None), (True, 9), (False, 30)):
+                for seq in (None, 10, 40):
+                    for local in (True, False):
+                        for variant in range(5):
+                            def make(log, siege=siege, left=left, presented=presented, pending=pending, seq=seq, local=local, variant=variant):
+                                global vehicle_physics
+                                b = battle(log, worker=variant == 4)
+                                vehicle_physics = Log(log, 'vehicle_physics', {'derive_params': lambda d, f: 'physics'})
+                                b._runtime = Log(log, 'runtime', constants=Log(log, 'constants', VEHICLE_SIEGE_STATE=SIEGE))
+                                b._local_siege_pending = pending
+                                has_siege = variant != 1
+                                descriptor = Log(log, 'descriptor', hasSiegeMode=has_siege) if variant != 2 else None
+                                entity = Log(log, 'entity', typeDescriptor=descriptor) if descriptor is not None else Log(log, 'entity', missing=('typeDescriptor',))
+                                stub(b, log, '_server_entity', entity)
+                                stub(b, log, '_report_local_siege_edge'); stub(b, log, '_advance_local_gun_edge', (0, 'edge'))
+                                stub(b, log, '_advance_local_gun_to'); stub(b, log, '_select_local_siege_pose')
+                                stub(b, log, '_local_factors', 'factors'); stub(b, log, '_update_local_hull_aiming')
+                                b._gun_state = Log(log, 'gun', {'adopt_descriptor': lambda d: True}) if variant in (0, 3) else None
+                                b._sender = Log(log, 'sender') if variant == 0 else None
+                                b._local_matrix = 'matrix' if variant in (0, 3) else None
+                                b._local_physics = 'old' if variant in (0, 3) else None
+                                b._remote_factory = Log(log, 'factory')
+                                record = {'engine_id': 41, 'local': local, 'native_remote': variant == 4}
+                                if presented is not None: record['presented_siege_state'] = presented
+                                state = {}
+                                if siege is not None: state['siege_state'] = siege
+                                state['siege_time_left_ms'] = left
+                                if seq is not None: state['input_seq'] = seq
+                                b._entity_probe = None
+                                return b, (record, state)
+                            def checked(log, make=make):
+                                b, args = make(log)
+                                b._battle_probe = b
+                                return b, args
+                            run('_apply_siege_state', checked, (siege, left, presented, pending, seq, local, variant)); cases += 1
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))

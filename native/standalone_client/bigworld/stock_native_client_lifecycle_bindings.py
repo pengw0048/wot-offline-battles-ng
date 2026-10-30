@@ -11,6 +11,7 @@ PORTS = (
     ('_stop_remote_visual', 'stop_remote_visual(self, record)'),
     ('_apply_critical_state', 'critical_state(self, record, payload, authority, critical_damage)'),
     ('_apply_stun_state', 'stun_state(self, record, state)'),
+    ('_apply_siege_state', 'siege_state(self, record, state, vehicle_physics)'),
 )
 
 

@@ -371,6 +371,99 @@ PyObject* stunState(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._apply_siege_state(record, state)
+PyObject* siegeState(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *state, *vehicle_physics;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &record, &state, &vehicle_physics)) return nullptr;
+    try {
+        auto states = attr(attr(attr(battle, "_runtime").get(), "constants").get(), "VEHICLE_SIEGE_STATE");
+        auto disabled = attr(states.get(), "DISABLED"), on = attr(states.get(), "SWITCHING_ON");
+        auto enabled = attr(states.get(), "ENABLED"), off = attr(states.get(), "SWITCHING_OFF");
+        auto siege = get(state, "siege_state", disabled.get());
+        auto left = get(state, "siege_time_left_ms", integer(0).get());
+        if (!exactInteger(siege.get())) throw p::Error("LAN snapshot has an invalid siege state");
+        if (!equal(siege.get(), disabled.get()) && !equal(siege.get(), on.get()) && !equal(siege.get(), enabled.get()) &&
+            !equal(siege.get(), off.get()))
+            throw p::Error("LAN snapshot has an unsupported siege state");
+        if (!exactInteger(left.get()) || PyObject_RichCompareBool(left.get(), integer(0).get(), Py_LT) == 1)
+            throw p::Error("LAN snapshot has an invalid siege transition time");
+        const bool switching = equal(siege.get(), on.get()) || equal(siege.get(), off.get());
+        const bool positive = PyObject_RichCompareBool(left.get(), integer(0).get(), Py_GT) == 1;
+        if ((switching && !positive) || (!switching && !equal(left.get(), integer(0).get())))
+            throw p::Error("LAN snapshot has an inconsistent siege transition");
+        const bool local = truthy(get(record, "local"));
+        auto pending = attr(battle, "_local_siege_pending");
+        if (local && pending.get() != Py_None) {
+            auto request_seq = p::item(pending.get(), 1);
+            bool acknowledged = request_seq.get() == Py_None;
+            auto snapshot_seq = get(state, "input_seq");
+            if (exactInteger(snapshot_seq.get()))
+                acknowledged = request_seq.get() == Py_None ||
+                               PyObject_RichCompareBool(snapshot_seq.get(), request_seq.get(), Py_GE) == 1;
+            if (acknowledged && !switching) {
+                setAttr(battle, "_local_siege_pending", Py_None);
+                method(battle, "_report_local_siege_edge", p::text("ack").get(), siege.get(), left.get(), snapshot_seq.get());
+            }
+        }
+        auto presented = get(record, "presented_siege_state");
+        if (equal(presented.get(), siege.get())) Py_RETURN_FALSE;
+        if (presented.get() == Py_None && equal(siege.get(), disabled.get())) {
+            put(record, "presented_siege_state", p::retain(disabled.get()));
+            Py_RETURN_FALSE;
+        }
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        auto entity = method(battle, "_server_entity", engine);
+        auto descriptor = optionalAttr(entity.get(), "typeDescriptor");
+        if (descriptor.get() == Py_None) throw p::Error("Siege vehicle descriptor is unavailable");
+        const bool has_siege = truthy(optionalAttr(descriptor.get(), "hasSiegeMode"));
+        if (!has_siege && !equal(siege.get(), disabled.get())) throw p::Error("Vehicle without Siege mode received an active state");
+        if (!has_siege) { put(record, "presented_siege_state", p::retain(disabled.get())); Py_RETURN_FALSE; }
+        auto gun_edge = p::retain(Py_None);
+        if (local && attr(battle, "_gun_state").get() != Py_None)
+            replace(gun_edge, method(battle, "_advance_local_gun_edge", attr(battle, "_gun_state").get()));
+        auto seconds = p::number(number(left.get()) / 1000.);
+        method(attr(battle, "_binding").get(), "update_vehicle_siege_state", engine, siege.get(), seconds.get());
+        put(record, "presented_siege_state", p::retain(siege.get()));
+        auto factory = attr(battle, "_remote_factory");
+        if (truthy(attr(battle, "_worker_mode")) && truthy(get(record, "native_remote")) && factory.get() != Py_None) {
+            auto updater = optionalAttr(factory.get(), "update_entity_siege_pose");
+            if (updater.get() != Py_None && PyCallable_Check(updater.get())) p::Ref unused(PyObject_CallFunctionObjArgs(updater.get(), engine, nullptr));
+        }
+        if (local && attr(battle, "_local_matrix").get() != Py_None) {
+            const bool raised = equal(siege.get(), enabled.get()) || equal(siege.get(), off.get());
+            method(battle, "_select_local_siege_pose", entity.get(), p::boolean(raised).get());
+        }
+        if (local && attr(battle, "_gun_state").get() != Py_None) {
+            auto changed = method(attr(battle, "_gun_state").get(), "adopt_descriptor", attr(entity.get(), "typeDescriptor").get());
+            setAttr(battle, "_targeting_signature", Py_None);
+            if (gun_edge.get() != Py_None) method(battle, "_advance_local_gun_to", entity.get(), p::item(gun_edge.get(), 1).get());
+            if (truthy(changed) && gun_edge.get() != Py_None && attr(battle, "_sender").get() != Py_None)
+                method(attr(battle, "_sender").get(), "send_current");
+        }
+        if (local && attr(battle, "_local_physics").get() != Py_None) {
+            auto type = attr(entity.get(), "typeDescriptor");
+            auto factors = method(battle, "_local_factors", type.get());
+            setAttr(battle, "_local_physics", method(vehicle_physics, "derive_params", attr(entity.get(), "typeDescriptor").get(), factors.get()).get());
+            setAttr(battle, "_local_suspension_params", Py_None);
+            setAttr(battle, "_local_suspension_probe_trace", p::Ref(PyTuple_New(0)).get());
+            setAttr(battle, "_local_suspension_disabled", Py_False);
+            setAttr(battle, "_local_suspension_report", Py_None);
+            setAttr(battle, "_local_suspension_failed_this_tick", Py_False);
+            setAttr(battle, "_local_spring_ground_memory", Py_None);
+            setAttr(battle, "_local_pseudo_ground_memory", Py_None);
+            for (const char* name : {"_local_suspension_pitch_velocity", "_local_suspension_roll_velocity",
+                                     "_local_suspension_support_vertical_speed"})
+                setAttr(battle, name, p::number(0.).get());
+            setAttr(battle, "_local_suspension_support_gradient", Py_None);
+        }
+        if (local && attr(battle, "_local_matrix").get() != Py_None) method(battle, "_update_local_hull_aiming", entity.get(), p::number(0.).get());
+        if (local) method(battle, "_report_local_siege_edge", p::text("state").get(), siege.get(), left.get(), get(state, "input_seq").get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -380,6 +473,7 @@ PyMethodDef methods[] = {
     {"stop_remote_visual", stopRemoteVisual, METH_VARARGS, "Stop a remote vehicle's marker and minimap entry."},
     {"critical_state", criticalState, METH_VARARGS, "Apply a canonical critical payload to a vehicle."},
     {"stun_state", stunState, METH_VARARGS, "Present the #1513 stunInfo absolute-time contract."},
+    {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
