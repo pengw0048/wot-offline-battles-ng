@@ -233,6 +233,41 @@ SNAPSHOT = record('Snapshot',
     O('detached_turrets', List(Any(), 30)), *AUTHORITY,
     O('bot_equipment_contracts', List(EQUIPMENT_CONTRACT, 90)), O('phase', STR))
 
+# ---- replica snapshot: each datum at the rate it changes ---------------------------------
+# Motion is sent when its values change; a remote actor's state record only when its
+# non-countdown fields change; the recipient's own row in full every snapshot.
+PLAYER_MOTION_NAMES = ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'up_cosine', 'aim_yaw',
+                       'gun_pitch', 'forward', 'turn', 'speed')
+BOT_MOTION_NAMES = ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'aim_yaw', 'gun_pitch', 'speed',
+                    'push_x', 'push_z', 'push_yaw', 'movement_dir', 'rotation_dir', 'airborne',
+                    'service_brake')
+# Values sampled with a state record; they never make a state record due on their own.
+COUNTDOWN_NAMES = ('siege_time_left_ms', 'reload_time', 'burst_time_left', 'combat_fire_elapsed',
+                   'combat_fire_timer')
+EQUIPMENT_COUNTDOWN_NAMES = ('cooldownTimeLeft', 'autoPendingElapsed', 'aiPendingElapsed')
+PLAYER_OWNER_NAMES = (
+    'input_seq', 'landing_observation_seq', 'input_processed_seq', 'equipment_intent_seq',
+    'equipment_intent_result', 'tank_pushes', 'turret_pushes', 'crew_receipt_id',
+    'ram_contact_admitted_seq', 'ram_contact_resolved_seq', 'destructible_contact_admitted_seq',
+    'destructible_contact_resolved_seq', 'gun_checkpoint_seq', 'gun_checkpoint', 'ram_contact',
+    'ram_contacts', 'destructible_contacts', 'destructible_contact_resolved_seqs',
+    'destructible_contact_rejected_seqs')
+PLAYER_MOTION = record('PlayerMotion', F('id', I64), *(F(n, F64) for n in PLAYER_MOTION_NAMES))
+BOT_MOTION = record('BotMotion', F('id', I32),
+                    *(f for f in BOT_ROW_FIELDS if f.name in BOT_MOTION_NAMES))
+PLAYER_STATE = record('PlayerState', *(f for f in PLAYER_ROW_FIELDS
+                                       if f.name not in PLAYER_MOTION_NAMES + PLAYER_OWNER_NAMES))
+BOT_STATE_ROW = record('BotStateRow', *(f for f in R['BotRow'].fields
+                                        if f.name not in BOT_MOTION_NAMES))
+REPLICA_SNAPSHOT = record('ReplicaSnapshot', *(
+    [f for f in R['Snapshot'].fields
+     if f.name not in ('players', 'bots', 'bot_equipment_contracts')] +
+    [F('full', BOOL), O('own', OneOf(PLAYER_ROW, PLAYER_ROW_FULL)),
+     F('player_motion', List(PLAYER_MOTION, 30)), F('bot_motion', List(BOT_MOTION, 30)),
+     F('player_states', List(PLAYER_STATE, 30)), F('bot_states', List(BOT_STATE_ROW, 30)),
+     F('removed_players', List(I64, 30)), F('removed_bots', List(I32, 30)),
+     O('bot_equipment_contracts', List(EQUIPMENT_CONTRACT, 90))]))
+
 LOADING_SNAPSHOT = record('LoadingSnapshot',
     F('protocol', I32), F('client_build', STR), F('server_tick', I64), F('round_id', I64),
     F('map', STR), N('bot_authority_id', I64), F('authority_epoch', I64), F('server_time_ms', I64),
@@ -374,6 +409,7 @@ BOT_STATE = record('BotState', F('round_id', I64), O('authority_epoch', I64),
 # ---- message table: None = tagged binary body (low-frequency control) -----------------
 MESSAGES = {
     'snapshot': ('Snapshot', 'LoadingSnapshot'),
+    'replica_snapshot': 'ReplicaSnapshot',
     'events': 'Events',
     'input': 'Input',
     'track_repair': 'TrackRepair',

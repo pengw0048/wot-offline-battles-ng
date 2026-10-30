@@ -69,6 +69,11 @@ def samples():
                           'wreck_hit': {'target_kind': 'bot', 'target_id': 2 ** 63 + 5}}]})
     messages.append({'type': 'track_repair', 'round_id': 1, 'critical_base_revision': 0, 'repair_seq': 1,
                      'tracks': [{'name': 'leftTrackHealth', 'hp': 12.5, 'max_hp': 100.0, 'state': 'critical'}]})
+    import replica_split
+    tick = next((m for m in messages if m.get('type') == 'snapshot' and 'client_build' not in m
+                 and m.get('bots') and m.get('players')), None)
+    if tick is not None:
+        messages.append(replica_split.encode(tick, None, tick['players'][0]['id'], True)[0])
     return messages
 
 

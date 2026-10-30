@@ -7,6 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 HELPERS = '''
 import battle_wire_schema as _battle_wire_schema
+import battle_wire_replica as _replica_split
 _WIRE = _battle_wire_schema.SCHEMA
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
@@ -47,9 +48,25 @@ EDITS = (
     # Module helpers after the last top-level import of the json module.
     ('import json\n', 'import json\n' + HELPERS, 1),
     (SERIALIZE_BEFORE, SERIALIZE_AFTER, 1),
-    # The binary wire carries complete snapshots; the JSON row delta is retired.
+    # Players receive the replica split against their last completed write; the
+    # simulation worker keeps complete rows.
     ('        actor_snapshot = self._is_actor_snapshot(message)\n',
-     '        actor_snapshot = False\n', 1),
+     '        actor_snapshot = (self._is_actor_snapshot(message) and\n'
+     '                          isinstance(self, Player))\n', 1),
+    ('                outgoing, baseline = snapshot_delta.encode(\n'
+     '                    message, self._snapshot_baseline, sequence,\n'
+     '                    force_full=full_snapshot)\n'
+     '            except snapshot_delta.SnapshotDeltaError:\n',
+     '                outgoing, baseline = _replica_split.encode(\n'
+     '                    message, self._snapshot_baseline, self.player_id,\n'
+     '                    full_snapshot)\n'
+     '            except (KeyError, TypeError):\n', 1),
+    ('            delta = outgoing.get("snapshot_delta") is True\n',
+     '            delta = outgoing.get("full") is False\n', 1),
+    ('                outgoing, baseline = snapshot_delta.encode(\n'
+     '                    message, None, sequence, force_full=True)\n',
+     '                outgoing, baseline = _replica_split.encode(\n'
+     '                    message, None, self.player_id, True)\n', 1),
     ('        payload = (json.dumps(message, separators=(",", ":")) + "\\n").encode("utf-8")\n'
      '        conn.sendall(payload)\n',
      '        conn.sendall(_WIRE.encode(message))\n', 1),
@@ -106,6 +123,10 @@ def stage(pinned, output):
         schema = source.read().replace('from codec import', 'from battle_wire_codec import')
     with open(os.path.join(output, 'battle_wire_schema.py'), 'w', encoding='utf-8') as target:
         target.write(schema)
+    with open(os.path.join(HERE, 'replica_split.py'), encoding='utf-8') as source:
+        split = source.read().replace('from schema import', 'from battle_wire_schema import')
+    with open(os.path.join(output, 'battle_wire_replica.py'), 'w', encoding='utf-8') as target:
+        target.write(split)
 
 
 if __name__ == '__main__':
