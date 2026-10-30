@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -36,6 +37,23 @@ struct Ref {
 };
 
 PyObject* checked(PyObject* value) { if (!value) throw Failure("python allocation failed"); return value; }
+
+// Interned unicode keys, created once and shared by every decoded dict and encode lookup.
+PyObject* nameKey(const char* name) {
+    static std::map<const char*, PyObject*> keys;
+    PyObject*& key = keys[name];
+    if (!key) key = checked(PyUnicode_DecodeUTF8(name, static_cast<Py_ssize_t>(std::strlen(name)), "strict"));
+    return key;
+}
+PyObject* fieldKey(uint32_t field) {
+    static std::vector<PyObject*> keys(sizeof(fields) / sizeof(fields[0]), nullptr);
+    PyObject*& key = keys[field];
+    if (!key) key = nameKey(fields[field].name);
+    return key;
+}
+void setItem(PyObject* dict, PyObject* key, PyObject* value) {
+    if (PyDict_SetItem(dict, key, value) < 0) throw Failure("dict insert failed");
+}
 
 // ---- decoding -------------------------------------------------------------------
 struct Reader {
@@ -93,11 +111,10 @@ void decodeRecord(Reader& r, uint32_t index, PyObject* dict) {
             bool present = (bits[bit / 8] >> (bit % 8)) & 1, null = (bits[(bit + 1) / 8] >> ((bit + 1) % 8)) & 1;
             ++flag;
             if (!present) continue;
-            if (null) { if (PyDict_SetItemString(dict, field.name, Py_None) < 0) throw Failure("dict insert failed"); continue; }
+            if (null) { setItem(dict, fieldKey(rec.first + f), Py_None); continue; }
         }
         Ref value(decodeValue(r, field.type));
-        Ref key(text(field.name, std::strlen(field.name)));
-        if (PyDict_SetItem(dict, key.p, value.p) < 0) throw Failure("dict insert failed");
+        setItem(dict, fieldKey(rec.first + f), value.p);
     }
 }
 
@@ -157,7 +174,7 @@ PyObject* decodeValue(Reader& r, uint32_t index) {
         const VariantEntry& entry = variants[t.a + i];
         Ref dict(checked(PyDict_New()));
         Ref tag(text(entry.tag, std::strlen(entry.tag)));
-        if (PyDict_SetItemString(dict.p, t.key, tag.p) < 0) throw Failure("dict insert failed");
+        setItem(dict.p, nameKey(t.key), tag.p);
         decodeRecord(r, entry.record, dict.p);
         return dict.release();
     }
@@ -252,7 +269,7 @@ void encodeRecord(Writer& w, uint32_t index, PyObject* dict, const char* skip) {
     std::vector<unsigned char> bits((2 * rec.flagged + 7) / 8, 0); uint32_t flag = 0;
     for (uint32_t f = 0; f < rec.count; ++f) {
         const FieldDesc& field = fields[rec.first + f];
-        PyObject* item = PyDict_GetItemString(dict, field.name);
+        PyObject* item = PyDict_GetItem(dict, fieldKey(rec.first + f));
         if (item) ++known;
         if (field.flags) {
             if (item) {
@@ -265,12 +282,12 @@ void encodeRecord(Writer& w, uint32_t index, PyObject* dict, const char* skip) {
             ++flag;
         } else if (!item) throw Failure(std::string(field.name) + " is required");
     }
-    if (skip && PyDict_GetItemString(dict, skip)) ++known;
+    if (skip && PyDict_GetItem(dict, nameKey(skip))) ++known;
     if (known != PyDict_Size(dict)) throw Failure(std::string(rec.name) + " has unknown keys");
     if (!bits.empty()) w.out.append(reinterpret_cast<const char*>(&bits[0]), bits.size());
     for (uint32_t f = 0; f < rec.count; ++f) {
         const FieldDesc& field = fields[rec.first + f];
-        PyObject* item = PyDict_GetItemString(dict, field.name);
+        PyObject* item = PyDict_GetItem(dict, fieldKey(rec.first + f));
         if (!item || (item == Py_None && (field.flags & 2))) continue;
         encodeValue(w, field.type, item);
     }
@@ -339,7 +356,7 @@ void encodeValue(Writer& w, uint32_t index, PyObject* value) {
         throw Failure("no alternative matched: " + message);
     }
     case VARIANT: {
-        PyObject* tag = PyDict_Check(value) ? PyDict_GetItemString(value, t.key) : nullptr;
+        PyObject* tag = PyDict_Check(value) ? PyDict_GetItem(value, nameKey(t.key)) : nullptr;
         if (!tag) throw Failure("variant tag missing");
         std::string name = utf8(tag);
         for (uint32_t i = 0; i < t.b; ++i) if (name == variants[t.a + i].tag) {
@@ -395,8 +412,7 @@ PyObject* decode(const unsigned char* data, std::size_t size) {
             if (m.layout == 2) { unsigned char i = r.read<unsigned char>(); if (i >= m.b) throw Failure("layout out of range"); record = types[children[m.a + i]].a; }
             decodeRecord(r, record, result.p);
         }
-        Ref type(text(m.name, std::strlen(m.name)));
-        if (PyDict_SetItemString(result.p, "type", type.p) < 0) throw Failure("dict insert failed");
+        setItem(result.p, nameKey("type"), nameKey(m.name));
         if (r.at != size) throw Failure("trailing bytes");
         return result.release();
     } catch (const Failure& error) {
@@ -408,7 +424,7 @@ PyObject* decode(const unsigned char* data, std::size_t size) {
 bool encode(PyObject* message, std::string& out) {
     try {
         if (!PyDict_Check(message)) throw Failure("message is not a dict");
-        PyObject* type = PyDict_GetItemString(message, "type");
+        PyObject* type = PyDict_GetItem(message, nameKey("type"));
         if (!type) throw Failure("message has no type");
         std::string name = utf8(type);
         uint32_t id = 0;
