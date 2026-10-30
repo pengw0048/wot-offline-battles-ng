@@ -11,14 +11,23 @@ RUNTIME = 'src/res/scripts/client/gui/mods/offline_lan_0922/battle_runtime.py'
 METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_attacker_engine_id',
            '_should_suppress_postmortem_killer', '_sync_fire_effect', '_stop_remote_visual',
            '_event_entity_key', '_remote_visual_components', '_store_remote_visual_components',
-           '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical')
+           '_apply_critical_state', '_apply_stun_state', '_apply_siege_state', '_present_critical',
+           '_sync_remote_visual_components', '_set_record_spot_visibility', '_apply_spot_presentation')
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS')
 
 FIXTURE = r'''
 import copy, math, sys
 sys.path.insert(0, sys.argv[1])
 import offline_client_lifecycle_native as native
+NATIVE_QUERY = None
+set_draw_visibility = None
+ENGINE_MODE_IDLE = 0
 exec(open(sys.argv[2]).read())
+
+def rep(value):
+    if callable(value) and not isinstance(value, Log) and hasattr(value, '__name__'):
+        return '<callable %s>' % value.__name__
+    return repr(value)
 
 class Log(object):
     """Fake engine object: records every call and answers from a script."""
@@ -31,10 +40,11 @@ class Log(object):
         if attr.startswith('__') or attr in self._missing:
             raise AttributeError(attr)
         def call(*args, **kwargs):
-            self._log.append((self._name, attr) + tuple(repr(a) for a in args) +
-                             tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
+            self._log.append((self._name, attr) + tuple(rep(a) for a in args) +
+                             tuple(sorted((k, rep(v)) for k, v in kwargs.items())))
             answer = self._answers.get(attr)
             return answer(*args) if callable(answer) else answer
+        call.__name__ = '%s.%s' % (self._name, attr)
         return call
 
 def battle(log, **extra):
@@ -71,8 +81,9 @@ def run(name, make, args):
             '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
-        entity_after = None if probe is None else (getattr(probe, 'stunInfo', None),
-                                                   copy.deepcopy(probe.__dict__.get('_offlineStunFactors')))
+        entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
+            'stunInfo', '_offlineStunFactors', '_spot_visible', '_offlineNativeDrawVisible', 'targetCaps',
+            '_offlineNativeMarkerVisible'))
         out.append((result, log, copy.deepcopy([v for v in values if isinstance(v, dict)]),
                     copy.deepcopy(b._records), entity_after))
     (pr, pl, pv, prec, pm), (nr, nl, nv, nrec, nm) = out
@@ -96,13 +107,16 @@ NATIVE = {
     '_apply_stun_state': native.stun_state,
     '_apply_siege_state': lambda b, r, st: native.siege_state(b, r, st, vehicle_physics),
     '_present_critical': native.present_critical,
+    '_sync_remote_visual_components': native.remote_visual_components,
+    '_set_record_spot_visibility': lambda b, r, v, m=None: native.spot_visibility(b, r, v, m, NATIVE_QUERY, set_draw_visibility, ENGINE_MODE_IDLE),
+    '_apply_spot_presentation': native.spot_presentation,
 }
 vehicle_physics = None
 critical_damage = None
 
 def stub(b, log, name, answer=None):
     def call(*args, **kwargs):
-        log.append(('battle', name) + tuple(repr(a) for a in args) + tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
+        log.append(('battle', name) + tuple(rep(a) for a in args) + tuple(sorted((k, rep(v)) for k, v in kwargs.items())))
         return answer(*args) if callable(answer) else answer
     setattr(b, name, call)
 cases = 0
@@ -243,6 +257,80 @@ for end in (0, 5000, -1, True, 2.5):
                                     b._entity_probe = entity
                                     return b, args
                                 run('_apply_stun_state', make_checked, (end, kind, attacker, factors, presented, estimated, local, variant)); cases += 1
+def spot_battle(log, worker=False, outlined=None, alive=True):
+    global NATIVE_QUERY, set_draw_visibility
+    NATIVE_QUERY = Log(log, 'query')
+    set_draw_visibility = lambda vehicle, draw: log.append(('set_draw_visibility', repr(vehicle), repr(draw)))
+    globals()['NATIVE_QUERY'], globals()['set_draw_visibility'] = NATIVE_QUERY, set_draw_visibility
+    b = battle(log, worker=worker, outlined=outlined)
+    stub(b, log, '_record_alive', alive); stub(b, log, '_present_vehicle_dead')
+    stub(b, log, '_run_optional_feature', True); stub(b, log, '_sync_fire_effect')
+    stub(b, log, '_spot_presentation_visibility', lambda entity, remembered, was_model_visible=False: (bool(remembered), not was_model_visible))
+    provider = Log(log, 'provider')
+    b._avatar = Log(log, 'avatar', guiSessionProvider=provider)
+    return b
+COMPONENTS = ({}, {'visual_started': True}, {'world_marker_started': True}, {'minimap_started': True},
+              {'world_marker_started': True, 'minimap_started': True})
+for components in COMPONENTS:
+    for team in (True, False, 0):
+        for world in (True, False):
+            for native_remote in (True, False):
+                for outlined in (41, None):
+                    for alive in (True, False):
+                        for failing in (None, 'start_vehicle_minimap', 'stop_vehicle_marker'):
+                            def make(log, components=components, team=team, world=world, native_remote=native_remote, outlined=outlined, alive=alive, failing=failing):
+                                b = spot_battle(log, outlined=outlined, alive=alive)
+                                def boom(*a):
+                                    raise RuntimeError('signal failed')
+                                b._binding = Log(log, 'binding', dict(((failing, boom),)) if failing else {})
+                                b._sync_remote_visual_components = Pinned._sync_remote_visual_components.__get__(b)
+                                record = dict(components, engine_id=41, native_remote=native_remote)
+                                vehicle = Log(log, 'vehicle')
+                                b._entity_probe = vehicle
+                                return b, (record, vehicle, team, world)
+                            run('_sync_remote_visual_components', make, (components, team, world, native_remote, outlined, alive, failing)); cases += 1
+for visible in (True, False, 1):
+    for marker in (None, True, False):
+        for transition in (None, True, False):
+            for spot in (None, True, False):
+                for presentation in ('ready', 'not_ready', 'none'):
+                    for native_remote in (True, False):
+                        for variant in range(5):
+                            def make(log, visible=visible, marker=marker, transition=transition, spot=spot, presentation=presentation, native_remote=native_remote, variant=variant):
+                                b = spot_battle(log, alive=variant != 1)
+                                stub(b, log, '_sync_remote_visual_components')
+                                attrs = {'model': None if variant == 4 else 'model', 'engineMode': (3, 1)}
+                                vehicle = Log(log, 'vehicle', missing=('update_tracks',) if variant == 2 else (), **attrs)
+                                b._remote_factory = Log(log, 'factory', {'get': lambda engine: vehicle})
+                                record = {'engine_id': 41, 'native_remote': native_remote,
+                                          'presentation': presentation != 'none', 'ready': presentation == 'ready',
+                                          'state': {'health': 300, 'display_health': 280}}
+                                if spot is not None: record['spot_visible'] = spot
+                                if transition is not None: record['_spot_marker_transition'] = transition
+                                if variant == 3: record['_spot_presentation_signature'] = (bool(visible), bool(marker), True, True)
+                                if variant in (0, 3): record['deferred_health_presentation'] = True
+                                b._entity_probe = vehicle
+                                args = (record, visible) if marker is None and variant % 2 else (record, visible, marker)
+                                return b, args
+                            run('_set_record_spot_visibility', make, (visible, marker, transition, spot, presentation, native_remote, variant)); cases += 1
+for alive in (True, False):
+    for dead_known in (True, False, None):
+        for remembered in (True, False):
+            for spot in (True, False, None):
+                for failing in (False, True):
+                    def make(log, alive=alive, dead_known=dead_known, remembered=remembered, spot=spot, failing=failing):
+                        b = spot_battle(log, alive=alive)
+                        if failing:
+                            def boom(record, visible):
+                                raise RuntimeError('spot failed')
+                            b._set_record_spot_visibility = boom
+                        else:
+                            stub(b, log, '_set_record_spot_visibility')
+                        record = {'engine_id': 41}
+                        if dead_known is not None: record['dead_marker_known'] = dead_known
+                        if spot is not None: record['spot_visible'] = spot
+                        return b, (record, Log(log, 'entity'), remembered)
+                    run('_apply_spot_presentation', make, (alive, dead_known, remembered, spot, failing)); cases += 1
 EVENT_SETS = [
     [], [{'kind': 'ammo_rack', 'state': 'destroyed'}],
     [{'kind': 'device', 'name': 'engine', 'state': 'destroyed', 'cause': 'fire'},
@@ -327,10 +415,19 @@ for name, (errors, quiet, effects) in sorted(TALLY.items()):
 
 
 def pinned_source(fork):
-    source = (Path(fork) / RUNTIME).read_text()
+    """The runtime as staged by every other adapter: what the lifecycle ports replace."""
+    import importlib.util
+    import sys
+    sys.path.insert(0, str(ROOT / 'bigworld'))
+    spec = importlib.util.spec_from_file_location('prepare_offline_fork', ROOT / 'bigworld/prepare_offline_fork.py')
+    prepare = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prepare)
+    prepare.client_lifecycle_bindings.battle = lambda source: source
+    source = prepare.ADAPTERS[Path(RUNTIME)]((Path(fork) / RUNTIME).read_text())
     tree = ast.parse(source)
     lines = source.splitlines()
-    chunks = ['import math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):']
+    chunks = ['import math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):',
+              "    def __repr__(self):\n        return '<battle>'"]
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) in GLOBALS for t in node.targets):
             chunks.insert(1, '\n'.join(lines[node.lineno - 1:node.end_lineno]))
@@ -341,7 +438,9 @@ def pinned_source(fork):
                 if isinstance(item, ast.FunctionDef) and item.name in METHODS:
                     start = min([d.lineno for d in item.decorator_list] + [item.lineno])
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
-    return '\n\n'.join(chunks) + '\n'
+    text = '\n\n'.join(chunks) + '\n'
+    # Package-relative imports resolve to the fixture's fakes.
+    return text.replace('from . import native_client_query', 'native_client_query = NATIVE_QUERY')
 
 
 class LifecycleDifferential(unittest.TestCase):

@@ -560,6 +560,164 @@ PyObject* presentCritical(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+
+// BattleRuntime._sync_remote_visual_components(record, vehicle, team_visible, world_visible)
+bool syncRemoteVisualComponents(PyObject* battle, PyObject* record, PyObject* vehicle, bool team_visible, bool world_visible) {
+    auto started = remoteVisualComponents(record);
+    bool world = started.first, minimap = started.second;
+    world_visible = world_visible && team_visible;
+    std::int64_t id = 0;
+    if (!pyInt(get(record, "engine_id").get(), id)) throw p::Error("record engine_id is not an integer");
+    auto entity = integer(id);
+    if (!world_visible && equal(attr(battle, "_outlined_engine_id").get(), entity.get())) method(battle, "_clear_target_outline");
+    auto finish = [&]() {
+        storeRemoteVisualComponents(record, world, minimap);
+        put(record, "spot_world_marker_visible", p::boolean(world));
+        if (truthy(get(record, "native_remote"))) setAttr(vehicle, "_offlineNativeMarkerVisible", world ? Py_True : Py_False);
+    };
+    try {
+        auto binding = attr(battle, "_binding");
+        auto dead = [&]() {
+            if (!truthy(method(battle, "_record_alive", record, vehicle))) method(battle, "_present_vehicle_dead", record, Py_True);
+        };
+        if (team_visible) {
+            if (world_visible && !world && !minimap) {
+                method(binding.get(), "start_vehicle_visual", entity.get(), Py_True);
+                world = minimap = true;
+                dead();
+            } else {
+                if (!minimap) { method(binding.get(), "start_vehicle_minimap", entity.get()); minimap = true; }
+                if (world_visible && !world) { method(binding.get(), "start_vehicle_marker", entity.get()); world = true; dead(); }
+                else if (!world_visible && world) { method(binding.get(), "stop_vehicle_marker", entity.get()); world = false; }
+            }
+        } else if (world && minimap) {
+            method(binding.get(), "stop_vehicle_visual", entity.get(), Py_False);
+            world = minimap = false;
+        } else if (world) {
+            method(binding.get(), "stop_vehicle_visual", entity.get(), Py_False);
+            world = false;
+        } else if (minimap) {
+            method(binding.get(), "stop_vehicle_minimap", entity.get());
+            minimap = false;
+        }
+    } catch (...) {
+        // The pinned finally block preserves each component's completed signal.
+        PyObject *type, *value, *trace;
+        PyErr_Fetch(&type, &value, &trace);
+        try { finish(); } catch (...) { Py_XDECREF(type); Py_XDECREF(value); Py_XDECREF(trace); throw; }
+        PyErr_Restore(type, value, trace);
+        throw;
+    }
+    finish();
+    return world || minimap;
+}
+
+PyObject* remoteVisualComponentsPython(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *vehicle, *team, *world;
+    if (!PyArg_ParseTuple(args, "OOOOO", &battle, &record, &vehicle, &team, &world)) return nullptr;
+    try { return p::boolean(syncRemoteVisualComponents(battle, record, vehicle, p::flag(team), p::flag(world))).release(); }
+    catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._set_record_spot_visibility(record, visible, marker_visible=None)
+PyObject* spotVisibility(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *visible_raw, *marker_raw, *query, *set_draw_visibility, *idle;
+    if (!PyArg_ParseTuple(args, "OOOOOOO", &battle, &record, &visible_raw, &marker_raw, &query, &set_draw_visibility, &idle)) return nullptr;
+    try {
+        const bool visible = p::flag(visible_raw);
+        auto marker_value = p::retain(marker_raw);
+        if (marker_raw == Py_None) replace(marker_value, method(record, "pop", p::text("_spot_marker_transition").get(), p::boolean(visible).get()));
+        const bool marker = truthy(marker_value);
+        if (truthy(get(record, "spot_visible", Py_True)) != visible) {
+            put(record, "spot_visible", p::boolean(visible));
+            method(query, "lifecycle", battle, record);
+        }
+        put(record, "spot_visible", p::boolean(visible));
+        put(record, "spot_marker_visible", p::boolean(marker));
+        if (!truthy(get(record, "presentation")) || !truthy(get(record, "ready"))) return p::boolean(visible).release();
+        auto engine = PyDict_GetItemString(record, "engine_id");
+        if (!engine) throw p::Error("record has no engine_id");
+        auto vehicle = method(attr(battle, "_remote_factory").get(), "get", engine);
+        if (vehicle.get() == Py_None || attr(vehicle.get(), "model").get() == Py_None) throw p::Error("spotted remote vehicle has no model");
+        setAttr(vehicle.get(), "_spot_visible", visible ? Py_True : Py_False);
+        const bool alive = truthy(method(battle, "_record_alive", record, vehicle.get()));
+        const bool draw = visible || !alive;
+        p::Ref signature(PyTuple_Pack(4, p::boolean(visible).get(), p::boolean(marker).get(), p::boolean(draw).get(), p::boolean(alive).get()));
+        if (!equal(signature.get(), get(record, "_spot_presentation_signature").get())) {
+            if (truthy(get(record, "native_remote"))) {
+                setAttr(vehicle.get(), "_offlineNativeDrawVisible", draw ? Py_True : Py_False);
+                p::Ref unused(PyObject_CallFunctionObjArgs(set_draw_visibility, vehicle.get(), draw ? Py_True : Py_False, nullptr));
+                setAttr(vehicle.get(), "targetCaps", p::list().get());
+                if (!draw) {
+                    auto stop = optionalAttr(vehicle.get(), "update_tracks");
+                    bool stopped = false;
+                    if (stop.get() != Py_None && PyCallable_Check(stop.get())) {
+                        auto mode = optionalAttr(vehicle.get(), "engineMode");
+                        if (mode.get() == Py_None && !PyObject_HasAttrString(vehicle.get(), "engineMode"))
+                            replace(mode, p::Ref(PyTuple_Pack(2, idle, integer(0).get())));
+                        p::Ref feature_args(PyTuple_Pack(3, p::number(0.).get(), p::number(0.).get(), mode.get()));
+                        stopped = truthy(method(battle, "_run_optional_feature", p::text("remote track animation").get(), stop.get(), feature_args.get()));
+                    }
+                    put(record, "_remote_track_pending", p::boolean(!stopped));
+                } else {
+                    put(record, "_remote_track_pending", p::boolean(true));
+                    method(record, "pop", p::text("_remote_track_state_signature").get(), Py_None);
+                }
+            } else {
+                method(attr(vehicle.get(), "appearance").get(), "changeVisibility", draw ? Py_True : Py_False);
+            }
+            method(battle, "_sync_fire_effect", vehicle.get(), draw ? Py_None : Py_False);
+            put(record, "_spot_presentation_signature", p::retain(signature.get()));
+        }
+        method(battle, "_sync_remote_visual_components", record, vehicle.get(), p::boolean(marker).get(), p::boolean(visible).get());
+        if (marker && truthy(get(record, "deferred_health_presentation", Py_False))) {
+            auto provider = optionalAttr(attr(battle, "_avatar").get(), "guiSessionProvider");
+            auto present = optionalAttr(provider.get(), "setVehicleHealth");
+            if (present.get() == Py_None || !PyCallable_Check(present.get())) throw p::Error("#1513 remote vehicle health presenter is unavailable");
+            auto state_raw = get(record, "state");
+            auto state = truthy(state_raw) ? p::retain(state_raw.get()) : p::dict();
+            auto health_raw = method(state.get(), "get", p::text("display_health").get(), method(state.get(), "get", p::text("health").get(), integer(0).get()).get());
+            std::int64_t health = 0;
+            if (!pyInt(truthy(health_raw) ? health_raw.get() : integer(0).get(), health)) throw p::Error("Native deferred health is invalid");
+            p::Ref unused(PyObject_CallFunctionObjArgs(present.get(), Py_False, engine, integer(std::max<std::int64_t>(0, health)).get(),
+                                                       integer(0).get(), integer(0).get(), nullptr));
+            method(record, "pop", p::text("deferred_health_presentation").get(), Py_None);
+        }
+        return p::boolean(visible).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._apply_spot_presentation(record, entity, remembered)
+PyObject* spotPresentation(PyObject*, PyObject* args) {
+    PyObject *battle, *record, *entity, *remembered_raw;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &record, &entity, &remembered_raw)) return nullptr;
+    try {
+        auto remembered = p::retain(remembered_raw);
+        if (!truthy(method(battle, "_record_alive", record, entity)) && truthy(get(record, "dead_marker_known", Py_False)))
+            replace(remembered, p::boolean(true));
+        auto fn = attr(battle, "_spot_presentation_visibility");
+        p::Ref positional(PyTuple_Pack(2, entity, remembered.get()));
+        auto keywords = p::dict();
+        put(keywords.get(), "was_model_visible", p::boolean(truthy(get(record, "spot_visible", Py_False))));
+        p::Ref pair(PyObject_Call(fn.get(), positional.get(), keywords.get()));
+        auto model = p::item(pair.get(), 0), marker = p::item(pair.get(), 1);
+        if (p::size(pair.get()) != 2) throw p::Error("too many values to unpack");
+        put(record, "spot_marker_visible", p::retain(marker.get()));
+        put(record, "_spot_marker_transition", p::retain(marker.get()));
+        try {
+            method(battle, "_set_record_spot_visibility", record, model.get());
+        } catch (...) {
+            PyObject *type, *value, *trace;
+            PyErr_Fetch(&type, &value, &trace);
+            method(record, "pop", p::text("_spot_marker_transition").get(), Py_None);
+            PyErr_Restore(type, value, trace);
+            throw;
+        }
+        method(record, "pop", p::text("_spot_marker_transition").get(), Py_None);
+        return PyTuple_Pack(2, model.get(), marker.get());
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef methods[] = {
     {"pending_combat", pendingCombat, METH_VARARGS, "Whether a journaled combat event still targets the record."},
     {"vehicle_statistics", vehicleStatistics, METH_VARARGS, "Feed frags and team-killer state to the stock arena."},
@@ -569,6 +727,9 @@ PyMethodDef methods[] = {
     {"stop_remote_visual", stopRemoteVisual, METH_VARARGS, "Stop a remote vehicle's marker and minimap entry."},
     {"critical_state", criticalState, METH_VARARGS, "Apply a canonical critical payload to a vehicle."},
     {"stun_state", stunState, METH_VARARGS, "Present the #1513 stunInfo absolute-time contract."},
+    {"remote_visual_components", remoteVisualComponentsPython, METH_VARARGS, "Split the #1513 marker and minimap signals."},
+    {"spot_visibility", spotVisibility, METH_VARARGS, "Apply model and team-knowledge presentation gates."},
+    {"spot_presentation", spotPresentation, METH_VARARGS, "Publish a split spotting state through the legacy seam."},
     {"present_critical", presentCritical, METH_VARARGS, "Map critical transitions to stock #1513 UI callbacks."},
     {"siege_state", siegeState, METH_VARARGS, "Apply a server-owned Siege transition through #1513's callback."},
     {nullptr, nullptr, 0, nullptr}};
