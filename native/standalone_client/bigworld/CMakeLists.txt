@@ -174,6 +174,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_transport_module.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_wire_codec.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_wire_module.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_wire_replay.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_admission.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_landing.cpp"

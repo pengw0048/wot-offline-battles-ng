@@ -13,6 +13,9 @@ const std::size_t frame_header_bytes = 8;
 PyObject* decode(const unsigned char* data, std::size_t size);
 // Encode one message dict; sets a Python ValueError and returns false on schema mismatch.
 bool encode(PyObject* message, std::string& out);
+// Tagged binary tree for open values (replay records); same contract as decode/encode.
+PyObject* decode_any(const unsigned char* data, std::size_t size);
+bool encode_any(PyObject* value, std::string& out);
 // Total frame size from the 8-byte header, or 0 when the header is incomplete.
 std::size_t frame_size(const unsigned char* data, std::size_t size);
 PyMethodDef* methods();

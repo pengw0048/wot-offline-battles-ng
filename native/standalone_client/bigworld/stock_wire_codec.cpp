@@ -443,6 +443,30 @@ bool encode(PyObject* message, std::string& out) {
     }
 }
 
+PyObject* decode_any(const unsigned char* data, std::size_t size) {
+    try {
+        Reader r{data, size, 0};
+        Ref value(decodeAny(r));
+        if (r.at != size) throw Failure("trailing bytes");
+        return value.release();
+    } catch (const Failure& error) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, error.what());
+        return nullptr;
+    }
+}
+
+bool encode_any(PyObject* value, std::string& out) {
+    try {
+        out.clear();
+        Writer w{out};
+        encodeAny(w, value);
+        return true;
+    } catch (const Failure& error) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, error.what());
+        return false;
+    }
+}
+
 PyMethodDef* methods() {
     static PyMethodDef table[] = {
         {"decode", decodePython, METH_VARARGS, "Decode one binary battle frame."},

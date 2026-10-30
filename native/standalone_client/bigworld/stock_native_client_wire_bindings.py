@@ -68,3 +68,37 @@ def client(source):
             raise ValueError('Pinned LAN transport seam changed (%d != %d): %r' % (found, count, before[:70]))
         source = source.replace(before, after)
     return source
+
+
+REPLAY_EDITS = (
+    ('        from gui.mods.offline_lan_0922.replay_process import ProcessRecorder\n',
+     '        from gui.mods.offline_lan_0922.native_replay import NativeRecorder\n', 1),
+    ('        client._offline_replay_recorder = ProcessRecorder(\n',
+     '        client._offline_replay_recorder = NativeRecorder(\n', 1),
+    ("        log('record_start_requested mode=%s independent_process=True path=%s' %\n",
+     "        log('record_start_requested mode=%s native_writer=True path=%s' %\n", 1),
+)
+TRANSPORT_EDITS = (
+    ('from gui.mods.offline_lan_0922 import offline_replay, replay_reader, replay_resources\n',
+     'from gui.mods.offline_lan_0922 import offline_replay, replay_reader, replay_resources\n'
+     'from gui.mods.offline_lan_0922 import native_replay\n', 1),
+    ("        reader_factory = kwargs.pop('replay_reader_factory', replay_reader.ProcessReader)\n",
+     "        reader_factory = kwargs.pop('replay_reader_factory', native_replay.NativeReader)\n", 1),
+)
+
+
+def _apply(source, edits, label):
+    for before, after, count in edits:
+        found = source.count(before)
+        if found != count:
+            raise ValueError('Pinned %s seam changed (%d != %d): %r' % (label, found, count, before[:70]))
+        source = source.replace(before, after)
+    return source
+
+
+def offline_replay(source):
+    return _apply(source, REPLAY_EDITS, 'replay recorder')
+
+
+def replay_transport(source):
+    return _apply(source, TRANSPORT_EDITS, 'replay transport')

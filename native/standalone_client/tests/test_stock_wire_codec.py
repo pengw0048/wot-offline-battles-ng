@@ -167,8 +167,9 @@ class StagedClientTransport(unittest.TestCase):
                 (ROOT / 'bigworld/stock_snapshot_static.py').read_text())
             subprocess.run(['c++', '-std=c++17', '-O1', '-bundle', '-undefined', 'dynamic_lookup',
                             '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'),
-                            str(ROOT / 'bigworld/stock_wire_codec.cpp'),
-                            str(ROOT / 'tests/stock_wire_host_client_module.cpp'),
+                            '-DWOT_WIRE_HOST_BUILD', str(ROOT / 'bigworld/stock_wire_codec.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'),
+                            str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
                             '-o', str(folder / 'offline_client_wire_native.so')], check=True)
             frames = [{'frame': SCHEMA.encode(m).hex()} for m in samples()]
             (folder / 'frames.json').write_text(json.dumps(frames))
@@ -178,6 +179,83 @@ class StagedClientTransport(unittest.TestCase):
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('frame stream ok', run.stdout)
+
+
+REPLAY_FIXTURE = r'''
+import os, sys, types
+sys.path.insert(0, sys.argv[1])
+root = sys.argv[2]
+for name in ('gui', 'gui.mods'):
+    module = types.ModuleType(name); module.__path__ = [root + '/' + name.replace('.', '/')]; sys.modules[name] = module
+package = types.ModuleType('gui.mods.offline_lan_0922')
+package.__path__ = [sys.argv[3], root + '/gui/mods/offline_lan_0922']
+sys.modules[package.__name__] = package
+from gui.mods.offline_lan_0922 import native_replay, offline_replay
+clock = [100.0]
+header = {'welcome': {'type': u'welcome'}, 'start': {'type': u'battle_start', 'round_id': 3},
+          'snapshot': {'type': u'snapshot', 'round_id': 3, 'players': [], 'bots': []}, 'config': {u'map': u'33_fjord'},
+          'player_id': 4, 'live': None}
+recorder = native_replay.NativeRecorder(sys.argv[4], 1, header, lambda: clock[0])
+rows = []
+for i in range(200):
+    clock[0] += 0.033
+    wire = {'type': u'snapshot', 'round_id': 3, 'server_tick': i, 'x': 1.5 * i, 'bots': [{'id': 1, 'hp': 2 ** 63 + i}]}
+    local = {'position': [0.5, 1.0, i * 0.25], 'health': 500 - i, 'visibility': {'bot:1': [True, False]}}
+    recorder.append('wire', wire); recorder.append('local', local)
+    rows.append(('wire', wire)); rows.append(('local', local))
+path = recorder.close('round_finished')
+assert path and os.path.exists(path) and not os.path.exists(recorder.temp)
+reader = native_replay.NativeReader(path)
+assert reader.header['config'] == {u'map': u'33_fjord'} and reader.header['magic'] == offline_replay.MAGIC
+for kind, data in rows:
+    row = reader.next()
+    assert row['type'] == kind and row['data'] == data, (row, kind)
+end = reader.next()
+assert end['type'] == 'end' and end['records'] == 400 and end['reason'] == 'round_finished'
+assert reader.next() is None
+data = open(path, 'rb').read()
+open(path + '.cut.wotlanreplay', 'wb').write(data[:len(data) // 2])
+cut = native_replay.NativeReader(path + '.cut.wotlanreplay')
+try:
+    while cut.next() is not None:
+        pass
+except ValueError:
+    pass
+else:
+    raise AssertionError('truncated replay accepted')
+try:
+    recorder.append('wire', {'type': u'snapshot'})
+except ValueError:
+    raise AssertionError('closed recorder raised instead of refusing')
+print('native replay ok %d' % len(rows))
+'''
+
+
+class NativeReplay(unittest.TestCase):
+    def test_python27_native_replay_round_trip(self):
+        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        if not fork:
+            self.skipTest('Pinned gameplay source is required')
+        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
+                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
+        with tempfile.TemporaryDirectory(prefix='wire-replay-') as folder:
+            folder = Path(folder)
+            (folder / 'pkg').mkdir()
+            (folder / 'pkg/native_replay.py').write_text((ROOT / 'bigworld/stock_native_replay.py').read_text())
+            subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                            '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
+                            '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
+                            '-I' + str(ROOT / 'bigworld'), str(ROOT / 'bigworld/stock_wire_codec.cpp'),
+                            str(ROOT / 'bigworld/stock_wire_replay.cpp'),
+                            str(ROOT / 'tests/stock_wire_host_client_module.cpp'), '-lz',
+                            '-o', str(folder / 'offline_client_wire_native.so')], check=True)
+            (folder / 'fixture.py').write_text(REPLAY_FIXTURE)
+            run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder),
+                                  str(Path(fork) / 'src/res/scripts/client'), str(folder / 'pkg'),
+                                  str(folder / 'replays')], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('native replay ok', run.stdout)
 
 
 if __name__ == '__main__':
