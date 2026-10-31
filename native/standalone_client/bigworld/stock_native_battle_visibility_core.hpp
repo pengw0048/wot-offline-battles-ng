@@ -22,6 +22,11 @@ namespace projectiles {
 // Server time in milliseconds at local clock `now`, once the server anchor exists.
 std::optional<double> serverTimeMs(const Battle& b, double now);
 }
+namespace params {
+// The spotting inputs loadout.spotting_profile returns for one descriptor (local: the player's crew, devices and factors;
+// replay: the accepted effective profile).
+p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local);
+}
 namespace gun {
 // Living crew members holding a skill (the pinned _local_skill_count).
 int livingSkillCount(Battle& b, const std::string& skill);
@@ -40,8 +45,6 @@ struct VisibilityCore {
     };
     std::map<std::string, Installed> installed;
     std::map<std::string, stock_native_client_environment::Profile> profiles;
-    std::map<std::string, Object> remote_spotting;   // Bot profiles keyed by vehicle and devices
-    Object local_spotting;
     bool spg = false;
     std::string strategic, arty;
     std::map<std::string, std::string> sight_failures;

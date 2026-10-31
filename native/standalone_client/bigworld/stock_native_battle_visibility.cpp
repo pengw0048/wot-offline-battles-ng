@@ -46,8 +46,6 @@ Point point(PyObject* v) {
     if (PyList_Check(v) || PyTuple_Check(v)) return p::numbers<3>(v);
     return {p::numeric(v, "x"), p::numeric(v, "y"), p::numeric(v, "z")};
 }
-p::Ref loadoutLaw() { return p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.loadout")); }
-template<class... A> p::Ref law(const char* name, A... args) { auto module = loadoutLaw(); return py::call(module.get(), name, args...); }
 std::string key(const std::string& kind, std::int64_t id) { return kind + ":" + std::to_string(id); }
 
 env::ActorView view(const VisibilityCore::Installed& item) {
@@ -438,7 +436,6 @@ std::int64_t localTeam(const Battle& b) {
 void configureLocal(Battle& b, LocalVisibilityInputs inputs) {
     if (!b.visibility) b.visibility = std::make_unique<Visibility>();
     b.visibility->local = std::move(inputs);
-    if (auto* c = core(b)) c->local_spotting = Object();
 }
 
 void bind(Battle& b) {
@@ -619,47 +616,7 @@ void disableSpaceVisibility(Battle& b) {
     if (auto* c = core(b)) c->space.reset();
 }
 
-p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local) {
-    if (!b.visibility) b.visibility = std::make_unique<Visibility>();
-    auto& inputs = b.visibility->local;
-    if (local && b.replay && inputs.accepted_spotting && inputs.accepted_spotting.get() != Py_None)
-        return p::retain(inputs.accepted_spotting.get());
-    auto* c = core(b);
-    if (local) {
-        if (c && c->local_spotting) return p::retain(c->local_spotting.get());
-        PyObject* crew = inputs.crew && p::flag(inputs.crew.get()) ? inputs.crew.get() : Py_None;
-        auto skills = crew != Py_None ? law("crew_skill_names", crew) : p::retain(Py_None);
-        auto level = law("crew_level_increase", descriptor, inputs.equipments ? inputs.equipments.get() : Py_None, skills.get());
-        auto module = loadoutLaw();
-        auto fn = py::attr(module.get(), "spotting_profile");
-        p::Ref args(PyTuple_Pack(2, descriptor, crew));
-        auto keywords = p::dict();
-        p::set(keywords.get(), "level_increase", level);
-        p::set(keywords.get(), "factors", p::retain(inputs.factors ? inputs.factors.get() : Py_None));
-        p::Ref result(PyObject_Call(fn.get(), args.get(), keywords.get()));
-        if (c) c->local_spotting = borrow(result.get());
-        return result;
-    }
-    // Every non-local vehicle carries the default crew; its profile depends only on its type and mounted devices.
-    auto devices = law("device_names", descriptor);
-    p::Ref device_text(PyObject_Repr(devices.get()));
-    const auto cache_key = p::string(field(descriptor, "name").get()) + "|" + p::string(device_text.get());
-    if (c) {
-        const auto found = c->remote_spotting.find(cache_key);
-        if (found != c->remote_spotting.end()) return p::retain(found->second.get());
-    }
-    auto level = law("crew_level_increase", descriptor);
-    auto factors = law("attribute_factors", descriptor);
-    auto module = loadoutLaw();
-    auto fn = py::attr(module.get(), "spotting_profile");
-    p::Ref args(PyTuple_Pack(2, descriptor, Py_None));
-    auto keywords = p::dict();
-    p::set(keywords.get(), "level_increase", level);
-    p::set(keywords.get(), "factors", factors);
-    p::Ref result(PyObject_Call(fn.get(), args.get(), keywords.get()));
-    if (c) c->remote_spotting[cache_key] = borrow(result.get());
-    return result;
-}
+p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local) { return params::spottingProfile(b, descriptor, local); }
 
 double visionRadius(Battle& b, PyObject* descriptor, const Actor* vehicle, double still_seconds, bool local) {
     auto spotting_profile = spottingProfile(b, descriptor, local);

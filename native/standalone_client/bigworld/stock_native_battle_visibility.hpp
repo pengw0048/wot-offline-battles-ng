@@ -8,10 +8,6 @@ struct VisibilityCore;
 
 // Round inputs the startup subsystem supplies once the local loadout is known.
 struct LocalVisibilityInputs {
-    Object crew;                // garage crew rows, or None
-    Object equipments;          // garage equipment rows
-    Object factors;             // the player's #1513 attribute factors, or None
-    Object accepted_spotting;   // replay: the accepted effective spotting profile, or None
     Object arena_type;          // ArenaType for the gameplay visibility mask
     bool sixth_sense = false;   // crew owns commander_sixthsense
     bool expert = false;        // crew owns commander_expert
