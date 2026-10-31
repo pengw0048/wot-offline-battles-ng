@@ -131,6 +131,8 @@ bool Value::operator==(const Value&v)const{if(reference&&reference==v.reference)
 const Value& Value::get(const std::string&key)const{if(reference)return reference->get(key);auto i=object.find(key);return i==object.end()?null:i->second;}
 double Value::numeric(double fallback)const{if(reference)return reference->numeric(fallback);if(kind==Kind::Integer)return unsigned_integer?double(std::uint64_t(integer)):double(integer);if(kind==Kind::Number)return std::isfinite(number)?number:fallback;if(kind==Kind::Boolean)return boolean?1.:0.;if(kind==Kind::Text)try{std::size_t end=0;const double n=std::stod(text,&end);return end==text.size()&&std::isfinite(n)?n:fallback;}catch(...){return fallback;}return fallback;}
 bool Value::truth(bool fallback)const{if(reference)return reference->truth(fallback);switch(kind){case Kind::Null:return fallback;case Kind::Boolean:return boolean;case Kind::Integer:return integer!=0;case Kind::Number:return number!=0.;case Kind::Text:return !text.empty();case Kind::Array:return !array.empty();case Kind::Object:return !object.empty();case Kind::Shared:return fallback;}return fallback;}
+// Text of a key or an unrecognised value: str() for anything that is not already a string, as Python formatting did.
+std::string pyText(PyObject*raw){if(PyString_Check(raw)||PyUnicode_Check(raw))return p::string(raw);p::Ref shown(PyObject_Str(raw));return p::string(shown.get());}
 Value read(PyObject*raw){Value out;if(raw==Py_None)return out;if(PyBool_Check(raw)){out.kind=Value::Kind::Boolean;out.boolean=raw==Py_True;return out;}
 #if PY_MAJOR_VERSION<3
     if(PyInt_Check(raw)){out.kind=Value::Kind::Integer;out.integer=PyInt_AS_LONG(raw);return out;}
@@ -139,9 +141,9 @@ Value read(PyObject*raw){Value out;if(raw==Py_None)return out;if(PyBool_Check(ra
         if(!PyErr_Occurred()){out.integer=signed_value;return out;}
         PyErr_Clear();const auto bits=PyLong_AsUnsignedLongLong(raw);if(PyErr_Occurred())throw p::Error("Native value integer exceeds u64");
         out.integer=std::int64_t(bits);out.unsigned_integer=true;return out;}if(PyFloat_Check(raw)){out.kind=Value::Kind::Number;out.number=PyFloat_AS_DOUBLE(raw);return out;}
-    if(PyDict_Check(raw)){out.kind=Value::Kind::Object;Py_ssize_t cursor=0;PyObject*key=nullptr,*value=nullptr;while(PyDict_Next(raw,&cursor,&key,&value))out.object.emplace(p::string(key),read(value));return out;}
+    if(PyDict_Check(raw)){out.kind=Value::Kind::Object;Py_ssize_t cursor=0;PyObject*key=nullptr,*value=nullptr;while(PyDict_Next(raw,&cursor,&key,&value))out.object.emplace(pyText(key),read(value));return out;}
     if(PyList_Check(raw)||PyTuple_Check(raw)){out.kind=Value::Kind::Array;const auto count=PySequence_Size(raw);out.array.reserve(std::size_t(count));for(Py_ssize_t i=0;i<count;++i){p::Ref v(PySequence_GetItem(raw,i));out.array.push_back(read(v.get()));}return out;}
-    out.kind=Value::Kind::Text;out.text=p::string(raw);return out;
+    out.kind=Value::Kind::Text;out.text=pyText(raw);return out;
 }
 PyObject* write(const Value&v){if(v.reference)return write(*v.reference);switch(v.kind){case Value::Kind::Null:return p::retain(Py_None).release();case Value::Kind::Boolean:return p::boolean(v.boolean).release();case Value::Kind::Integer:return v.unsigned_integer?PyLong_FromUnsignedLongLong(std::uint64_t(v.integer)):p::integer(v.integer).release();case Value::Kind::Number:return p::number(v.number).release();case Value::Kind::Text:return p::text(v.text).release();case Value::Kind::Array:{auto out=p::list();for(const auto&x:v.array)p::append(out.get(),p::Ref(write(x)));return out.release();}case Value::Kind::Object:{auto out=p::dict();for(const auto&x:v.object)p::set(out.get(),x.first.c_str(),p::Ref(write(x.second)));return out.release();}case Value::Kind::Shared:return p::retain(Py_None).release();}return p::retain(Py_None).release();}
 void State::reset(Value value){
