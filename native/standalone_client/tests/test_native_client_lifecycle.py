@@ -48,9 +48,18 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_present_hit_impulse', '_event_shell', '_shell_is_gold', '_report_feedback_shell_failure',
            '_feedback_shell_fields', '_fallback_postmortem_viewpoint', '_report_local_kill_contract',
            '_projectile_cosmetic_allowed', '_diagnostic_int', '_diagnostic_vehicle_info', '_diagnostic_value',
-           'on_snapshot', '_apply_rules', '_ammo_tick', '_sync_local_server_marker', '_observe_local_vehicle')
+           'on_snapshot', '_apply_rules', '_ammo_tick', '_sync_local_server_marker', '_observe_local_vehicle',
+           '_remove_ram_bot_history_index', '_remember_ram_bot_snapshot', '_ack_local_ram_contacts',
+           '_ack_local_destructible_contacts', '_reconcile_detached_turret_snapshot',
+           '_record_worker_control_diagnostics', '_worker_diagnostic_totals', '_worker_control_snapshot',
+           '_drain_worker_transport', '_remember_remote_track_turn', '_update_bot_tracks', '_send_bot_message',
+           '_enqueue_bot_message', '_simulated_rpm_and_gear', '_publish_rpm', '_report_track_surface', '_bot_track_params',
+           '_bot_engine_mode', '_report_bot_tracks')
 CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES', '_EFFECT_REPORT_LIMIT', '_HIT_IMPULSE_REPORT_LIMIT')
-GLOBALS = ('_xyz', '_format_xyz', '_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
+GLOBALS = ('_xyz', '_format_xyz', '_number', 'DESTRUCTIBLE_CONTACT_INFLIGHT_LIMIT', '_WORKER_DIAGNOSTIC_FIELDS',
+           'REMOTE_TRACK_PRESENTATION_SECONDS', 'TRACK_SCROLL_LIMITS', 'RPM_PRESENTATION_SECONDS', 'TRACK_REPORT_SECONDS',
+           'ENGINE_MODE_OFF', 'ENGINE_MODE_IDLE', 'ENGINE_MODE_RUNNING', 'BOT_MOVING_SPEED', 'BOT_TURNING_RATE', '_MOVEMENT_FORWARD',
+           '_MOVEMENT_BACKWARD', '_MOVEMENT_ROTATE_LEFT', '_MOVEMENT_ROTATE_RIGHT', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
            '_MutedShootingExtra', 'PROJECTILE_MAX_TIME_MS', '_angle_delta',
            'PROJECTILE_SUSTAIN_SECONDS', 'PROJECTILE_CHORDS_PER_FRAME', 'PROJECTILE_MAX_CHORDS_PER_FRAME', 'PROJECTILE_PROGRESS_SECONDS')
 
@@ -146,7 +155,14 @@ def run(name, make, args):
             '_projectile_target_positions', '_projectile_previous_positions', '_projectile_current_positions',
             '_projectile_frame_start', '_projectile_frame_end', '_projectile_advance_active', '_projectile_historic_pose_cache',
             '_projectile_revision', '_next_critical_report_time', '_worker_probe_attempted', '_worker_probe', '_last_snapshot',
-            '_rules_state'))
+            '_rules_state', '_ram_bot_history', '_ram_bot_history_times', '_ram_bot_history_order', '_ram_bot_history_index',
+            '_ram_bot_lookup_cache', '_local_ram_admitted_seq', '_local_ram_receipts', '_local_ram_receipt',
+            '_local_destructible_admitted_seq', '_local_destructible_contacts', '_local_destructible_safe_poses',
+            '_detached_turret_rows', '_detached_turret_proposals', '_detached_turret_geometry', '_worker_probe_control_debt',
+            '_worker_probe_max_control_debt', '_worker_probe_control_steps', '_worker_probe_max_control_step',
+            '_worker_probe_catchup_callbacks', '_worker_probe_control_debt_callbacks', '_worker_probe_astar_max_pending',
+            '_worker_probe_astar_budget_exhausted', 'state', '_generation', '_next_rpm_time', '_last_presented_rpm',
+            '_engine_audio_report_at', '_track_report_time'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -323,6 +339,25 @@ NATIVE = {
     '_ammo_tick': lambda b: native.ammo_tick(b, globals()),
     '_sync_local_server_marker': lambda b: native.sync_local_server_marker(b, globals()),
     '_observe_local_vehicle': lambda b, m, n: native.observe_local_vehicle(b, m, n, globals()),
+    '_remove_ram_bot_history_index': lambda b, r, t, st: native.remove_ram_bot_history_index(b, r, t, st, globals()),
+    '_remember_ram_bot_snapshot': lambda b, sn: native.remember_ram_bot_snapshot(b, sn, globals()),
+    '_ack_local_ram_contacts': lambda b, sn: native.ack_local_ram_contacts(b, sn, native_client_drive, globals()),
+    '_ack_local_destructible_contacts': lambda b, sn: native.ack_local_destructible_contacts(b, sn, native_client_drive, globals()),
+    '_reconcile_detached_turret_snapshot': lambda b, m: native.reconcile_detached_turret_snapshot(b, m, native_bot_runtime, globals()),
+    '_record_worker_control_diagnostics': lambda b, t: native.record_worker_control_diagnostics(b, t, globals()),
+    '_worker_diagnostic_totals': lambda b: native.worker_diagnostic_totals(b, globals()),
+    '_worker_control_snapshot': lambda b: native.worker_control_snapshot(b, globals()),
+    '_drain_worker_transport': lambda b: native.drain_worker_transport(b, globals()),
+    '_remember_remote_track_turn': lambda b, r, y, n: native.remember_remote_track_turn(b, r, y, n, globals()),
+    '_update_bot_tracks': lambda b, r, st, n, t=None: native.update_bot_tracks(b, r, st, n, t, globals()),
+    '_send_bot_message': lambda b, m: native.send_bot_message(b, m, native_bot_runtime, globals()),
+    '_enqueue_bot_message': lambda b, m: native.enqueue_bot_message(b, m, native_bot_runtime, globals()),
+    '_simulated_rpm_and_gear': lambda b: native.simulated_rpm_and_gear(b, globals()),
+    '_publish_rpm': lambda b, n, force=False: native.publish_rpm(b, n, force, globals()),
+    '_report_track_surface': lambda b, e, o, r, now=None: native.report_track_surface(b, e, o, r, now, globals()),
+    '_bot_track_params': lambda b, r, e: native.bot_track_params(b, r, e, globals()),
+    '_bot_engine_mode': lambda b, a, sp, t: native.bot_engine_mode(b, a, sp, t, globals()),
+    '_report_bot_tracks': lambda b, ve, l, r, m, n: native.report_bot_tracks(b, ve, l, r, m, n, globals()),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -2711,6 +2746,255 @@ for variant in range(48):
             b.client = Log(log, 'client', player_id=(4, '4')[v % 2], team=(1, 2)[v % 3 == 2])
             return b, (copy.deepcopy(m), 12.5)
         run('_observe_local_vehicle', make, (variant, repr(message)[:30])); cases += 1
+
+# Snapshot receipts: Bot RAM history, local contact acknowledgements and landed turrets.
+import bisect
+import collections as _collections
+for variant in range(64):
+    def history_battle(log, v):
+        b = battle(log, worker=v % 3 != 0)
+        b._replay_mode = v % 7 == 6
+        b._native_client_state = None if v % 5 else 'state'
+        b._bots = None if v % 11 == 10 else Log(log, 'bots', states={1: {'mass': 30, 'team': 2, 'x': 9}, 2: 'raw', 5: {'vehicle': 'v'}})
+        b._ram_bot_history = {7: {1: {'id': 1}, 3: {'id': 3}}} if v % 2 else {}
+        b._ram_bot_history_times = {7: 7000} if v % 2 else {}
+        b._ram_bot_history_order = list(range(-520 + (v % 4), 0)) + ([7] if v % 2 else [])
+        for revision in b._ram_bot_history_order[:6]:
+            b._ram_bot_history[revision] = {1: {'id': 1}} if revision % 2 else 'stale'
+            b._ram_bot_history_times[revision] = revision * 10 if revision % 3 else None
+        b._ram_bot_history_index = {1: [(-5200, -520), (7000, 7), (9000, 9)], 3: [(7000, 7)], 4: []}
+        b._ram_bot_lookup_cache = {'x': 1}
+        return b
+    for snapshot in ({'bot_state_revision': 9, 'bot_state_time_us': 9000, 'bots': [{'id': 1, 'x': 1}, {'id': '2', 'y': 2}, {'id': None}, 'raw', {'id': 'q'}, {'id': 5}]},
+                     {'bot_state_revision': 7, 'bot_state_time_us': 7000, 'bots': [{'id': 1}, {'id': 3, 'mass': 1}]},
+                     {'bot_state_revision': -1, 'bot_state_time_us': 5}, {'bot_state_revision': 'x', 'bot_state_time_us': 5},
+                     {'bot_state_revision': 3, 'bot_state_time_us': None}, {'bot_state_revision': 4, 'bot_state_time_us': 40, 'bots': None}, ['not dict']):
+        run('_remember_ram_bot_snapshot', lambda log, v=variant, sn=snapshot: (history_battle(log, v), (copy.deepcopy(sn),)), (variant, repr(snapshot)[:30])); cases += 1
+    run('_remove_ram_bot_history_index', lambda log, v=variant: (history_battle(log, v), ((7, 9, -520)[v % 3], (7000, None, 9000, -5200)[v % 4], {1: 0, 3: 0, 4: 0, 8: 0})), (variant,)); cases += 1
+    def contact_battle(log, v):
+        b = battle(log)
+        b.client = None if v % 13 == 12 else Log(log, 'client', player_id=(4, '4')[v % 2])
+        fake_module('native_client_drive', Log(log, 'drive', {'enabled': v % 9 == 8, 'ack_contacts': 'native'}))
+        b._local_ram_admitted_seq = (0, 5, 9)[v % 3]
+        receipts = _collections.OrderedDict() if v % 2 else {}
+        for seq in (2, 4, 7):
+            receipts[seq] = {'seq': seq}
+        b._local_ram_receipts = receipts if v % 5 else {}
+        b._local_ram_receipt = 'old'
+        b._local_destructible_contact_seq = (8, 3)[v % 7 == 6]
+        b._local_destructible_admitted_seq = (0, 6)[v % 2]
+        b._local_destructible_contacts = {2: 'a', 4: 'b', 6: 'c', 8: 'd'}
+        b._local_destructible_safe_poses = {2: 'p', 6: 'q'}
+        stub(b, log, '_apply_local_destructible_rejection', lambda seq: (seq if v % 3 else 0))
+        return b
+    players = [{'id': 4, 'ram_contact_admitted_seq': 8, 'ram_contact_resolved_seq': 4, 'destructible_contact_admitted_seq': 8,
+                'destructible_contact_resolved_seq': 3, 'destructible_contact_resolved_seqs': [6, 5], 'destructible_contact_rejected_seqs': (2, 6)},
+               {'id': 4, 'ram_contact_admitted_seq': 'x', 'destructible_contact_resolved_seqs': [6, 6]},
+               {'id': 9}, {'id': None}, 'raw', {'id': 4, 'ram_contact_admitted_seq': 3, 'ram_contact_resolved_seq': 5,
+                                                 'destructible_contact_resolved_seqs': 'bad'},
+               {'id': 4, 'destructible_contact_admitted_seq': 2, 'destructible_contact_resolved_seq': 2,
+                'destructible_contact_resolved_seqs': (), 'destructible_contact_rejected_seqs': list(range(17))},
+               {'id': 4, 'destructible_contact_admitted_seq': 6, 'destructible_contact_resolved_seq': 1,
+                'destructible_contact_resolved_seqs': [0], 'destructible_contact_rejected_seqs': []}]
+    for start in range(len(players) + 1):
+        # The extra ordering puts a conversion failure ahead of a valid local row; the pinned loop stops there.
+        rows = [{'id': 'x'}] + players if start == len(players) else players[start:] + players[:start]
+        snapshot = {'players': rows} if variant % 4 else {'players': None}
+        for name in ('_ack_local_ram_contacts', '_ack_local_destructible_contacts'):
+            run(name, lambda log, v=variant, sn=snapshot: (contact_battle(log, v), (copy.deepcopy(sn),)), (variant, start)); cases += 1
+    def turret_battle(log, v):
+        b = battle(log, worker=v % 4 == 3)
+        b._bots = None if v % 3 == 0 else Log(log, 'bots')
+        fake_module('native_bot_runtime', Log(log, 'bot_runtime', {'enabled': v % 5 == 4, 'detached_ingress': (None, 'native')[v % 2]}))
+        stub(b, log, '_clock', 3.0)
+        b._start_message = None if v % 11 == 10 else {'round_id': 2}
+        b._detached_turret_rows = {('v', 1): {'motion_seq': 4}} if v % 2 else {}
+        b._detached_turret_proposals = {('v', 1): {'motion_seq': 9}, ('v', 2): {'motion_seq': 1}}
+        b._detached_turret_geometry = set([('v', 1), ('v', 2)])
+        return b
+    schema = types.ModuleType('turret_obstacle_schema')
+    schema.MAX_ACTIVE_TURRETS = 2 + variant % 2
+    schema.normalize_record = lambda raw: (dict(raw) if isinstance(raw, dict) and raw.get('vehicle') else None)
+    schema.row_key = lambda row: (row['vehicle'], row.get('n', 1))
+    globals()['turret_obstacle_schema'] = schema
+    presentation = types.ModuleType('gui.mods.offline_lan_0922.native_client_turret_presentation')
+    presentation.ingress = lambda battle: battle._binding.turret_ingress()
+    sys.modules[presentation.__name__] = presentation
+    globals()['native_client_turret_presentation'] = presentation
+    for message in ({'round_id': 2, 'detached_turrets': [{'vehicle': 'v', 'motion_seq': 5}, {'vehicle': 'v', 'n': 2, 'motion_seq': 1}, 'bad',
+                                                        {'vehicle': 'w', 'motion_seq': 2}]},
+                    {'round_id': 2, 'detached_turrets': ({'vehicle': 'v', 'motion_seq': 4},)}, {'round_id': 3, 'detached_turrets': []},
+                    {'round_id': 2, 'detached_turrets': [{'vehicle': 'v', 'n': 2, 'motion_seq': 1}, {'vehicle': 'w', 'motion_seq': 2},
+                                                        {'vehicle': 'x', 'motion_seq': 3}]},
+                    {'round_id': 2, 'detached_turrets': None}, ['x']):
+        run('_reconcile_detached_turret_snapshot', lambda log, v=variant, m=message: (turret_battle(log, v), (copy.deepcopy(m),)), (variant, repr(message)[:30])); cases += 1
+
+# Worker steps: control diagnostics, outgoing Bot messages, transport drain, remote Bot tracks.
+class WObj(object):
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+    def __repr__(self):
+        return '<WObj %s>' % sorted(self.__dict__)
+for variant in range(64):
+    def worker_battle(log, v):
+        b = battle(log, worker=v % 9 != 8)
+        bot_attrs = {}
+        for name, values in (('_sample_time_us', (2000000, '2000000', None, 1999000)), ('_last_update_control_steps', (3, 0, 'x', -2)),
+                             ('_last_update_max_control_step', (0.02, float('nan'), 'y', -1.0, float('inf'))), ('_accumulator', (0.05, 'z', -0.1)),
+                             ('_control_seconds', (0.05, 0.0, 'q'))):
+            if (v + len(name)) % 7 != 0:
+                bot_attrs[name] = values[(v // (1 + len(name) % 3)) % len(values)]
+        searches = ({1: 'a', 2: 'b'}, {}, ['x'], None)[v % 4]
+        navigator = WObj(searches=searches, search_frame_budget=(0, 3, 'w', -1)[v % 4], search_credit=(1.5, 'n', float('nan'))[v % 3],
+                         search_completed=4, search_failed=None) if v % 5 else None
+        if navigator is not None and v % 6 == 0: del navigator.__dict__['search_frame_budget']
+        totals = lambda: {'alive_bot_ticks': 3, 'suspension_param_failures': True, 'visibility_queue_depth': -1,
+                          'visibility_queue_max_depth': 2.0, 'visibility_oldest_stale_age_ms': 5, 'visibility_admitted': 10 ** 20, 'other': 1}
+        def raising(): raise ValueError('totals')
+        bot_attrs.update(navigator=navigator, diagnostic_totals=(totals, raising, 7)[v % 3])
+        b._bots = None if v % 13 == 12 else WObj(**bot_attrs)
+        for name in ('_worker_probe_control_debt', '_worker_probe_max_control_debt', '_worker_probe_max_control_step'):
+            setattr(b, name, (0.01, 0.2)[v % 2])
+        for name in ('_worker_probe_control_steps', '_worker_probe_catchup_callbacks', '_worker_probe_control_debt_callbacks',
+                     '_worker_probe_astar_max_pending', '_worker_probe_astar_budget_exhausted'):
+            setattr(b, name, v % 3)
+        return b
+    run('_record_worker_control_diagnostics', lambda log, v=variant: (worker_battle(log, v), ((1990000, '1990000', 'x', 2000000)[v % 4],)), (variant,)); cases += 1
+    run('_worker_diagnostic_totals', lambda log, v=variant: (worker_battle(log, v), ()), (variant,)); cases += 1
+    run('_worker_control_snapshot', lambda log, v=variant: (worker_battle(log, v), ()), (variant,)); cases += 1
+    def drain_battle(log, v):
+        b = battle(log, worker=v % 5 != 4)
+        b.state = 'running'
+        b._generation = 3
+        b._bots = WObj()
+        b._start_message = {'round_id': 2} if v % 7 else None
+        def drain():
+            log.append(('drain',))
+            if v % 6 == 1: b.state = 'finished'
+            if v % 6 == 2: b._generation = 4
+            if v % 6 == 3: b._bots = WObj()
+            if v % 6 == 4: b._start_message = {'round_id': 3}
+        b.client = Log(log, 'client', {'dispatch_ready_messages': drain}, missing=('dispatch_ready_messages',) if v % 8 == 7 else ())
+        if v % 8 == 7: b.client.dispatch_ready_messages = 5
+        return b
+    run('_drain_worker_transport', lambda log, v=variant: (drain_battle(log, v), ()), (variant,)); cases += 1
+    for record in ({}, {'track_pose_sample': (1.0, 0.5)}, {'track_pose_sample': (2.5, -3.0)}, {'track_pose_sample': ('1', '7')}):
+        run('_remember_remote_track_turn', lambda log, v=variant, r=record: (battle(log), (copy.deepcopy(r), (3.1, -3.1, 0.0, '2')[v % 4], (2.0, 2.5, '3')[v % 3])),
+            (variant, repr(record))); cases += 1
+    def track_battle(log, v):
+        b = battle(log, worker=v % 11 == 10)
+        vehicle = Log(log, 'vehicle', {'update_tracks': v % 2}, _offlineNativeDrawVisible=v % 5 != 4)
+        b._remote_factory = None if v % 13 == 12 else Log(log, 'factory', {'get': lambda engine: None if v % 9 == 8 else vehicle})
+        stub(b, log, '_bot_engine_mode', lambda alive, speed, turn: ('mode', alive, round(speed, 3), round(turn, 3)))
+        stub(b, log, '_bot_track_params', 'params')
+        stub(b, log, '_report_bot_tracks')
+        b._bot_yaw_rates = {7: 0.4, 8: 'x'}
+        physics = types.ModuleType('vehicle_physics')
+        physics.track_scroll = lambda params, speed, turn, airborne, direction: ((40.0, -20.0), (0.5, 0.25), (-2, 31))[v % 3]
+        globals()['vehicle_physics'] = physics
+        return b
+    for record, state in (({'engine_id': 7, 'native_remote': True}, {'id': 7, 'speed': 4.0, 'health': 50, 'airborne': True, 'movement_dir': -1}),
+                          ({'engine_id': 8, '_remote_track_next_update': 10.04}, {'id': 8, 'alive': False, 'speed': 'x'}),
+                          ({'engine_id': 9, 'native_remote': True, '_remote_track_pending': True}, {'id': 9, 'health': 0}),
+                          ({'engine_id': 7, '_remote_track_next_update': 9.0}, {'id': 7, 'health': None, 'speed': 2})):
+        run('_update_bot_tracks', lambda log, v=variant, r=record, st=state: (track_battle(log, v), (copy.deepcopy(r), copy.deepcopy(st), (10.0, '10.1', 9.99)[v % 3])
+            + (((None, 0.3, 'q')[v % 3],) if v % 2 else ())), (variant, repr(record)[:20])); cases += 1
+    def send_battle(log, v):
+        b = battle(log, worker=v % 4 != 3)
+        answers = dict((name, (name, v % 2)) for name in ('send_bot_manifest', 'send_bot_state', 'send_projected_bot_state', 'send_bot_observation',
+                                                         'send_bot_ram', 'send_rules_state', 'send_battle_result'))
+        b.client = Log(log, 'client', answers, missing=('send_projected_bot_state',) if v % 3 else ())
+        stub(b, log, '_human_ram_armor_results', (None, ['armor'])[v % 2])
+        stub(b, log, '_resolve_bot_fire')
+        b._bots = WObj()
+        fake_module('native_bot_runtime', Log(log, 'bot_runtime', {'detached_rows': ([], ['turret'])[v % 2]}))
+        if v % 10 == 9: stub(b, log, '_send_bot_message', v % 3)
+        return b
+    for message in ({'type': 'bot_manifest', 'bots': [1]}, {'type': 'bot_manifest', 'bots': [1], 'player_collision_profiles': {'p': 1}},
+                    {'type': 'bot_state', 'rows': [1], 'push_contacts': [2], 'sample_time_us': 5, 'source_batch_horizon_us': 6, 'edge_revision': 3},
+                    {'type': 'bot_state', 'rows': [], 'human_ram_armors': {'h': 1}},
+                    {'type': 'bot_observation', 'contacts': [1], 'affordances': [2], 'radio_links': [3]},
+                    {'type': 'bot_ram', 'bot_id': 1, 'target_kind': 'human', 'contact_positions': [1], 'track_impact_speed': 2.5, 'ram_seq': 4},
+                    {'type': 'rules_state', 'rules': {'bases': {'1': {}}}}, {'type': 'rules_state', 'rules': None},
+                    {'type': 'battle_result', 'winner': 1, 'reason': 'base'}, {'type': 'other'}, {}):
+        for name in ('_send_bot_message', '_enqueue_bot_message'):
+            run(name, lambda log, v=variant, m=message: (send_battle(log, v), (copy.deepcopy(m),)), (variant, repr(message)[:30])); cases += 1
+
+# Track, engine and RPM presentation.
+engine_audio_module = types.ModuleType('gui.mods.offline_lan_0922.engine_audio')
+sys.modules[engine_audio_module.__name__] = engine_audio_module
+sys.modules['gui.mods.offline_lan_0922'].engine_audio = engine_audio_module
+for variant in range(60):
+    def rpm_battle(log, v):
+        sys.stdout = Recorder(log)
+        b = battle(log)
+        b._local_descriptor = None if v % 17 == 16 else WObj(physics=({'speedLimits': (15.0, -6.0)}, {'speedLimits': [10]}, WObj(speedLimits=(0, 0)),
+                                                                        {'speedLimits': None})[v % 4 if v % 5 == 0 else 0])
+        b._local_speed = (4.2, -0.01, 0.0, 30.0, '2')[v % 5]
+        b._local_turn_speed = (0.3, -1.0)[v % 2]
+        b._local_airborne = v % 7 == 3
+        b._local_drive_throttle = 1
+        b._local_physics = None if v % 3 == 0 else 'physics'
+        b._local_yaw, b._local_pitch, b._local_roll = 0.5, 0.01, -0.02
+        b._next_rpm_time = (0.0, 5.0)[v % 2]
+        b._last_presented_rpm = None if v % 4 else (0.5, 0.01, -0.02, 0.0, 0.0, 0.0, 0)
+        physics = types.ModuleType('vehicle_physics')
+        physics.track_scroll = lambda *a: ((40.0, -20.0), (0.02, -0.01), (3, 4))[(v // 3) % 3]
+        physics.derive_params = lambda descriptor: ('params', descriptor)
+        globals()['vehicle_physics'] = physics
+        b._binding = Log(log, 'binding', {'avatar_aux_physics': None}, missing=('avatar_aux_physics',) if v % 19 == 18 else ())
+        if v % 11 != 10: b._engine_audio_report_at = (0.0, 9.0)[v % 2]
+        b._server = None if v % 6 == 5 else Log(log, 'server', vehicle_id=4)
+        appearance = Log(log, 'appearance', detailedEngineState=WObj(mode=2, rpm=0.4), engineAudition=None if v % 2 else 'a',
+                         _offlineEngineRelay=None if v % 3 else Log(log, 'relay'))
+        stub(b, log, '_server_entity', WObj(appearance=appearance))
+        b._replay_mode = v % 8 == 7
+        return b
+    run('_simulated_rpm_and_gear', lambda log, v=variant: (rpm_battle(log, v), ()), (variant,)); cases += 1
+    run('_publish_rpm', lambda log, v=variant: (rpm_battle(log, v), (3.0, v % 2) if v % 3 else (3.0,)), (variant,)); cases += 1
+    for alive, speed, turn in ((True, 0.06, 0.0), (True, -0.06, 0.03), (True, 0.0, -0.03), (False, 5, 5), (1, 0.05, 0.02), (0, 0, 0), (True, 'x', 0)):
+        run('_bot_engine_mode', lambda log, a=alive, sp=speed, t=turn: (battle(log), (a, sp, t)), (variant, alive, speed, turn)); cases += 1
+    run('_bot_track_params', lambda log, v=variant: (rpm_battle(log, v), ({'track_params': 'cached'} if v % 2 else {}, WObj(typeDescriptor='td'))), (variant,)); cases += 1
+    def surface_battle(log, v):
+        b = rpm_battle(log, v)
+        b._frame_diagnostics = None if v % 13 == 12 else WObj(enabled=v % 9 != 8)
+        stub(b, log, '_clock', 20.0)
+        stub(b, log, '_bounded_failure_reason', lambda error: 'reason:%s' % type(error).__name__)
+        stub(b, log, '_warn_optional_failure')
+        b._runtime = WObj(material_kinds=WObj(EFFECT_MATERIAL_INDEXES_BY_IDS={7: 0, 8: 5}, EFFECT_MATERIALS=('ground', 'stone'))) if v % 4 else WObj()
+        b._start_message = {'round_id': 3} if v % 3 else None
+        b._track_report_time = (None, 18.0, 10.0)[v % 3]
+        b._remote_factory = WObj(track_animation_error=(None, 'boom')[v % 2])
+        return b
+    def surface_entity(log, v):
+        def raising():
+            raise ValueError('reader')
+        scroll = WObj(leftScroll=lambda: 1.5, rightScroll=raising, leftContact=True, rightContact=lambda: False)
+        speed = WObj(value=(1, 2, 3, 4, 5, 6)) if v % 2 else WObj(value=lambda: None)
+        appearance = WObj(terrainMatKindSensor=WObj(matKinds=[1, 2, 3, 4, 5]) if v % 3 else None,
+                          customEffectManager=WObj(_CustomEffectManager__variableArgs={'matkindL': 7, 'matkindR': 8, 'speed': 2.5}) if v % 4 else None,
+                          trackScrollController=scroll if v % 5 else None, terrainMatKind=(9, 9), isInWater=v % 7 == 0,
+                          damageState=WObj(isCurrentModelDamaged=lambda: v % 2 == 0), detailedEngineState=WObj(mode=1, rpm=0.2),
+                          engineAudition=None)
+        entity = WObj(appearance=appearance, bw_entity_id=77, position=(1.0, 2.0, 3.0), isAlive=raising if v % 10 == 9 else (lambda: True),
+                      speedInfo=speed, _offlineNativeDrawVisible=v % 2 == 0,
+                      track_feed_state=lambda: ((1.0, 2.0), 'engine and python', False, True), track_scroll_readback=lambda: (1.0, 2.0, True, True))
+        if v % 6 == 0: del entity.__dict__['bw_entity_id']
+        if v % 4 == 1: entity.__dict__['_offlineTrackEffectReceipt'] = {'at': 19.5, 'n': 1}
+        return entity
+    def surface_case(log, v):
+        b = surface_battle(log, v)
+        entity = surface_entity(log, v)
+        receipt = {'_surface_report_at': (0.0, 30.0)[v % 5 == 2]} if v % 2 else {}
+        return b, (entity, 'remote', receipt) + ((None, 21.0)[v % 2],) * (v % 3 != 0)
+    run('_report_track_surface', lambda log, v=variant: surface_case(log, v), (variant,)); cases += 1
+    def tracks_case(log, v):
+        b = surface_battle(log, v)
+        entity = surface_entity(log, v)
+        if v % 9 == 4: del entity.__dict__['track_feed_state']
+        return b, (entity, 1.25, -0.5, (2, 1), 20.0)
+    run('_report_bot_tracks', lambda log, v=variant: tracks_case(log, v), (variant,)); cases += 1
+sys.stdout = sys.__stdout__
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
@@ -2731,7 +3015,8 @@ def pinned_source(fork):
     tree = ast.parse(source)
     lines = source.splitlines()
     chunks = ['import json, math', '_INTEGER_TYPES = (int, long)', '_STRING_TYPES = (basestring,)',
-              'def timed(stage):\n    return lambda method: method', 'class Pinned(object):',
+              'def timed(stage):\n    return lambda method: method',
+              'def observed(stage):\n    return lambda method: method', 'class Pinned(object):',
               "    def __repr__(self):\n        return '<battle>'"]
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) in GLOBALS for t in node.targets):
@@ -2751,7 +3036,7 @@ def pinned_source(fork):
                         "collision_preparation_scope_1513 = sys.modules['gui.mods.offline_lan_0922.destructibles_sensor']"
                         ".collision_preparation_scope_1513")
     for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime',
-                   'native_client_projectile', 'native_client_critical'):
+                   'native_client_projectile', 'native_client_critical', 'native_client_turret_presentation'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     text = text.replace('from .native_input_diagnostics import write_json_record',
                         "write_json_record = sys.modules['gui.mods.offline_lan_0922.native_input_diagnostics']"

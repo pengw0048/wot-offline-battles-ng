@@ -1548,11 +1548,13 @@ PyMethodDef* recording_methods();
 PyMethodDef* lan_poll_methods();
 PyMethodDef* feedback_methods();
 PyMethodDef* snapshot_ingest_methods();
+PyMethodDef* worker_steps_methods();
+PyMethodDef* presentation_steps_methods();
 // Lifecycle and event-journal ports share one Python module.
 PyMethodDef* lifecycle_methods() {
     static std::vector<PyMethodDef> all;
     if (all.empty()) {
-        for (PyMethodDef* table : {methods, events_methods(), frame_methods_table(), shots_methods(), diagnostics_methods(), recording_methods(), lan_poll_methods(), feedback_methods(), snapshot_ingest_methods()})
+        for (PyMethodDef* table : {methods, events_methods(), frame_methods_table(), shots_methods(), diagnostics_methods(), recording_methods(), lan_poll_methods(), feedback_methods(), snapshot_ingest_methods(), worker_steps_methods(), presentation_steps_methods()})
             for (PyMethodDef* m = table; m->ml_name; ++m) all.push_back(*m);
         all.push_back({nullptr, nullptr, 0, nullptr});
     }
