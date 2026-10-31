@@ -42,7 +42,8 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_flush_pending_projectile_resolutions', '_prune_projectile_position_history', '_advance_projectiles',
            '_accept_projectile_event', '_apply_projectile_ricochet_event', '_apply_projectile_terminal_event',
            '_projectile_launch_mismatches', 'on_fire_intent_result', '_defer_local_projectile_presentation',
-           '_reconcile_projectile_snapshot')
+           '_reconcile_projectile_snapshot', '_clock', '_tick_critical_states', '_advance_artillery_arcs',
+           '_advance_authority_worker_probe')
 CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES',)
 GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
            '_MutedShootingExtra', 'PROJECTILE_MAX_TIME_MS', '_angle_delta',
@@ -139,7 +140,7 @@ def run(name, make, args):
             '_pose_motion_local_time', '_projectile_perf', '_projectile_scan_count', '_projectile_candidate_count',
             '_projectile_target_positions', '_projectile_previous_positions', '_projectile_current_positions',
             '_projectile_frame_start', '_projectile_frame_end', '_projectile_advance_active', '_projectile_historic_pose_cache',
-            '_projectile_revision'))
+            '_projectile_revision', '_next_critical_report_time', '_worker_probe_attempted', '_worker_probe'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -292,6 +293,10 @@ NATIVE = {
     '_defer_local_projectile_presentation': lambda b, e: native.defer_local_projectile_presentation(b, e, globals()),
     '_reconcile_projectile_snapshot': lambda b, m: native.reconcile_projectile_snapshot(
         b, m, native_client_projectile, native_bot_runtime, globals()),
+    '_clock': lambda b: native.clock(b, globals()),
+    '_tick_critical_states': lambda b, dt: native.tick_critical_states(b, dt, native_client_critical, globals()),
+    '_advance_artillery_arcs': lambda b, now: native.advance_artillery_arcs(b, now, native_bot_runtime, globals()),
+    '_advance_authority_worker_probe': lambda b: native.advance_authority_worker_probe(b, globals()),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -319,7 +324,7 @@ for name in ('gui', 'gui.mods', 'gui.mods.offline_lan_0922'):
 bot_planner = None
 def _marks_on_gun(value):
     return ('marks', value)
-native_client_environment = native_client_drive = native_client_replica = None
+native_client_environment = native_client_drive = native_client_replica = native_client_critical = None
 BOT_MOVING_SPEED = 0.05
 def _engine_rotation(yaw, pitch=0.0, roll=0.0):
     return ('rotation', yaw, pitch, roll)
@@ -2378,6 +2383,104 @@ for variant in range(48):
 
         finally:
             sys.stdout = sys.__stdout__
+
+# Frame steps: _clock, _tick_critical_states, _advance_artillery_arcs, _advance_authority_worker_probe.
+CRITICAL_REPAIR_NETWORK_SECONDS = 0.25
+ARTILLERY_ARC_RAYS_PER_FRAME = 6
+for variant in range(6):
+    def make(log, v=variant):
+        b = battle(log)
+        answers = {0: 12.5, 1: 7, 2: 'x', 3: None}
+        def bw_time():
+            log.append(('bigworld', 'time'))
+            if v == 5: raise ValueError('no clock')
+            return answers.get(v)
+        bigworld = Log(log, 'bigworld', missing=('time',) if v == 4 else ())
+        if v != 4: bigworld.time = bw_time
+        b._runtime = Log(log, 'runtime', bigworld=bigworld)
+        globals()['time'] = Log(log, 'time', {'time': 77.25})
+        return b, ()
+    run('_clock', make, (variant,)); cases += 1
+for variant in range(48):
+    def make(log, v=variant):
+        b = battle(log, records={'player:4': {'engine_id': 9, 'state': (None, {'alive': True}, {}, 0)[(v // 4) % 4]}} if v % 11 != 10 else {})
+        b.client = Log(log, 'client', player_id=4)
+        descriptor = Log(log, 'descriptor', maxHealth=300.9)
+        entity = (None if v % 13 == 12 else
+                  Log(log, 'entity', missing=() if v % 2 else ('maxHealth',), typeDescriptor=None if v % 17 == 16 else descriptor,
+                      **({'maxHealth': 250} if v % 2 else {})))
+        stub(b, log, '_server_entity', entity)
+        stub(b, log, '_record_alive', v % 19 != 18)
+        stub(b, log, '_local_repair_factor', 1.5)
+        payload = [None, {'events': [{'device': 'leftTrack'}]}, {'events': None}, {'events': []}][v % 4]
+        stub(b, log, '_tick_local_track_repair', lambda e, dt, factor: log.append(('maxHealth', e.__dict__.get('maxHealth'))) or payload)
+        stub(b, log, '_critical_state', lambda p: {'repaired': True})
+        stub(b, log, '_present_repair_progress')
+        stub(b, log, '_present_critical')
+        stub(b, log, '_queue_local_track_repair')
+        stub(b, log, '_tick_equipment_cooldowns')
+        stub(b, log, '_clock', 10.0)
+        b._next_critical_report_time = (5.0, 10.0, 20.0)[v % 3]
+        fake_module('native_client_critical', Log(log, 'critical', {'frame': v % 7 == 3}))
+        return b, ((0.016, 0.0, -1.0, 0.016)[v % 4] if v < 40 else 0.016,)
+    run('_tick_critical_states', make, (variant,)); cases += 1
+for variant in range(8):
+    def make(log, v=variant):
+        b = battle(log)
+        b._artillery = None if v % 4 == 0 else Log(log, 'artillery', {'advance': lambda now, rays, probe: ('arcs', now, rays)})
+        b._artillery_arc_probe = Log(log, 'arc_probe')
+        b._bots = None if v % 2 == 0 else Log(log, 'bots')
+        fake_module('native_bot_runtime', Log(log, 'bot_runtime', {'enabled': v >= 4}))
+        return b, (3.5 if v % 3 != 2 else 'late',)
+    run('_advance_artillery_arcs', make, (variant,)); cases += 1
+class FakeProbe(object):
+    def __init__(self, log, start=True, tick_error=None, stop_error=None, active=True):
+        self.log, self.start_ok, self.tick_error, self.stop_error, self.active = log, start, tick_error, stop_error, active
+    def __repr__(self):
+        return '<probe>'
+    def start(self):
+        self.log.append(('probe', 'start'))
+        if self.start_ok == 'raise': raise RuntimeError('start broke')
+        return self.start_ok
+    def tick(self):
+        self.log.append(('probe', 'tick'))
+        if self.tick_error: raise self.tick_error
+    def stop(self, reason):
+        self.log.append(('probe', 'stop', reason))
+        if self.stop_error: raise self.stop_error
+for variant in range(288):
+    def make(log, v=variant):
+        b = battle(log, worker=v % 23 == 22)
+        b._config = [None, {}, {'authority_worker_probe': {'enabled': True, 'stageSeconds': 4}, 'map': 'm'},
+                     {'authority_worker_probe': {'enabled': True, 'stageSeconds': 'bad'}},
+                     {'authority_worker_probe': ['enabled']}, {'authority_worker_probe': {'enabled': 0}}][v % 6]
+        def is_authority():
+            log.append(('bots', 'is_authority'))
+            if v % 7 == 6: raise ValueError('not yet')
+            return v % 5 != 4
+        b._bots = Log(log, 'bots', missing=('is_authority',) if v % 9 == 8 else ())
+        if v % 9 != 8: b._bots.is_authority = is_authority
+        b._battle_live = v % 8 != 7
+        b._worker_probe_attempted = v % 10 == 9
+        b._worker_probe_bot_count = (3, 0, -1)[v // 96] if v % 11 != 10 else 0
+        b._worker_probe_authority_callbacks = 2
+        b._start_message = {'round_id': 4} if v % 3 else None
+        b._runtime = Log(log, 'runtime', bigworld=Log(log, 'bigworld'))
+        b._authority_worker_probe_sample = Log(log, 'sample')
+        b.client = Log(log, 'client', player_id=4)
+        existing = (v // 6) % 4
+        b._worker_probe = (None if existing == 0 else
+                           FakeProbe(log, active=existing != 1, tick_error=ValueError('tick') if existing == 3 else None,
+                                     stop_error=RuntimeError('stop') if v % 2 else None))
+        def created(bigworld, sample, stage_seconds=None, context=None):
+            log.append(('AuthorityWorkerProbe', rep(bigworld), rep(sample), stage_seconds, sorted(context.items())))
+            if v % 13 == 12: raise RuntimeError('cannot build')
+            return FakeProbe(log, start=('raise', False, True, True)[v % 4], tick_error=ValueError('first') if v % 17 == 16 else None)
+        globals()['AuthorityWorkerProbe'] = created
+        globals()['write_probe_record'] = lambda record: log.append(('write_probe_record', sorted(record.items())))
+        globals()['os'] = Log(log, 'os', {'getpid': 4242})
+        return b, ()
+    run('_advance_authority_worker_probe', make, (variant,)); cases += 1
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
@@ -2418,7 +2521,7 @@ def pinned_source(fork):
                         "collision_preparation_scope_1513 = sys.modules['gui.mods.offline_lan_0922.destructibles_sensor']"
                         ".collision_preparation_scope_1513")
     for module in ('native_client_environment', 'native_client_drive', 'native_client_replica', 'native_bot_runtime',
-                   'native_client_projectile'):
+                   'native_client_projectile', 'native_client_critical'):
         text = text.replace('from . import %s' % module, '%s = globals()[%r]' % (module, module))
     text = text.replace('from .native_input_diagnostics import write_json_record',
                         "write_json_record = sys.modules['gui.mods.offline_lan_0922.native_input_diagnostics']"

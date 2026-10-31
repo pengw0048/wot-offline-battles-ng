@@ -128,6 +128,10 @@ PORTS = (
      'reconcile_projectile_snapshot(self, message, native_client_projectile, native_bot_runtime, globals())'),
     ('_report_local_compound', 'report_local_compound(self, now, globals())'),
     ('_report_local_decals', 'report_local_decals(self, globals())'),
+    ('_clock', 'clock(self, globals())'),
+    ('_tick_critical_states', 'tick_critical_states(self, dt, native_client_critical, globals())'),
+    ('_advance_artillery_arcs', 'advance_artillery_arcs(self, now, native_bot_runtime, globals())'),
+    ('_advance_authority_worker_probe', 'advance_authority_worker_probe(self, globals())'),
 )
 
 
@@ -156,7 +160,7 @@ def battle(source):
         index = matches[0].end()
         imports = ''.join('        from . import %s\n' % module for module in (
             'native_client_query', 'native_client_environment', 'native_client_drive',
-            'native_client_replica', 'native_client_projectile', 'native_bot_runtime') if module in call)
+            'native_client_replica', 'native_client_projectile', 'native_bot_runtime', 'native_client_critical') if module in call)
         source = (source[:index] + imports + '        return _offline_lifecycle_native.' + call + '\n' + source[index:])
     seam = '            _FrameDiagnostics(\n                initial_window_seconds='
     if source.count(seam) != 1:
@@ -168,3 +172,4 @@ def battle(source):
     if not source.startswith(future):
         raise ValueError('The pinned lifecycle import seam changed')
     return future + 'import offline_client_lifecycle_native as _offline_lifecycle_native\n' + source[len(future):]
+

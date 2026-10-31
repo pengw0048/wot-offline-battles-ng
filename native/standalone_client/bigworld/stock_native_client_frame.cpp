@@ -804,6 +804,190 @@ PyObject* retryBotManifest(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+bool test(PyObject* a, PyObject* b, int op) {
+    const int result = PyObject_RichCompareBool(a, b, op);
+    if (result < 0) throw p::Error("Native frame comparison failed");
+    return result != 0;
+}
+// `x += 1` on a runtime attribute.
+void bump(PyObject* o, const char* name) {
+    setAttr(o, name, p::Ref(PyNumber_InPlaceAdd(attr(o, name).get(), integer(1).get())).get());
+}
+// `except Exception:` around a body; BaseException still propagates.
+template<class Body> bool contained(Body body) {
+    try { body(); return true; }
+    catch (const std::exception& e) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what());
+        if (!PyErr_ExceptionMatches(PyExc_Exception)) throw;
+        return false;
+    }
+}
+
+// BattleRuntime._clock(): BigWorld.time() as a float, or wall time when it is unavailable.
+PyObject* runtimeClock(PyObject*, PyObject* args) {
+    PyObject *battle, *g;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
+    try {
+        auto function = optionalAttr(attr(attr(battle, "_runtime").get(), "bigworld").get(), "time");
+        if (PyCallable_Check(function.get())) {
+            PyObject* raw = PyObject_CallFunctionObjArgs(function.get(), nullptr);
+            if (raw) {
+                PyObject* value = PyNumber_Float(raw);
+                Py_DECREF(raw);
+                if (value) return value;
+            }
+            if (!PyErr_ExceptionMatches(PyExc_Exception)) return nullptr;
+            PyErr_Clear();
+        }
+        return method(frameGlobal(g, "time").get(), "time").release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._tick_critical_states(dt): the native critical owner, else canonical state with track repair.
+PyObject* tickCriticalStates(PyObject*, PyObject* args) {
+    PyObject *battle, *dt, *critical, *g;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &dt, &critical, &g)) return nullptr;
+    try {
+        if (truthy(method(critical, "frame", battle, dt))) Py_RETURN_NONE;
+        if (test(dt, p::Ref(PyFloat_FromDouble(0.0)).get(), Py_LE)) Py_RETURN_NONE;
+        auto key = p::Ref(PyString_Format(p::text("player:%s").get(), attr(attr(battle, "client").get(), "player_id").get()));
+        auto record = method(attr(battle, "_records").get(), "get", key.get());
+        if (record.get() == Py_None) Py_RETURN_NONE;
+        auto engine = p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get()));
+        auto entity = method(battle, "_server_entity", engine.get());
+        if (entity.get() == Py_None || attr(entity.get(), "typeDescriptor").get() == Py_None) Py_RETURN_NONE;
+        if (!truthy(method(battle, "_record_alive", record.get(), entity.get()))) Py_RETURN_NONE;
+        if (!PyObject_HasAttrString(entity.get(), "maxHealth"))
+            setAttr(entity.get(), "maxHealth", p::Ref(PyNumber_Int(attr(attr(entity.get(), "typeDescriptor").get(), "maxHealth").get())).get());
+        auto now = method(battle, "_clock");
+        auto factor = method(battle, "_local_repair_factor", attr(entity.get(), "typeDescriptor").get());
+        auto payload = method(battle, "_tick_local_track_repair", entity.get(), dt, factor.get());
+        if (payload.get() != Py_None) {
+            auto critical = method(battle, "_critical_state", payload.get());
+            if (PyObject_SetItem(record.get(), p::text("critical_state").get(), critical.get()) < 0) throw p::Error("critical_state");
+            auto previous = method(record.get(), "get", p::text("state").get());
+            auto state = p::flag(previous.get()) ? p::Ref(PyObject_CallFunctionObjArgs(reinterpret_cast<PyObject*>(&PyDict_Type), previous.get(), nullptr)) : p::dict();
+            if (PyObject_SetItem(state.get(), p::text("critical").get(), p::Ref(PyObject_GetItem(record.get(), p::text("critical_state").get())).get()) < 0 ||
+                PyObject_SetItem(record.get(), p::text("state").get(), state.get()) < 0) throw p::Error("state");
+            // Close the repair timer before publishing the repaired-device transition.
+            method(battle, "_present_repair_progress", entity.get());
+            auto events = method(payload.get(), "get", p::text("events").get());
+            dispatch(battle, "_present_critical", "present_critical",
+                     {record.get(), events.get(), p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get())).get()});
+            if (truthy(method(payload.get(), "get", p::text("events").get())) ||
+                test(now.get(), attr(battle, "_next_critical_report_time").get(), Py_GE)) {
+                method(battle, "_queue_local_track_repair", payload.get());
+                setAttr(battle, "_next_critical_report_time",
+                        p::Ref(PyNumber_Add(now.get(), frameGlobal(g, "CRITICAL_REPAIR_NETWORK_SECONDS").get())).get());
+            }
+        }
+        method(battle, "_tick_equipment_cooldowns", now.get());
+        method(battle, "_present_repair_progress", entity.get());
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._advance_artillery_arcs(now)
+PyObject* advanceArtilleryArcs(PyObject*, PyObject* args) {
+    PyObject *battle, *now, *bot_module, *g;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &now, &bot_module, &g)) return nullptr;
+    try {
+        // The native Bot runtime owns arc previews when it is enabled.
+        auto bots = attr(battle, "_bots");
+        if (bots.get() != Py_None && truthy(method(bot_module, "enabled", bots.get()))) return integer(0).release();
+        auto artillery = attr(battle, "_artillery");
+        if (artillery.get() == Py_None) return integer(0).release();
+        return method(artillery.get(), "advance", now, frameGlobal(g, "ARTILLERY_ARC_RAYS_PER_FRAME").get(),
+                      attr(battle, "_artillery_arc_probe").get()).release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._advance_authority_worker_probe(): the opt-in probe, never authoritative.
+PyObject* advanceAuthorityWorkerProbe(PyObject*, PyObject* args) {
+    PyObject *battle, *g;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
+    try {
+        // Dedicated workers remain draw-disabled; the diagnostic toggles draw/window stages.
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        auto config = attr(battle, "_config");
+        auto settings = method(p::flag(config.get()) ? config.get() : p::dict().get(), "get", p::text("authority_worker_probe").get());
+        if (!p::flag(settings.get())) replace(settings, p::dict());
+        const bool enabled = PyDict_Check(settings.get()) &&
+            truthy(method(settings.get(), "get", p::text("enabled").get(), Py_False));
+        auto checker = optionalAttr(attr(battle, "_bots").get(), "is_authority");
+        bool authority = false;
+        if (PyCallable_Check(checker.get()) &&
+            !contained([&] { authority = truthy(p::Ref(PyObject_CallFunctionObjArgs(checker.get(), nullptr))); })) {
+            PyErr_Clear();
+            authority = false;
+        }
+        auto round_id = [&] {
+            auto start = attr(battle, "_start_message");
+            return method(p::flag(start.get()) ? start.get() : p::dict().get(), "get", p::text("round_id").get());
+        };
+        auto report = [&](PyObject* error) {
+            auto record = literal(6);
+            put(record.get(), "schema", integer(1));
+            put(record.get(), "probe", p::text("authority_worker"));
+            put(record.get(), "event", p::text("probe_error"));
+            put(record.get(), "process_id", method(frameGlobal(g, "os").get(), "getpid"));
+            put(record.get(), "round_id", round_id());
+            put(record.get(), "message", p::Ref(PyObject_Str(error)));
+            p::Ref(PyObject_CallFunctionObjArgs(frameGlobal(g, "write_probe_record").get(), record.get(), nullptr));
+        };
+        auto probe = attr(battle, "_worker_probe");
+        if (probe.get() != Py_None) {
+            if (truthy(attr(probe.get(), "active")) && (!enabled || !truthy(attr(battle, "_battle_live")) || !authority)) {
+                const char* reason = !authority ? "authority_lost" : !enabled ? "probe_disabled" : "battle_not_live";
+                method(probe.get(), "stop", p::text(reason).get());
+                Py_RETURN_FALSE;
+            }
+            if (!truthy(attr(probe.get(), "active"))) Py_RETURN_FALSE;
+            bool ticked = contained([&] {
+                bump(battle, "_worker_probe_authority_callbacks");
+                method(probe.get(), "tick");
+            });
+            if (ticked) Py_RETURN_TRUE;
+            // A measurement must never terminate or alter the round.
+            auto error = caught(std::runtime_error("probe tick"));
+            if (!contained([&] { method(probe.get(), "stop", p::text("probe_error").get()); })) PyErr_Clear();
+            report(error.get());
+            Py_RETURN_FALSE;
+        }
+        if (truthy(attr(battle, "_worker_probe_attempted")) || !enabled || !truthy(attr(battle, "_battle_live")) || !authority ||
+            test(attr(battle, "_worker_probe_bot_count").get(), integer(0).get(), Py_LE))
+            Py_RETURN_FALSE;
+        setAttr(battle, "_worker_probe_attempted", Py_True);
+        bool started = false;
+        const bool ok = contained([&] {
+            auto seconds = p::Ref(PyNumber_Float(method(settings.get(), "get", p::text("stageSeconds").get(),
+                                                        p::Ref(PyFloat_FromDouble(15.0)).get()).get()));
+            auto bigworld = attr(attr(battle, "_runtime").get(), "bigworld");
+            auto sample = attr(battle, "_authority_worker_probe_sample");
+            auto context = literal(4);
+            put(context.get(), "process_id", method(frameGlobal(g, "os").get(), "getpid"));
+            put(context.get(), "round_id", round_id());
+            auto config_now = attr(battle, "_config");
+            put(context.get(), "map", method(p::flag(config_now.get()) ? config_now.get() : p::dict().get(), "get", p::text("map").get()));
+            put(context.get(), "player_id", optionalAttr(attr(battle, "client").get(), "player_id"));
+            auto created = callWithMapping(frameGlobal(g, "AuthorityWorkerProbe").get(),
+                                           p::Ref(PyTuple_Pack(2, bigworld.get(), sample.get())).get(),
+                                           {{"stage_seconds", seconds.get()}, {"context", context.get()}}, p::dict().get());
+            replace(probe, std::move(created));
+            setAttr(battle, "_worker_probe", probe.get());
+            if (!truthy(method(probe.get(), "start"))) return;
+            bump(battle, "_worker_probe_authority_callbacks");
+            method(probe.get(), "tick");
+            started = true;
+        });
+        if (ok) return p::boolean(started).release();
+        auto error = caught(std::runtime_error("probe start"));
+        if (!contained([&] { if (probe.get() != Py_None) method(probe.get(), "stop", p::text("start_failed").get()); })) PyErr_Clear();
+        report(error.get());
+        Py_RETURN_FALSE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef frame_methods[] = {
     {"frame", frame, METH_VARARGS, "Run one battle render callback."},
     {"optional_feature_enabled", optionalFeatureEnabled, METH_VARARGS, "Whether a presentation feature is still enabled."},
@@ -814,6 +998,10 @@ PyMethodDef frame_methods[] = {
     {"prewarm_critical_layout", prewarmCriticalLayout, METH_VARARGS, "Build one ready vehicle's hit layout per countdown frame."},
     {"maybe_send_battle_ready", maybeSendBattleReady, METH_VARARGS, "Open the countdown once the line-up has entered."},
     {"retry_bot_manifest", retryBotManifest, METH_VARARGS, "Retry the worker's bot manifest at bounded cadence."},
+    {"clock", runtimeClock, METH_VARARGS, "BigWorld.time() as a float, or wall time."},
+    {"tick_critical_states", tickCriticalStates, METH_VARARGS, "Present canonical critical state and local track repair."},
+    {"advance_artillery_arcs", advanceArtilleryArcs, METH_VARARGS, "Advance the artillery arc preview rays."},
+    {"advance_authority_worker_probe", advanceAuthorityWorkerProbe, METH_VARARGS, "Advance the opt-in authority worker probe."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
