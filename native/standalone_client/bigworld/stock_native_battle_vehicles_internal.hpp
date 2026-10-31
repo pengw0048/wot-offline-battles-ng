@@ -1,6 +1,7 @@
 #pragma once
 // Vehicle subsystem internals shared by its translation units.
 #include "stock_native_battle.hpp"
+#include "stock_native_battle_vehicles.hpp"
 #include <utility>
 
 namespace native_battle {
@@ -18,7 +19,12 @@ p::Ref vector(Battle& b, const Point& at);
 p::Ref rotation(double yaw, double pitch, double roll);
 std::int64_t attackReason(Battle& b, const char* member, std::int64_t fallback);
 
+inline LocalCriticalReport& localCritical(Battle& b) { return b.roster->local_critical; }
+bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::int64_t ack_seq, std::int64_t server_revision);
+
 // Lifecycle.
+void apply(Battle& b, const Value& event);
+void retire(Battle& b, Actor& v);
 void create(Battle& b, Actor& v, const Value& event);
 bool ready(Battle& b, Actor& v);
 void update(Battle& b, Actor& v, const Value& event);
@@ -33,12 +39,14 @@ bool applyStatistics(Battle& b, Actor& v, const Value& state);
 bool applyStun(Battle& b, Actor& v, const Value& state);
 bool reconcileCriticalAuthority(Battle& b, Actor& v, const Value& source, Value* canonical);
 bool presentCritical(Battle& b, Actor& v, PyObject* events, std::int64_t attacker);
+std::int64_t criticalExtraIndex(PyObject* descriptor, const std::string& name);
+bool damageInfoServiceable(Battle& b);
+bool showDamageInfo(Battle& b, std::int64_t engine_id, std::int64_t damage_index, std::int64_t extra_index, std::int64_t attacker);
+bool finalizeDeadWreck(Battle& b, Actor& v, PyObject* entity);
 std::int64_t deathAttackerEngineId(Battle& b, const Value& state);
 bool suppressPostmortemKiller(Battle& b, const Actor& victim, const Value& state, std::int64_t attacker);
 bool syncFireEffect(Battle& b, PyObject* entity, std::optional<bool> burning = {});
 bool stopRemoteVisual(Battle& b, Actor& v);
 bool syncVisualComponents(Battle& b, Actor& v, PyObject* vehicle, bool team_visible, bool world_visible);
-void setDrawVisibility(PyObject* vehicle, bool visible);
-p::Ref projectileBoundaryPose(Battle& b, const Point& position, const Value& state);
 }
 }
