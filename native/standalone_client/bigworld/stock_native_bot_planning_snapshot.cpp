@@ -51,7 +51,7 @@ double number(const SeedValue&v,double fallback=0.){const auto&r=v.resolved();if
     if(r.kind==Kind::Integer)return double(r.integer);if(r.kind==Kind::Boolean)return r.boolean?1.:0.;
     if(r.kind!=Kind::Number||!std::isfinite(r.number))throw Invalid("Planning seed numeric value is invalid");return r.number;}
 std::int64_t integer(const SeedValue&v,std::int64_t fallback=0){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;
-    if(r.kind==Kind::Integer){if(r.unsigned_integer)throw Invalid("Planning seed integer is outside its domain");return r.integer;}if(r.kind==Kind::Boolean)return r.boolean?1:0;throw Invalid("Planning seed integer is invalid");}
+    if(r.kind==Kind::Integer)return r.integer;if(r.kind==Kind::Boolean)return r.boolean?1:0;throw Invalid("Planning seed integer is invalid");}
 bool boolean(const SeedValue&v,bool fallback=false){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;if(r.kind==Kind::Boolean)return r.boolean;return integer(r)!=0;}
 std::string string(const SeedValue&v,const std::string&fallback={}){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;if(r.kind!=Kind::Text)throw Invalid("Planning seed string is invalid");return r.text;}
 const std::vector<SeedValue>& rows(const SeedValue&v){static const std::vector<SeedValue> none;const auto&r=v.resolved();if(r.kind==Kind::Null)return none;
@@ -65,7 +65,9 @@ std::array<double,2> waypoint(const SeedValue&v){
 template<class T,class Parse>std::optional<T> optional(const SeedValue&p,const char*name,Parse parse){const auto&v=field(p,name);return present(v)?std::optional<T>(parse(v)):std::nullopt;}
 void optionalNumber(const SeedValue&p,const char*name,plan::Optional<double>&out){const auto&v=field(p,name);if(present(v))out.set(number(v));}
 void optionalPoint(const SeedValue&p,const char*name,plan::Optional<Point>&out){const auto&v=field(p,name);if(present(v))out.set(point(v));}
-void optionalId(const SeedValue&p,const char*name,plan::Optional<std::int64_t>&out){const auto&v=field(p,name);if(present(v))out.set(integer(v));}
+// A wire integer above int64 was a Python long overflow.
+std::int64_t wireInteger(const SeedValue&v){if(v.resolved().kind==Kind::Integer&&v.resolved().unsigned_integer)throw Invalid("Planning snapshot integer is outside its domain");return integer(v);}
+void optionalId(const SeedValue&p,const char*name,plan::Optional<std::int64_t>&out){const auto&v=field(p,name);if(present(v))out.set(wireInteger(v));}
 const SeedValue& mapping(const SeedValue&v){const auto&r=v.resolved();if(r.kind!=Kind::Null&&r.kind!=Kind::Object)throw Invalid("Planning snapshot mapping is invalid");return r;}
 // Wire arrays are lists; a boolean signs as the number it is.
 std::string signatureValue(const SeedValue&raw){const auto&p=raw.resolved();
@@ -87,10 +89,10 @@ std::string orderSignature(const SeedValue&p){
 StrategicOrder order(const SeedValue&raw){const auto&p=mapping(raw);StrategicOrder out;out.signature=orderSignature(p);auto&d=out.drive;auto&n=out.navigation;
     optionalPoint(p,"aim_position",d.aim);optionalPoint(p,"move_position",d.move);optionalPoint(p,"face_position",d.face);
     optionalNumber(p,"throttle_override",d.throttle);optionalNumber(p,"arrival_radius",d.arrival_radius);optionalNumber(p,"parking_heading",d.parking_heading);optionalNumber(p,"hull_angle_degrees",d.hull_angle_degrees);optionalId(p,"target_id",d.target);
-    d.target_kind=string(field(p,"target_kind"));d.stable_hull_face=boolean(field(p,"stable_hull_face"));d.mode=string(field(p,"combat_mode"),"route");d.parking_phase=string(field(p,"parking_phase"));d.fire_allowed=boolean(field(p,"fire_allowed"));d.shell_index=int(integer(field(p,"shell_index")));d.fire_range=number(field(p,"fire_range"));
+    d.target_kind=string(field(p,"target_kind"));d.stable_hull_face=boolean(field(p,"stable_hull_face"));d.mode=string(field(p,"combat_mode"),"route");d.parking_phase=string(field(p,"parking_phase"));d.fire_allowed=boolean(field(p,"fire_allowed"));d.shell_index=int(wireInteger(field(p,"shell_index")));d.fire_range=number(field(p,"fire_range"));
     n.mode=d.mode;n.parking_phase=d.parking_phase;n.route_id=string(field(p,"route_id"),"direct");n.defense_base=string(field(p,"defense_base_id"),"own_base");n.team_command=string(field(p,"team_command_id"));
     if(d.throttle.present)n.throttle=d.throttle.value;if(d.target.present)n.target=d.target.value;
-    n.route_index=optional<int>(p,"route_index",[](const SeedValue&v){return int(integer(v));});n.route_join=optional<bool>(p,"route_join",[](const SeedValue&v){return boolean(v);});n.route_anchor=optional<Point>(p,"route_anchor",[](const SeedValue&v){return point(v);});
+    n.route_index=optional<int>(p,"route_index",[](const SeedValue&v){return int(wireInteger(v));});n.route_join=optional<bool>(p,"route_join",[](const SeedValue&v){return boolean(v);});n.route_anchor=optional<Point>(p,"route_anchor",[](const SeedValue&v){return point(v);});
     const auto&b=field(p,"move_area_bounds");if(present(b)){const auto&values=rows(b);if(values.size()!=4)throw Invalid("Planning move area width is invalid");std::array<double,4> bounds;for(std::size_t i=0;i<4;++i)bounds[i]=number(values[i]);n.move_area=bounds;}return out;
 }
 Point position(const SeedValue&state){return {number(field(state,"x")),number(field(state,"y")),number(field(state,"z"))};}
