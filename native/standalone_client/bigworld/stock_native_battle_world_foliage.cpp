@@ -18,23 +18,6 @@ namespace trees = stock_native_bot_foliage;
 constexpr const char* format_name = "offline-lan-0922-foliage";
 constexpr std::int64_t format_version = 4;
 
-std::string shortMapName(std::string map) {
-    for (auto& c : map) if (c == '\\') c = '/';
-    while (!map.empty() && map.back() == '/') map.pop_back();
-    const auto slash = map.rfind('/');
-    return slash == std::string::npos ? map : map.substr(slash + 1);
-}
-bool exists(const std::string& path) { std::ifstream in(path); return in.good(); }
-// One JSON document through the stock interpreter's json module; startup-only.
-p::Ref readJson(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) throw p::Error("foliage data is unavailable: " + path);
-    std::stringstream text;
-    text << in.rdbuf();
-    p::Ref json(PyImport_ImportModule("json"));
-    p::Ref raw(PyString_FromStringAndSize(text.str().data(), Py_ssize_t(text.str().size())));
-    return p::Ref(PyObject_CallMethod(json.get(), const_cast<char*>("loads"), const_cast<char*>("O"), raw.get()));
-}
 p::Ref item(PyObject* mapping, const char* name) {
     PyObject* v = PyDict_Check(mapping) ? PyDict_GetItemString(mapping, name) : nullptr;
     return p::retain(v ? v : Py_None);
@@ -191,7 +174,7 @@ bool activateFallenTree(Battle& b, std::uint32_t chunk_id, std::uint32_t item_in
 void refreshFallenFoliage(Battle& b, double now, bool force) {
     if (b.worker || !b.world || !b.world->foliage || !b.world->foliage->trees) return;
     auto& owner = *b.world->foliage->trees;
-    ScenePoses source(local::sceneAccess(b));
+    ScenePoses source(world::sceneAccess(b));
     if (!source.access.scene || !source.access.scene->current()) return;
     if (source.access.events)
         for (const auto& key : source.access.events->takeActivatedTrees()) owner.activate(key);
@@ -206,6 +189,7 @@ void refreshFallenFoliage(Battle& b, double now, bool force) {
 }
 
 void foliage(Battle& b, double now) {
+    spaceFrame(b, now);
     if (!b.worker) {
         local::driveFrame(b, now);
         try {
