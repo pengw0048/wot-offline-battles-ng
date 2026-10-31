@@ -158,29 +158,29 @@ def battle(source):
     return SHELL
 
 
-WORKER_SHELL = '''"""Thin glue between bootstrap and the native hidden-worker session (offline_native_battle)."""
-
-import offline_native_battle as _native
-
-
-class WorkerSession(object):
+WORKER_SESSION = '''class WorkerSession(object):
     """Forward bootstrap's worker session calls to the native session owner."""
 
     def __init__(self, config, lobby_ready=None, callback=None, cancel_callback=None, bigworld=None):
-        _native.worker_session_install(dict(config or {}), lobby_ready, bigworld)
+        import offline_native_battle
+        offline_native_battle.worker_session_install(dict(config or {}), lobby_ready, bigworld)
 
     def start(self):
-        return _native.worker_session_start()
+        import offline_native_battle
+        return offline_native_battle.worker_session_start()
 
     def stop(self, show_login=False, restore_account=False, release_join=False):
-        _native.worker_session_stop(int(bool(restore_account)))
+        import offline_native_battle
+        offline_native_battle.worker_session_stop(int(bool(restore_account)))
 '''
 
 
 def worker(source):
-    """Return the replacement authority_worker module; the pinned source is not used."""
-    del source
-    return WORKER_SHELL
+    """authority_worker.py keeps its LAN client; the session class forwards to the native worker session."""
+    marker = 'class WorkerSession(object):'
+    if source.count(marker) != 1 or 'class AuthorityWorkerLANClient(LANClient):' not in source:
+        raise ValueError('The pinned authority worker seam changed')
+    return source[:source.index(marker)] + WORKER_SESSION
 
 
 ENGINE_AUDIO_SHELL = '''"""Bootstrap's engine audio hook: the native relay owns audition assembly."""
