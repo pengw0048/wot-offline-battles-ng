@@ -867,10 +867,9 @@ std::optional<Value> normalize(const Value& raw_value) {
     row.object["shooter_id"] = shooter;
     // The player wire carries its fire identities; a Bot launch never does.
     if (kind == "bot" && (present(row, "fire_intent_seq") || present(row, "fire_input_seq"))) return std::nullopt;
-    p::Ref packed(cs::write(row));
     shot::Launch l;
-    const bool valid = kind == "player" ? shot::readPlayerLaunch(packed.get(), l) : shot::readLaunch(packed.get(), l);
-    if (!valid) { PyErr_Clear(); return std::nullopt; }
+    const bool valid = kind == "player" ? shot::readPlayerLaunch(row, l) : shot::readLaunch(row, l);
+    if (!valid) return std::nullopt;
     auto out = object();
     auto& o = out.object;
     o["projectile_id"] = text(l.id);

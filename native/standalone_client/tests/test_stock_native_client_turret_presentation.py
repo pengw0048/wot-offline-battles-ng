@@ -71,9 +71,9 @@ class NativeTurretPresentation(unittest.TestCase):
         fork=Path(os.environ['WOT_FORK_0101_SOURCE'])
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
-        names=['stock_native_client_turret_presentation','stock_native_detached_turret_snapshot','stock_native_detached_turret_runtime','stock_native_bot_turret_obstacles']
+        names=['stock_native_client_turret_presentation','stock_native_detached_turret_snapshot','stock_native_detached_turret_runtime','stock_native_bot_turret_obstacles','stock_native_client_state']
         with tempfile.TemporaryDirectory(prefix='native-turret-presentation-') as directory:
             folder=Path(directory);script=folder/'fixture.py';script.write_text(SCRIPT)
-            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wno-register','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(fork/'native'),str(ROOT/'tests/stock_native_client_turret_presentation_host.cpp')]+[str(ROOT/'bigworld'/(name+'.cpp')) for name in names]+[str(fork/'native/offline_destructible_geometry.cpp'),'-o',str(folder/'turret_presentation_test.so')]
+            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wno-register','-Wall','-Wextra','-Werror','-DWOT_CLIENT_REPLICA_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(fork/'native'),str(ROOT/'tests/stock_native_client_turret_presentation_host.cpp')]+[str(ROOT/'bigworld'/(name+'.cpp')) for name in names]+[str(fork/'native/offline_destructible_geometry.cpp'),'-o',str(folder/'turret_presentation_test.so')]
             subprocess.run(command,check=True);subprocess.run([py27,'-B',str(script),str(fork)],check=True)
 if __name__=='__main__':unittest.main()

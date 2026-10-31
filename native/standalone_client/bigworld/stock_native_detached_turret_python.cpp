@@ -134,7 +134,7 @@ class NativeOwner::Impl:public LaunchSource {
         if(players.kind!=Value::Kind::Null&&players.kind!=Value::Kind::Array)throw p::Error("Detached turret snapshot players are invalid");
         for(const auto&player:players.array)try{
             const auto id=integer(player,"id");if(id<=0||!flag(player,"participating")||!flag(player,"world_pose"))continue;
-            const auto*pushes=member(player,"turret_pushes");p::Ref raw(pushes?p::Ref(cs::write(*pushes)):p::retain(Py_None));require(readPlayerImpulses(id,raw.get(),impulses));
+            std::string failure;if(!readPlayerImpulses(id,member(player,"turret_pushes"),impulses,&failure))throw p::Error("Detached turret input: "+failure);
             const Owner owner{true,id};auto order_key=p::text(name(owner));if(PyDict_SetItem(physical_order.get(),order_key.get(),Py_None)<0)throw p::Error("Detached turret player order allocation failed");
             auto cached=cache_.find(owner);if(cached==cache_.end()||!cached->second.support_valid)continue;
             VehiclePose pose;pose.position={{number(player,"x"),number(player,"y"),number(player,"z")}};
@@ -187,22 +187,22 @@ public:
         if(!b.world)throw p::Error("Detached turret world is unavailable");
         const auto count=std::min<std::size_t>(12,rows.array.size());bool changed=false;
         for(std::size_t i=0;i<count;++i)try{
-            p::Ref raw(cs::write(rows.array[i]));Row row;require(readRow(raw.get(),row),"Detached turret canonical row");if(!launches_->accept(row))continue;
+            Row row;std::string failure;if(!readRow(rows.array[i],row,&failure))throw p::Error("Detached turret canonical row: "+failure);if(!launches_->accept(row))continue;
             if(const auto*record=b.vehicle(name(row.owner))){auto entity=p::Ref(stock_native_bot::readNativeEntity(nullptr,record->engine_id));if(entity.get()!=Py_None)installEntity(row.owner,entity.get());}
             const auto cache=cache_.find(row.owner);bodies_.accept(row,cache==cache_.end()?std::vector<Component>{}:cache->second.components);
             publish(b.world->turrets,row);changed=true;
         }catch(const std::exception&e){note(e);}
         return changed;
     }
-    p::Ref rows()const{
+    Value rows()const{
         if(!launches_)throw p::Error("Detached turret owner is not installed");
-        auto out=p::list();for(const auto&row:launches_->rows()){p::Ref packed(packRow(row));const auto pending=launches_->proposals().find(row.owner);if(pending!=launches_->proposals().end()&&row.motion_sequence==0&&PyDict_DelItemString(packed.get(),"created_time_ms")<0)throw p::Error("Detached launch proposal shape is invalid");p::append(out.get(),packed);}return out;
+        Value out;out.kind=Value::Kind::Array;for(const auto&row:launches_->rows()){auto packed=packRow(row);const auto pending=launches_->proposals().find(row.owner);if(pending!=launches_->proposals().end()&&row.motion_sequence==0)packed.object.erase("created_time_ms");out.array.push_back(std::move(packed));}return out;
     }
-    p::Ref advance(Battle&b,double now){
+    std::optional<Value> advance(Battle&b,double now){
         current(b);if(!std::isfinite(now))throw p::Error("Detached turret frame time is invalid");
         world_.now(now);launches_->retry(now,*this,world_);for(const auto&e:launches_->failures)errors_.push_back(e.reason);launches_->failures.clear();
         const bool send_tail=b.result.resolved().kind!=Value::Kind::Null&&launches_->pending()&&now>=next_publish_;
-        auto tail=send_tail?rows():p::retain(Py_None);if(send_tail)next_publish_=now+.25;
+        auto tail=send_tail?std::optional<Value>(rows()):std::nullopt;if(send_tail)next_publish_=now+.25;
         const auto server=native_battle::projectiles::serverTimeMs(b,now);const double server_ms=server?*server:-1.;
         if(bodies_.due(server_ms))bodies(b,server_ms);
         return tail;
@@ -214,7 +214,7 @@ NativeOwner::~NativeOwner()=default;
 void NativeOwner::install(Battle&b){impl_->install(b);}
 bool NativeOwner::queue(Battle&b,const Actor&vehicle,PyObject*entity,const Value*state,double now){return impl_->queue(b,vehicle,entity,state,now);}
 bool NativeOwner::ingress(Battle&b,const Value&message){return impl_->ingress(b,message);}
-p::Ref NativeOwner::advance(Battle&b,double now){return impl_->advance(b,now);}
-p::Ref NativeOwner::rows()const{return impl_->rows();}
+std::optional<Value> NativeOwner::advance(Battle&b,double now){return impl_->advance(b,now);}
+Value NativeOwner::rows()const{return impl_->rows();}
 std::vector<std::string> NativeOwner::takeErrors(){return impl_->errors();}
 }

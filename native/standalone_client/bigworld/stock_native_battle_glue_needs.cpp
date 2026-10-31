@@ -109,18 +109,13 @@ void sendCurrentInput(Battle& b) { local::sendCurrent(b); }
 // native_bot_runtime.projectile_*: None until the worker's native Bot owner exists.
 std::optional<bool> botProjectileObserve(Battle& b, const Value& message, double now) {
     if (!b.bots || !b.bots->owner) return std::nullopt;
-    auto raw = b.pythonOf(message);
-    return bots::projectileObserve(b, raw.get(), now);
+    return bots::projectileObserve(b, message, now);
 }
 std::optional<bool> botProjectileIngress(Battle& b, const Value& message, double now) {
     if (!b.bots || !b.bots->owner) return std::nullopt;
-    auto raw = b.pythonOf(message);
-    return bots::projectileIngress(b, raw.get(), now);
+    return bots::projectileIngress(b, message, now);
 }
-bool botProjectileEvent(Battle& b, const Value& event, double now) {
-    p::Ref raw(cs::write(event));
-    return bots::projectileEvent(b, raw.get(), now);
-}
+bool botProjectileEvent(Battle& b, const Value& event, double now) { return bots::projectileEvent(b, event, now); }
 std::size_t botProjectileAdvance(Battle& b, double now, bool force) { return bots::projectileAdvance(b, now, force); }
 bool botAuthority(const Battle& b) { return bots::isAuthority(b); }
 

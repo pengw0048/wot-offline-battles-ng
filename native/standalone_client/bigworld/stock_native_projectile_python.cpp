@@ -9,6 +9,8 @@
 #include "stock_native_bot_python.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_startup.hpp"
+#include "stock_native_battle_link.hpp"
+#include "stock_native_wire_value.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -20,7 +22,12 @@ namespace p=stock_native_bot_python;
 namespace bots=stock_native_bot;
 namespace geo=stock_native_bot_geometry;
 namespace world=stock_native_world;
+namespace cs=stock_native_client_state;
+namespace link=native_battle::link;
+namespace w=stock_native_wire_value;
 namespace {
+using cs::Value;
+using Kind=Value::Kind;
 using ActorKey=offline_simulation::ActorKey;
 using ActorKind=offline_simulation::ActorKind;
 using LaunchRecord=offline_simulation::weapons::LaunchRecord;
@@ -34,13 +41,19 @@ Pose plainPose(const stock_native_client_state::Value&state,const Point&position
     if(s.kind==stock_native_client_state::Value::Kind::Object){if(s.object.count("x")&&s.object.count("y")&&s.object.count("z"))out.position={s.get("x").numeric(),s.get("y").numeric(),s.get("z").numeric()};out.yaw=s.get("yaw").numeric();out.pitch=s.get("pitch").numeric();out.roll=s.get("roll").numeric();out.turret_yaw=s.get("turret_yaw").numeric(angle_delta(out.yaw,s.get("aim_yaw").numeric(out.yaw)));out.gun_pitch=s.get("gun_pitch").numeric();out.siege=int(s.get("siege_state").numeric());}
     return out;
 }
-p::Ref shotWire(const damage::LaunchDescriptor&d){
-    const auto&s=d.shot;auto out=p::dict(),shell=p::dict();p::set(out.get(),"speed",p::number(d.speed));p::set(out.get(),"gravity",p::number(d.gravity));p::set(out.get(),"maxDistance",p::number(d.maximum));p::set(out.get(),"piercingPower",p::numbers(std::array<double,2>{s.shell.piercing_near,s.shell.piercing_far}));p::set(out.get(),"deadeye",p::boolean(s.deadeye));p::set(shell.get(),"kind",p::text(s.shell.kind));p::set(shell.get(),"caliber",p::number(s.shell.caliber));p::set(shell.get(),"damage",p::numbers(std::array<double,2>{s.shell.damage,s.device_damage_mean.value_or(0.)}));p::set(shell.get(),"explosionRadius",p::number(d.raw_radius));
-    if(d.explosion_factors){p::set(shell.get(),"explosionDamageFactor",p::number(s.shell.explosion_damage_factor));p::set(shell.get(),"explosionDamageAbsorptionFactor",p::number(s.shell.explosion_absorption_factor));p::set(shell.get(),"explosionEdgeDamageFactor",p::number(s.edge_damage_factor));}
-    if(s.stun){const auto&v=*s.stun;auto stun=p::dict();p::set(stun.get(),"stunRadius",p::number(v.radius));p::set(stun.get(),"stunDuration",p::number(v.duration));p::set(stun.get(),"stunFactor",p::number(v.factor));p::set(stun.get(),"guaranteedStunDuration",p::number(v.guaranteed_duration));p::set(stun.get(),"damageDurationCoeff",p::number(v.damage_duration));p::set(stun.get(),"guaranteedStunEffect",p::number(v.guaranteed_effect));p::set(stun.get(),"damageEffectCoeff",p::number(v.damage_effect));p::set(shell.get(),"stun",stun);}
-    p::set(out.get(),"shell",shell);return out;
+Value shotWire(const damage::LaunchDescriptor&d){
+    const auto&s=d.shot;auto out=w::object(),shell=w::object();auto&o=out.object;auto&h=shell.object;o["speed"]=w::number(d.speed);o["gravity"]=w::number(d.gravity);o["maxDistance"]=w::number(d.maximum);o["piercingPower"]=w::numbers(std::array<double,2>{s.shell.piercing_near,s.shell.piercing_far});o["deadeye"]=w::boolean(s.deadeye);h["kind"]=w::text(s.shell.kind);h["caliber"]=w::number(s.shell.caliber);h["damage"]=w::numbers(std::array<double,2>{s.shell.damage,s.device_damage_mean.value_or(0.)});h["explosionRadius"]=w::number(d.raw_radius);
+    if(d.explosion_factors){h["explosionDamageFactor"]=w::number(s.shell.explosion_damage_factor);h["explosionDamageAbsorptionFactor"]=w::number(s.shell.explosion_absorption_factor);h["explosionEdgeDamageFactor"]=w::number(s.edge_damage_factor);}
+    if(s.stun){const auto&v=*s.stun;auto stun=w::object();auto&t=stun.object;t["stunRadius"]=w::number(v.radius);t["stunDuration"]=w::number(v.duration);t["stunFactor"]=w::number(v.factor);t["guaranteedStunDuration"]=w::number(v.guaranteed_duration);t["damageDurationCoeff"]=w::number(v.damage_duration);t["guaranteedStunEffect"]=w::number(v.guaranteed_effect);t["damageEffectCoeff"]=w::number(v.damage_effect);h["stun"]=std::move(stun);}
+    o["shell"]=std::move(shell);return out;
 }
-std::optional<std::int64_t> optionalInteger(PyObject*raw,const char*key){auto value=p::value(raw,key);if(value.get()==Py_None)return {};return p::wide(value.get());}
+std::optional<std::int64_t> optionalInteger(const Value&raw,const char*key){const auto&v=raw.get(key).resolved();if(v.kind==Kind::Null)return {};return w::wide(v);}
+// str(round_id) of the pinned runtime.
+std::string roundText(const Value&raw){const auto&v=raw.resolved();
+    switch(v.kind){case Kind::Null:return "None";case Kind::Boolean:return v.boolean?"True":"False";
+    case Kind::Integer:return v.unsigned_integer?std::to_string(std::uint64_t(v.integer)):std::to_string(v.integer);case Kind::Text:return v.text;
+    case Kind::Number:{char buffer[64];snprintf(buffer,sizeof(buffer),"%.12g",v.number);std::string out(buffer);if(out.find_first_of(".eni")==std::string::npos)out+=".0";return out;}
+    default:return "<unrepresentable>";}}
 }
 struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::DetachedHits {
     struct CachedRecord {Record record;std::shared_ptr<const stock_native_client_state::Actor> actor;std::unique_ptr<p::Ref> entity;};
@@ -58,7 +71,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     // The round this owner serves; refresh and launch read its actor table and projectile clock.
     native_battle::Battle* battle=nullptr;
     std::uint64_t generation=0;
-    std::unique_ptr<p::Ref> client,process_clock;
+    std::unique_ptr<p::Ref> process_clock;
     std::uint64_t registry_epoch=0,rejected=0,record_failures=0,effect_failures=0;
     std::string round;
     damage::StunConfig stun;
@@ -119,7 +132,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         world::Hit hit;const auto status=passive_scene.horizontal(a,b,hit);if(status==world::QueryStatus::Failed)throw p::Error("Projectile blast visibility query failed");return status!=world::QueryStatus::Found||double((vector(hit.point)-vector(a)).length())+.001>=distance;
     }
     damage::Target target(const CachedRecord&r,const bots::ServiceEntity&s,const Pose&pose){
-        const auto&descriptor=s.projectile[pose.siege==2?1:0];if(!descriptor)throw p::Error("Projectile target descriptor unavailable");auto raw=p::dict();p::set(raw.get(),"kind",p::text(r.record.human?"player":"bot"));p::set(raw.get(),"network_id",p::integer(r.record.id));p::set(raw.get(),"state",p::Ref(stock_native_client_state::write(r.actor->state)));damage::Target out;if(!damage::readProjectileTargetState(nullptr,raw.get(),r.entity->get(),*descriptor,out))throw p::Error("Projectile target state unavailable");out.position=pose.position;out.stun_config.minimum_duration=stun.minimum_duration;out.stun_config.factors=stun.factors;return out;
+        const auto&descriptor=s.projectile[pose.siege==2?1:0];if(!descriptor)throw p::Error("Projectile target descriptor unavailable");damage::Target out;if(!damage::readProjectileTargetState(nullptr,r.record.human,r.record.id,r.actor->state,r.entity->get(),*descriptor,out))throw p::Error("Projectile target state unavailable");out.position=pose.position;out.stun_config.minimum_duration=stun.minimum_duration;out.stun_config.factors=stun.factors;return out;
     }
     damage::GeometryWorld geometry(const Record&r,const bots::ServiceEntity&s,const Pose&pose,bool historical,const Flight&flight,double at){
         std::array<std::optional<unsigned>,2> values{};const auto frozen=source_stickers.find(flight.canonical.id);if(frozen!=source_stickers.end())values=frozen->second;
@@ -155,52 +168,54 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     static double builtinClock(PyObject* fn){if(!fn||!PyCFunction_Check(fn))throw p::Error("Native clock unavailable");const int flags=PyCFunction_GET_FLAGS(fn);PyObject*result=nullptr;if((flags&METH_NOARGS)!=0)result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),nullptr);else if((flags&METH_VARARGS)!=0){p::Ref args(PyTuple_New(0));result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),args.get());}else throw p::Error("Native clock signature invalid");p::Ref value(result);return p::scalar(value.get());}
     double processTime(){return builtinClock(process_clock?process_clock->get():nullptr);}
 
-    bool observe(PyObject*message,double at){
-        current();now=at;if(!PyDict_Check(message)||!std::isfinite(at))return false;auto epoch=optionalInteger(message,"authority_epoch");if(!epoch)epoch=optionalInteger(client->get(),"authority_epoch");const auto server=optionalInteger(message,"server_time_ms");double anchor=at;auto received=p::value(message,"_client_received_time");if(received.get()!=Py_None)anchor=std::max(0.,at-std::max(0.,std::min(60.,processTime()-p::scalar(received.get()))));
-        auto rtt=p::value(client->get(),"minimum_rtt_ms");double one_way=0;try{if(rtt.get()!=Py_None)one_way=std::max(0.,std::min(.25,p::scalar(rtt.get())/2000.));else{auto fallback=p::value(client->get(),"rtt_ms");if(fallback.get()!=Py_None)one_way=std::max(0.,std::min(.25,p::scalar(fallback.get())/2000.));}}catch(...){PyErr_Clear();}
-        anchor=std::max(0.,anchor-one_way);if(!owner.observe(epoch,server,anchor,at))return false;
+    bool observe(const Value&raw,double at){
+        current();now=at;const auto&message=raw.resolved();if(message.kind!=Kind::Object||!std::isfinite(at))return false;auto epoch=optionalInteger(message,"authority_epoch");if(!epoch)epoch=link::authorityEpoch(*battle);const auto server=optionalInteger(message,"server_time_ms");double anchor=at;const auto&received=message.get("_client_received_time").resolved();if(received.kind!=Kind::Null)anchor=std::max(0.,at-std::max(0.,std::min(60.,processTime()-w::scalar(received))));
+        // The worker link exposes no round-trip time, so the anchor is the local receive time.
+        if(!owner.observe(epoch,server,anchor,at))return false;
         return true;
     }
     bool install(native_battle::Battle&b){
-        if(battle)throw p::Error("Native projectile owner already installed");if(!b.projectiles||!b.startup||!b.engine.client)throw p::Error("Native projectile battle state is unavailable");battle=&b;generation=b.generation;client=std::make_unique<p::Ref>(p::retain(b.engine.client.get()));registry_epoch=registry.epoch;
+        if(battle)throw p::Error("Native projectile owner already installed");if(!b.projectiles||!b.startup)throw p::Error("Native projectile battle state is unavailable");battle=&b;generation=b.generation;registry_epoch=registry.epoch;
         p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!random.install(instance.get()))throw p::Error("Native projectile RNG installation failed");p::Ref timing(PyImport_ImportModule("time"));auto clock=p::value(timing.get(),"monotonic");process_clock=std::make_unique<p::Ref>(clock.get()!=Py_None?p::retain(clock.get()):p::value(timing.get(),"clock"));
         p::Ref stun_module(PyImport_ImportModule("items.stun"));auto cfg=p::value(stun_module.get(),"g_cfg");if(!damage::readStunConfig(cfg.get(),stun))throw p::Error("Native projectile stun config unavailable");battle_end_ms=std::int64_t(std::round((native_battle::startup::prebattleSeconds(b)+native_battle::startup::battleSeconds(b))*1000.));
-        p::Ref round_value(stock_native_client_state::write(b.start.get("round_id")));p::Ref round_string(PyObject_Str(round_value.get()));round=p::string(round_string.get());for(const auto&seen:b.projectiles->bot_fire_seen)confirmed_sequences[seen.first]=seen.second;
-        const auto&server=*b.projectiles;auto epoch=server.epoch;if(!epoch)epoch=optionalInteger(client->get(),"authority_epoch");const double install_now=b.clock();owner.observe(epoch,server.server_time_ms,server.server_local_time,install_now);for(const auto&actor:runtime.actors()){const auto sequence=runtime.weapons().at({ActorKind::Bot,actor.first}).fire_seq;confirmed_sequences[actor.first]=std::max(confirmed_sequences[actor.first],sequence);}refresh();const auto&snapshot=b.startup->last_snapshot.resolved();if(snapshot.kind==stock_native_client_state::Value::Kind::Object){p::Ref raw(stock_native_client_state::write(snapshot));ingress(raw.get(),install_now);}return true;
+        round=roundText(b.start.get("round_id"));for(const auto&seen:b.projectiles->bot_fire_seen)confirmed_sequences[seen.first]=seen.second;
+        const auto&server=*b.projectiles;auto epoch=server.epoch;if(!epoch)epoch=link::authorityEpoch(b);const double install_now=b.clock();owner.observe(epoch,server.server_time_ms,server.server_local_time,install_now);for(const auto&actor:runtime.actors()){const auto sequence=runtime.weapons().at({ActorKind::Bot,actor.first}).fire_seq;confirmed_sequences[actor.first]=std::max(confirmed_sequences[actor.first],sequence);}refresh();const auto&snapshot=b.startup->last_snapshot.resolved();if(snapshot.kind==Kind::Object)ingress(snapshot,install_now);return true;
     }
-    bool matchingRound(PyObject*message){auto raw=p::value(message,"round_id");if(raw.get()==Py_None)return true;p::Ref text(PyObject_Str(raw.get()));return p::string(text.get())==round;}
-    bool ingress(PyObject*message,double at){
-        current();if(!PyDict_Check(message)||!matchingRound(message)||!observe(message,at))return false;refresh();auto rows=p::value(message,"projectiles");if(!PyList_Check(rows.get())&&!PyTuple_Check(rows.get()))return true;std::vector<Launch> accepted;std::set<std::string> reported;
-        for(Py_ssize_t i=0;i<p::size(rows.get());++i){auto row=p::item(rows.get(),i);if(!PyDict_Check(row.get()))continue;auto id=p::value(row.get(),"projectile_id");if(id.get()!=Py_None)try{reported.insert(p::string(id.get()));}catch(...){PyErr_Clear();}Launch launch;if(readLaunch(row.get(),launch))accepted.push_back(std::move(launch));else{if(PyErr_Occurred())++rejected;PyErr_Clear();}}
+    bool matchingRound(const Value&message){const auto&raw=message.get("round_id").resolved();return raw.kind==Kind::Null||roundText(raw)==round;}
+    bool ingress(const Value&raw,double at){
+        current();const auto&message=raw.resolved();if(message.kind!=Kind::Object||!matchingRound(message)||!observe(message,at))return false;refresh();const auto&rows=message.get("projectiles").resolved();if(rows.kind!=Kind::Array)return true;std::vector<Launch> accepted;std::set<std::string> reported;
+        for(const auto&value:rows.array){const auto&row=value.resolved();if(row.kind!=Kind::Object)continue;const auto&id=row.get("projectile_id").resolved();if(id.kind==Kind::Text)reported.insert(id.text);Launch launch;std::string failure;if(readLaunch(row,launch,&failure))accepted.push_back(std::move(launch));else if(!failure.empty())++rejected;}
         return owner.reconcile(accepted,reported,at);
     }
-    bool event(PyObject*raw,double at){
-        current();if(!PyDict_Check(raw)||!matchingRound(raw))return false;auto type=p::value(raw,"kind");const auto kind=p::string(type.get());
-        if(kind=="projectile_impact"){auto id=p::value(raw,"projectile_id");return owner.terminalEvent(p::string(id.get()),optionalInteger(raw,"authority_epoch"));}
+    bool event(const Value&value,double at){
+        current();const auto&raw=value.resolved();if(raw.kind!=Kind::Object||!matchingRound(raw))return false;const auto kind=w::string(raw.get("kind"));
+        if(kind=="projectile_impact"){return owner.terminalEvent(w::string(raw.get("projectile_id")),optionalInteger(raw,"authority_epoch"));}
         if(kind=="projectile_ricochet"){const auto epoch=optionalInteger(raw,"authority_epoch");if(epoch&&owner.epoch()&&epoch!=owner.epoch())return false;}
         if(kind!="authority"&&kind!="shot"&&kind!="bot_shot"&&kind!="projectile_ricochet")return false;if(!observe(raw,at))return false;if(kind=="authority")return true;
-        refresh();Launch launch;if(!readLaunch(raw,launch)){if(PyErr_Occurred())++rejected;PyErr_Clear();return false;}return owner.launch(launch,at);
+        refresh();Launch launch;std::string failure;if(!readLaunch(raw,launch,&failure)){if(!failure.empty())++rejected;return false;}return owner.launch(launch,at);
     }
-    p::Ref packedLaunch(std::int64_t bot,std::int64_t sequence,const FrozenLaunch&f){
-        const auto&r=f.source;const auto&d=f.descriptor;auto args=p::list(),kwargs=p::dict();p::append(args.get(),p::text("bot"));p::append(args.get(),p::integer(bot));p::append(args.get(),p::integer(sequence));p::append(args.get(),p::integer(r.edge.shell));p::append(args.get(),p::numbers(r.origin));p::append(args.get(),p::numbers(f.velocity));p::append(args.get(),p::number(d.gravity));p::append(args.get(),p::number(d.maximum));p::append(args.get(),p::integer(r.artillery?r.maximum_time_ms:20000));const bool he=d.shot.shell.kind=="HIGH_EXPLOSIVE";p::append(args.get(),p::boolean(he));p::append(args.get(),p::number(he?d.shot.explosion_radius:0.));p::set(kwargs.get(),"authority_epoch",f.epoch?p::integer(*f.epoch):p::retain(Py_None));p::set(kwargs.get(),"penetration_factor",p::number(f.factor));p::set(kwargs.get(),"source_shot",shotWire(d));p::set(kwargs.get(),"burst_group_seq",p::integer(r.edge.group_seq));p::set(kwargs.get(),"burst_index",p::integer(r.edge.index));p::set(kwargs.get(),"burst_count",p::integer(r.edge.count));p::set(kwargs.get(),"launch_time_us",p::integer(r.launch_time_us));p::set(kwargs.get(),"launch_pose",p::tupleNumbers(std::array<double,6>{r.pose.position[0],r.pose.position[1],r.pose.position[2],r.pose.yaw,r.pose.pitch,r.pose.roll}));p::set(kwargs.get(),"shells_before_shot",r.has_shells_before?p::integer(r.shells_before):p::retain(Py_None));p::Ref tuple(PyTuple_New(4));PyTuple_SET_ITEM(tuple.get(),0,p::integer(bot).release());PyTuple_SET_ITEM(tuple.get(),1,p::integer(sequence).release());PyTuple_SET_ITEM(tuple.get(),2,args.release());PyTuple_SET_ITEM(tuple.get(),3,kwargs.release());return tuple;
+    // The send_projectile_launch parameters by name.
+    Value packedLaunch(std::int64_t bot,std::int64_t sequence,const FrozenLaunch&f){
+        const auto&r=f.source;const auto&d=f.descriptor;auto out=w::object();auto&o=out.object;o["type"]=w::text("projectile_launch");o["shooter_kind"]=w::text("bot");o["shooter_id"]=w::integer(bot);o["shot_seq"]=w::integer(sequence);o["shell_index"]=w::integer(r.edge.shell);o["origin"]=w::numbers(r.origin);o["velocity"]=w::numbers(f.velocity);o["gravity"]=w::number(d.gravity);o["max_distance"]=w::number(d.maximum);o["max_time_ms"]=w::integer(r.artillery?r.maximum_time_ms:20000);const bool he=d.shot.shell.kind=="HIGH_EXPLOSIVE";o["is_he"]=w::boolean(he);o["splash_radius"]=w::number(he?d.shot.explosion_radius:0.);
+        o["authority_epoch"]=f.epoch?w::integer(*f.epoch):Value();o["penetration_factor"]=w::number(f.factor);o["source_shot"]=shotWire(d);o["burst_group_seq"]=w::integer(r.edge.group_seq);o["burst_index"]=w::integer(r.edge.index);o["burst_count"]=w::integer(r.edge.count);o["launch_time_us"]=w::integer(r.launch_time_us);o["launch_pose"]=w::numbers(std::array<double,6>{r.pose.position[0],r.pose.position[1],r.pose.position[2],r.pose.yaw,r.pose.pitch,r.pose.roll});o["shells_before_shot"]=r.has_shells_before?w::integer(r.shells_before):Value();return out;
     }
-    PyObject* launches(PyObject*message){
-        current();if(message!=Py_None){if(sending)throw p::Error("Native Bot launch transport result missing");auto type=p::value(message,"type");launch_batch.clear();launch_cursor=0;blocked_bots.clear();next_sequences.clear();if(p::string(type.get())!="bot_state")return PyList_New(0);auto admitted=p::value(message,"launches");if(admitted.get()!=Py_None){std::map<std::pair<std::int64_t,std::int64_t>,const LaunchRecord*> pending;for(const auto&row:runtime.weapons().pending())pending[{row.actor.id,row.edge.shot_seq}]=&row;for(Py_ssize_t i=0;i<p::size(admitted.get());++i){auto row=p::item(admitted.get(),i);const auto id=p::integral(row.get(),"id"),sequence=p::integral(row.get(),"fire_seq");if(id<=0||sequence<=0)throw p::Error("Bot launch publication identity invalid");if(sequence<=confirmed_sequences[id])continue;const auto found=pending.find({id,sequence});if(found==pending.end()){blocked_bots.insert(id);continue;}launch_batch.push_back(*found->second);}}}
-        if(sending)throw p::Error("Native Bot launch transport result missing");auto out=p::list();
+    std::vector<LaunchMessage> launches(const Value*message){
+        current();if(message){if(sending)throw p::Error("Native Bot launch transport result missing");const auto&m=message->resolved();launch_batch.clear();launch_cursor=0;blocked_bots.clear();next_sequences.clear();if(w::string(m.get("type"))!="bot_state")return {};const auto&admitted=m.get("launches").resolved();if(admitted.kind!=Kind::Null){if(admitted.kind!=Kind::Array)throw p::Error("Native Bot event is not a sequence");std::map<std::pair<std::int64_t,std::int64_t>,const LaunchRecord*> pending;for(const auto&row:runtime.weapons().pending())pending[{row.actor.id,row.edge.shot_seq}]=&row;for(const auto&row:admitted.array){const auto integral=[&](const char*key){const auto&v=row.get(key).resolved();return v.kind==Kind::Null?std::int64_t(0):w::wide(v);};const auto id=integral("id"),sequence=integral("fire_seq");if(id<=0||sequence<=0)throw p::Error("Bot launch publication identity invalid");if(sequence<=confirmed_sequences[id])continue;const auto found=pending.find({id,sequence});if(found==pending.end()){blocked_bots.insert(id);continue;}launch_batch.push_back(*found->second);}}}
+        if(sending)throw p::Error("Native Bot launch transport result missing");std::vector<LaunchMessage> out;
         while(launch_cursor<launch_batch.size()){
             const auto&r=launch_batch[launch_cursor++];const auto bot=r.actor.id,sequence=r.edge.shot_seq;const auto last=confirmed_sequences[bot];if(sequence<=last||blocked_bots.count(bot))continue;const auto next=next_sequences.find(bot);const auto expected=next==next_sequences.end()?last+1:next->second;if(sequence!=expected){blocked_bots.insert(bot);continue;}
             const auto key=std::make_pair(bot,sequence);auto frozen=launch_payloads.find(key);
             if(frozen==launch_payloads.end())try{
                 const auto*s=services.find({ActorKind::Bot,bot});const auto state=runtime.actors().find(bot);if(!s||state==runtime.actors().end()||!s->available||!s->record_ready||!r.has_origin||r.launch_time_us<0)throw p::Error("Bot launch source unavailable");const auto&shots=s->launch_shots[state->second.mode==1?1:0];if(r.edge.shell<0||std::size_t(r.edge.shell)>=shots.size())throw p::Error("Bot launch shell unavailable");FrozenLaunch launch;launch.source=r;launch.descriptor=shots[std::size_t(r.edge.shell)];const auto cosmetics=s->projectile_stickers[state->second.mode==1?1:0].find(r.edge.shell);if(cosmetics!=s->projectile_stickers[state->second.mode==1?1:0].end())launch.stickers=cosmetics->second;const auto&d=launch.descriptor;const double horizontal=std::cos(r.pitch);Point direction{std::sin(r.yaw)*horizontal,std::sin(r.pitch),std::cos(r.yaw)*horizontal};const double n=length({},direction);if(n<=1e-6||d.speed<=0||d.gravity<=0||d.maximum<=0)throw p::Error("Bot launch trajectory invalid");for(unsigned i=0;i<3;++i)launch.velocity[i]=direction[i]*d.speed/(r.artillery?1.:n);
                 if(r.artillery){if(r.maximum_time_ms<=0||r.maximum_time_ms>20000||r.gravity!=d.gravity||r.maximum_distance!=d.maximum)throw p::Error("Bot artillery launch descriptor changed");for(unsigned i=0;i<3;++i)if(std::abs(r.velocity[i]-launch.velocity[i])>1e-7)throw p::Error("Bot artillery launch velocity changed");launch.velocity=r.velocity;}
-                launch.factor=damage::sampleShellValue(1.,random);launch.epoch=optionalInteger(client->get(),"authority_epoch");frozen=launch_payloads.emplace(key,std::move(launch)).first;
+                launch.factor=damage::sampleShellValue(1.,random);launch.epoch=link::authorityEpoch(*battle);frozen=launch_payloads.emplace(key,std::move(launch)).first;
             }catch(const std::exception&e){blocked_bots.insert(bot);error("launch",e);continue;}
-            sending=key;p::append(out.get(),packedLaunch(bot,sequence,frozen->second));break;
+            sending=key;out.push_back({bot,sequence,packedLaunch(bot,sequence,frozen->second)});break;
         }
-        return out.release();
+        return out;
     }
     bool launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){const auto key=std::make_pair(bot,sequence);if(!sending||*sending!=key)return false;sending.reset();if(accepted)next_sequences[bot]=sequence+1;else blocked_bots.insert(bot);return true;}
-    PyObject* advance(native_battle::Battle&b,double at,bool force){
+    std::vector<WireDispatch> advance(native_battle::Battle&b,double at,bool force){
         current(&b);now=at;refresh();
         const auto start=std::chrono::steady_clock::now();owner.advance(at,force);
         for(auto at=source_stickers.begin();at!=source_stickers.end();)if(!owner.flights().count(at->first))at=source_stickers.erase(at);else ++at;
@@ -219,12 +234,12 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
 NativeProjectiles::NativeProjectiles(world::Registry&r,world::Scene&s,geo::Vehicles&v,world::WorldEvents&e,bots::Runtime&b,bots::NativeServices&svc):state_(std::make_unique<State>(r,s,v,e,b,svc)){}
 NativeProjectiles::~NativeProjectiles()=default;
 bool NativeProjectiles::install(native_battle::Battle&battle){try{return state_->install(battle);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool NativeProjectiles::observe(PyObject*message,double now){try{return state_->observe(message,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool NativeProjectiles::ingress(PyObject*message,double now){try{return state_->ingress(message,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool NativeProjectiles::event(PyObject*event,double now){try{return state_->event(event,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-PyObject* NativeProjectiles::launches(PyObject*message){try{return state_->launches(message);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
+bool NativeProjectiles::observe(const Value&message,double now){return state_->observe(message,now);}
+bool NativeProjectiles::ingress(const Value&message,double now){return state_->ingress(message,now);}
+bool NativeProjectiles::event(const Value&event,double now){return state_->event(event,now);}
+std::vector<LaunchMessage> NativeProjectiles::launches(const Value*message){return state_->launches(message);}
 bool NativeProjectiles::launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){return state_->launchResult(bot,sequence,accepted);}
-PyObject* NativeProjectiles::advance(native_battle::Battle&battle,double now,bool force){try{return state_->advance(battle,now,force);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
+std::vector<WireDispatch> NativeProjectiles::advance(native_battle::Battle&battle,double now,bool force){return state_->advance(battle,now,force);}
 bool NativeProjectiles::acknowledge(std::uint64_t serial,bool sent){return state_->owner.acknowledge(serial,sent);}
 PyObject* NativeProjectiles::statistics()const{try{p::Ref out(packMetrics(state_->owner.metrics()));p::set(out.get(),"ingress_rejected",p::integer(state_->rejected));p::set(out.get(),"record_failures",p::integer(state_->record_failures));p::set(out.get(),"effect_failures",p::integer(state_->effect_failures));return out.release();}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 }

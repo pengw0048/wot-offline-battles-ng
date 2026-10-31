@@ -104,9 +104,9 @@ bool reconcileAuthority(Battle& b, PyObject* player_id);
 // Server-owned combat state for the authority simulation.
 void snapshot(Battle& b, PyObject* message);
 // Projectile and world ingress the native owner consumes.
-bool projectileIngress(Battle& b, PyObject* message, double now);
-bool projectileObserve(Battle& b, PyObject* message, double now);
-bool projectileEvent(Battle& b, PyObject* event, double now);
+bool projectileIngress(Battle& b, const Value& message, double now);
+bool projectileObserve(Battle& b, const Value& message, double now);
+bool projectileEvent(Battle& b, const Value& event, double now);
 std::size_t projectileAdvance(Battle& b, double now, bool force_progress);
 bool worldIngress(Battle& b, PyObject* event, double now);
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence);

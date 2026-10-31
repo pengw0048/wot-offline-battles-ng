@@ -397,8 +397,7 @@ bool reconcileDetachedTurrets(Battle& b, const Value& message) {
     bool changed = false;
     for (std::size_t i = 0; i < rows.array.size() && i < max_active_turrets; ++i) {
         stock_native_detached_turret::Row row;
-        p::Ref raw(cs::write(rows.array[i]));
-        if (!stock_native_detached_turret::readRow(raw.get(), row)) { PyErr_Clear(); continue; }
+        if (!stock_native_detached_turret::readRow(rows.array[i], row)) continue;
         const std::string key = std::string(row.owner.human ? "player:" : "bot:") + std::to_string(row.owner.id);
         const auto previous = turrets.rows.find(key);
         if (previous != turrets.rows.end() && row.motion_sequence <= previous->second.motion_sequence) continue;

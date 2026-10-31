@@ -441,33 +441,33 @@ bool detachedIngress(Owner&o,Battle&b,const cs::Value&message){
     catch(const std::exception&e){detachedFailure(o,"Native detached turret snapshot failed",e);}
     detachedErrors(o);return changed;
 }
-p::Ref detachedAdvance(Owner&o,Battle&b,double now){
-    if(!live(o))return p::retain(Py_None);
+std::optional<cs::Value> detachedAdvance(Owner&o,Battle&b,double now){
+    if(!live(o))return std::nullopt;
     try{auto tail=o.detached_runtime->advance(b,now);detachedErrors(o);o.detached(b);return tail;}
-    catch(const std::exception&e){detachedFailure(o,"Native detached turret advance failed",e);return p::retain(Py_None);}
+    catch(const std::exception&e){detachedFailure(o,"Native detached turret advance failed",e);return std::nullopt;}
 }
-p::Ref detachedRows(Owner&o){return o.detached_runtime->rows();}
+cs::Value detachedRows(Owner&o){return o.detached_runtime->rows();}
 
-bool projectileIngress(Owner&o,PyObject*message,double now){
-    if(!live(o))return false;const bool changed=o.projectiles->ingress(message,now);
-    if(PyErr_Occurred())o.local(p::Error("Native projectile snapshot failed"));return changed;
+namespace {
+// A malformed projectile message is local to that message; a Python glue error keeps its own detail.
+template<class Call>bool projectileInput(Owner&o,const char*context,Call&&call){
+    if(!live(o))return false;bool changed=false;
+    try{changed=call();if(PyErr_Occurred())o.local(p::Error(context));}
+    catch(const std::exception&e){o.local(p::Error(PyErr_Occurred()?std::string(context):std::string(context)+"; "+e.what()));}
+    return changed;
 }
-bool projectileObserve(Owner&o,PyObject*message,double now){
-    if(!live(o))return false;const bool changed=o.projectiles->observe(message,now);
-    if(PyErr_Occurred())o.local(p::Error("Native projectile clock message failed"));return changed;
 }
-bool projectileEvent(Owner&o,PyObject*event,double now){
-    if(!live(o))return false;const bool changed=o.projectiles->event(event,now);
-    if(PyErr_Occurred())o.local(p::Error("Native projectile event failed"));return changed;
-}
-p::Ref projectileAdvance(Owner&o,Battle&b,double now,bool force){
-    if(!live(o))return p::list();
-    p::Ref result(o.projectiles->advance(b,now,force));
-    return live(o)?std::move(result):p::list();
+bool projectileIngress(Owner&o,const cs::Value&message,double now){return projectileInput(o,"Native projectile snapshot failed",[&]{return o.projectiles->ingress(message,now);});}
+bool projectileObserve(Owner&o,const cs::Value&message,double now){return projectileInput(o,"Native projectile clock message failed",[&]{return o.projectiles->observe(message,now);});}
+bool projectileEvent(Owner&o,const cs::Value&event,double now){return projectileInput(o,"Native projectile event failed",[&]{return o.projectiles->event(event,now);});}
+std::vector<stock_native_projectile::WireDispatch> projectileAdvance(Owner&o,Battle&b,double now,bool force){
+    if(!live(o))return {};
+    auto result=o.projectiles->advance(b,now,force);
+    if(!live(o))result.clear();return result;
 }
 bool projectileAcknowledge(Owner&o,std::uint64_t serial,bool sent){return o.projectiles->acknowledge(serial,sent);}
-p::Ref projectileLaunches(Owner&o,PyObject*message){
-    if(!live(o))return p::list();return p::Ref(o.projectiles->launches(message));
+std::vector<stock_native_projectile::LaunchMessage> projectileLaunches(Owner&o,const cs::Value*message){
+    if(!live(o))return {};return o.projectiles->launches(message);
 }
 void projectileLaunchResult(Owner&o,std::int64_t bot,std::int64_t sequence,bool accepted){o.projectiles->launchResult(bot,sequence,accepted);}
 void transportError(Owner&o,const std::string&message){o.local(p::Error("Native projectile transport failed: "+message));}
