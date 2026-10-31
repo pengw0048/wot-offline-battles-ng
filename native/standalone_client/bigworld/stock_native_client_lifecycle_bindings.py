@@ -207,7 +207,8 @@ PORTS = (
     ('_tick_overturn', 'tick_overturn(self, dt, now)'),
     ('_tick_expert_target', 'tick_expert_target(self, now)'),
     ('_update_target_outline', 'update_target_outline(self, now)'),
-    ('_refresh_fallen_tree_foliage', 'refresh_fallen_tree_foliage(self, now, force, native_client_environment)'),
+    ('_refresh_fallen_tree_foliage',
+     'refresh_fallen_tree_foliage(self, now, force, native_client_environment, native_client_drive, native_bot_runtime)'),
     ('_advance_detached_turrets',
      'advance_detached_turrets(self, now, native_client_turret_presentation, native_bot_runtime)'),
 )

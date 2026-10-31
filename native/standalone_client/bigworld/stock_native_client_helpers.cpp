@@ -382,9 +382,14 @@ PyObject* applyAuthorityBotPoses(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OOO", &battle, &states, &bot_module)) return nullptr;
     try {
         auto bots = attr(battle, "_bots");
-        if (bots.get() == Py_None || !truthy(method(bot_module, "enabled", bots.get())))
-            raise("authority Bot poses are presented only by the worker's native Bot runtime");
-        return method(bot_module, "apply_presentation", bots.get(), states, method(battle, "_clock").get()).release();
+        if (bots.get() != Py_None && truthy(method(bot_module, "enabled", bots.get())))
+            return method(bot_module, "apply_presentation", bots.get(), states, method(battle, "_clock").get()).release();
+        // A visible client is never the Bot authority, so its runtime publishes no poses.
+        if (PyObject_Size(states) != 0) {
+            if (PyErr_Occurred()) throw p::Error("states");
+            raise("a visible client received authority Bot poses");
+        }
+        Py_RETURN_FALSE;
     } catch (const std::exception& e) { return fail(e); }
 }
 
@@ -439,14 +444,19 @@ PyObject* updateTargetOutline(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
-// BattleRuntime._refresh_fallen_tree_foliage(now, force=False): the native environment owns foliage.
+// BattleRuntime._refresh_fallen_tree_foliage(now, force=False): the visible client's native environment, else the
+// worker's drive and native Bot runtime frame.
 PyObject* refreshFallenTreeFoliage(PyObject*, PyObject* args) {
-    PyObject *battle, *now, *force, *environment;
-    if (!PyArg_ParseTuple(args, "OOOO", &battle, &now, &force, &environment)) return nullptr;
+    PyObject *battle, *now, *force, *environment, *drive, *bot_module;
+    if (!PyArg_ParseTuple(args, "OOOOOO", &battle, &now, &force, &environment, &drive, &bot_module)) return nullptr;
     try {
         auto native = method(environment, "foliage", battle, now, force);
-        if (native.get() == Py_None) raise("#1513 native environment owner is unavailable for foliage");
-        return native.release();
+        if (native.get() != Py_None) return native.release();
+        if (truthy(method(drive, "enabled", battle))) method(drive, "frame", battle, now);
+        auto bots = attr(battle, "_bots");
+        if (bots.get() == Py_None || !truthy(method(bot_module, "enabled", bots.get())))
+            raise("foliage needs the native environment or the worker's native Bot runtime");
+        return method(bot_module, "frame", bots.get(), now, force).release();
     } catch (const std::exception& e) { return fail(e); }
 }
 

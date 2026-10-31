@@ -405,7 +405,8 @@ NATIVE = {
     '_tick_overturn': native.tick_overturn,
     '_tick_expert_target': native.tick_expert_target,
     '_update_target_outline': native.update_target_outline,
-    '_refresh_fallen_tree_foliage': lambda b, n, force=False: native.refresh_fallen_tree_foliage(b, n, force, native_client_environment),
+    '_refresh_fallen_tree_foliage': lambda b, n, force=False: native.refresh_fallen_tree_foliage(
+        b, n, force, native_client_environment, native_client_drive, native_bot_runtime),
     '_advance_detached_turrets': lambda b, n: native.advance_detached_turrets(b, n, native_client_turret_presentation, native_bot_runtime),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
