@@ -17,7 +17,8 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  # write is required to save the Wwise SDK cache; read still covers artifacts.
+  actions: write
 
 jobs:
   client:
@@ -31,8 +32,17 @@ jobs:
         with:
           version: v0.15.0
           disable_annotations: true
-      - name: Fetch the licensed Wwise SDK
+      # The extracted SDK is reused until this key changes. Bump it when the
+      # private archive changes; a hit never contacts that repository.
+      - name: Restore the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
+        id: wwise-sdk
+        uses: actions/cache@v4
+        with:
+          path: wwise-sdk
+          key: wwise-2017.1.9.6501-win32-vc150
+      - name: Fetch the licensed Wwise SDK
+        if: ${{ !inputs.client_build_run && steps.wwise-sdk.outputs.cache-hit != 'true' }}
         uses: actions/checkout@v7
         with:
           repository: pengw0048/wot-wwise-2017-sdk
@@ -40,14 +50,19 @@ jobs:
           path: wwise-private
           persist-credentials: false
       - name: Prepare the licensed Wwise SDK
+        if: ${{ !inputs.client_build_run && steps.wwise-sdk.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = Join-Path $PWD "wwise-sdk"
+          New-Item -ItemType Directory -Path $dest | Out-Null
+          tar -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
+      - name: Select the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $dest = Join-Path $env:RUNNER_TEMP "wwise-input"
-          New-Item -ItemType Directory -Path $dest | Out-Null
-          tar -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
-          $sdk = Join-Path $dest "SDK"
+          $sdk = Join-Path $PWD "wwise-sdk\SDK"
           if (-not (Test-Path -LiteralPath (Join-Path $sdk "include\AK\AkWwiseSDKVersion.h"))) {
               throw "The licensed Wwise SDK input is missing its version header."
           }
