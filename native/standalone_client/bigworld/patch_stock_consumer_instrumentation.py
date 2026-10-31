@@ -13,13 +13,13 @@ SEAMS = (
 
 
 def patch_text(text):
-    old = [text.count(before) for before, _ in SEAMS]
-    new = [text.count(after) for _, after in SEAMS]
-    if all(n == 0 for n in old) and all(n == 1 for n in new):
-        return text
-    if any(n != 1 for n in old) or any(n != 0 for n in new):
-        raise ValueError('Consumer instrumentation seams are partial, duplicated, or changed')
+    # Each seam is applied once and left alone when an earlier run already applied it.
     for before, after in SEAMS:
+        old, new = text.count(before), text.count(after)
+        if old == 0 and new == 1:
+            continue
+        if old != 1 or new != 0:
+            raise ValueError('Consumer instrumentation seam is duplicated or changed: ' + before)
         text = text.replace(before, after, 1)
     return text
 
