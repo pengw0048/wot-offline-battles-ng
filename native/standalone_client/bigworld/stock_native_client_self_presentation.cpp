@@ -354,7 +354,7 @@ void selfPresentation(Battle&b,PyObject*e,PlayerDriver&driver,double elapsed,con
     sampleSwing(self,b,appearance.get(),dt);
     optional(self,b,"local track animation",[&]{tracks(self,b,e,appearance.get(),driver);});if(!self.current())return;
     if(!stopped){auto avatar=obj(b.engine.avatar);p::Ref speeds(Py_BuildValue("(dd)",s.speed,s.turn_speed));put(avatar.get(),"_PlayerAvatar__lastVehicleSpeeds",speeds);
-        auto binding=obj(b.engine.binding);if(binding.get()!=Py_None)optional(self,b,"engine RPM presentation",[&]{auto now=invoke(self.bigworld.get(),"time");rpm(self,b,e,appearance.get(),driver,p::scalar(now.get()));});
+        if(b.engine.server)optional(self,b,"engine RPM presentation",[&]{auto now=invoke(self.bigworld.get(),"time");rpm(self,b,e,appearance.get(),driver,p::scalar(now.get()));});
     }
 }
 std::optional<double> selfAimYaw(Battle&b,PyObject*e,const PlayerDriver&driver) {

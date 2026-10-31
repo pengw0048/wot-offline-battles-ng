@@ -51,20 +51,8 @@ bool entityVisible(Battle& b, const Actor& v) {
         return false;
     }
 }
-// arena_vehicle_removed, then destroy_entity even when the first call raised.
-void removeServerEntity(Battle& b, std::int64_t engine_id) {
-    auto id = p::integer(engine_id);
-    try {
-        py::call(b.engine.binding.get(), "arena_vehicle_removed", id.get());
-    } catch (...) {
-        PyObject *type, *value, *trace;
-        PyErr_Fetch(&type, &value, &trace);
-        py::call(b.engine.binding.get(), "destroy_entity", id.get());
-        PyErr_Restore(type, value, trace);
-        throw;
-    }
-    py::call(b.engine.binding.get(), "destroy_entity", id.get());
-}
+// #1513 has no arena vehicle removal update; entity destruction is the only removal boundary.
+void removeServerEntity(Battle& b, std::int64_t engine_id) { startup::binding::destroyEntity(b, engine_id); }
 void clearOutlineOf(Battle& b, const Actor& v) {
     if (b.visibility && b.visibility->outlined_engine_id == v.engine_id) visibility::clearOutline(b);
 }
@@ -169,7 +157,6 @@ void destroy(Battle& b, const std::string& key, const Value& event) {
         const bool arena_added = d.arena_added, native_remote = v.native_remote;
         if (!native_remote) stopRemoteVisual(b, v);
         retire(b, v);
-        if (arena_added) py::call(b.engine.binding.get(), "arena_vehicle_removed", p::integer(engine_id).get());
         remote::destroy(b, engine_id);
         return;
     }

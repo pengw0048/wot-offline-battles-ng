@@ -250,7 +250,7 @@ void retireFailedCreates(Battle& b) {
     for (auto it = r.failed_creates.begin(); it != r.failed_creates.end();) {
         if (!engineOwns(b, *it)) { ++it; continue; }
         try {
-            py::call(b.engine.binding.get(), "destroy_entity", p::integer(*it).get());
+            startup::binding::destroyEntity(b, *it);
             it = r.failed_creates.erase(it);
         } catch (const std::exception& e) {
             if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
@@ -468,12 +468,12 @@ std::int64_t create(Battle& b, PyObject* descriptor, PyObject* properties, const
     prepareDescriptor(b, descriptor);
     p::Ref at(nativeVector(position));
     p::Ref rotation(Py_BuildValue("(ddd)", 0., 0., yaw));
-    auto raw = py::call(b.engine.binding.get(), "create_vehicle", properties, at.get(), rotation.get());
+    auto raw = startup::binding::createVehicle(b, properties, at.get(), rotation.get());
     if (raw.get() == Py_None) throw p::Error("native remote createEntity returned no id");
     const std::int64_t id = p::wide(raw.get());
     // #1513 enters client-created Vehicles asynchronously; a re-entrant entry cannot be completed.
     if (py::call(b.engine.bigworld.get(), "entity", raw.get()).get() != Py_None) {
-        py::call(b.engine.binding.get(), "destroy_entity", raw.get());
+        startup::binding::destroyEntity(b, id);
         throw p::Error("native remote Vehicle entered before createEntity returned");
     }
     auto rv = std::make_unique<RemoteVehicle>();
@@ -507,10 +507,7 @@ std::int64_t create(Battle& b, PyObject* descriptor, PyObject* properties, const
     r.vehicles[id] = std::move(rv);
     if (created.animation) rekey(b, created, minimum_keyframe);
     try {
-        auto snapshot = p::dict();
-        p::set(snapshot.get(), "properties", p::retain(properties));
-        p::set(snapshot.get(), "team_killer", p::boolean(false));
-        py::call(b.engine.binding.get(), "arena_vehicle_added", raw.get(), snapshot.get());
+        startup::binding::arenaVehicleAdded(b, id, properties, false);
     } catch (const std::exception& e) {
         // The caller never receives this id; retire it once BigWorld owns it.
         const std::string error = describe(e);
@@ -559,7 +556,7 @@ void destroy(Battle& b, std::int64_t engine_id) {
     RemoteVehicle* rv = vehicle(b, engine_id);
     if (!rv) return;
     detachVehicle(b, *rv);
-    if (engineOwns(b, engine_id)) py::call(b.engine.binding.get(), "destroy_entity", p::integer(engine_id).get());
+    if (engineOwns(b, engine_id)) startup::binding::destroyEntity(b, engine_id);
     // Native entity destruction is the ownership commit boundary.
     b.remote->vehicles.erase(engine_id);
 }

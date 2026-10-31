@@ -57,9 +57,7 @@ void modelTokens(PyObject* object,ResourceStamp& stamp){
 PyObject* readNativeEntity(PyObject*,std::int64_t engine_id){try{
     // The current battle's remote factory owns presented remote vehicles; BigWorld owns the rest.
     auto* battle=native_battle::current();
-    if(battle&&battle->engine.remote_factory){Ref vehicles(value(battle->engine.remote_factory.get(),"_vehicles"));
-        if(PyDict_Check(vehicles.p)){Ref key(PyLong_FromLongLong(engine_id));auto entity=PyDict_GetItem(vehicles.p,key.p);
-            if(entity&&entity!=Py_None){Py_INCREF(entity);return entity;}}}
+    if(battle){auto entity=native_battle::remote::get(*battle,engine_id);if(entity.get()!=Py_None)return entity.release();}
 #if !defined(WOT_RESOURCE_LIFECYCLE_HOST_BUILD)
     auto* control=BW::ConnectionControl::pInstance();
     auto* entity=control&&engine_id>=std::numeric_limits<BW::EntityID>::min()&&

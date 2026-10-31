@@ -1090,8 +1090,6 @@ void cleanup(Battle& b) {
     s.map_create_attempted = s.lobby_retire_started = false;
     s.space_visibility.reset();
     b.engine.avatar = Object();
-    b.engine.binding = Object();
-    b.engine.remote_factory = Object();
     b.live = false;
     b.prebattle_deadline = -1.;
     if (!first.empty()) throw p::Error(first);

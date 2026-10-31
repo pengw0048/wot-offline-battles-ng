@@ -43,12 +43,12 @@ bool applyStatistics(Battle& b, Actor& v, const Value& state) {
     const std::int64_t frags = std::int64_t(field(state, "frags").numeric(0.));
     bool changed = false;
     if (!d.frags || *d.frags != frags) {
-        py::call(b.engine.binding.get(), "arena_vehicle_statistics", id(v).get(), p::integer(frags).get());
+        startup::binding::arenaVehicleStatistics(b, v.engine_id, frags);
         d.frags = frags;
         changed = true;
     }
     if (field(state, "team_killer").truth() && !d.team_killer) {
-        py::call(b.engine.binding.get(), "arena_team_killer", id(v).get());
+        startup::binding::arenaTeamKiller(b, v.engine_id);
         d.team_killer = true;
         changed = true;
     }
@@ -99,8 +99,8 @@ bool stopRemoteVisual(Battle& b, Actor& v) {
     if (outlined(b, v)) visibility::clearOutline(b);
     auto& d = v.presented;
     if (!d.world_marker_started && !d.minimap_started) return false;
-    if (d.world_marker_started) py::call(b.engine.binding.get(), "stop_vehicle_visual", id(v).get(), Py_False);
-    else py::call(b.engine.binding.get(), "stop_vehicle_minimap", id(v).get());
+    if (d.world_marker_started) startup::binding::stopVehicleVisual(b, v.engine_id, false);
+    else startup::binding::stopVehicleMinimap(b, v.engine_id);
     d.world_marker_started = d.minimap_started = false;
     if (v.native_remote) {
         auto vehicle = remote::get(b, v.engine_id);
@@ -133,24 +133,23 @@ bool syncVisualComponents(Battle& b, Actor& v, PyObject* vehicle, bool team_visi
         d.world_marker_visible = world;
         if (v.native_remote) py::set(vehicle, "_offlineNativeMarkerVisible", boolean(world));
     };
-    auto binding = b.engine.binding.get();
     auto dead = [&] { if (!alive(b, v, vehicle)) presentDead(b, v, true); };
     try {
         if (team_visible) {
             if (world_visible && !world && !minimap) {
-                py::call(binding, "start_vehicle_visual", id(v).get(), Py_True);
+                startup::binding::startVehicleVisual(b, v.engine_id, true);
                 world = minimap = true;
                 dead();
             } else {
-                if (!minimap) { py::call(binding, "start_vehicle_minimap", id(v).get()); minimap = true; }
-                if (world_visible && !world) { py::call(binding, "start_vehicle_marker", id(v).get()); world = true; dead(); }
-                else if (!world_visible && world) { py::call(binding, "stop_vehicle_marker", id(v).get()); world = false; }
+                if (!minimap) { startup::binding::startVehicleMinimap(b, v.engine_id); minimap = true; }
+                if (world_visible && !world) { startup::binding::startVehicleMarker(b, v.engine_id); world = true; dead(); }
+                else if (!world_visible && world) { startup::binding::stopVehicleMarker(b, v.engine_id); world = false; }
             }
         } else if (world) {
-            py::call(binding, "stop_vehicle_visual", id(v).get(), Py_False);
+            startup::binding::stopVehicleVisual(b, v.engine_id, false);
             world = minimap = false;
         } else if (minimap) {
-            py::call(binding, "stop_vehicle_minimap", id(v).get());
+            startup::binding::stopVehicleMinimap(b, v.engine_id);
             minimap = false;
         }
     } catch (...) {
@@ -296,7 +295,7 @@ bool applySiege(Battle& b, Actor& v, const Value& state) {
     if (!has_siege && siege != disabled) throw p::Error("Vehicle without Siege mode received an active state");
     if (!has_siege) { d.siege_state = disabled; return false; }
     if (v.local) gun::edge(b);
-    py::call(b.engine.binding.get(), "update_vehicle_siege_state", id(v).get(), p::integer(siege).get(), p::number(double(left) / 1000.).get());
+    startup::binding::updateVehicleSiegeState(b, v.engine_id, siege, double(left) / 1000.);
     d.siege_state = siege;
     if (b.worker && v.native_remote) remote::updateSiegePose(b, v.engine_id);
     if (v.local) {
@@ -423,9 +422,8 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
     }
     if (!previous_dead && dead) {
         if (!suppress) {
-            auto killed = py::optional(b.engine.binding.get(), "arena_vehicle_killed");
-            if (py::callable(killed)) {
-                py::invoke(killed.get(), engine.get(), attacker.get(), reason_value.get());
+            {
+                startup::binding::arenaVehicleKilled(b, v.engine_id, p::wide(attacker.get()), p::wide(reason_value.get()));
                 events::reportLocalKill(b, v, edge.attacker, reason);
                 if (local && edge.suppress_postmortem_killer) {
                     auto clear = py::optional(b.engine.compatibility.get(), "clear_postmortem_killer");
@@ -479,11 +477,7 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
         d.pose_signature.reset();
         auto at = vector(b, {pose[0], pose[1], pose[2]});
         auto rot = rotation(pose[3], pose[4], pose[5]);
-        auto setter = py::attr(b.engine.binding.get(), "set_vehicle_pose");
-        p::Ref positional(PyTuple_Pack(3, engine.get(), at.get(), rot.get()));
-        auto keywords = p::dict();
-        p::set(keywords.get(), "now", p::number(now));
-        p::Ref(PyObject_Call(setter.get(), positional.get(), keywords.get()));
+        startup::binding::setVehiclePose(b, v.engine_id, at.get(), rot.get(), Py_None, p::number(now).get());
         d.pose_signature = signature;
         d.pose_generation = b.generation;
         d.settled_signature.reset();
@@ -500,7 +494,7 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
     const std::array<double, 5> aim{pose[3], pose[4], pose[6], pose[7], double(d.siege_state.value_or(-1))};
     if (pose_changed || d.aim_signature != aim) {
         d.aim_signature.reset();
-        py::call(b.engine.binding.get(), "update_vehicle_aim", engine.get(), p::number(pose[3]).get(), p::number(pose[6]).get(), p::number(pose[7]).get());
+        startup::binding::updateVehicleAim(b, v.engine_id, pose[3], pose[6], pose[7]);
         d.aim_signature = aim;
     }
     if (v.kind == "bot" || v.kind == "player") {

@@ -144,7 +144,7 @@ void create(Battle& b, Actor& v, const Value& event) {
     const std::int64_t team = integer(field(state, "team"), 1);
     const std::string name = has(state, "name") ? field(state, "name").resolved().text : "Vehicle";
     auto compact = py::call(descriptor.get(), "makeCompactDescr");
-    auto properties = py::call(b.engine.binding.get(), "properties_from_compact_descr", compact.get(), p::integer(team).get(), p::text(name).get());
+    auto properties = startup::binding::properties(b, compact.get(), team, name);
     p::Ref info(PyObject_GetItem(properties.get(), p::text("publicInfo").get()));
     auto put = [&](PyObject* into, const char* key, p::Ref value) {
         if (PyObject_SetItem(into, p::text(key).get(), value.get()) < 0) throw p::Error("publicInfo write failed");
@@ -204,7 +204,7 @@ bool ready(Battle& b, Actor& v) {
             throw p::Error("Vehicle " + std::to_string(v.engine_id) + " enter failed: " +
                            p::string(p::Ref(PyObject_Str(p::item(status.get(), 1).get())).get()));
     }
-    if (phase != "completed" || !p::flag(py::call(b.engine.binding.get(), "is_vehicle_ready", id.get()).get())) return false;
+    if (phase != "completed" || !startup::binding::isVehicleReady(b, v.engine_id)) return false;
     v.ready = true;
     return true;
 }
@@ -238,15 +238,12 @@ bool materialize(Battle& b, Actor& v) {
         }
     }
     if (!b.worker && d.remote && !d.arena_added) {
-        auto info = p::dict();
-        PyDict_SetItemString(info.get(), "properties", d.properties.get());
-        p::set(info.get(), "team_killer", p::boolean(field(d.state, "team_killer").truth()));
-        py::call(b.engine.binding.get(), "arena_vehicle_added", id.get(), info.get());
+        startup::binding::arenaVehicleAdded(b, v.engine_id, d.properties.get(), field(d.state, "team_killer").truth());
         d.arena_added = true;
         startup::startTeamChatWhenRosterReady(b);
     }
     if (!b.worker && d.remote && !v.native_remote && d.arena_added && d.spot_visible && !(d.world_marker_started || d.minimap_started)) {
-        py::call(b.engine.binding.get(), "start_vehicle_visual", id.get(), Py_True);
+        startup::binding::startVehicleVisual(b, v.engine_id, true);
         d.world_marker_started = d.minimap_started = true;
         if (!alive(b, v, vehicle.get())) presentDead(b, v, true);
     }

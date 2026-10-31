@@ -4,6 +4,7 @@
 #endif
 #include "stock_native_battle_world.hpp"
 #include "stock_native_battle_world_imports.hpp"
+#include "stock_native_battle_startup_needs.hpp"
 #include "stock_native_battle_world_parts.hpp"
 #include "stock_native_battle_local.hpp"
 #include "stock_native_detached_turret_snapshot.hpp"
@@ -377,12 +378,9 @@ bool detachLateAmmoTurret(Battle& b, Actor& vehicle, PyObject* entity, const Val
 }
 
 bool wreckPrewarmReady(Battle& b, double vehicle_ready_deadline) {
-    auto factory = b.engine.remote_factory.get();
-    auto pending = py::optional(factory, "wreck_prewarm_pending_count");
-    if (!py::callable(pending) || p::wide(py::invoke(pending.get()).get()) <= 0) return true;
+    if (remote::wreckPrewarmPending(b) <= 0) return true;
     if (vehicle_ready_deadline <= 0. || b.clock() < vehicle_ready_deadline) return false;
-    auto abandon = py::optional(factory, "abandon_pending_wreck_prewarm");
-    if (py::callable(abandon)) py::invoke(abandon.get());
+    remote::abandonWreckPrewarm(b);
     return true;
 }
 

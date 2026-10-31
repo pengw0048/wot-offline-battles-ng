@@ -620,13 +620,7 @@ bool battleResult(Battle& b, const Value& result) {
     }
     // Publish the afterbattle period first so its owners hold the outcome before the notification runs.
     b.feature("afterbattle arena period", [&] {
-        if (!b.engine.binding) throw p::Error("#1513 arena-period binding is unavailable");
-        auto period = py::attr(b.engine.binding.get(), "arena_period");
-        p::Ref positional(Py_BuildValue("(s)", "afterbattle"));
-        auto keywords = p::dict();
-        p::set(keywords.get(), "winner_team", p::integer(winner));
-        p::set(keywords.get(), "finish_reason", p::integer(toInt(reason.get())));
-        p::Ref(PyObject_Call(period.get(), positional.get(), keywords.get()));
+        startup::binding::arenaPeriod(b, "afterbattle", 0., std::make_pair(winner, std::int64_t(toInt(reason.get()))));
     });
     py::invoke(callback.get(), p::integer(winner).get(), reason.get());
     fb.round_finished_notified = true;

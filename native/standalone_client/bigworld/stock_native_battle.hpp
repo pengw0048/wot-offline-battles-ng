@@ -67,7 +67,7 @@ struct Engine {
     Object modules;         // runtime bundle: bigworld, constants, math, vehicles, compatibility, ...
     Object bigworld, constants, math, vehicles, compatibility;
     Object client;          // LAN client and its native transport
-    Object avatar, binding, server, remote_factory;
+    Object avatar, server;
 };
 
 struct Vehicles;

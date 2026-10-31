@@ -97,12 +97,8 @@ Actor* Battle::vehicleByEngine(std::int64_t engine_id) const {
 Actor* Battle::localVehicle() const { return vehicle("player:" + std::to_string(local_player)); }
 
 p::Ref Battle::entity(std::int64_t engine_id) const {
-    auto id = p::integer(engine_id);
-    if (engine.remote_factory) {
-        p::Ref found(PyObject_CallMethod(engine.remote_factory.get(), const_cast<char*>("get"), const_cast<char*>("O"), id.get()));
-        if (found.get() != Py_None) return found;
-    }
-    return p::Ref(PyObject_CallMethod(engine.bigworld.get(), const_cast<char*>("entity"), const_cast<char*>("O"), id.get()));
+    // Native remotes the AOI facade hides (wrecks) come from their owner; BigWorld owns the rest.
+    return remote::get(*this, engine_id);
 }
 
 void Battle::warn(const std::string& name, const std::string& error, bool disable) {
