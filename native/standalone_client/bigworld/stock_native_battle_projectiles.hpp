@@ -79,9 +79,29 @@ struct ProjectileVisual {
     bool active = false, admitted = true;
 };
 
+// One canonical projectile handed to the stock ProjectileMover.
+struct ProjectileTracer {
+    std::int64_t visual_id = 0, attacker_id = 0;
+    Object effects;                     // the shot's effectsDescr
+    bool own_shot = false, input_hit_notified = false, flock_hit_notified = false, missed_notified = false;
+    bool started = false, terminal = false, terminal_failed = false;
+};
+// The cosmetic tracer presenter: one stock ProjectileMover, bounded admission, terminal feedback once per shot.
+struct TracerPresenter {
+    Object mover;
+    Object flock_manager, triggers_manager;           // stock modules
+    std::int64_t next_shot_id = 1000000;
+    std::map<std::string, ProjectileTracer> shots;
+    std::map<std::int64_t, std::pair<double, double>> budgets;        // attacker -> (tokens, updated)
+    std::map<std::string, std::pair<std::int64_t, bool>> admissions;  // projectile -> (attacker, admitted)
+    std::set<std::string> failure_stages;
+    bool launches_enabled = true, explosions_enabled = true, closed = false;
+};
+
 struct Projectiles {
     Projectiles();
     ~Projectiles();
+    TracerPresenter tracers;
     std::optional<std::int64_t> epoch;
     std::map<std::string, ProjectileMeta> metas;
     std::map<std::string, ProjectileVisual> visuals;
@@ -193,6 +213,26 @@ std::optional<std::int64_t> estimatedServerTime(const Battle& b, double now);
 bool isAuthority(const Battle& b);
 // Ends the round's projectile owners.
 void retire(Battle& b);
+}
+
+// The stock ProjectileMover presenter of canonical tracers (visible client).
+namespace tracers {
+// #1513 ProjectileMover.add's startPoint/refStartPoint guard.
+constexpr double visual_start_max_diff = 20.;
+// A world terminal's stock explosion: (effectsDescr, effectMaterial, unit direction).
+struct Explosion { Object effects, material, direction; };
+// Reserves one bounded cosmetic slot for a projectile; repeated calls return the stored decision.
+bool admit(Battle& b, std::int64_t attacker_id, const std::string& projectile_id, double now);
+// Starts one stock tracer at the checked reference pose; visual_start is stock's separate on-screen startPoint.
+bool play(Battle& b, PyObject* descriptor, std::int64_t shell_index, const Point& reference_origin, const Point& reference_velocity,
+          double gravity, double max_distance, std::int64_t attacker_id, const std::string& projectile_id, bool is_ricochet,
+          const std::optional<Point>& visual_start);
+// Forwards exactly one terminal to the stock tracer, with its hit (and own-miss) feedback.
+bool stop(Battle& b, const std::string& projectile_id, const Point& end, const std::optional<Explosion>& explosion, bool missed);
+// Destroys the mover and forgets every shot; false when the old mover could not be destroyed.
+bool reset(Battle& b);
+// Closes the presenter for the round; throws when the stock mover fails to destroy.
+void destroy(Battle& b);
 }
 
 namespace gun {
