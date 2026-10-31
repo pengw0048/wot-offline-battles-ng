@@ -1,6 +1,7 @@
 #pragma once
 #include "stock_native_bot_armor_geometry.hpp"
 #include "offline_simulation_types.h"
+#include "stock_native_client_state.hpp"
 #include <string>
 struct _object;
 namespace native_battle { struct Battle; }
@@ -31,8 +32,8 @@ public:
         if(!result)return {};return Plates{result->value,result->tracks};
     }
 };
-// Reads the latest snapshot's plain-data requests and vehicle/entity readiness, then invokes
+// Reads the latest snapshot's human_ram_probes and vehicle/entity readiness, then invokes
 // only typed native geometry. Bad requests are isolated to their own row;
 // missing resources omit a reply so the server retains the exact substep.
-_object* results(native_battle::Battle&,World&,std::vector<std::string>* errors=nullptr);
+stock_native_client_state::Value results(native_battle::Battle&,World&,std::vector<std::string>* errors=nullptr);
 }

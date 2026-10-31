@@ -341,8 +341,7 @@ bool ingressDestructible(Battle& b, const Value& event) {
         if (!b.world || b.world->destructibles_disabled || !b.featureEnabled("destructible interactions")) return false;
         invalid("#1513 destructible runtime is unavailable");
     }
-    p::Ref raw(cs::write(event));
-    const bool accepted = owner->events.ingress(raw.get(), b.clock());
+    const bool accepted = owner->events.ingress(event, b.clock());
     if (!accepted && PyErr_Occurred()) {
         const auto error = describe(p::Error("Canonical native world event was rejected"));
         // A bad canonical row is local to that row on the Bot authority; the visible client reports it.
@@ -350,12 +349,6 @@ bool ingressDestructible(Battle& b, const Value& event) {
         invalid(error);
     }
     return accepted;
-}
-
-p::Ref packDestructibleEvents(Battle& b) {
-    auto* owner = current(b);
-    if (!owner) return p::list();
-    return p::Ref(owner->events.pack(b.engine.shell.get()));
 }
 
 bool acknowledgeDestructibleEvents(Battle& b, std::uint64_t sequence) {

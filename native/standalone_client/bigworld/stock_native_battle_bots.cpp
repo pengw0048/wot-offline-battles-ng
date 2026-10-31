@@ -9,6 +9,8 @@
 #include "stock_native_battle_bots_needs.hpp"
 #include "stock_native_bot_clock.hpp"
 #include "stock_native_bot_owner.hpp"
+#include "stock_native_battle_link.hpp"
+#include "stock_native_bot_value.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -18,6 +20,7 @@ namespace {
 using OwnerRef = std::shared_ptr<stock_native_bot::Owner>;
 bool feedTracks(Battle& b, Actor& vehicle, PyObject* entity, double turn, double now);
 namespace owner = stock_native_bot::owner;
+namespace v = stock_native_bot_value;
 constexpr double MANIFEST_RETRY_SECONDS = 0.25;
 constexpr double REMOTE_TRACK_SECONDS = 1.0 / 20.0;
 constexpr double TRACK_SCROLL_MIN = -15.0, TRACK_SCROLL_MAX = 30.0;
@@ -42,37 +45,29 @@ p::Ref client(const Battle& b) { return p::retain(b.engine.client ? b.engine.cli
 bool flushWorld(Battle& b) {
     OwnerRef o = existing(b);
     if (!o) return true;
-    auto events = owner::worldEvents(*o, b);
-    if (!b.live) return PySequence_Size(events.get()) == 0;
-    for (Py_ssize_t i = 0; i < PySequence_Size(events.get()); ++i) {
-        auto row = p::item(events.get(), i);
-        auto sequence = p::item(row.get(), 0), event = p::item(row.get(), 1);
-        if (!p::flag(py::call(client(b).get(), "send_destructible", event.get()).get())) return false;
-        owner::acknowledgeWorld(*o, std::uint64_t(p::wide(sequence.get())));
+    const auto events = owner::worldEvents(*o, b);
+    if (!b.live) return events.empty();
+    for (const auto& row : events) {
+        auto message = v::object();
+        message.object["type"] = v::text("destructible");
+        message.object["event"] = row.second;
+        if (!link::send(b, message)) return false;
+        owner::acknowledgeWorld(*o, row.first);
     }
     return true;
 }
 std::string text(PyObject* v) { return v && v != Py_None ? p::string(p::Ref(PyObject_Str(v)).get()) : std::string(); }
-bool messageIs(PyObject* message, const char* type) {
-    return PyDict_Check(message) && text(PyDict_GetItemString(message, "type")) == type;
-}
-p::Ref field(PyObject* message, const char* name) { return p::value(message, name); }
-bool has(PyObject* message, const char* name) { return PyDict_Check(message) && PyDict_GetItemString(message, name); }
-p::Ref callKeywords(PyObject* fn, std::initializer_list<PyObject*> positional, PyObject* keywords) {
-    p::Ref tuple(PyTuple_New(Py_ssize_t(positional.size())));
-    Py_ssize_t i = 0;
-    for (PyObject* v : positional) { Py_INCREF(v); PyTuple_SET_ITEM(tuple.get(), i++, v); }
-    return p::Ref(PyObject_Call(fn, tuple.get(), keywords));
+const std::string& typeOf(const Value& message) {
+    static const std::string none;
+    const auto& type = message.resolved().get("type").resolved();
+    return type.kind == Value::Kind::Text ? type.text : none;
 }
 std::array<Value, 4> manifestIdentity(const Battle& b) {
     const auto* a = authority(b);
-    auto epoch = py::optional(client(b).get(), "authority_epoch");
-    Value generation;
-    generation.kind = Value::Kind::Integer;
-    generation.integer = std::int64_t(b.generation);
+    const auto epoch = link::authorityEpoch(b);
     Value owner_id;
-    if (a->authority_id) { owner_id.kind = Value::Kind::Integer; owner_id.integer = *a->authority_id; }
-    return {generation, b.start.get("round_id"), owner_id, cs::read(epoch.get())};
+    if (a->authority_id) owner_id = v::integer(*a->authority_id);
+    return {v::integer(std::int64_t(b.generation)), b.start.get("round_id"), owner_id, epoch ? v::integer(*epoch) : Value()};
 }
 void discardManifest(Battle& b) {
     auto* a = authority(b);
@@ -81,96 +76,97 @@ void discardManifest(Battle& b) {
     a->manifest_retry_identity.reset();
 }
 // Sends each player destructible contact verdict; an accepted send is acknowledged.
-std::size_t sendContactResults(Battle& b, stock_native_bot::Owner& o, PyObject* results, double now) {
+std::size_t sendContactResults(Battle& b, stock_native_bot::Owner& o, const Value& results, double now) {
     std::size_t sent = 0;
-    for (Py_ssize_t i = 0; i < PySequence_Size(results); ++i) {
-        auto row = p::item(results, i);
-        auto player = p::value(row.get(), "player_id"), seq = p::value(row.get(), "seq");
-        auto accepted = p::value(row.get(), "accepted"), token = p::value(row.get(), "token");
-        if (p::flag(py::call(client(b).get(), "send_player_destructible_contact_result", player.get(), seq.get(), accepted.get(),
-                             token.get()).get())) {
-            owner::acknowledgePlayerContact(o, std::uint64_t(p::wide(p::value(row.get(), "serial").get())), now);
+    for (const auto& entry : results.resolved().array) {
+        const auto& row = entry.resolved();
+        auto message = v::object();
+        message.object["type"] = v::text("player_destructible_contact_result");
+        message.object["player_id"] = row.get("player_id");
+        message.object["contact_seq"] = row.get("seq");
+        message.object["accepted"] = row.get("accepted");
+        message.object["token"] = row.get("token");
+        if (link::send(b, message)) {
+            owner::acknowledgePlayerContact(o, std::uint64_t(v::wide(row.get("serial"))), now);
             ++sent;
         }
     }
     return sent;
 }
 
-// The outgoing authority message through its LAN client sender.
-bool send(Battle& b, PyObject* message) {
-    auto lan = client(b);
-    if (messageIs(message, "bot_manifest")) {
-        auto profiles = field(message, "player_collision_profiles");
-        auto fn = py::attr(lan.get(), "send_bot_manifest");
-        auto bots = field(message, "bots");
-        return p::flag((profiles.get() != Py_None ? py::invoke(fn.get(), bots.get(), profiles.get()) : py::invoke(fn.get(), bots.get())).get());
+// The outgoing authority message, shaped as its link message.
+bool send(Battle& b, const Value& source) {
+    const auto& message = source.resolved();
+    if (message.kind != Value::Kind::Object) return false;
+    const std::string& type = typeOf(message);
+    auto out = v::object();
+    auto& d = out.object;
+    d["type"] = v::text(type);
+    const auto copy = [&](const char* key) { d[key] = message.get(key); };
+    const auto optional = [&](const char* key) { if (message.object.count(key)) copy(key); };
+    if (type == "bot_manifest") {
+        copy("bots");
+        if (message.get("player_collision_profiles").resolved().kind != Value::Kind::Null) copy("player_collision_profiles");
+        return link::send(b, out);
     }
-    if (messageIs(message, "bot_state")) {
-        Object armors = own(field(message, "human_ram_armors"));
-        if (armors.get() == Py_None && b.worker) {
+    if (type == "bot_state") {
+        Value armors = message.get("human_ram_armors");
+        if (armors.resolved().kind == Value::Kind::Null && b.worker) {
             OwnerRef o = existing(b);
-            armors = own(o ? owner::humanRam(*o, b) : p::Ref(PyList_New(0)));
+            armors = o ? owner::humanRam(*o, b) : v::array();
         }
-        auto kwargs = p::dict();
-        if (has(message, "push_contacts")) p::set(kwargs.get(), "push_contacts", field(message, "push_contacts"));
+        copy("rows");
+        optional("push_contacts");
         if (b.worker) {
             OwnerRef o = existing(b);
-            auto turrets = o ? owner::detachedRows(*o) : p::Ref(PyList_New(0));
-            if (p::flag(turrets.get())) p::set(kwargs.get(), "detached_turrets", turrets);
+            // The detached turret owner still returns Python rows.
+            if (o) {
+                Value turrets = cs::read(owner::detachedRows(*o).get());
+                if (turrets.truth()) d["detached_turrets"] = std::move(turrets);
+            }
         }
-        if (has(message, "sample_time_us")) {
-            p::set(kwargs.get(), "sample_time_us", field(message, "sample_time_us"));
-            p::set(kwargs.get(), "source_batch_horizon_us", field(message, "source_batch_horizon_us"));
-        }
-        if (armors.get() != Py_None) p::set(kwargs.get(), "human_ram_armors", p::retain(armors.get()));
-        auto rows = field(message, "rows");
-        auto projected = py::optional(lan.get(), "send_projected_bot_state");
-        if (py::callable(projected)) {
-            p::set(kwargs.get(), "edge_sample_time_us", field(message, "edge_sample_time_us"));
-            p::set(kwargs.get(), "edge_revision", field(message, "edge_revision"));
-            return p::flag(callKeywords(projected.get(), {rows.get()}, kwargs.get()).get());
-        }
-        return p::flag(callKeywords(py::attr(lan.get(), "send_bot_state").get(), {rows.get()}, kwargs.get()).get());
+        if (message.object.count("sample_time_us")) { copy("sample_time_us"); copy("source_batch_horizon_us"); }
+        if (armors.resolved().kind != Value::Kind::Null) d["human_ram_armors"] = std::move(armors);
+        copy("edge_sample_time_us");
+        copy("edge_revision");
+        return link::send(b, out);
     }
-    if (messageIs(message, "bot_observation")) {
-        auto kwargs = p::dict();
-        p::set(kwargs.get(), "radio_links", field(message, "radio_links"));
-        p::set(kwargs.get(), "player_vision_ranges", field(message, "player_vision_ranges"));
-        auto contacts = field(message, "contacts"), affordances = field(message, "affordances");
-        return p::flag(callKeywords(py::attr(lan.get(), "send_bot_observation").get(), {contacts.get(), affordances.get()}, kwargs.get()).get());
+    if (type == "bot_observation") {
+        for (const char* key : {"contacts", "affordances", "radio_links", "player_vision_ranges"}) copy(key);
+        return link::send(b, out);
     }
-    if (messageIs(message, "bot_ram")) {
-        auto kwargs = p::dict();
-        for (const char* key : {"contact_positions", "track_contacts_bot", "track_contacts_target", "track_impact_speed"})
-            if (has(message, key)) p::set(kwargs.get(), key, field(message, key));
-        std::vector<p::Ref> values;
-        for (const char* key : {"bot_id", "target_kind", "target_id", "ram_seq", "damage_to_bot", "damage_to_target",
-                                "ram_contact_player_id", "ram_contact_seq"})
-            values.push_back(field(message, key));
-        p::Ref tuple(PyTuple_New(Py_ssize_t(values.size())));
-        for (std::size_t i = 0; i < values.size(); ++i) PyTuple_SET_ITEM(tuple.get(), Py_ssize_t(i), values[i].release());
-        return p::flag(p::Ref(PyObject_Call(py::attr(lan.get(), "send_bot_ram").get(), tuple.get(), kwargs.get())).get());
+    if (type == "bot_ram") {
+        for (const char* key : {"bot_id", "target_kind", "target_id", "ram_seq", "damage_to_bot", "damage_to_target"}) copy(key);
+        for (const char* key : {"ram_contact_player_id", "ram_contact_seq", "contact_positions", "track_contacts_bot", "track_contacts_target",
+                                "track_impact_speed"})
+            optional(key);
+        return link::send(b, out);
     }
-    if (messageIs(message, "rules_state")) {
-        auto rules = field(message, "rules");
-        auto bases = PyDict_Check(rules.get()) ? p::value(rules.get(), "bases") : p::retain(Py_None);
-        return p::flag(py::call(lan.get(), "send_rules_state", bases.get()).get());
+    if (type == "rules_state") {
+        const auto& rules = message.get("rules").resolved();
+        d["bases"] = rules.kind == Value::Kind::Object ? rules.get("bases") : Value();
+        return link::send(b, out);
     }
-    if (messageIs(message, "battle_result")) {
-        auto winner = field(message, "winner"), reason = field(message, "reason"), base = field(message, "base_team");
-        return p::flag(py::call(lan.get(), "send_battle_result", winner.get(), reason.get(), base.get()).get());
+    if (type == "battle_result") {
+        for (const char* key : {"winner", "reason", "base_team"}) copy(key);
+        return link::send(b, out);
     }
     return false;
 }
 
 // Publishes accepted Bot launches in fire-sequence order; a refused launch blocks that Bot's later ones.
-bool resolveFire(Battle& b, PyObject* message) {
+bool resolveFire(Battle& b, const Value& message) {
     OwnerRef o = existing(b);
     if (!o) return false;
     auto sender = py::optional(client(b).get(), "send_projectile_launch");
     if (!py::callable(sender)) return false;
     bool complete = true;
-    Object wave = own(owner::projectileLaunches(*o, message));
+    // The projectile owner still reads a Python bot_state: only its type and launches.
+    auto admitted = v::object();
+    admitted.object["type"] = message.get("type");
+    if (message.resolved().object.count("launches")) admitted.object["launches"] = message.get("launches");
+    p::Ref wire(cs::write(admitted));
+    Object wave = own(owner::projectileLaunches(*o, wire.get()));
     while (p::flag(wave.get())) {
         for (Py_ssize_t i = 0; i < PySequence_Size(wave.get()); ++i) {
             auto row = p::item(wave.get(), i);
@@ -195,9 +191,9 @@ bool resolveFire(Battle& b, PyObject* message) {
 }
 
 // Sends one authority message; an accepted Bot state then publishes its launches.
-bool enqueue(Battle& b, PyObject* message) {
+bool enqueue(Battle& b, const Value& message) {
     const bool accepted = send(b, message);
-    if (accepted && messageIs(message, "bot_state")) resolveFire(b, message);
+    if (accepted && typeOf(message) == "bot_state") resolveFire(b, message);
     return accepted;
 }
 
@@ -213,8 +209,7 @@ bool enqueueManifest(Battle& b, const Value& message, double now) {
         throw p::Error("worker bot manifest enqueue timed out");
     }
     if (same && a->next_manifest_retry > 0. && now + 1.0e-9 < a->next_manifest_retry) return false;
-    p::Ref wire(cs::write(message));
-    if (!send(b, wire.get())) {
+    if (!send(b, message)) {
         a->next_manifest_retry = now + MANIFEST_RETRY_SECONDS;
         if (!same) a->manifest_retry_deadline = now + b.config.get("startupTimeoutSeconds").numeric(30.);
         a->manifest_retry_identity = identity;
@@ -228,17 +223,7 @@ bool enqueueManifest(Battle& b, const Value& message, double now) {
 
 // The worker's Bot start carries human_ram_timeline when both ends speak it.
 void markHumanRamTimeline(Battle& b, Value& start) {
-    auto lan = client(b);
-    auto protocol = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.lan_client"));
-    auto capability = py::attr(protocol.get(), "HUMAN_RAM_TIMELINE_CAPABILITY");
-    auto mine = py::optional(lan.get(), "capabilities"), server = py::optional(lan.get(), "server_capabilities");
-    if (mine.get() != Py_None && server.get() != Py_None && PySequence_Contains(mine.get(), capability.get()) == 1 &&
-        PySequence_Contains(server.get(), capability.get()) == 1) {
-        Value flag;
-        flag.kind = Value::Kind::Boolean;
-        flag.boolean = true;
-        start.object["human_ram_timeline"] = flag;
-    }
+    if (link::negotiated(b, "human_ram_timeline_v1")) start.object["human_ram_timeline"] = v::boolean(true);
 }
 // Sends what the round start returned: the manifest through its retry tenure.
 void dispatchOutgoing(Battle& b, const std::vector<Value>& outgoing, bool materialize = false) {
@@ -315,19 +300,17 @@ void update(Battle& b, double now, double dt) {
     if (!enabled(b)) return;
     OwnerRef o = prepare(b);
     if (!o) return;
-    auto players = owner::players(*o, b);
-    auto results = owner::playerContacts(*o, b, players.get(), now);
-    if (flushWorld(b)) sendContactResults(b, *o, results.get(), now);
+    const Value players = owner::players(*o, b);
+    const Value results = owner::playerContacts(*o, b, players, now);
+    if (flushWorld(b)) sendContactResults(b, *o, results, now);
     const std::int64_t sample_before = owner::clock(*o).sample_us;
-    Object outgoing;
-    outgoing = own(owner::update(*o, b, dt, now, players.get()));
+    const Value outgoing = owner::update(*o, b, dt, now, players);
     flushWorld(b);
     recordControl(b, owner::clock(*o), sample_before);
-    for (Py_ssize_t i = 0; i < PySequence_Size(outgoing.get()); ++i) {
-        auto message = p::item(outgoing.get(), i);
-        const bool state = messageIs(message.get(), "bot_state");
+    for (const auto& message : outgoing.array) {
+        const bool state = typeOf(message) == "bot_state";
         if (state) ++a->generated;
-        const bool accepted = enqueue(b, message.get());
+        const bool accepted = enqueue(b, message);
         if (state) ++(accepted ? a->enqueued : a->send_failed);
     }
 }
@@ -342,12 +325,11 @@ std::size_t presentPoses(Battle& b, double now) {
 }
 
 bool drainWorkerTransport(Battle& b) {
-    auto drain = py::optional(client(b).get(), "dispatch_ready_messages");
-    if (!b.worker || !py::callable(drain)) return true;
+    if (!b.worker) return true;
     const auto generation = b.generation;
     const auto* before = authority(b);
     const Value round = b.start.get("round_id");
-    py::invoke(drain.get());
+    link::drain(b);
     // Dispatch can finish or replace the round; no old frame may advance on a new lifecycle.
     Battle* now = current();
     return now == &b && b.running() && b.generation == generation && authority(b) == before && b.start.get("round_id") == round;
@@ -360,10 +342,9 @@ void retryManifest(Battle& b, double now) {
     const auto identity = manifestIdentity(b);
     if (a->manifest_retry_identity && *a->manifest_retry_identity != identity) { discardManifest(b); return; }
     if (a->round_id != b.start.get("round_id")) { discardManifest(b); return; }
-    auto client_round = py::optional(client(b).get(), "round_id");
-    if (client_round.get() != Py_None && cs::read(client_round.get()) != b.start.get("round_id")) { discardManifest(b); return; }
-    auto check = py::optional(client(b).get(), "is_bot_authority");
-    if (py::callable(check) && !p::flag(py::invoke(check.get()).get())) { discardManifest(b); return; }
+    const auto client_round = link::roundId(b);
+    if (client_round && v::integer(*client_round) != b.start.get("round_id")) { discardManifest(b); return; }
+    if (!link::authority(b)) { discardManifest(b); return; }
     const Value* pending = pendingManifest(b);
     if (!pending || !isAuthority(b)) {
         a->next_manifest_retry = a->manifest_retry_deadline = 0.;
@@ -444,41 +425,41 @@ bool feedTracks(Battle& b, Actor& vehicle, PyObject* entity, double turn, double
 }
 }
 
-bool reconcileAuthority(Battle& b, PyObject* player_id) {
+void reconcileAuthority(Battle& b, const Value& player) {
     auto* a = authority(b);
-    if (!a || !a->started) return false;
-    if (player_id == Py_None ? !a->authority_id
-                             : a->authority_id && (PyInt_Check(player_id) || PyLong_Check(player_id)) && *a->authority_id == p::wide(player_id))
-        return false;
+    if (!a || !a->started) return;
+    const auto& player_id = player.resolved();
+    // A Python bool was an int here: comparing it rejected it as an id.
+    const bool integral = player_id.kind == Value::Kind::Integer || player_id.kind == Value::Kind::Boolean;
+    if (player_id.kind == Value::Kind::Null ? !a->authority_id : a->authority_id && integral && *a->authority_id == v::wide(player_id))
+        return;
     Value start = b.start.resolved().kind == Value::Kind::Object ? b.start.resolved() : Value();
     start.kind = Value::Kind::Object;
-    start.object["bot_authority_id"] = cs::read(player_id);
+    start.object["bot_authority_id"] = player_id;
     if (!b.worker) {
         // A visible client tracks the authority lineage only and never builds a manifest.
         if (!roundStart(b, start).empty()) throw p::Error("visible client attempted to become bot authority");
-        return true;
+        return;
     }
     markHumanRamTimeline(b, start);
     // The hidden worker joins only a waiting room and owns the Bots from the round start; a late
     // takeover of an already published line-up has no restore path here.
-    Object snapshot = a->last_snapshot && PyDict_Check(a->last_snapshot.get()) ? a->last_snapshot : own(p::dict());
-    const bool becomes = player_id != Py_None && (PyInt_Check(player_id) || PyLong_Check(player_id)) && p::wide(player_id) == b.local_player;
-    if (becomes && (p::flag(p::value(snapshot.get(), "bot_manifest").get()) || p::flag(p::value(snapshot.get(), "bots").get()) ||
-                    start.get("bot_manifest").truth()))
+    const Value& snapshot = a->last_snapshot.resolved();
+    const bool becomes = integral && v::wide(player_id) == b.local_player;
+    if (becomes && (snapshot.get("bot_manifest").truth() || snapshot.get("bots").truth() || start.get("bot_manifest").truth()))
         throw p::Error("a Bot authority takeover is not supported by the hidden worker");
-    auto result = p::value(snapshot.get(), "battle_result");
-    if (result.get() != Py_None) start.object["battle_result"] = cs::read(result.get());
+    const Value& result = snapshot.get("battle_result");
+    if (result.resolved().kind != Value::Kind::Null) start.object["battle_result"] = result;
     dispatchOutgoing(b, roundStart(b, start));
-    return true;
 }
 
-void snapshot(Battle& b, PyObject* message) {
-    if (b.bots) b.bots->last_snapshot = borrow(message);
+void applySnapshot(Battle& b, const Value& message) {
+    // The worker keeps the accepted (shared) snapshot for its owner's human input, ram probes and takeover.
+    if (b.bots && b.worker) b.bots->last_snapshot = message;
     OwnerRef o = existing(b);
     if (!o) return;
     owner::snapshot(*o, message);
-    if (PyDict_Check(message) && PyDict_GetItemString(message, "battle_result") && PyDict_GetItemString(message, "battle_result") != Py_None)
-        b.bots->finished = true;
+    if (message.resolved().get("battle_result").resolved().kind != Value::Kind::Null) b.bots->finished = true;
 }
 
 bool projectileIngress(Battle& b, PyObject* message, double now) {
@@ -516,9 +497,9 @@ std::size_t projectileAdvance(Battle& b, double now, bool force_progress) {
     }
     return sent_count;
 }
-bool worldIngress(Battle& b, PyObject* event, double now) {
+bool worldIngress(Battle& b, const Value& event) {
     OwnerRef o = prepare(b);
-    return o && owner::worldIngress(*o, event, now);
+    return o && owner::worldIngress(*o, event, b.clock());
 }
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence) {
     OwnerRef o = existing(b);
@@ -540,16 +521,16 @@ std::size_t prewarmPlayers(Battle& b, double now) {
 
 // The hidden worker's water observations; sent when the native owner produced a batch.
 bool playerEnvironment(Battle& b, double dt, double now) {
-    auto lan = client(b);
-    if (dt <= 0. || lan.get() == Py_None) return false;
+    if (dt <= 0.) return false;
     OwnerRef o = prepare(b);
     if (!o) return false;
-    const bool authority_flag = p::flag(py::call(lan.get(), "is_bot_authority").get());
-    auto batch = owner::playerEnvironment(*o, b, dt, authority_flag);
+    auto batch = owner::playerEnvironment(*o, b, dt, link::authority(b));
     if (!batch) return false;
-    auto sequence = p::integer(batch->first);
-    auto sender = py::optional(lan.get(), "send_player_environment");
-    const bool sent = py::callable(sender) && p::flag(py::invoke(sender.get(), batch->second.get(), sequence.get()).get());
+    auto message = v::object();
+    message.object["type"] = v::text("player_environment");
+    message.object["observations"] = std::move(batch->second);
+    message.object["sample_seq"] = v::integer(batch->first);
+    const bool sent = link::send(b, message);
     owner::acknowledgePlayerEnvironment(*o, b, batch->first, sent);
     return sent;
 }
@@ -580,18 +561,6 @@ p::Ref controlSnapshot(const Battle& b) {
 void frameStarted(Battle& b, double, double) {
     if (b.bots) ++b.bots->frame_callbacks;
 }
-void applySnapshot(Battle& b, const Value& value) {
-    auto message = b.pythonOf(value);
-    snapshot(b, message.get());
-}
-void reconcileAuthority(Battle& b, const Value& player_id) {
-    p::Ref id(cs::write(player_id));
-    reconcileAuthority(b, id.get());
-}
-bool worldIngress(Battle& b, const Value& event) {
-    p::Ref message(cs::write(event));
-    return worldIngress(b, message.get(), b.clock());
-}
 std::optional<bool> detachedIngress(Battle& b, const Value& message) {
     OwnerRef o = existing(b);
     if (!o) return std::nullopt;
@@ -606,20 +575,21 @@ std::size_t detachedAdvance(Battle& b, double now) {
     if (!o) return 0;
     auto rows = owner::detachedAdvance(*o, b, now);
     if (rows.get() == Py_None) return 0;
-    // After the battle result no bot_state carries proposals: send_bot_state([], detached_turrets=rows).
-    auto kwargs = p::dict();
-    p::set(kwargs.get(), "detached_turrets", rows);
-    auto empty = p::list();
-    callKeywords(py::attr(client(b).get(), "send_bot_state").get(), {empty.get()}, kwargs.get());
-    return std::size_t(PyList_GET_SIZE(rows.get()));
+    // After the battle result no bot_state carries proposals: a bot_state of the detached turret tail alone.
+    auto message = v::object();
+    message.object["type"] = v::text("bot_state");
+    message.object["rows"] = v::array();
+    message.object["detached_turrets"] = cs::read(rows.get());
+    const std::size_t count = message.object["detached_turrets"].array.size();
+    link::send(b, message);
+    return count;
 }
 void prewarmBots(Battle& b, double now) { prewarm(b, now); }
 std::size_t playerContacts(Battle& b, const Value& players, double now) {
     OwnerRef o = prepare(b);
     if (!o) return 0;
-    p::Ref rows(cs::write(players));
-    auto results = owner::playerContacts(*o, b, rows.get(), now);
-    return flushWorld(b) ? sendContactResults(b, *o, results.get(), now) : 0;
+    const Value results = owner::playerContacts(*o, b, players, now);
+    return flushWorld(b) ? sendContactResults(b, *o, results, now) : 0;
 }
 const Value* currentState(const Battle& b, std::int64_t bot_id) {
     const auto* a = authority(b);

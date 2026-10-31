@@ -1,20 +1,23 @@
 #include "stock_native_world_events.hpp"
 #include "stock_native_bot_python.hpp"
+#include "stock_native_bot_value.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace stock_native_world {
 namespace {
 namespace p=stock_native_bot_python;
+namespace v=stock_native_bot_value;
+using Value=stock_native_client_state::Value;
 const char* kind(Kind value){switch(value){case Kind::Tree:return "tree";case Kind::Falling:return "column";case Kind::Fragile:return "fragile";case Kind::Structure:return "module";default:throw p::Error("Native destructible kind is unsupported");}}
 MaterialKey identity(const Destruction&e){return {e.key.first,e.key.second,e.kind==Kind::Structure?e.material:-1};}
-p::Ref event(const Destruction&e){auto out=p::dict();p::set(out.get(),"destructible_kind",p::text(kind(e.kind)));p::set(out.get(),"chunk_id",p::integer(e.key.first));p::set(out.get(),"item_index",p::integer(e.key.second));p::set(out.get(),"x",p::number(e.position[0]));p::set(out.get(),"y",p::number(e.position[1]));p::set(out.get(),"z",p::number(e.position[2]));p::set(out.get(),"fall_yaw",p::number(e.yaw));p::set(out.get(),"speed",p::number(e.speed));p::set(out.get(),"is_shot",p::boolean(e.shot));if(e.kind==Kind::Structure)p::set(out.get(),"mat_kind",p::integer(e.material));return out;}
-Destruction parse(PyObject*raw,double now){
-    if(!PyDict_Check(raw)||!std::isfinite(now))throw p::Error("Canonical destructible event is invalid");Destruction out;out.now=now;
-    auto type=p::value(raw,"destructible_kind");const auto name=p::string(type.get());if(name=="tree")out.kind=Kind::Tree;else if(name=="column")out.kind=Kind::Falling;else if(name=="fragile")out.kind=Kind::Fragile;else if(name=="module")out.kind=Kind::Structure;else throw p::Error("Canonical destructible kind is invalid");
-    auto chunk=p::value(raw,"chunk_id"),item=p::value(raw,"item_index"),shot=p::value(raw,"is_shot");const auto c=p::wide(chunk.get()),i=p::wide(item.get());if(c<0||std::uint64_t(c)>0xffffffffULL||i<0||i>0xffff||!PyBool_Check(shot.get()))throw p::Error("Canonical destructible identity is invalid");out.key={std::uint32_t(c),std::uint32_t(i)};out.shot=shot.get()==Py_True;
-    auto x=p::value(raw,"x"),y=p::value(raw,"y"),z=p::value(raw,"z");out.position={{p::scalar(x.get()),p::scalar(y.get()),p::scalar(z.get())}};out.yaw=p::numeric(raw,"fall_yaw");out.speed=p::numeric(raw,"speed");
-    if(out.kind==Kind::Structure){auto material=p::value(raw,"mat_kind");out.material=p::wide(material.get());if(out.material<73||out.material>=86)throw p::Error("Canonical destructible module is invalid");}return out;
+Value event(const Destruction&e){auto out=v::object();auto&d=out.object;d["destructible_kind"]=v::text(kind(e.kind));d["chunk_id"]=v::integer(e.key.first);d["item_index"]=v::integer(e.key.second);d["x"]=v::number(e.position[0]);d["y"]=v::number(e.position[1]);d["z"]=v::number(e.position[2]);d["fall_yaw"]=v::number(e.yaw);d["speed"]=v::number(e.speed);d["is_shot"]=v::boolean(e.shot);if(e.kind==Kind::Structure)d["mat_kind"]=v::integer(e.material);return out;}
+Destruction parse(const Value&source,double now){
+    const auto&raw=source.resolved();if(raw.kind!=Value::Kind::Object||!std::isfinite(now))throw p::Error("Canonical destructible event is invalid");Destruction out;out.now=now;
+    const auto name=v::string(v::value(raw,"destructible_kind"));if(name=="tree")out.kind=Kind::Tree;else if(name=="column")out.kind=Kind::Falling;else if(name=="fragile")out.kind=Kind::Fragile;else if(name=="module")out.kind=Kind::Structure;else throw p::Error("Canonical destructible kind is invalid");
+    const auto&shot=v::value(raw,"is_shot");const auto c=v::wide(v::value(raw,"chunk_id")),i=v::wide(v::value(raw,"item_index"));if(c<0||std::uint64_t(c)>0xffffffffULL||i<0||i>0xffff||shot.kind!=Value::Kind::Boolean)throw p::Error("Canonical destructible identity is invalid");out.key={std::uint32_t(c),std::uint32_t(i)};out.shot=shot.boolean;
+    out.position={{v::scalar(v::value(raw,"x")),v::scalar(v::value(raw,"y")),v::scalar(v::value(raw,"z"))}};out.yaw=v::numeric(raw,"fall_yaw");out.speed=v::numeric(raw,"speed");
+    if(out.kind==Kind::Structure){out.material=v::wide(v::value(raw,"mat_kind"));if(out.material<73||out.material>=86)throw p::Error("Canonical destructible module is invalid");}return out;
 }
 }
 WorldEvents::WorldEvents(Registry&r,stock_native_destructible::Runtime&native,Scene&scene,std::uint32_t space):registry_(r),native_(native),scene_(scene),space_(space),epoch_(r.epoch){}
@@ -43,13 +46,13 @@ void WorldEvents::record(const Destruction&e,bool canonical){
     activated_trees_.insert(e.key);
     if(canonical)trusted_published_.insert(e.key);
 }
-PyObject* WorldEvents::pack(PyObject*battle){
-    try{if(battle!=battle_||epoch_!=registry_.epoch)throw p::Error("Native world publication owner is stale");std::vector<Event> events=registry_.journal;for(const auto&row:trusted_)events.push_back(row.second);std::sort(events.begin(),events.end(),[](const Event&a,const Event&b){return a.sequence<b.sequence;});auto out=p::list();for(const auto&e:events){const bool trusted=trusted_.count(e.destruction.key)&&trusted_.at(e.destruction.key).sequence==e.sequence;if(!trusted)record(e.destruction,false);p::Ref row(Py_BuildValue("(LN)",static_cast<PY_LONG_LONG>(e.sequence),event(e.destruction).release()));p::append(out.get(),row);packed_=std::max(packed_,e.sequence);}return out.release();}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}
+std::vector<std::pair<std::uint64_t,Value>> WorldEvents::pack(PyObject*battle){
+    if(battle!=battle_||epoch_!=registry_.epoch)throw p::Error("Native world publication owner is stale");std::vector<Event> events=registry_.journal;for(const auto&row:trusted_)events.push_back(row.second);std::sort(events.begin(),events.end(),[](const Event&a,const Event&b){return a.sequence<b.sequence;});std::vector<std::pair<std::uint64_t,Value>> out;for(const auto&e:events){const bool trusted=trusted_.count(e.destruction.key)&&trusted_.at(e.destruction.key).sequence==e.sequence;if(!trusted)record(e.destruction,false);out.emplace_back(e.sequence,event(e.destruction));packed_=std::max(packed_,e.sequence);}return out;
 }
 bool WorldEvents::ack(std::uint64_t sequence){
     try{if(!battle_||epoch_!=registry_.epoch||sequence>packed_)return false;for(const auto&e:registry_.journal)if(e.sequence<=sequence)record(e.destruction,true);for(auto i=trusted_.begin();i!=trusted_.end();)if(i->second.sequence<=sequence){record(i->second.destruction,true);i=trusted_.erase(i);}else ++i;registry_.acknowledge(sequence);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
 }
-bool WorldEvents::ingress(PyObject*raw,double now){
+bool WorldEvents::ingress(const Value&raw,double now){
     try{if(!battle_||epoch_!=registry_.epoch)throw p::Error("Native canonical destructible owner is stale");const auto e=parse(raw,now);const auto id=identity(e);if(registry_.isolated(e.key))return false;if(registry_.skin.destroyed.count(id)||registry_.skin.destroyed.count(MaterialKey{e.key.first,e.key.second,-1})){record(e,true);return true;}
         const auto live=registry_.instances.find(e.key),baked=registry_.baked_instances.find(e.key);const Instance*proof=live!=registry_.instances.end()?&live->second:baked!=registry_.baked_instances.end()?&baked->second:nullptr;if(proof&&proof->kind!=e.kind)return false;if(!proof&&e.kind!=Kind::Tree)return false;
         const auto admitted=scene_.refresh(e.key,registry_);if(admitted==Admission::Isolated)return false;const bool logical=e.kind==Kind::Tree&&admitted!=Admission::Admitted;

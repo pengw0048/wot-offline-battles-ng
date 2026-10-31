@@ -52,11 +52,12 @@ struct CombatModeSnapshot {
 bool load_combat_snapshot(const stock_native_bot::BotSeed& bot,_object* descriptor,CombatSnapshot& output);
 bool load_combat_mode(const stock_native_bot::BotSeed& bot,_object* descriptor,CombatModeSnapshot& output);
 bool load_aim_samples(_object* descriptor,std::vector<AimSample>& output);
-bool readServerCombat(_object* raw,_object* server_tick,const CriticalState& metadata,ServerCombat& output);
+bool readServerCombat(const stock_native_client_state::Value& raw,const stock_native_client_state::Value& server_tick,
+                      const CriticalState& metadata,ServerCombat& output);
 bool adopt_combat_mode(offline_simulation::weapons::Store&,offline_simulation::ActorKey,
                        const CombatModeSnapshot&);
-// New owned reference containing only native-owned publication fields.
-_object* combat_snapshot_value(const CombatState&,const SiegeState&,
+// Only the native-owned publication fields.
+stock_native_client_state::Value combat_snapshot_value(const CombatState&,const SiegeState&,
     const offline_simulation::weapons::ActorState&,
     const std::vector<CriticalEvent>&);
 } // namespace wot::offline_bot_step

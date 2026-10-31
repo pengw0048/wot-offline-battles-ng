@@ -16,7 +16,7 @@ struct BotAuthority {
     // The native simulation owner, created when this client becomes the authority. Callers hold a
     // copy across any stock call that can re-enter and retire it.
     std::shared_ptr<stock_native_bot::Owner> owner;
-    Object last_snapshot;   // the latest accepted snapshot message: human input, ram probes, takeover
+    Value last_snapshot;    // worker: the latest applied (shared) snapshot: human input, ram probes, takeover
     // The round start (the pinned BotRuntime.battle_start state).
     bool started = false;
     Value round_id;
@@ -99,16 +99,11 @@ bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 // Measures a presented yaw's turn rate for the belt feed.
 double rememberTrackTurn(Actor& vehicle, double yaw, double now);
 
-// Authority changes from a roster or snapshot.
-bool reconcileAuthority(Battle& b, PyObject* player_id);
-// Server-owned combat state for the authority simulation.
-void snapshot(Battle& b, PyObject* message);
-// Projectile and world ingress the native owner consumes.
+// Projectile ingress the native owner consumes.
 bool projectileIngress(Battle& b, PyObject* message, double now);
 bool projectileObserve(Battle& b, PyObject* message, double now);
 bool projectileEvent(Battle& b, PyObject* event, double now);
 std::size_t projectileAdvance(Battle& b, double now, bool force_progress);
-bool worldIngress(Battle& b, PyObject* event, double now);
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence);
 bool acknowledgeRam(Battle& b, std::int64_t player_id, std::int64_t sequence);
 // Worker prebattle prewarm of the native world receipts; returns the prewarmed count.
@@ -119,7 +114,9 @@ bool playerEnvironment(Battle& b, double dt, double now);
 // Value-typed entry points the other subsystems call.
 // The worker's render callback started (progress counter).
 void frameStarted(Battle& b, double rule_dt, double raw_dt);
+// Server-owned combat state for the authority simulation.
 void applySnapshot(Battle& b, const Value& snapshot);
+// Authority changes from a roster or snapshot.
 void reconcileAuthority(Battle& b, const Value& player_id);
 bool worldIngress(Battle& b, const Value& event);
 // nullopt when no native owner handles detached turrets yet.
