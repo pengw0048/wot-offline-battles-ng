@@ -690,6 +690,8 @@ void finishEntityStartup(Battle& b) {
         }
         visibility::start(b);
         local::start(b);
+        // The visible player's native drive owner, replay included (native_client_drive.prepare at the running edge).
+        if (!b.worker) local::prepare(b);
         b.phase = Phase::Running;
         b.startup->stage = Stage::None;
         if (!b.worker) {
