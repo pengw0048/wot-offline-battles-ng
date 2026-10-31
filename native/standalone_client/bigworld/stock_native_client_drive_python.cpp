@@ -104,7 +104,7 @@ void synchronizeStatus(const native_battle::Battle&b,double now){
     auto owner=owned(b);const auto anchor=native_battle::projectiles::serverClockAnchor(b);std::optional<double>estimated;if(anchor)estimated=anchor->first+std::max(0.,now-anchor->second)*1000.;owner->statuses.synchronize(*b.vehicles,now,estimated);
 }
 DriverAccess driverAccess(native_battle::Battle&b){
-    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=b.entity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity is unavailable");if(!b.local->physics)throw p::Error("Native player effective physics are unavailable");installPlayer(b,entity.get(),*b.local->physics);}
+    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=b.entity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity "+std::to_string(actor->engine_id)+" of "+actor->key+" is unavailable");if(!b.local->physics)throw p::Error("Native player effective physics are unavailable");installPlayer(b,entity.get(),*b.local->physics);}
     return {owner,owner->player.get(),&owner->player_contacts,&owner->publication};
 }
 void installPlayer(native_battle::Battle&b,PyObject*entity,const native_battle::local::DriveParams&params){

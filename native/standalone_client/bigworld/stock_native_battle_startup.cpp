@@ -7,6 +7,9 @@
 #include "stock_native_battle_vehicles.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_remote.hpp"
+#include "stock_native_battle_events.hpp"
+#include "stock_native_battle_critical.hpp"
+#include "stock_native_battle_feedback.hpp"
 #include <algorithm>
 #include <cstdlib>
 
@@ -148,6 +151,9 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
     b.diagnostics = std::make_unique<Diagnostics>();
     b.local = std::make_unique<LocalVehicle>();
     b.roster = std::make_unique<Vehicles>();
+    b.events = std::make_unique<Events>();
+    b.critical = std::make_unique<Critical>();
+    b.feedback = std::make_unique<Feedback>();
     b.vehicles->local_player_id = b.local_player;
     b.startup->on_local_leave = borrow(on_local_leave);
     b.live = false;

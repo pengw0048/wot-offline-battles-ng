@@ -451,6 +451,7 @@ bool receive(Battle& b, const Value& message) {
 
 // BattleRuntime._drain_event_journal: apply ready events in order; a waiting event blocks only its dependencies.
 bool drain(Battle& b) {
+    if (!b.events) return true;
     auto& events = *b.events;
     auto& journal = events.journal;
     std::size_t attempts = journal.size(), index = 0;
