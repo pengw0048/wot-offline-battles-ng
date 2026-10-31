@@ -216,6 +216,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_geometry.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_python.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_critical.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_critical_python.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_lifecycle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_bots.cpp"

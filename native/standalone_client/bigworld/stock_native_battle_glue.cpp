@@ -104,4 +104,27 @@ std::pair<p::Ref, p::Ref> compat::dispatchAccountIntCommand(Battle& b, PyObject*
     auto result = py::call(b.engine.compatibility.get(), "dispatch_account_int_command", command, values);
     return {p::item(result.get(), 0), p::item(result.get(), 1)};
 }
+
+// BattleRuntime._echo_local_gun_angles: the rotator angle (or the given one) as the server's echoed aim.
+bool vehicles::echoLocalGunAngles(Battle& b, std::optional<double> turret_yaw, std::optional<double> gun_pitch) {
+    if (!b.engine.server || !b.local) throw p::Error("player gun-angle echo is not attached");
+    auto rotator = py::optional(b.engine.avatar.get(), "gunRotator");
+    if (rotator.get() == Py_None) throw p::Error("#1513 gun rotator is unavailable");
+    auto angle = [&](const char* name) {
+        auto value = py::optional(rotator.get(), name);
+        if (value.get() == Py_None) throw p::Error(std::string("#1513 ") + name + " is unavailable for server echo");
+        return p::scalar(value.get());
+    };
+    const double turret = turret_yaw ? *turret_yaw : angle("turretYaw");
+    const double pitch = gun_pitch ? *gun_pitch : angle("gunPitch");
+    const double hull = b.local->yaw;
+    startup::binding::updateVehicleAim(b, startup::server::vehicleId(b), hull, hull + turret, pitch);
+    return true;
+}
+
+// BattleRuntime._pose_motion_time_us/_pose_motion_local_time: the latest authority motion time and its local clock.
+std::optional<std::pair<std::int64_t, double>> vehicles::poseMotionAnchor(const Battle& b) {
+    if (!b.projectiles || !b.projectiles->motion_time_us) return std::nullopt;
+    return std::make_pair(*b.projectiles->motion_time_us, b.projectiles->motion_local_time);
+}
 }

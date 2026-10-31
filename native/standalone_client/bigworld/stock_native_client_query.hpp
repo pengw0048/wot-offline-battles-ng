@@ -6,6 +6,7 @@ struct _object;
 namespace stock_native_world {struct TurretSweep;}
 namespace stock_native_bot_turret {struct MovingDescriptor;}
 namespace stock_native_bot_geometry {struct Vehicle;}
+namespace native_battle {struct Battle;}
 namespace stock_native_client_query {
 struct OutlineMiss {double angle=0.;std::int64_t engine_id=0;double distance=0.;};
 struct OutlineDecline {std::int64_t engine_id=0;std::string reason;};
@@ -45,7 +46,7 @@ public:
         std::optional<double> start_server_ms={})=0;
 };
 // Cold acquisition retains this query owner and its detached component BSPs.
-std::shared_ptr<ProjectileTurrets> projectileTurrets(_object* battle);
+std::shared_ptr<ProjectileTurrets> projectileTurrets(native_battle::Battle& battle);
 // The query lifecycle installs this geometry once per actor/descriptor owner.
 // Consumers retain Actor.geometry while using the returned native resource.
 const stock_native_bot_geometry::Vehicle* geometry(const stock_native_client_state::Actor&);

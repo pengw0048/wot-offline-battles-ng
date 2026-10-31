@@ -425,7 +425,7 @@ public:
     Owner(Battle& b, std::int64_t sequence)
         : state_(b.vehicles), epoch_(state_->epoch), generation_(b.generation), client_(b.engine.client),
           scene_(stock_native_client_drive::sceneAccess(b)),
-          world_(state_, scene_, stock_native_client_query::projectileTurrets(b.engine.shell.get())), flights_(world_), lifecycle_(flights_) {
+          world_(state_, scene_, stock_native_client_query::projectileTurrets(b)), flights_(world_), lifecycle_(flights_) {
         if (!scene_.registry || !scene_.scene || !scene_.pipeline) throw p::Error("Native player projectile scene is unavailable");
         if (!world_.install(b)) throw p::Error("Native player projectile world installation failed");
         lifecycle_.sequence(sequence);

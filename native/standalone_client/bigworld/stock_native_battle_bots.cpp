@@ -641,5 +641,11 @@ void start(Battle& b) {
     if (b.worker) markHumanRamTimeline(b, message);
     dispatchOutgoing(b, roundStart(b, message), true);
 }
+
+// The worker Bot world's per-frame foliage, motion and registry step; false without a live owner.
+bool frame(Battle& b, double now, bool force) {
+    OwnerRef o = existing(b);
+    return o ? owner::frame(*o, now, force) : false;
+}
 }
 }

@@ -46,5 +46,9 @@ void applyHealth(Battle& b, Actor& vehicle, Value& state, const HealthEdge& edge
 bool applyCritical(Battle& b, Actor& vehicle, const Value& payload, const Value* authority = nullptr);
 // Re-applies the vehicle's current presented state (siege, statistics, stun, critical, health).
 bool materialize(Battle& b, Actor& vehicle);
+// The local gun angle echoed as the server's aim (the rotator's own angles when not given).
+bool echoLocalGunAngles(Battle& b, std::optional<double> turret_yaw, std::optional<double> gun_pitch);
+// The latest authority motion time (us) and the local clock it was anchored at.
+std::optional<std::pair<std::int64_t, double>> poseMotionAnchor(const Battle& b);
 }
 }

@@ -1427,5 +1427,37 @@ bool markManifestEnqueued(Battle& b, const Value& message) {
     clearPending(*b.bots);
     return true;
 }
+
+// The round's Bot skill context for visible-client peer drive: tactics, skill mode, lineup pins and round.
+Value peerSkillContext(const Battle& b) {
+    const Value& start = b.start.resolved();
+    Value out;
+    out.kind = Kind::Object;
+    out.object["tactics"] = at(start, "bot_tactics");
+    Value mode;
+    mode.kind = Kind::Text;
+    mode.text = normalizeSkillMode(at(start, "bot_skill_mode"));
+    out.object["mode"] = mode;
+    const Value& round_id = at(start, "round_id").resolved();
+    Value round;
+    round.kind = Kind::Text;
+    round.text = round_id.kind == Kind::Text ? round_id.text : round_id.kind == Kind::Integer ? std::to_string(round_id.integer) : "None";
+    out.object["round"] = round;
+    Value pins;
+    pins.kind = Kind::Array;
+    for (const auto& raw : at(start, "bot_lineup").resolved().array) {
+        const auto& row = raw.resolved();
+        if (row.kind != Kind::Object || !skillTier(at(row, "skill"))) continue;
+        const Value& team = at(row, "team").resolved();
+        const Value& slot = at(row, "slot").resolved();
+        if (team.kind != Kind::Integer || slot.kind != Kind::Integer) continue;
+        Value pin;
+        pin.kind = Kind::Array;
+        pin.array = {team, slot, at(row, "skill").resolved()};
+        pins.array.push_back(std::move(pin));
+    }
+    out.object["pins"] = pins;
+    return out;
+}
 }
 }

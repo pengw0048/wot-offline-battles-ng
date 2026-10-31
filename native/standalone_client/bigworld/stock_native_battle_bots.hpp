@@ -130,6 +130,10 @@ bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* sta
 // Advances native detached turrets; returns the advanced row count.
 std::size_t detachedAdvance(Battle& b, double now);
 void prewarmBots(Battle& b, double now);
+// The worker Bot world's per-frame foliage, motion and registry step; false without a live owner.
+bool frame(Battle& b, double now, bool force);
+// The round's Bot skill context (tactics, skill mode, lineup pins, round) the visible client's peer drive reads.
+Value peerSkillContext(const Battle& b);
 // Resolves the players' destructible contacts and sends each verdict; returns the sent count.
 std::size_t playerContacts(Battle& b, const Value& players, double now);
 // A Bot's static collision profile, or null before its manifest.

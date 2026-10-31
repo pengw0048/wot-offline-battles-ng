@@ -35,4 +35,11 @@ void startup::receive(Battle& b, const std::string& kind, PyObject* message) {
     else if (kind == "player_destructible_contact") world::destructibleContact(b, value);
     else throw p::Error("unsupported worker round message: " + kind);
 }
+
+std::optional<std::array<double, 4>> startup::arenaBounds(const Battle& b) {
+    return b.startup ? b.startup->arena_bounds : std::nullopt;
+}
+PyObject* startup::navigationGraph(const Battle& b) {
+    return b.startup && b.startup->navigation_graph ? b.startup->navigation_graph.get() : Py_None;
+}
 }

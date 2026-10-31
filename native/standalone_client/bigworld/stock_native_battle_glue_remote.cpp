@@ -30,5 +30,16 @@ p::Ref visibleCollisions(Battle& b, PyObject* vehicle, PyObject* start, PyObject
     if (!actor || !actor->native_remote) return p::retain(Py_None);
     return collideAtMatrix(b, vehicle, drawn, start, end);
 }
+
+// The live pose overlay of a vehicle as the stock pose sources bind it; none when its pose is inactive.
+std::optional<PoseOverlay> poseOverlay(const Battle&, PyObject* vehicle) {
+    const auto* row = overlay(vehicle);
+    if (!row || !row->pose_active || !row->field("matrix")) return std::nullopt;
+    PoseOverlay out;
+    out.matrix = borrow(row->field("matrix"));
+    if (auto* steady = row->field("steady_rotation_matrix")) out.steady_rotation = borrow(steady);
+    if (auto* stabilised = row->field("stabilised_matrix")) out.stabilised = borrow(stabilised);
+    return out;
+}
 }
 }

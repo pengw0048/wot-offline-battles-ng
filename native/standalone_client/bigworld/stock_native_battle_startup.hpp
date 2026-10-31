@@ -120,6 +120,8 @@ std::pair<Point, double> worldPose(Battle& b, const Value& state);     // the pi
 std::optional<double> groundY(Battle& b, double x, double z, double hint, bool allow_wide);
 std::optional<std::int64_t> outfitSeason(Battle& b);
 Value localState(Battle& b);
+std::optional<std::array<double, 4>> arenaBounds(const Battle& b);
+PyObject* navigationGraph(const Battle& b);   // borrowed; None when the map has no baked graph
 std::int64_t skillCount(Battle& b, const char* skill);
 
 // ---- engine binding (the pinned BigWorldVehicleBinding) ----

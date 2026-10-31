@@ -10,6 +10,7 @@
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_client_query.hpp"
 #include "stock_native_battle.hpp"
+#include "stock_native_battle_visibility.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_turret_obstacles.hpp"
 #include "stock_native_detached_turret_snapshot.hpp"
@@ -238,7 +239,7 @@ const geo::Vehicle* geometry(const state::Actor&a){
 PyObject* descriptor(const state::Actor&a){
     const auto*g=static_cast<const CachedGeometry*>(a.geometry.get());return g&&g->revision==a.descriptor_revision?g->descriptor.get():nullptr;
 }
-std::shared_ptr<ProjectileTurrets> projectileTurrets(PyObject*battle){auto handle=field(battle,"_native_client_query");if(handle.get()==Py_None)throw p::Error("Native client query owner is unavailable");return std::make_shared<ProjectileTurretAccess>(handle.get());}
+std::shared_ptr<ProjectileTurrets> projectileTurrets(native_battle::Battle&b){auto*handle=native_battle::visibility::queryOwner(b);if(!handle)throw p::Error("Native client query owner is unavailable");return std::make_shared<ProjectileTurretAccess>(handle);}
 PyObject* create(PyObject*,PyObject*args){PyObject*battle,*collision_type=Py_None;if(!PyArg_ParseTuple(args,"O|O",&battle,&collision_type))return nullptr;try{
     auto shared=state::fromBattle(battle);if(!shared||shared->retired)throw p::Error("Native client state is unavailable");
     auto o=std::make_unique<Owner>(std::move(shared),collision_type);p::Ref capsule(PyCapsule_New(o.get(),capsule_name,destroy));o.release();return capsule.release();
