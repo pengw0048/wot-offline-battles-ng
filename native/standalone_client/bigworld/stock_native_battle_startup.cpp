@@ -619,7 +619,8 @@ void waitForClientReady(Battle& b) {
 
 void onClientReady(Battle& b) {
     b.startup->client_ready_received = true;
-    if (!b.feature("Expert damaged-device presentation", [&] { visibility::enableExpert(b); }))
+    // Expert needs both the client-ready edge and the visibility state; visibility::start covers the other order.
+    if (b.visibility && !b.feature("Expert damaged-device presentation", [&] { visibility::enableExpert(b); }))
         visibility::disableExpertPresentation(b);
     if (b.running()) {
         local::sendCurrent(b);

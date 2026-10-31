@@ -69,6 +69,8 @@ void visibility::start(Battle& b) {
     inputs.sixth_sense_delay = params::boosterSkillValue(b.startup->effective_params, "sixth_sense_delay", 3.0);
     configureLocal(b, std::move(inputs));
     bind(b);
+    if (b.startup->client_ready_received && !b.feature("Expert damaged-device presentation", [&] { enableExpertVisibility(b); }))
+        disableExpert(b);
 }
 void visibility::enableExpert(Battle& b) { enableExpertVisibility(b); }
 void visibility::disableExpertPresentation(Battle& b) { disableExpert(b); }
