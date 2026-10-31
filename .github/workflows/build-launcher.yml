@@ -85,6 +85,9 @@ jobs:
           assert identity['buildIdentity'] == expected, identity
           assert not os.path.exists(os.path.join(payload, 'client'))
           assert os.path.isfile(ng_client.executable(package))
+          symbols = [os.path.join(root, name) for root, _, names in os.walk(payload)
+                     for name in names if name.lower().endswith('.pdb')]
+          assert not symbols, symbols
           '@ | python - $tree $launcher $payload "github-${{ github.run_id }}-${{ github.run_attempt }}"
           if ($LASTEXITCODE -ne 0) {
               throw "NG payload verification failed"
@@ -138,3 +141,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+      # Symbols for this run's bwclient_h.exe; the player download omits them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wot-offline-battles-ng-symbols-${{ github.run_number }}
+          path: ${{ runner.temp }}\ng-client\*.pdb
+          if-no-files-found: error
+          retention-days: 90

@@ -90,7 +90,7 @@ Before each native launch, previous standalone.log and python.log files are
 moved to logs/<UTC timestamp>/ in this package folder. prepare.log is appended.
 On failure the console stays open. Preserve its error text, prepare.log,
 the native logs, logs/ and any .dmp file if generated when reporting a failure.
-Matching PDB symbols accompany the executable for crash investigation.
+Matching PDB symbols are archived with each build for crash investigation.
 '''
     (client / 'README-FIRST.txt').write_bytes(readme.replace('\n', '\r\n').encode('ascii'))
     print('Packaged preparation tools; no original game resources were copied.', flush=True)

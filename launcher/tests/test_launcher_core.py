@@ -1355,6 +1355,22 @@ class PayloadStagingTest(unittest.TestCase):
             stage_payload.launcher_version(), identity["semanticVersion"])
         self.assertIsNotNone(core._normalize_payload_identity(identity))
 
+    def test_ng_client_debug_symbols_stay_out_of_the_payload(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "bigworld-client-win32")
+        self._write_ng_client(package)
+        with open(os.path.join(package, "bwclient_h.PDB"), "w") as stream:
+            stream.write("symbols")
+        target = os.path.join(source, "staged")
+
+        written = stage_payload.stage_ng_client(
+            target, package, identity="test-staging")
+
+        self.assertFalse(os.path.exists(os.path.join(target, "bwclient_h.PDB")))
+        self.assertFalse(any(path.lower().endswith(".pdb") for path in written))
+        self.assertTrue(os.path.isfile(os.path.join(target, "bwclient_h.exe")))
+
     def test_an_incomplete_ng_client_package_is_rejected(self):
         source = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, source, True)

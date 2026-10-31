@@ -67,6 +67,7 @@ python -m PyInstaller `
     --hidden-import bot_tactics_smoke `
     --exclude-module gui `
     --hidden-import PIL.ImageTk `
+    --exclude-module PIL._avif `
     --hidden-import PIL.DdsImagePlugin `
     --hidden-import packed_xml `
     --hidden-import vehicle_prices `

@@ -39,6 +39,7 @@ NG_CLIENT_REQUIRED = (
     "offline-res.json",
     "tools/prepare_native_client.py",
 )
+NG_CLIENT_EXCLUDED_SUFFIXES = (".pdb",)
 BUILD_IDENTITY_RELATIVE = "mods/configs/offline_lan_0922/build_identity.json"
 BUILD_IDENTITY_ENV = "WOT_OFFLINE_BUILD_IDENTITY"
 BUILD_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -56,7 +57,8 @@ def _copy_file(source, target):
     shutil.copy2(source, target)
 
 
-def _copy_tree(source, target, keep_bytecode=False, suffixes=None):
+def _copy_tree(source, target, keep_bytecode=False, suffixes=None,
+               excluded_suffixes=()):
     written = []
     for directory, directories, names in os.walk(source):
         directories[:] = sorted(
@@ -68,6 +70,8 @@ def _copy_tree(source, target, keep_bytecode=False, suffixes=None):
                 continue
             if name.startswith(".") or (suffixes is not None and
                                          not name.lower().endswith(suffixes)):
+                continue
+            if excluded_suffixes and name.lower().endswith(excluded_suffixes):
                 continue
             source_path = os.path.join(directory, name)
             if os.path.islink(source_path):
@@ -127,8 +131,10 @@ def stage_ng_client(target_root, ng_client, source_root=None, identity=None):
     for relative in NG_CLIENT_REQUIRED:
         if not os.path.isfile(os.path.join(ng_client, *relative.split("/"))):
             raise ValueError("NG client package is incomplete: %s" % relative)
-    # Python 2.7 bytecode can be part of the client runtime.
-    written = _copy_tree(ng_client, target_root, keep_bytecode=True)
+    # Python 2.7 bytecode can be part of the client runtime. Debug symbols
+    # are archived beside each build instead of shipping to every player.
+    written = _copy_tree(ng_client, target_root, keep_bytecode=True,
+                         excluded_suffixes=NG_CLIENT_EXCLUDED_SUFFIXES)
     target = os.path.join(target_root, *BUILD_IDENTITY_RELATIVE.split("/"))
     payload = {
         "schema": 1,
