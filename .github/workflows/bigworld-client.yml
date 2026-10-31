@@ -51,12 +51,19 @@ jobs:
           persist-credentials: false
       - name: Prepare the licensed Wwise SDK
         if: ${{ !inputs.client_build_run && steps.wwise-sdk.outputs.cache-hit != 'true' }}
+        timeout-minutes: 2
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Windows System32 tar hangs on this xz stream and produces no output.
+          $tar = Join-Path $env:ProgramFiles "Git\usr\bin\tar.exe"
+          if (-not (Test-Path -LiteralPath $tar)) {
+              throw "Git tar is required to extract the Wwise SDK."
+          }
           $dest = Join-Path $PWD "wwise-sdk"
           New-Item -ItemType Directory -Path $dest | Out-Null
-          tar -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
+          & $tar -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
+          if ($LASTEXITCODE -ne 0) { throw "The licensed Wwise SDK archive could not be extracted." }
       - name: Select the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
         shell: pwsh
