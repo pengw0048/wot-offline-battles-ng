@@ -308,7 +308,8 @@ void receive(Battle& b, const Value& data, double now, bool manifest) {
         if (a && a->engine_id) it = owner->pending_creates.erase(it);
         else ++it;
     }
-    refreshBindings(b, true);
+    // The worker presents its own Bots through setPose; only the visible client binds the replica.
+    if (!b.worker) refreshBindings(b, true);
 }
 }
 
