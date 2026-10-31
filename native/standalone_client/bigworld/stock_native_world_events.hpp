@@ -1,6 +1,9 @@
 #pragma once
 #include "stock_native_destructible_runtime.hpp"
+#include "stock_native_client_state.hpp"
 #include <set>
+#include <utility>
+#include <vector>
 struct _object;
 namespace stock_native_world {
 using TrustedTreeStatus=TreeIdentity;
@@ -26,11 +29,12 @@ public:
     // Retires the empty stock AreaDestructibles animator clock and binds the battle identity pack() is fenced by.
     // Existing stock animator bodies are rejected: install before any legacy authority advances.
     bool install(_object * battle);
-    // Ordered (sequence,event-dict) rows. Transport admission is the caller's
-    // external boundary; no callback or LAN method runs inside this owner.
-    _object * pack(_object * battle);
+    // Ordered (sequence, event) rows; throws when the owner is stale. Transport admission is the
+    // caller's external boundary; no callback or LAN method runs inside this owner.
+    std::vector<std::pair<std::uint64_t,stock_native_client_state::Value>> pack(_object * battle);
     bool ack(std::uint64_t sequence);
-    bool ingress(_object * canonical_event,double now);
+    // False for a rejected event; a stale owner or malformed event also sets the Python error.
+    bool ingress(const stock_native_client_state::Value & canonical_event,double now);
     // Projectile CAS transport owns publication. This applies only the native
     // consequences of an accepted destruction and is safe to retry.
     bool mirrorOnly(const Destruction&);

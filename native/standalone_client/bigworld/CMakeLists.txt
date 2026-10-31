@@ -162,7 +162,6 @@ set(WOT_STOCK_ADAPTER_SOURCES
 
 # Persistent native gameplay owners and their cold/event Python value boundary.
 list(APPEND WOT_STOCK_ADAPTER_SOURCES
-    "${CMAKE_CURRENT_LIST_DIR}/stock_native_bot_actor_python.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_state.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_query.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_query_module.cpp"

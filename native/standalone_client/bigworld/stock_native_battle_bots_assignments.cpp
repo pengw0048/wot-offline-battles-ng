@@ -2,6 +2,7 @@
 // line-up helpers): shared tier/class slots, then each team's vehicles drawn from the #1513 catalogue.
 #include "stock_native_battle_bots.hpp"
 #include "stock_native_battle_bots_random.hpp"
+#include "stock_native_battle_link.hpp"
 #include "stock_native_battle_startup.hpp"
 #include <algorithm>
 #include <cmath>
@@ -558,8 +559,14 @@ std::optional<Table> lineup(Battle& b, PyObject* player_descriptor) {
         }
     }
     if (humans[0].empty() && humans[1].empty()) {
-        auto team = py::optional(b.engine.client.get(), "team");
-        const std::int64_t own_team = p::flag(team.get()) ? p::wide(p::Ref(PyNumber_Int(team.get())).get()) : 1;
+        std::int64_t own_team = 1;
+        if (b.worker) {
+            const auto team = link::team(b);
+            if (team && *team) own_team = *team;
+        } else {
+            auto team = py::optional(b.engine.client.get(), "team");
+            if (p::flag(team.get())) own_team = p::wide(p::Ref(PyNumber_Int(team.get())).get());
+        }
         humans[own_team != 2 ? 0 : 1].push_back(player_profile);
     }
 

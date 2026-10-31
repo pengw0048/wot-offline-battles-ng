@@ -51,5 +51,5 @@ bool readPerceptionMode(const stock_native_bot::BotSeed & bot,_object * descript
     stock_native_bot_perception::Actor & result);
 // The same plain parser handles accepted server order replacement at ingress;
 // no Python strategy, geometry or simulation callback is invoked here.
-bool readPlanningOrders(_object * orders,std::map<std::int64_t,StrategicOrder> & result);
+bool readPlanningOrders(const std::map<std::int64_t,stock_native_client_state::Value> & orders,std::map<std::int64_t,StrategicOrder> & result);
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "stock_native_player_environment.hpp"
+#include "stock_native_client_state.hpp"
 #include <map>
 #include <memory>
 struct _object;
@@ -16,6 +17,6 @@ using MetadataCache=std::map<std::int64_t,MetadataCacheEntry>;
 // A malformed/unready player is contained to that player.
 bool readAndAdvance(native_battle::Battle& battle,double dt,bool authority,Owner&,World&,
                     MetadataCache&,std::optional<Batch>&);
-// Returns a new Python list of wire observations.
-_object* observationsValue(const Batch&);
+// The wire observations of one batch.
+stock_native_client_state::Value observationsValue(const Batch&);
 }

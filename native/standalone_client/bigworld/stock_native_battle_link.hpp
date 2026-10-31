@@ -30,6 +30,8 @@ bool authority();
 inline bool authority(const Battle&) { return authority(); }
 std::optional<std::int64_t> roundId(const Battle& b);
 std::optional<std::int64_t> authorityEpoch(const Battle& b);
+// The worker's own team from its LAN welcome, when known.
+std::optional<std::int64_t> team(const Battle& b);
 // Both the worker and the server advertised this capability.
 bool negotiated(const Battle& b, const std::string& capability);
 // Dispatches every message already received (between the Bot control slice and shell advancement).

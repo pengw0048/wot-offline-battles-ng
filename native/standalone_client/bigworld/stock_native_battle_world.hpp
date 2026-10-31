@@ -85,8 +85,7 @@ void disableDestructibles(Battle& b, const std::string& error);
 bool applyDestructibleState(Battle& b, const Value& events);
 bool reconcileDetachedTurrets(Battle& b, const Value& message);
 bool rememberRamBotSnapshot(Battle& b, const Value& snapshot);
-// Native destruction publication: ordered (sequence, canonical event) rows for the LAN client, then its ack.
-p::Ref packDestructibleEvents(Battle& b);
+// Acknowledges native destruction publication through this sequence.
 bool acknowledgeDestructibleEvents(Battle& b, std::uint64_t sequence);
 
 // The LAN player_destructible_contact (worker) and player_destructible_contact_result (visible) messages.

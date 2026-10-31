@@ -2,11 +2,13 @@
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_combat_snapshot.hpp"
 #include "stock_native_bot_descriptor.hpp"
+#include "stock_native_bot_value.hpp"
 #include <algorithm>
 
 namespace stock_native_bot {
 namespace {
 namespace p=stock_native_bot_python;
+using stock_native_client_state::Value;
 Point point(PyObject*value){Point out;for(int i=0;i<3;++i){auto v=p::item(value,i);out[i]=p::scalar(v.get());}return out;}
 stock_native_bot_turret::MovingDescriptor envelope(PyObject*d){
     stock_native_bot_turret::MovingDescriptor result;const char*names[]={"chassis","hull"};
@@ -49,21 +51,22 @@ bool readNativeSnapshot(const RoundSeed&seed,const ServerOrders&orders,double re
     }
     output=std::move(next);return true;
 }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool readNativeServerSnapshot(PyObject*raw,PyObject*tick,PyObject*time,const Actor&actor,const offline_simulation::weapons::ActorState&weapon,ServerSnapshot&output){try{
-    // Preserve the source's missing-field defaults without copying the full
-    // server row, and parse the complete transaction before changing an actor.
-    p::Ref combat(PyDict_Copy(raw));
-    if(!p::field(raw,"health"))p::set(combat.get(),"health",p::integer(actor.combat.health));
-    if(!p::field(raw,"alive"))p::set(combat.get(),"alive",p::boolean(actor.combat.alive));
-    if(!p::field(raw,"critical")){p::Ref current(step::combat_snapshot_value(actor.combat,actor.siege,weapon,{}));auto critical=p::value(current.get(),"critical");p::set(combat.get(),"critical",critical);}
-    ServerSnapshot next;if(!step::readServerCombat(combat.get(),tick,actor.combat.critical,next.combat))return false;
-    next.fire_sequence=p::integral(raw,"fire_seq");next.server_time_ms=time&&time!=Py_None?p::wide(time):0;
-    auto reload=p::value(raw,"reload_time"),duration=p::value(raw,"reload_duration");next.has_reload=reload.get()!=Py_None&&duration.get()!=Py_None;
-    if(next.has_reload){next.reload_time=p::scalar(reload.get());next.reload_duration=p::scalar(duration.get());}
-    auto clip=p::value(raw,"clip"),clip_size=p::value(raw,"clip_size");if(clip.get()!=Py_None&&clip_size.get()!=Py_None)next.clip={{int(p::wide(clip.get())),int(p::wide(clip_size.get()))}};
-    if(p::field(raw,"ammo_remaining")&&p::field(raw,"shell_index")&&p::field(raw,"next_shell_index")&&p::field(raw,"ammo_reload_pending")){
-        auto ammo=weapon.ammo;auto counts=p::value(raw,"ammo_remaining");ammo.remaining.clear();for(Py_ssize_t i=0;i<p::size(counts.get());++i){auto count=p::item(counts.get(),i);const auto n=p::wide(count.get());if(n<0||n>2147483647)throw p::Error("Native ammunition count invalid");ammo.remaining.push_back(int(n));}
-        ammo.loaded=int(p::integral(raw,"shell_index"));ammo.next=int(p::integral(raw,"next_shell_index"));ammo.reload_pending=p::truth(raw,"ammo_reload_pending");ammo.plan_pending=false;ammo.validate(weapon.gun.config.shell_count);next.ammunition=std::move(ammo);
+bool readNativeServerSnapshot(const Value&source,const Value&tick,const Value&time,const Actor&actor,const offline_simulation::weapons::ActorState&weapon,ServerSnapshot&output){try{
+    namespace v=stock_native_bot_value;
+    // Preserve the source's missing-field defaults and parse the complete transaction before changing an actor.
+    const auto&raw=source.resolved();if(raw.kind!=Value::Kind::Object)throw p::Error("Native Bot event is not a dictionary");
+    Value combat=raw;
+    if(!v::field(raw,"health"))combat.object["health"]=v::integer(actor.combat.health);
+    if(!v::field(raw,"alive"))combat.object["alive"]=v::boolean(actor.combat.alive);
+    if(!v::field(raw,"critical"))combat.object["critical"]=step::combat_snapshot_value(actor.combat,actor.siege,weapon,{}).get("critical");
+    ServerSnapshot next;if(!step::readServerCombat(combat,tick,actor.combat.critical,next.combat))return false;
+    next.fire_sequence=v::integral(raw,"fire_seq");next.server_time_ms=time.resolved().kind!=Value::Kind::Null?v::wide(time):0;
+    const auto&reload=v::value(raw,"reload_time"),&duration=v::value(raw,"reload_duration");next.has_reload=reload.kind!=Value::Kind::Null&&duration.kind!=Value::Kind::Null;
+    if(next.has_reload){next.reload_time=v::scalar(reload);next.reload_duration=v::scalar(duration);}
+    const auto&clip=v::value(raw,"clip"),&clip_size=v::value(raw,"clip_size");if(clip.kind!=Value::Kind::Null&&clip_size.kind!=Value::Kind::Null)next.clip={{int(v::wide(clip)),int(v::wide(clip_size))}};
+    if(v::field(raw,"ammo_remaining")&&v::field(raw,"shell_index")&&v::field(raw,"next_shell_index")&&v::field(raw,"ammo_reload_pending")){
+        auto ammo=weapon.ammo;ammo.remaining.clear();for(const auto&count:v::rows(v::value(raw,"ammo_remaining"))){const auto n=v::wide(count);if(n<0||n>2147483647)throw p::Error("Native ammunition count invalid");ammo.remaining.push_back(int(n));}
+        ammo.loaded=int(v::integral(raw,"shell_index"));ammo.next=int(v::integral(raw,"next_shell_index"));ammo.reload_pending=v::truth(raw,"ammo_reload_pending");ammo.plan_pending=false;ammo.validate(weapon.gun.config.shell_count);next.ammunition=std::move(ammo);
     }
     output=std::move(next);return true;
 }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}

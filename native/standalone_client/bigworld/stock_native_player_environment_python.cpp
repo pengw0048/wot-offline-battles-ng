@@ -3,6 +3,7 @@
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_battle.hpp"
+#include "stock_native_bot_value.hpp"
 #include <algorithm>
 #include <cmath>
 namespace stock_native_player_environment {
@@ -64,12 +65,13 @@ bool readAndAdvance(native_battle::Battle& battle,double dt,bool authority,Owner
  for(auto i=cache.begin();i!=cache.end();)if(!present.count(i->first))i=cache.erase(i);else ++i;
  output=owner.advance(dt,true,players,world);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-PyObject* observationsValue(const Batch& batch){try{auto out=p::list();for(const auto& item:batch.observations){auto row=p::dict();p::set(row.get(),"player_id",p::integer(item.id));p::set(row.get(),"input_seq",p::integer(item.input_sequence));p::set(row.get(),"level",p::integer(item.level));
- if(item.drowning){const auto& proposal=*item.drowning;auto data=p::dict(),list=p::list(),destroyed=p::list(),crew=p::list(),events=p::list();
+native_battle::Value observationsValue(const Batch& batch){namespace v=stock_native_bot_value;using wot::offline_bot_step::CriticalEventKind;
+ auto out=v::array();for(const auto& item:batch.observations){auto row=v::object();row.object["player_id"]=v::integer(item.id);row.object["input_seq"]=v::integer(item.input_sequence);row.object["level"]=v::integer(item.level);
+ if(item.drowning){const auto& proposal=*item.drowning;auto data=v::object(),list=v::array(),destroyed=v::array(),crew=v::array(),events=v::array();
   for(const auto& entry:proposal.state.devices){const auto& d=entry.second;if(!d.hp&&!d.destroyed&&!d.critical)continue;const double hp=d.hp.value_or(0.);const double maximum=std::max(1.,d.maximum.value_or(std::max(1.,std::floor(hp+.5))));
-   auto device=p::dict();p::set(device.get(),"name",p::text(entry.first));p::set(device.get(),"hp",p::number(std::max(0.,hp)));p::set(device.get(),"max_hp",p::number(maximum));const char* state=d.destroyed?"destroyed":d.critical?"critical":hp<=0.?"destroyed":hp<=maximum*.5?"critical":"normal";p::set(device.get(),"state",p::text(state));p::append(list.get(),device);if(d.destroyed)p::append(destroyed.get(),p::text(entry.first));}
-  for(const auto& name:proposal.state.crew_ko)p::append(crew.get(),p::text(name));
-  for(const auto& event:proposal.events){auto e=p::dict();const auto kind=event.kind==wot::offline_bot_step::CriticalEventKind::device?"device":event.kind==wot::offline_bot_step::CriticalEventKind::crew?"crew":event.kind==wot::offline_bot_step::CriticalEventKind::fire?"fire":"ammo_rack";p::set(e.get(),"kind",p::text(kind));if(event.kind==wot::offline_bot_step::CriticalEventKind::device||event.kind==wot::offline_bot_step::CriticalEventKind::crew)p::set(e.get(),"name",p::text(event.name));if(event.kind==wot::offline_bot_step::CriticalEventKind::device)p::set(e.get(),"old_state",p::text(status(event.old_status)));if(event.kind==wot::offline_bot_step::CriticalEventKind::fire)p::set(e.get(),"state",p::boolean(event.status==wot::offline_bot_step::CriticalStatus::fire_on));else p::set(e.get(),"state",p::text(status(event.status)));p::set(e.get(),"cause",p::text("drowning"));p::append(events.get(),e);}
-  p::set(data.get(),"devices",list);p::set(data.get(),"destroyed",destroyed);p::set(data.get(),"crew_ko",crew);p::set(data.get(),"fire",p::boolean(proposal.state.fire));p::set(data.get(),"ammo_rack_death",p::boolean(proposal.state.ammo_rack_death));p::set(data.get(),"events",events);p::set(row.get(),"drowning_critical",data);}
- p::append(out.get(),row);}return out.release();}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
+   auto device=v::object();device.object["name"]=v::text(entry.first);device.object["hp"]=v::number(std::max(0.,hp));device.object["max_hp"]=v::number(maximum);const char* state=d.destroyed?"destroyed":d.critical?"critical":hp<=0.?"destroyed":hp<=maximum*.5?"critical":"normal";device.object["state"]=v::text(state);list.array.push_back(std::move(device));if(d.destroyed)destroyed.array.push_back(v::text(entry.first));}
+  for(const auto& name:proposal.state.crew_ko)crew.array.push_back(v::text(name));
+  for(const auto& event:proposal.events){auto e=v::object();const auto kind=event.kind==CriticalEventKind::device?"device":event.kind==CriticalEventKind::crew?"crew":event.kind==CriticalEventKind::fire?"fire":"ammo_rack";e.object["kind"]=v::text(kind);if(event.kind==CriticalEventKind::device||event.kind==CriticalEventKind::crew)e.object["name"]=v::text(event.name);if(event.kind==CriticalEventKind::device)e.object["old_state"]=v::text(status(event.old_status));if(event.kind==CriticalEventKind::fire)e.object["state"]=v::boolean(event.status==wot::offline_bot_step::CriticalStatus::fire_on);else e.object["state"]=v::text(status(event.status));e.object["cause"]=v::text("drowning");events.array.push_back(std::move(e));}
+  data.object["devices"]=std::move(list);data.object["destroyed"]=std::move(destroyed);data.object["crew_ko"]=std::move(crew);data.object["fire"]=v::boolean(proposal.state.fire);data.object["ammo_rack_death"]=v::boolean(proposal.state.ammo_rack_death);data.object["events"]=std::move(events);row.object["drowning_critical"]=std::move(data);}
+ out.array.push_back(std::move(row));}return out;}
 }

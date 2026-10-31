@@ -35,47 +35,13 @@ struct Read {
 std::int64_t integer(PyObject*p,std::int64_t fallback=0){if(!p||p==Py_None)return fallback;if(PyInt_Check(p))return PyInt_AS_LONG(p);if(!PyLong_Check(p))throw Invalid("Planning snapshot integer is invalid");const auto v=PyLong_AsLongLong(p);if(PyErr_Occurred())throw Invalid("Planning snapshot integer is outside its domain");return v;}
 std::uint64_t unsignedInteger(PyObject*p){if(!p||p==Py_None)return 0;if(PyInt_Check(p)){const long v=PyInt_AS_LONG(p);if(v<0)throw Invalid("Planning snapshot counter is negative");return std::uint64_t(v);}if(!PyLong_Check(p))throw Invalid("Planning snapshot counter is invalid");const auto v=PyLong_AsUnsignedLongLong(p);if(PyErr_Occurred())throw Invalid("Planning snapshot counter is outside its domain");return v;}
 double number(PyObject*p,double fallback=0.){if(!p||p==Py_None)return fallback;double v=PyFloat_Check(p)?PyFloat_AS_DOUBLE(p):double(integer(p));if(!std::isfinite(v))throw Invalid("Planning snapshot numeric value is nonfinite");return v;}
-bool boolean(PyObject*p,bool fallback=false){if(!p||p==Py_None)return fallback;if(p==Py_True)return true;if(p==Py_False)return false;return integer(p)!=0;}
 std::string string(PyObject*p,const std::string&fallback={}){if(!p||p==Py_None)return fallback;if(PyString_Check(p))return std::string(PyString_AS_STRING(p),std::size_t(PyString_GET_SIZE(p)));if(!PyUnicode_Check(p))throw Invalid("Planning snapshot string is invalid");auto*s=PyUnicode_AsUTF8String(p);if(!s)throw Invalid("Planning snapshot UTF-8 projection failed");std::string result(PyString_AS_STRING(s),std::size_t(PyString_GET_SIZE(s)));Py_DECREF(s);return result;}
 template<class Function>void dictionary(PyObject*p,Function function){if(!p||p==Py_None)return;if(!PyDict_Check(p))throw Invalid("Planning snapshot mapping is invalid");Py_ssize_t pos=0;PyObject*k,*v;while(PyDict_Next(p,&pos,&k,&v))function(k,v);}
 Point point(Read&r,PyObject*p){if(!p||p==Py_None)throw Invalid("Planning snapshot point is missing");if(PyDict_Check(p))return {number(r.get(p,"x")),number(r.get(p,"y")),number(r.get(p,"z"))};
     if(!PyTuple_Check(p)&&!PyList_Check(p)){auto x=r.get(p,"x"),y=r.get(p,"y"),z=r.get(p,"z");if(x!=Py_None&&y!=Py_None&&z!=Py_None)return {number(x),number(y),number(z)};}
     if(r.size(p)!=3)throw Invalid("Planning snapshot point width is invalid");return {number(r.item(p,0)),number(r.item(p,1)),number(r.item(p,2))};}
-Point xz(Read&r,PyObject*p){if(r.size(p)==3)return point(r,p);if(r.size(p)!=2)throw Invalid("Planning snapshot XZ point width is invalid");return {number(r.item(p,0)),0.,number(r.item(p,1))};}
 nav::Cell cell(Read&r,PyObject*p){if(r.size(p)!=2)throw Invalid("Planning snapshot cell width is invalid");return {int(integer(r.item(p,0))),int(integer(r.item(p,1)))};}
-template<class T,class Parse>std::optional<T> optional(Read&r,PyObject*p,const char*name,Parse parse){auto*v=r.get(p,name);return v==Py_None?std::nullopt:std::optional<T>(parse(v));}
-void optionalNumber(Read&r,PyObject*p,const char*name,plan::Optional<double>&out){auto*v=r.get(p,name);if(v!=Py_None)out.set(number(v));}
-void optionalPoint(Read&r,PyObject*p,const char*name,plan::Optional<Point>&out,bool two=false){auto*v=r.get(p,name);if(v!=Py_None)out.set(two?xz(r,v):point(r,v));}
-void optionalId(Read&r,PyObject*p,const char*name,plan::Optional<std::int64_t>&out){auto*v=r.get(p,name);if(v!=Py_None)out.set(integer(v));}
 std::string signatureNumber(double value){std::ostringstream out;out<<std::hexfloat<<value;return "n"+out.str()+";";}
-std::string signatureValue(Read&r,PyObject*p){
-    if(!p||p==Py_None)return "-";
-    if(PyFloat_Check(p)||PyInt_Check(p)||PyLong_Check(p))return signatureNumber(number(p));
-    if(PyString_Check(p)||PyUnicode_Check(p)){const auto value=string(p);return "s"+std::to_string(value.size())+":"+value;}
-    if(PyList_Check(p)||PyTuple_Check(p)){std::string out=PyList_Check(p)?"l":"t";out+=std::to_string(r.size(p))+":";
-        for(Py_ssize_t i=0;i<r.size(p);++i)out+=signatureValue(r,r.item(p,i));return out;}
-    if(PyDict_Check(p)){std::map<std::string,PyObject*> values;dictionary(p,[&](PyObject*k,PyObject*v){values[string(k)]=v;});
-        std::string out="d"+std::to_string(values.size())+":";for(const auto&v:values)out+=std::to_string(v.first.size())+":"+v.first+signatureValue(r,v.second);return out;}
-    throw Invalid("Server order contains a non-wire value");
-}
-std::string orderSignature(Read&r,PyObject*p){
-    std::map<std::string,std::string> values;const bool target=r.get(p,"target_id")!=Py_None;
-    dictionary(p,[&](PyObject*k,PyObject*v){const auto name=string(k);
-        if(target&&(name=="aim_position"||(name=="face_position"&&!boolean(r.get(p,"stable_hull_face")))||(name=="move_position"&&string(r.get(p,"combat_mode"))=="advance_contact")))return;
-        if((name=="aim_position"||name=="face_position"||name=="move_position"||name=="route_anchor")&&(PyDict_Check(v)||PyTuple_Check(v)||PyList_Check(v))){
-            std::string value="t3:";for(double coordinate:point(r,v))value+=signatureNumber(coordinate);values[name]=value;}
-        else values[name]=signatureValue(r,v);});
-    std::string out;for(const auto&v:values)out+=std::to_string(v.first.size())+":"+v.first+v.second;return out;
-}
-StrategicOrder order(Read&r,PyObject*p){StrategicOrder out;out.signature=orderSignature(r,p);auto&d=out.drive;auto&n=out.navigation;
-    optionalPoint(r,p,"aim_position",d.aim);optionalPoint(r,p,"move_position",d.move);optionalPoint(r,p,"face_position",d.face);
-    optionalNumber(r,p,"throttle_override",d.throttle);optionalNumber(r,p,"arrival_radius",d.arrival_radius);optionalNumber(r,p,"parking_heading",d.parking_heading);optionalNumber(r,p,"hull_angle_degrees",d.hull_angle_degrees);optionalId(r,p,"target_id",d.target);
-    d.target_kind=string(r.get(p,"target_kind"));d.stable_hull_face=boolean(r.get(p,"stable_hull_face"));d.mode=string(r.get(p,"combat_mode"),"route");d.parking_phase=string(r.get(p,"parking_phase"));d.fire_allowed=boolean(r.get(p,"fire_allowed"));d.shell_index=int(integer(r.get(p,"shell_index")));d.fire_range=number(r.get(p,"fire_range"));
-    n.mode=d.mode;n.parking_phase=d.parking_phase;n.route_id=string(r.get(p,"route_id"),"direct");n.defense_base=string(r.get(p,"defense_base_id"),"own_base");n.team_command=string(r.get(p,"team_command_id"));
-    if(d.throttle.present)n.throttle=d.throttle.value;if(d.target.present)n.target=d.target.value;
-    n.route_index=optional<int>(r,p,"route_index",[](PyObject*v){return int(integer(v));});n.route_join=optional<bool>(r,p,"route_join",[](PyObject*v){return boolean(v);});n.route_anchor=optional<Point>(r,p,"route_anchor",[&](PyObject*v){return point(r,v);});
-    auto*b=r.get(p,"move_area_bounds");if(b!=Py_None){if(r.size(b)!=4)throw Invalid("Planning move area width is invalid");std::array<double,4> bounds;for(int i=0;i<4;++i)bounds[i]=number(r.item(b,i));n.move_area=bounds;}return out;
-}
 // The round seed's rows are owned Values (the pinned BotRuntime rows the native round start built).
 using SeedValue=stock_native_client_state::Value;
 using Kind=SeedValue::Kind;
@@ -95,6 +61,40 @@ Point point(const SeedValue&v){const auto&r=v.resolved();if(r.kind==Kind::Object
 std::array<double,2> waypoint(const SeedValue&v){
     // The authored/baked route schema is (x, z, hold); the director consumers read the first two.
     const auto&values=rows(v);if(values.size()<2)throw Invalid("Planning route point width is invalid");return {number(values[0]),number(values[1])};}
+// A server order (BotRuntime._apply_orders row), keyed exactly as its accepted wire fields.
+template<class T,class Parse>std::optional<T> optional(const SeedValue&p,const char*name,Parse parse){const auto&v=field(p,name);return present(v)?std::optional<T>(parse(v)):std::nullopt;}
+void optionalNumber(const SeedValue&p,const char*name,plan::Optional<double>&out){const auto&v=field(p,name);if(present(v))out.set(number(v));}
+void optionalPoint(const SeedValue&p,const char*name,plan::Optional<Point>&out){const auto&v=field(p,name);if(present(v))out.set(point(v));}
+// A wire integer above int64 was a Python long overflow.
+std::int64_t wireInteger(const SeedValue&v){if(v.resolved().kind==Kind::Integer&&v.resolved().unsigned_integer)throw Invalid("Planning snapshot integer is outside its domain");return integer(v);}
+void optionalId(const SeedValue&p,const char*name,plan::Optional<std::int64_t>&out){const auto&v=field(p,name);if(present(v))out.set(wireInteger(v));}
+const SeedValue& mapping(const SeedValue&v){const auto&r=v.resolved();if(r.kind!=Kind::Null&&r.kind!=Kind::Object)throw Invalid("Planning snapshot mapping is invalid");return r;}
+// Wire arrays are lists; a boolean signs as the number it is.
+std::string signatureValue(const SeedValue&raw){const auto&p=raw.resolved();
+    switch(p.kind){case Kind::Null:return "-";case Kind::Boolean:case Kind::Integer:case Kind::Number:return signatureNumber(number(p));
+    case Kind::Text:return "s"+std::to_string(p.text.size())+":"+p.text;
+    case Kind::Array:{std::string out="l"+std::to_string(p.array.size())+":";for(const auto&v:p.array)out+=signatureValue(v);return out;}
+    case Kind::Object:{std::string out="d"+std::to_string(p.object.size())+":";for(const auto&v:p.object)out+=std::to_string(v.first.size())+":"+v.first+signatureValue(v.second);return out;}
+    default:throw Invalid("Server order contains a non-wire value");}
+}
+std::string orderSignature(const SeedValue&p){
+    std::map<std::string,std::string> values;const bool target=present(field(p,"target_id"));
+    for(const auto&entry:mapping(p).object){const auto&name=entry.first;const auto&v=entry.second.resolved();
+        if(target&&(name=="aim_position"||(name=="face_position"&&!boolean(field(p,"stable_hull_face")))||(name=="move_position"&&string(field(p,"combat_mode"))=="advance_contact")))continue;
+        if((name=="aim_position"||name=="face_position"||name=="move_position"||name=="route_anchor")&&(v.kind==Kind::Object||v.kind==Kind::Array)){
+            std::string value="t3:";for(double coordinate:point(v))value+=signatureNumber(coordinate);values[name]=value;}
+        else values[name]=signatureValue(v);}
+    std::string out;for(const auto&v:values)out+=std::to_string(v.first.size())+":"+v.first+v.second;return out;
+}
+StrategicOrder order(const SeedValue&raw){const auto&p=mapping(raw);StrategicOrder out;out.signature=orderSignature(p);auto&d=out.drive;auto&n=out.navigation;
+    optionalPoint(p,"aim_position",d.aim);optionalPoint(p,"move_position",d.move);optionalPoint(p,"face_position",d.face);
+    optionalNumber(p,"throttle_override",d.throttle);optionalNumber(p,"arrival_radius",d.arrival_radius);optionalNumber(p,"parking_heading",d.parking_heading);optionalNumber(p,"hull_angle_degrees",d.hull_angle_degrees);optionalId(p,"target_id",d.target);
+    d.target_kind=string(field(p,"target_kind"));d.stable_hull_face=boolean(field(p,"stable_hull_face"));d.mode=string(field(p,"combat_mode"),"route");d.parking_phase=string(field(p,"parking_phase"));d.fire_allowed=boolean(field(p,"fire_allowed"));d.shell_index=int(wireInteger(field(p,"shell_index")));d.fire_range=number(field(p,"fire_range"));
+    n.mode=d.mode;n.parking_phase=d.parking_phase;n.route_id=string(field(p,"route_id"),"direct");n.defense_base=string(field(p,"defense_base_id"),"own_base");n.team_command=string(field(p,"team_command_id"));
+    if(d.throttle.present)n.throttle=d.throttle.value;if(d.target.present)n.target=d.target.value;
+    n.route_index=optional<int>(p,"route_index",[](const SeedValue&v){return int(wireInteger(v));});n.route_join=optional<bool>(p,"route_join",[](const SeedValue&v){return boolean(v);});n.route_anchor=optional<Point>(p,"route_anchor",[](const SeedValue&v){return point(v);});
+    const auto&b=field(p,"move_area_bounds");if(present(b)){const auto&values=rows(b);if(values.size()!=4)throw Invalid("Planning move area width is invalid");std::array<double,4> bounds;for(std::size_t i=0;i<4;++i)bounds[i]=number(values[i]);n.move_area=bounds;}return out;
+}
 Point position(const SeedValue&state){return {number(field(state,"x")),number(field(state,"y")),number(field(state,"z"))};}
 strategy::Agent agent(const SeedValue&p){strategy::Agent a;a.id=integer(field(p,"id"));a.team=int(integer(field(p,"team")));a.seed=std::uint64_t(integer(field(p,"seed")));
     const auto&profile=field(p,"profile");auto&v=a.profile;v.class_tag=string(field(profile,"class_tag"));v.dominant_role=string(field(profile,"dominant_role"));
@@ -170,7 +170,7 @@ bool readNavigationMode(const stock_native_client_state::Value&state,PyObject*va
     try{Read r;result=descriptor(r,value,state);return true;
     }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readPerceptionMode(const stock_native_bot::BotSeed&bot,PyObject*descriptor,stock_native_bot_perception::Actor&result){try{Read r;const auto id=integer(field(bot.state,"id"));auto value=perception(r,id,bot.state,descriptor,bot.crew_level);result=std::move(value);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool readPlanningOrders(PyObject*source,std::map<std::int64_t,StrategicOrder>&result){try{Read r;std::map<std::int64_t,StrategicOrder> next;dictionary(source,[&](PyObject*k,PyObject*v){next[integer(k)]=order(r,v);});result=std::move(next);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readPlanningOrders(const std::map<std::int64_t,stock_native_client_state::Value>&source,std::map<std::int64_t,StrategicOrder>&result){try{std::map<std::int64_t,StrategicOrder> next;for(const auto&row:source)next[row.first]=order(row.second);result=std::move(next);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readPlanningSnapshot(const stock_native_bot::RoundSeed&seed,const stock_native_bot::ServerOrders&orders,PlanningSnapshot&result){try{Read r;PlanningSnapshot out;out.order_revision=orders.revision;
     out.map=mapInput(seed);out.grade_up=out.grade_down=std::tan(25.*3.14159265358979323846/180.);
     auto*bake=r.get(seed.graph.get(),"bake");if(PyDict_Check(bake)){out.bake.present=true;out.bake.vehicle_half_width=number(r.get(bake,"vehicle_half_width"));auto*radii=r.get(bake,"edge_clearance_radii");for(Py_ssize_t i=0;i<r.size(radii);++i)out.bake.maximum_clearance_radius=std::max(out.bake.maximum_clearance_radius,number(r.item(radii,i)));}
@@ -180,8 +180,7 @@ bool readPlanningSnapshot(const stock_native_bot::RoundSeed&seed,const stock_nat
     for(const auto&row:seed.agents){auto a=agent(row.second);if(a.id!=row.first)throw Invalid("Planning director actor identity mismatch");out.director.agents[a.id]=std::move(a);}
     out.director.restoreContacts({});
     // The accepted orders, parsed exactly as a later snapshot's order replacement is.
-    p::Ref mapping(PyDict_New());for(const auto&row:orders.orders){p::Ref key(PyLong_FromLongLong(row.first));p::Ref value(stock_native_client_state::write(row.second));if(PyDict_SetItem(mapping.get(),key.get(),value.get())<0)throw Invalid("Planning order allocation failed");}
-    dictionary(mapping.get(),[&](PyObject*k,PyObject*v){out.orders[integer(k)]=order(r,v);});out.order_tokens=orders.tokens;
+    for(const auto&row:orders.orders)out.orders[row.first]=order(row.second);out.order_tokens=orders.tokens;
     for(const auto&row:seed.bots){const auto id=row.first;const auto&bot=row.second;auto local=out.director.agents.find(id);if(local==out.director.agents.end())throw Invalid("Planning actor has no registered strategy profile");
         PyObject*d=stock_native_bot::activeDescriptor(bot);out.actors[id]=navigationActor(id,bot.state,&local->second);const auto&initial=field(bot.state,"_spg_initial");if(present(initial))out.initial_parking[id]=parkingPlan(initial);
         const auto&origin=field(bot.state,"_spg_selection_origin");if(present(origin))out.parking_origins[id]=point(origin);out.descriptors[id]=descriptor(r,d,bot.state);out.perception.push_back(perception(r,id,bot.state,d,bot.crew_level));}

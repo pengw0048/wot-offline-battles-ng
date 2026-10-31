@@ -132,7 +132,7 @@ void retire(Battle&b){
     stock_native_client_survival::retire(b);stock_native_client_critical::close(b);try{closeSiegeHints(b);}catch(const std::exception&){PyErr_Clear();}
     auto owner=std::static_pointer_cast<dr::NativeOwner>(b.local->drive);if(owner){try{owner->retire();}catch(const std::exception&){PyErr_Clear();}}b.local->drive.reset();
 }
-bool ingress(Battle&b,const Value&event,double now){auto owner=dr::owned(b);if(!owner->events)throw p::Error("Native visible world events are not installed");p::Ref raw(cs::write(event));const bool accepted=owner->events->ingress(raw.get(),now);if(!accepted&&PyErr_Occurred())throw p::Error("Native canonical destruction was not applied");return accepted;}
+bool ingress(Battle&b,const Value&event,double now){auto owner=dr::owned(b);if(!owner->events)throw p::Error("Native visible world events are not installed");const bool accepted=owner->events->ingress(event,now);if(!accepted&&PyErr_Occurred())throw p::Error("Native canonical destruction was not applied");return accepted;}
 void died(Battle&b){if(b.replay)return;auto owner=dr::existing(b);if(owner&&owner->player)owner->player->state().speed=0.;if(b.local)b.local->speed=0.;}
 // One visible player slice: world ingress, status, the native driver and its reliable input publications.
 void drive(Battle&b,double dt){

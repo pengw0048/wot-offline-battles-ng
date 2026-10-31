@@ -26,6 +26,7 @@
 #include "stock_native_human_ram.hpp"
 #include "stock_native_detached_turret_python.hpp"
 #include "stock_native_projectile_python.hpp"
+#include "stock_native_bot_value.hpp"
 #include <algorithm>
 #include <chrono>
 #include <memory>
@@ -34,6 +35,8 @@ namespace stock_native_bot {
 namespace {
 namespace p=stock_native_bot_python;
 namespace cs=stock_native_client_state;
+namespace v=stock_native_bot_value;
+using native_battle::Value;
 namespace world=stock_native_world;
 namespace foliage=stock_native_bot_foliage;
 namespace player_contacts=stock_native_player_contacts;
@@ -131,7 +134,7 @@ struct Owner {
     }
     // The native round start's manifest seed (descriptor pairs) and each Bot's static ram profile.
     std::shared_ptr<const RoundSeed> seed;
-    cs::Handle profiles;
+    std::map<ID,Value> profiles;
     const BotSeed* bot(ID id)const{const auto found=seed->bots.find(id);return found==seed->bots.end()?nullptr:&found->second;}
     // The Bot authority closes the owner when the round or native generation changes.
     bool current()const{return !retired&&runtime&&scene.current();}
@@ -219,12 +222,12 @@ struct Owner {
         }
         for(auto i=installed.begin();i!=installed.end();){if(!present.count(i->first)){services.remove(i->first);if(i->first.kind==offline_simulation::ActorKind::Human){humans.erase(i->first.id);human_descriptors.erase(i->first.id);}i=installed.erase(i);}else ++i;}
     }
-    void installHuman(Battle&battle,PyObject*input,ID id){
-        auto descriptor=native_battle::startup::playerDescriptor(battle,cs::read(input));
+    void installHuman(Battle&battle,const Value&input,ID id){
+        auto descriptor=native_battle::startup::playerDescriptor(battle,input);
         if(descriptor.get()==Py_None)throw p::Error("Native human descriptor is unavailable");
         HumanDescriptor frozen;require(readHumanDescriptor(input,descriptor.get(),frozen));
         // The formation spawn of this (team, slot) (the pinned BattleRuntime._formation_pose and its cache).
-        const auto spawn=native_battle::startup::formationPose(battle,p::integral(input,"team",1),p::integral(input,"slot"));
+        const auto spawn=native_battle::startup::formationPose(battle,v::integral(input,"team",1),v::integral(input,"slot"));
         frozen.spawn_anchor=Point{spawn.first[0],spawn.first[1],spawn.first[2]};
         const Key key=humanKey(id);
         const auto*record=battle.vehicle(recordName(key));
@@ -253,15 +256,18 @@ struct Owner {
         frozen.target_available=row.available;frozen.record_revision=row.target.record_revision;frozen.descriptor_revision=row.target.descriptor_revision;
         services.install(std::move(row));
     }
-    void humanInput(Battle&battle,PyObject*players,bool is_prepared=false){
+    // `players` is either the snapshot's player rows or rows already prepared by prepareHumanInput.
+    void humanInput(Battle&battle,const Value&players,bool is_prepared=false){
         std::vector<Human> accepted;std::set<ID> present;
-        p::Ref prepared=is_prepared?(players&&players!=Py_None?p::retain(players):p::list()):p::Ref(prepareHumanInput(players,battle,profiles.get()));
-        for(Py_ssize_t i=0;i<p::size(prepared.get());++i){auto row=p::item(prepared.get(),i);if(!PyDict_Check(row.get()))continue;
+        const Value prepared_rows=is_prepared?Value():prepareHumanInput(players,battle,profiles);
+        const auto&prepared=is_prepared?players.resolved():prepared_rows;
+        static const std::vector<Value> none;
+        for(const auto&entry:prepared.kind==Value::Kind::Null?none:v::rows(prepared)){const auto&row=entry.resolved();if(row.kind!=Value::Kind::Object)continue;
             try{
-                const ID id=p::integral(row.get(),"id");if(id<=0||!p::truth(row.get(),"world_pose"))continue;
+                const ID id=v::integral(row,"id");if(id<=0||!v::truth(row,"world_pose"))continue;
                 if(!present.insert(id).second)continue;
-                if(!humans.count(id))installHuman(battle,row.get(),id);
-                HumanIngress input;require(readHumanInput(row.get(),humans.at(id),input));
+                if(!humans.count(id))installHuman(battle,row,id);
+                HumanIngress input;require(readHumanInput(row,humans.at(id),input));
                 services.updateHuman(humanKey(id),input.target,input.human.perception.config.team,input.target.alive,input.target.available,input.radius);
                 accepted.push_back(std::move(input.human));
             }catch(const std::exception&e){local(e);}
@@ -294,8 +300,8 @@ namespace {
 using Time=std::chrono::steady_clock;
 std::uint64_t nanos(Time::time_point start){return std::chrono::duration_cast<std::chrono::nanoseconds>(Time::now()-start).count();}
 bool live(const Owner&o){return o.current();}
-PyObject* lastSnapshot(const Battle&b){return b.bots&&b.bots->last_snapshot?b.bots->last_snapshot.get():Py_None;}
-p::Ref snapshotPlayers(const Battle&b){return p::value(lastSnapshot(b),"players");}
+const Value& lastSnapshot(const Battle&b){static const Value none;return b.bots?b.bots->last_snapshot.resolved():none;}
+const Value& snapshotPlayers(const Battle&b){return v::value(lastSnapshot(b),"players");}
 }
 
 namespace owner {
@@ -320,10 +326,7 @@ std::shared_ptr<Owner> create(Battle&b){
     // The round start has accepted no server snapshot tick yet.
     o.services.bind(*o.runtime);o.server_tick=-1;
     // A player's ram receipt pins the Bot's static collision profile.
-    auto profiles=p::dict();
-    for(const auto&row:b.bots->profiles){p::Ref key(PyLong_FromLongLong(row.first));p::Ref value(cs::write(row.second));
-        if(PyDict_SetItem(profiles.get(),key.get(),value.get())<0)throw p::Error("Native Bot ram profile allocation failed");}
-    o.profiles=native_battle::own(std::move(profiles));
+    o.profiles=b.bots->profiles;
     o.records(b);
     o.detached_runtime.reset(new stock_native_detached_turret::NativeOwner(*o.runtime,o.registry,
         o.scene,o.vehicles,VEHICLE_SKIP_FLAGS));
@@ -337,21 +340,21 @@ void close(Owner&o){o.retire();}
 bool current(const Owner&o){return o.current();}
 const Clock& clock(const Owner&o){return o.runtime->clock();}
 
-p::Ref players(Owner&o,Battle&b){auto rows=snapshotPlayers(b);return p::Ref(prepareHumanInput(rows.get(),b,o.profiles.get()));}
+Value players(Owner&o,Battle&b){return prepareHumanInput(snapshotPlayers(b),b,o.profiles);}
 
-p::Ref update(Owner&o,Battle&b,double elapsed,double now,PyObject*players){
-    if(!live(o))return p::list();
+Value update(Owner&o,Battle&b,double elapsed,double now,const Value&players){
+    if(!live(o))return v::array();
     auto start=Time::now();o.records(b);o.humanInput(b,players,true);o.detached(b);
     // The hidden worker has no viewpoint: every Bot keeps full presentation detail.
     o.runtime->camera(std::nullopt);
-    o.server_time_ms=p::numeric(lastSnapshot(b),"server_time_ms");
+    o.server_time_ms=v::numeric(lastSnapshot(b),"server_time_ms");
     o.ingress_ns+=nanos(start);start=Time::now();
     // Original artillery jobs advance once per frame, before the Bot slices.
     o.services.beginCallback(now,o.server_time_ms);
     o.runtime->weaponRuntime().advanceArtillery(now,4,o.services.weaponWorld());
     auto result=o.runtime->update(elapsed,now,o.server_time_ms);
-    o.step_ns+=nanos(start);if(!live(o))return p::list();start=Time::now();
-    p::Ref packed(packNativeOutputs(result,o.runtime->clock().sample_us));
+    o.step_ns+=nanos(start);if(!live(o))return v::array();start=Time::now();
+    auto packed=packNativeOutputs(result,o.runtime->clock().sample_us);
     o.publication_ns+=nanos(start);return packed;
 }
 bool frame(Owner&o,double now,bool force){if(!live(o))return false;o.frame(now,force);return true;}
@@ -359,8 +362,8 @@ std::size_t prewarm(Owner&o,Battle&b,double now){
     if(!live(o))return 0;o.records(b);return o.runtime->prewarm(now);
 }
 std::size_t prewarmPlayers(Owner&o,Battle&b,double now){
-    if(!live(o))return 0;o.records(b);auto rows=snapshotPlayers(b);
-    o.humanInput(b,rows.get());return o.runtime->prewarmPlayers(now,b.live);
+    if(!live(o))return 0;o.records(b);
+    o.humanInput(b,snapshotPlayers(b));return o.runtime->prewarmPlayers(now,b.live);
 }
 std::size_t presentPoses(Owner&o,Battle&b,double now){
     if(!live(o))return 0;std::vector<std::string> errors;
@@ -368,60 +371,60 @@ std::size_t presentPoses(Owner&o,Battle&b,double now){
     for(const auto&error:errors)o.local(p::Error(error));
     return count;
 }
-void snapshot(Owner&o,PyObject*message){
-    if(!live(o)||!PyDict_Check(message))return;
+void snapshot(Owner&o,const Value&source){
+    const auto&message=source.resolved();
+    if(!live(o)||message.kind!=Value::Kind::Object)return;
     auto started=Time::now();
-    auto orders=p::value(message,"bot_orders"),revision=p::value(message,"bot_order_revision");
-    if(orders.get()!=Py_None&&revision.get()!=Py_None)try{
-        auto mapping=p::dict();const auto count=std::min<Py_ssize_t>(30,p::size(orders.get()));
-        for(Py_ssize_t i=0;i<count;++i){auto row=p::item(orders.get(),i),id=p::value(row.get(),"id");auto key=p::integer(p::wide(id.get()));
-            if(PyDict_GetItem(mapping.get(),key.get()))throw p::Error("Native Bot order has a duplicate actor");
-            if(PyDict_SetItem(mapping.get(),key.get(),row.get())<0)throw p::Error("Native Bot order allocation failed");}
-        std::map<ID,planning::StrategicOrder> values;require(planning::readPlanningOrders(mapping.get(),values));
-        o.runtime->acceptOrders(std::move(values),p::wide(revision.get()));
+    const auto&orders=v::value(message,"bot_orders"),&revision=v::value(message,"bot_order_revision");
+    if(orders.kind!=Value::Kind::Null&&revision.kind!=Value::Kind::Null)try{
+        std::map<ID,Value> mapping;const auto&rows=v::rows(orders);const auto count=std::min<std::size_t>(30,rows.size());
+        for(std::size_t i=0;i<count;++i){const auto&row=rows[i].resolved();const auto key=v::wide(v::value(row,"id"));
+            if(!mapping.emplace(key,row).second)throw p::Error("Native Bot order has a duplicate actor");}
+        std::map<ID,planning::StrategicOrder> values;require(planning::readPlanningOrders(mapping,values));
+        o.runtime->acceptOrders(std::move(values),v::wide(revision));
     }catch(const std::exception&e){o.local(e);}
-    auto tick=p::value(message,"server_tick"),time=p::value(message,"server_time_ms");
-    if(tick.get()!=Py_None){const auto incoming=p::wide(tick.get());if(incoming<o.server_tick)return;o.server_tick=incoming;}
-    auto rows=p::value(message,"bots");if(rows.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(rows.get());++i){auto row=p::item(rows.get(),i);if(!PyDict_Check(row.get()))continue;
+    const auto&tick=v::value(message,"server_tick"),&time=v::value(message,"server_time_ms");
+    if(tick.kind!=Value::Kind::Null){const auto incoming=v::wide(tick);if(incoming<o.server_tick)return;o.server_tick=incoming;}
+    const auto&rows=v::value(message,"bots");if(rows.kind!=Value::Kind::Null)for(const auto&entry:v::rows(rows)){const auto&row=entry.resolved();if(row.kind!=Value::Kind::Object)continue;
         try{
-            const ID id=p::integral(row.get(),"id");const auto actor=o.runtime->actors().find(id);if(actor==o.runtime->actors().end())continue;
-            ServerSnapshot value;require(readNativeServerSnapshot(row.get(),tick.get(),time.get(),actor->second,o.runtime->weapons().at(botKey(id)),value));
+            const ID id=v::integral(row,"id");const auto actor=o.runtime->actors().find(id);if(actor==o.runtime->actors().end())continue;
+            ServerSnapshot value;require(readNativeServerSnapshot(row,tick,time,actor->second,o.runtime->weapons().at(botKey(id)),value));
             if(o.runtime->serverSnapshot(id,value))++o.snapshot_full_mirrors;else ++o.snapshot_receipt_mirrors;
         }catch(const std::exception&e){o.local(e);}
     }
     o.snapshot_read_ns+=nanos(started);
 }
 
-p::Ref worldEvents(Owner&o,Battle&b){if(!live(o))return p::list();return p::Ref(o.events.pack(b.engine.shell.get()));}
+std::vector<std::pair<std::uint64_t,Value>> worldEvents(Owner&o,Battle&b){if(!live(o))return {};return o.events.pack(b.engine.shell.get());}
 bool acknowledgeWorld(Owner&o,std::uint64_t sequence){const bool acknowledged=o.events.ack(sequence);if(PyErr_Occurred())throw p::Error("World acknowledgement failed");return acknowledged;}
-bool worldIngress(Owner&o,PyObject*event,double now){
+bool worldIngress(Owner&o,const Value&event,double now){
     if(!live(o))return false;const bool applied=o.events.ingress(event,now);
     if(PyErr_Occurred())o.local(p::Error("Canonical native world event was rejected"));return applied;
 }
-p::Ref playerContacts(Owner&o,Battle&b,PyObject*players,double now){
-    if(!live(o))return p::list();
+Value playerContacts(Owner&o,Battle&b,const Value&players,double now){
+    if(!live(o))return v::array();
     o.records(b);o.humanInput(b,players,true);
     std::vector<player_contacts::Request> requests;
     require(player_contacts::readPlayerContacts(players,o.humans,requests,o.contact_rejected));
-    return p::Ref(player_contacts::packPlayerVerdicts(o.player_contacts.update(requests,now,o.player_world)));
+    return player_contacts::packPlayerVerdicts(o.player_contacts.update(requests,now,o.player_world));
 }
 bool acknowledgePlayerContact(Owner&o,std::uint64_t serial,double now){return o.player_contacts.acknowledge(serial,now);}
-std::optional<std::pair<std::int64_t,p::Ref>> playerEnvironment(Owner&o,Battle&b,double elapsed,bool authority){
+std::optional<std::pair<std::int64_t,Value>> playerEnvironment(Owner&o,Battle&b,double elapsed,bool authority){
     if(!live(o))return {};
-    if(o.environment.willSample(elapsed,authority)){auto rows=snapshotPlayers(b);o.humanInput(b,rows.get());o.records(b);}
+    if(o.environment.willSample(elapsed,authority)){o.humanInput(b,snapshotPlayers(b));o.records(b);}
     std::optional<player_environment::Batch> batch;
     require(player_environment::readAndAdvance(b,elapsed,authority,o.environment,o.environment_world,o.environment_metadata,batch));
     b.bots->player_environment_check=o.environment.elapsed();
     if(!batch)return {};
-    return std::make_pair(std::int64_t(batch->sequence),p::Ref(player_environment::observationsValue(*batch)));
+    return std::make_pair(std::int64_t(batch->sequence),player_environment::observationsValue(*batch));
 }
 void acknowledgePlayerEnvironment(Owner&o,Battle&b,std::int64_t sequence,bool sent){
     o.environment.acknowledge(sequence,sent);b.bots->player_environment_seq=o.environment.sequence();
 }
-p::Ref humanRam(Owner&o,Battle&b){
-    if(!live(o))return p::list();o.records(b);
+Value humanRam(Owner&o,Battle&b){
+    if(!live(o))return v::array();o.records(b);
     stock_native_human_ram::NativeWorld<NativeServices,geometry::Vehicles> world(o.services,o.vehicles);
-    std::vector<std::string> errors;p::Ref result(stock_native_human_ram::results(b,world,&errors));
+    std::vector<std::string> errors;auto result=stock_native_human_ram::results(b,world,&errors);
     for(const auto&error:errors)o.local(p::Error(error));return result;
 }
 
@@ -475,36 +478,36 @@ void transportError(Owner&o,const std::string&message){o.local(p::Error("Native 
 bool acknowledgeLaunch(Owner&o,std::int64_t bot,std::int64_t sequence){return o.runtime->acknowledgeLaunch(bot,sequence);}
 void acknowledgeRam(Owner&o,std::int64_t player,std::int64_t sequence){o.runtime->acknowledgeRam(player,sequence);}
 void stageTiming(Owner&o,bool enabled){o.runtime->stageTiming(enabled);}
-p::Ref statistics(Owner&o){
-    auto out=p::dict();
+Value statistics(Owner&o){
+    auto out=v::object();auto&r=out.object;
     const auto&s=o.runtime->statistics();const auto&d=o.backend.presentation_counters();
-    p::set(out.get(),"callbacks",p::integer(s.callbacks));p::set(out.get(),"slices",p::integer(s.slices));
-    p::set(out.get(),"refreshes",p::integer(s.refreshes));p::set(out.get(),"actors",p::integer(s.actors));
-    p::set(out.get(),"refresh_slices",p::integer(s.refresh_slices));p::set(out.get(),"reuse_slices",p::integer(s.reuse_slices));
-    p::set(out.get(),"refresh_ns",p::integer(s.refresh_ns));p::set(out.get(),"reuse_ns",p::integer(s.reuse_ns));
-    p::set(out.get(),"refresh_actors",p::integer(s.refresh_actors));p::set(out.get(),"reuse_actors",p::integer(s.reuse_actors));
-    p::set(out.get(),"python_business_callbacks",p::integer(s.python_business_callbacks));p::set(out.get(),"stock_presentation_callbacks",p::integer(d.python_boundary_calls));
-    p::set(out.get(),"cold_installs",p::integer(o.cold_installs));p::set(out.get(),"ingress_ns",p::integer(o.ingress_ns));
-    p::set(out.get(),"step_ns",p::integer(o.step_ns));p::set(out.get(),"publication_ns",p::integer(o.publication_ns));
-    p::set(out.get(),"snapshot_read_ns",p::integer(o.snapshot_read_ns));
-    p::set(out.get(),"snapshot_full_mirrors",p::integer(o.snapshot_full_mirrors));p::set(out.get(),"snapshot_receipt_mirrors",p::integer(o.snapshot_receipt_mirrors));
-    p::set(out.get(),"ingress_errors",p::integer(o.ingress_errors));p::set(out.get(),"last_ingress_error",p::text(o.last_ingress_error));
-    p::set(out.get(),"stage_timing",p::boolean(s.stage_timing));p::set(out.get(),"detailed_slices",p::integer(s.detailed_slices));
+    r["callbacks"]=v::integer(std::int64_t(s.callbacks));r["slices"]=v::integer(std::int64_t(s.slices));
+    r["refreshes"]=v::integer(std::int64_t(s.refreshes));r["actors"]=v::integer(std::int64_t(s.actors));
+    r["refresh_slices"]=v::integer(std::int64_t(s.refresh_slices));r["reuse_slices"]=v::integer(std::int64_t(s.reuse_slices));
+    r["refresh_ns"]=v::integer(std::int64_t(s.refresh_ns));r["reuse_ns"]=v::integer(std::int64_t(s.reuse_ns));
+    r["refresh_actors"]=v::integer(std::int64_t(s.refresh_actors));r["reuse_actors"]=v::integer(std::int64_t(s.reuse_actors));
+    r["python_business_callbacks"]=v::integer(std::int64_t(s.python_business_callbacks));r["stock_presentation_callbacks"]=v::integer(std::int64_t(d.python_boundary_calls));
+    r["cold_installs"]=v::integer(std::int64_t(o.cold_installs));r["ingress_ns"]=v::integer(std::int64_t(o.ingress_ns));
+    r["step_ns"]=v::integer(std::int64_t(o.step_ns));r["publication_ns"]=v::integer(std::int64_t(o.publication_ns));
+    r["snapshot_read_ns"]=v::integer(std::int64_t(o.snapshot_read_ns));
+    r["snapshot_full_mirrors"]=v::integer(std::int64_t(o.snapshot_full_mirrors));r["snapshot_receipt_mirrors"]=v::integer(std::int64_t(o.snapshot_receipt_mirrors));
+    r["ingress_errors"]=v::integer(std::int64_t(o.ingress_errors));r["last_ingress_error"]=v::text(o.last_ingress_error);
+    r["stage_timing"]=v::boolean(s.stage_timing);r["detailed_slices"]=v::integer(std::int64_t(s.detailed_slices));
     const char*stage_names[]={"prepare","combat","decision","weapon_prepare","motion_plan","motion","weapon_finish",
         "observation","suspension","contacts","support_recheck","slope","publication"};
     static_assert(sizeof(stage_names)/sizeof(*stage_names)==std::size_t(Stage::count),"Native stage name count differs");
     for(std::size_t index=0;index<std::size_t(Stage::count);++index)
-        p::set(out.get(),(std::string("stage_")+stage_names[index]+"_ns").c_str(),p::integer(s.stage_ns[index]));
-    p::set(out.get(),"rejected_player_contacts",p::integer(o.contact_rejected));
+        r[std::string("stage_")+stage_names[index]+"_ns"]=v::integer(std::int64_t(s.stage_ns[index]));
+    r["rejected_player_contacts"]=v::integer(std::int64_t(o.contact_rejected));
     std::size_t ready_bots=0,live_bots=0;
     for(const auto&entry:o.runtime->actors())if(entry.second.motion.alive){
         ++live_bots;const auto*vehicle=o.vehicles.find(botKey(entry.first));
         if(vehicle&&vehicle->ready)++ready_bots;
     }
-    p::set(out.get(),"live_bots",p::integer(live_bots));
-    p::set(out.get(),"ready_bot_geometry",p::integer(ready_bots));
-    p::Ref projectile(o.projectiles->statistics());Py_ssize_t cursor=0;PyObject*key=nullptr,*value=nullptr;
-    while(PyDict_Next(projectile.get(),&cursor,&key,&value))p::set(out.get(),("projectile_"+p::string(key)).c_str(),p::retain(value));
+    r["live_bots"]=v::integer(std::int64_t(live_bots));
+    r["ready_bot_geometry"]=v::integer(std::int64_t(ready_bots));
+    // The projectile owner still reports Python statistics.
+    p::Ref projectile(o.projectiles->statistics());for(auto&row:cs::read(projectile.get()).object)r["projectile_"+row.first]=std::move(row.second);
     return out;
 }
 }

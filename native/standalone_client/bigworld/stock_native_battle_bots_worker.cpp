@@ -188,7 +188,7 @@ Value sample(const Battle& b) {
     out.object["bot_state_send_failed"] = integer(std::int64_t(a->send_failed));
     out.object["bot_count"] = integer(std::int64_t(a->bot_count));
     out.object["simulation_caps"] = integer(std::int64_t(a->simulation_caps));
-    out.object["bot_state_revision"] = a->last_snapshot ? cs::read(p::value(a->last_snapshot.get(), "bot_state_revision").get()) : null();
+    out.object["bot_state_revision"] = a->last_snapshot.get("bot_state_revision");
     out.object["control"] = cs::read(bots::controlSnapshot(b).get());
     return out;
 }
