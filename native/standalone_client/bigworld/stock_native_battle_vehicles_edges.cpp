@@ -475,9 +475,8 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
     auto engine = id(v);
     if (pose_changed) {
         d.pose_signature.reset();
-        auto at = vector(b, {pose[0], pose[1], pose[2]});
-        auto rot = rotation(pose[3], pose[4], pose[5]);
-        startup::binding::setVehiclePose(b, v.engine_id, at.get(), rot.get(), Py_None, p::number(now).get());
+        if (!remote::setPose(b, v.engine_id, {pose[0], pose[1], pose[2]}, pose[3], pose[4], pose[5], std::nullopt, now))
+            throw p::Error("remote vehicle has no native presentation");
         d.pose_signature = signature;
         d.pose_generation = b.generation;
         d.settled_signature.reset();
@@ -485,16 +484,15 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
         const bool intended = std::fabs(field(state, "speed").numeric()) > 0.05 || std::fabs(field(state, "movement_dir").numeric()) > .5 ||
                               std::fabs(field(state, "rotation_dir").numeric()) > .5;
         if (v.native_remote && !intended && d.settled_signature != signature) {
-            auto vehicle = remote::get(b, v.engine_id);
-            auto settle = py::optional(vehicle.get(), "settle_motion");
-            if (py::callable(settle) && b.feature("remote motion presentation", [&] { py::invoke(settle.get(), p::number(now).get()); }))
+            bool settled = false;
+            if (b.feature("remote motion presentation", [&] { settled = remote::settleMotion(b, v.engine_id, now); }) && settled)
                 d.settled_signature = signature;
         }
     }
     const std::array<double, 5> aim{pose[3], pose[4], pose[6], pose[7], double(d.siege_state.value_or(-1))};
     if (pose_changed || d.aim_signature != aim) {
         d.aim_signature.reset();
-        startup::binding::updateVehicleAim(b, v.engine_id, pose[3], pose[6], pose[7]);
+        remote::setAim(b, v.engine_id, pose[3], pose[6], pose[7]);
         d.aim_signature = aim;
     }
     if (v.kind == "bot" || v.kind == "player") {

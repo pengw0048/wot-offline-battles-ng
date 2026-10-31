@@ -141,7 +141,10 @@ Value read(PyObject*raw){Value out;if(raw==Py_None)return out;if(PyBool_Check(ra
     out.kind=Value::Kind::Text;out.text=p::string(raw);return out;
 }
 PyObject* write(const Value&v){if(v.reference)return write(*v.reference);switch(v.kind){case Value::Kind::Null:return p::retain(Py_None).release();case Value::Kind::Boolean:return p::boolean(v.boolean).release();case Value::Kind::Integer:return p::integer(v.integer).release();case Value::Kind::Number:return p::number(v.number).release();case Value::Kind::Text:return p::text(v.text).release();case Value::Kind::Array:{auto out=p::list();for(const auto&x:v.array)p::append(out.get(),p::Ref(write(x)));return out.release();}case Value::Kind::Object:{auto out=p::dict();for(const auto&x:v.object)p::set(out.get(),x.first.c_str(),p::Ref(write(x.second)));return out.release();}case Value::Kind::Shared:return p::retain(Py_None).release();}return p::retain(Py_None).release();}
-void State::reset(Value value){actors.clear();round=std::move(value);++epoch;++revision;sequence.reset();bot_revision.reset();motion_time.reset();bot_time.reset();order_revision.reset();server_time_ms.reset();received_at=0.;timed_bots.reset();timing_phase.clear();reset_pending=false;last_advance.reset();}
+void State::reset(Value value){
+    // The local player's actor is installed by the round that owns this state before its first manifest.
+    for(auto i=actors.begin();i!=actors.end();)if(i->second&&i->second->local)++i;else i=actors.erase(i);
+    round=std::move(value);++epoch;++revision;sequence.reset();bot_revision.reset();motion_time.reset();bot_time.reset();order_revision.reset();server_time_ms.reset();received_at=0.;timed_bots.reset();timing_phase.clear();reset_pending=false;last_advance.reset();}
 const Actor* State::find(const std::string&key)const{auto i=actors.find(key);return i==actors.end()?nullptr:i->second.get();}
 Actor* State::find(const std::string&key){auto i=actors.find(key);return i==actors.end()?nullptr:i->second.get();}
 bool State::updateLocal(const Pose&v,const Point&velocity,double speed){if(retired)return false;auto*a=find("player:"+std::to_string(local_player_id));if(!a||!a->local)return false;a->current=v;a->has_current=true;std::copy(velocity.begin(),velocity.end(),a->velocity.begin());a->speed=speed;++a->revision;return true;}
