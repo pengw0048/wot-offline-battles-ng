@@ -147,7 +147,7 @@ namespace worker {
 void install(PyObject* config, PyObject* lobby_ready, PyObject* bigworld);
 bool start();
 void stop(bool restore_account);
-void onEvent(const std::string& kind, PyObject* message);
+void onEvent(const std::string& kind, const std::shared_ptr<const Value>& message);
 // worker_session_install/start/stop for the stock bootstrap entry.
 PyMethodDef* methods();
 }
@@ -155,10 +155,10 @@ PyMethodDef* methods();
 // Defined by the startup subsystem; the worker session drives a round through them.
 namespace startup {
 // Creates and installs the round's Battle from the worker config; false with `error` when rejected.
-bool startRound(PyObject* config, PyObject* message, PyObject* client, std::string& error);
+bool startRound(PyObject* config, const Value& message, std::string& error);
 // Stops the current round's Battle (the pinned BattleRuntime.stop(show_login=False, restore_account=...)).
 void stopRound(bool restore_account);
 // One LAN message for the current round: snapshot, events, battle_live, bot_observation, player_destructible_contact.
-void receive(Battle& b, const std::string& kind, PyObject* message);
+void receive(Battle& b, const std::string& kind, const std::shared_ptr<const Value>& message);
 }
 }

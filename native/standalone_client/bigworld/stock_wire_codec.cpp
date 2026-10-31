@@ -399,6 +399,8 @@ using V = cs::Value;
 V nativeInteger(long long value) { V out; out.kind = V::Kind::Integer; out.integer = value; return out; }
 V nativeNumber(double value) { V out; out.kind = V::Kind::Number; out.number = value; return out; }
 V nativeBoolean(bool value) { V out; out.kind = V::Kind::Boolean; out.boolean = value; return out; }
+// A u64 above int64 keeps its bits in `integer` and is marked unsigned.
+V nativeUnsigned(unsigned long long value) { V out = nativeInteger(static_cast<long long>(value)); out.unsigned_integer = value > static_cast<unsigned long long>(std::numeric_limits<long long>::max()); return out; }
 V nativeText(Reader& r, std::size_t n) {
     r.need(n); V out; out.kind = V::Kind::Text;
     out.text.assign(reinterpret_cast<const char*>(r.data + r.at), n); r.at += n; return out;
@@ -411,7 +413,7 @@ V nativeAny(Reader& r) {
     case A_FALSE: return nativeBoolean(false);
     case A_TRUE: return nativeBoolean(true);
     case A_INT: return nativeInteger(r.read<long long>());
-    case A_UINT: return nativeInteger(static_cast<long long>(r.read<unsigned long long>()));
+    case A_UINT: return nativeUnsigned(r.read<unsigned long long>());
     case A_FLOAT: return nativeNumber(r.read<double>());
     case A_STR: return nativeText(r, r.read<uint32_t>());
     case A_LIST: {
@@ -454,7 +456,7 @@ V nativeValue(Reader& r, uint32_t index) {
     case U8: return nativeInteger(r.read<uint8_t>());
     case U16: return nativeInteger(r.read<uint16_t>());
     case U32: return nativeInteger(r.read<uint32_t>());
-    case U64: return nativeInteger(static_cast<long long>(r.read<unsigned long long>()));
+    case U64: return nativeUnsigned(r.read<unsigned long long>());
     case I8: return nativeInteger(r.read<int8_t>());
     case I16: return nativeInteger(r.read<int16_t>());
     case I32: return nativeInteger(r.read<int32_t>());
@@ -504,6 +506,197 @@ V nativeValue(Reader& r, uint32_t index) {
     }
     throw Failure("bad schema type");
 }
+}
+
+// ---- encoding owned native values (same contract as the Python encoder) -------------------
+namespace {
+const V& plain(const V& value) { return value.resolved(); }
+long long nativeExact(const V& value) {
+    if (value.kind != V::Kind::Integer) throw Failure("expected int");
+    if (value.unsigned_integer) throw Failure("int out of i64 range");
+    return value.integer;
+}
+template<class T> void putNative(Writer& w, const V& value) {
+    long long v = nativeExact(value);
+    if (v < static_cast<long long>(std::numeric_limits<T>::min()) ||
+        (v > 0 && static_cast<unsigned long long>(v) > static_cast<unsigned long long>(std::numeric_limits<T>::max())))
+        throw Failure("int out of range");
+    w.put(static_cast<T>(v));
+}
+bool sameNative(const V& value, const EnumValue& e) {
+    switch (e.kind) {
+    case 0: return value.kind == V::Kind::Null;
+    case 1: return value.kind == V::Kind::Boolean && !value.boolean;
+    case 2: return value.kind == V::Kind::Boolean && value.boolean;
+    case 3: return value.kind == V::Kind::Integer && !value.unsigned_integer && value.integer == e.integer;
+    default: return value.kind == V::Kind::Text && value.text == e.text;
+    }
+}
+void encodeNative(Writer& w, uint32_t type, const V& value);
+
+void encodeNativeAny(Writer& w, const V& raw) {
+    const V& value = plain(raw);
+    switch (value.kind) {
+    case V::Kind::Null: w.put<unsigned char>(A_NULL); return;
+    case V::Kind::Boolean: w.put<unsigned char>(value.boolean ? A_TRUE : A_FALSE); return;
+    case V::Kind::Integer:
+        if (value.unsigned_integer) { w.put<unsigned char>(A_UINT); w.put(static_cast<unsigned long long>(value.integer)); }
+        else { w.put<unsigned char>(A_INT); w.put(static_cast<long long>(value.integer)); }
+        return;
+    case V::Kind::Number:
+        if (!std::isfinite(value.number)) throw Failure("non-finite float");
+        w.put<unsigned char>(A_FLOAT); w.put(value.number); return;
+    case V::Kind::Text: w.put<unsigned char>(A_STR); w.put(static_cast<uint32_t>(value.text.size())); w.out += value.text; return;
+    case V::Kind::Array:
+        w.put<unsigned char>(A_LIST); w.put(static_cast<uint32_t>(value.array.size()));
+        for (const auto& item : value.array) encodeNativeAny(w, item);
+        return;
+    case V::Kind::Object:
+        w.put<unsigned char>(A_MAP); w.put(static_cast<uint32_t>(value.object.size()));
+        for (const auto& item : value.object) { w.put(static_cast<uint32_t>(item.first.size())); w.out += item.first; encodeNativeAny(w, item.second); }
+        return;
+    case V::Kind::Shared: break;
+    }
+    throw Failure("value is not a wire value");
+}
+
+void encodeNativeRecord(Writer& w, uint32_t index, const V& raw, const char* skip) {
+    const V& dict = plain(raw);
+    if (dict.kind != V::Kind::Object) throw Failure(std::string("expected object for ") + records[index].name);
+    const RecordDesc& rec = records[index];
+    std::size_t known = 0;
+    std::vector<const V*> items(rec.count, nullptr);
+    std::vector<unsigned char> bits((2 * rec.flagged + 7) / 8, 0); uint32_t flag = 0;
+    for (uint32_t f = 0; f < rec.count; ++f) {
+        const FieldDesc& field = fields[rec.first + f];
+        auto found = dict.object.find(field.name);
+        const V* item = found == dict.object.end() ? nullptr : &plain(found->second);
+        items[f] = item;
+        if (item) ++known;
+        if (field.flags) {
+            if (item) {
+                bits[(2 * flag) / 8] |= static_cast<unsigned char>(1u << ((2 * flag) % 8));
+                if (item->kind == V::Kind::Null) {
+                    if (!(field.flags & 2)) throw Failure(std::string(field.name) + " is not nullable");
+                    bits[(2 * flag + 1) / 8] |= static_cast<unsigned char>(1u << ((2 * flag + 1) % 8));
+                }
+            } else if (!(field.flags & 1)) throw Failure(std::string(field.name) + " is required");
+            ++flag;
+        } else if (!item) throw Failure(std::string(field.name) + " is required");
+    }
+    if (skip && dict.object.count(skip)) ++known;
+    if (known != dict.object.size()) throw Failure(std::string(rec.name) + " has unknown keys");
+    if (!bits.empty()) w.out.append(reinterpret_cast<const char*>(&bits[0]), bits.size());
+    for (uint32_t f = 0; f < rec.count; ++f) {
+        const FieldDesc& field = fields[rec.first + f];
+        if (!items[f] || (items[f]->kind == V::Kind::Null && (field.flags & 2))) continue;
+        encodeNative(w, field.type, *items[f]);
+    }
+}
+
+void encodeNative(Writer& w, uint32_t index, const V& raw) {
+    const V& value = plain(raw);
+    const Type& t = types[index];
+    switch (t.kind) {
+    case U8: putNative<uint8_t>(w, value); return;
+    case U16: putNative<uint16_t>(w, value); return;
+    case U32: putNative<uint32_t>(w, value); return;
+    case U64:
+        if (value.kind != V::Kind::Integer || (!value.unsigned_integer && value.integer < 0)) throw Failure("u64 out of range");
+        w.put(static_cast<unsigned long long>(value.integer)); return;
+    case I8: putNative<int8_t>(w, value); return;
+    case I16: putNative<int16_t>(w, value); return;
+    case I32: putNative<int32_t>(w, value); return;
+    case I64: w.put(nativeExact(value)); return;
+    case F32: case F64: {
+        if (value.kind != V::Kind::Number) throw Failure("expected float");
+        if (!std::isfinite(value.number)) throw Failure("non-finite float");
+        if (t.kind == F32) { float f = static_cast<float>(value.number); if (f != value.number) throw Failure("float not exact in f32"); w.put(f); }
+        else w.put(value.number);
+        return;
+    }
+    case BOOL: if (value.kind != V::Kind::Boolean) throw Failure("expected bool"); w.put<unsigned char>(value.boolean); return;
+    case STR:
+        if (value.kind != V::Kind::Text) throw Failure("expected text");
+        if (value.text.size() > 65535) throw Failure("string too long");
+        w.put(static_cast<uint16_t>(value.text.size())); w.out += value.text; return;
+    case LIST: case TUPLE: {
+        if (value.kind != V::Kind::Array) throw Failure("expected list");
+        const std::size_t n = value.array.size();
+        if (t.kind == LIST) { if (n > t.b) throw Failure("list too long"); w.put(static_cast<uint16_t>(n)); }
+        else if (n != t.b) throw Failure("tuple length mismatch");
+        for (std::size_t i = 0; i < n; ++i) encodeNative(w, t.kind == LIST ? t.a : children[t.a + i], value.array[i]);
+        return;
+    }
+    case MAP:
+        if (value.kind != V::Kind::Object || value.object.size() > t.b) throw Failure("expected map");
+        w.put(static_cast<uint16_t>(value.object.size()));
+        for (const auto& item : value.object) { w.put(static_cast<uint16_t>(item.first.size())); w.out += item.first; encodeNative(w, t.a, item.second); }
+        return;
+    case ENUM:
+        for (uint32_t i = 0; i < t.b; ++i) if (sameNative(value, enums[t.a + i])) { w.put(static_cast<unsigned char>(i)); return; }
+        throw Failure("value not in enum");
+    case ANY: encodeNativeAny(w, value); return;
+    case REF: encodeNativeRecord(w, t.a, value, nullptr); return;
+    case ONEOF: {
+        std::string message;
+        for (uint32_t i = 0; i < t.b; ++i) {
+            std::string trial; Writer tw{trial};
+            try { encodeNative(tw, children[t.a + i], value); }
+            catch (const Failure& error) { message += error.what(); message += " | "; continue; }
+            w.put(static_cast<unsigned char>(i)); w.out += trial; return;
+        }
+        throw Failure("no alternative matched: " + message);
+    }
+    case VARIANT: {
+        const V& tag = value.kind == V::Kind::Object ? plain(value.get(t.key)) : value;
+        if (value.kind != V::Kind::Object || tag.kind != V::Kind::Text) throw Failure("variant tag missing");
+        for (uint32_t i = 0; i < t.b; ++i) if (tag.text == variants[t.a + i].tag) {
+            w.put(static_cast<unsigned char>(i)); encodeNativeRecord(w, variants[t.a + i].record, value, t.key); return;
+        }
+        throw Failure("unknown variant " + tag.text);
+    }
+    }
+    throw Failure("bad schema type");
+}
+}
+
+bool encode_value(const cs::Value& raw, std::string& out, std::string& error) {
+    try {
+        const V& message = plain(raw);
+        if (message.kind != V::Kind::Object) throw Failure("message is not a dict");
+        const V& type = plain(message.get("type"));
+        if (type.kind != V::Kind::Text) throw Failure("message has no type");
+        uint32_t id = 0;
+        for (uint32_t i = 0; i < message_count; ++i) if (type.text == messages[i].name) { id = i + 1; break; }
+        if (!id) throw Failure("message type " + type.text + " is not in the schema");
+        const MessageDesc& m = messages[id - 1];
+        out.assign(frame_header_bytes, '\0');
+        Writer w{out};
+        if (m.layout == 0) {
+            V body = message;
+            body.object.erase("type");
+            encodeNativeAny(w, body);
+        } else if (m.layout == 1) encodeNativeRecord(w, m.a, message, "type");
+        else {
+            std::string reasons;
+            bool done = false;
+            for (uint32_t i = 0; i < m.b && !done; ++i) {
+                std::string trial(1, static_cast<char>(i)); Writer tw{trial};
+                try { encodeNativeRecord(tw, types[children[m.a + i]].a, message, "type"); }
+                catch (const Failure& failure) { reasons += failure.what(); reasons += " | "; continue; }
+                out += trial; done = true;
+            }
+            if (!done) throw Failure("no " + type.text + " layout matched: " + reasons);
+        }
+        uint32_t length = static_cast<uint32_t>(out.size() - frame_header_bytes);
+        uint16_t mid = static_cast<uint16_t>(id), flags = 0;
+        std::memcpy(&out[0], &length, 4); std::memcpy(&out[4], &mid, 2); std::memcpy(&out[6], &flags, 2);
+        return true;
+    } catch (const std::exception& failure) {
+        error = failure.what();
+        return false;
+    }
 }
 
 uint16_t message_id(const char* name) {

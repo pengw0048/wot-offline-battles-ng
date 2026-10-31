@@ -7,6 +7,7 @@
 #include "stock_native_battle_startup_needs.hpp"
 #include "stock_native_battle_world_parts.hpp"
 #include "stock_native_battle_local.hpp"
+#include "stock_native_battle_link.hpp"
 #include "stock_native_detached_turret_snapshot.hpp"
 #include <algorithm>
 #include <cmath>
@@ -289,7 +290,7 @@ void destructibleContact(Battle& b, const Value& message) {
         throw p::Error("worker player destructible contact body is malformed");
     const auto epoch = integer(m.get("authority_epoch")), player_id = integer(player.get("id"));
     if (!epoch || !player_id) throw p::Error("worker player destructible contact has invalid values");
-    const auto local_epoch = p::wide(py::attr(b.engine.client.get(), "authority_epoch").get());
+    const auto local_epoch = link::authorityEpoch(b).value_or(-1);
     if (m.get("round_id") != b.start.get("round_id") || *epoch != local_epoch || *player_id <= 0)
         throw p::Error("worker player destructible contact violates its contract");
     Value players;

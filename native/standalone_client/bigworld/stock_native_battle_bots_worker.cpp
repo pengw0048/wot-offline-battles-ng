@@ -4,6 +4,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_bots.hpp"
+#include "stock_native_battle_link.hpp"
 #include "stock_native_battle_subsystems.hpp"
 #include <chrono>
 #include <cmath>
@@ -32,12 +33,6 @@ Value integer(std::int64_t v) { Value x; x.kind = Value::Kind::Integer; x.intege
 Value number(double v) { Value x; x.kind = Value::Kind::Number; x.number = v; return x; }
 Value text(const std::string& v) { Value x; x.kind = Value::Kind::Text; x.text = v; return x; }
 Value object() { Value x; x.kind = Value::Kind::Object; return x; }
-std::optional<std::int64_t> exact(PyObject* v) {
-    if (!v || v == Py_None || PyBool_Check(v) || !(PyInt_Check(v) || PyLong_Check(v))) return {};
-    const auto n = PyLong_AsLongLong(v);
-    if (PyErr_Occurred()) { PyErr_Clear(); return {}; }
-    return n;
-}
 
 void encode(const Value& raw, std::ostringstream& out) {
     const Value& v = raw.resolved();
@@ -108,12 +103,13 @@ struct DrawLease {
 };
 
 struct Session {
-    Object config, lobby_ready, bigworld, client;
+    Object config, lobby_ready, bigworld;
+    bool linked = false;
     std::string status_path, state = "idle";
     bool stopped = false, handling_failure = false;
     std::uint64_t generation = 0;
     std::optional<std::int64_t> active_round;
-    Object pending_start;
+    std::shared_ptr<const Value> pending_start;
     double pending_deadline = -1., retry_delay = RETRY_SECONDS, next_status = 0., next_progress = 0.;
     std::int64_t last_progress_frame = 0;
     std::set<std::int64_t> retired_rounds;
@@ -127,9 +123,7 @@ struct Session {
 };
 std::unique_ptr<Session> session;
 
-bool authorityHere() {
-    return session->client && p::flag(py::call(session->client.get(), "is_bot_authority").get());
-}
+bool authorityHere() { return session->linked && link::authority(); }
 void log(const std::string& line) { native_battle::log(line); }
 
 // A native BigWorld.callback target bound to one session generation.
@@ -251,10 +245,11 @@ bool writeStatus(bool force = false) {
 #endif
     status.object["heartbeat_epoch"] = number(now);
     status.object["state"] = text(session->state);
-    status.object["connected"] = boolean(session->client && p::flag(py::optional(session->client.get(), "connected").get()));
-    status.object["phase"] = session->client ? cs::read(py::optional(session->client.get(), "phase").get()) : null();
+    status.object["connected"] = boolean(session->linked && link::connected());
+    status.object["phase"] = session->linked ? text(link::phase()) : null();
     status.object["round_id"] = session->active_round ? integer(*session->active_round) : null();
-    status.object["bot_authority_id"] = session->client ? cs::read(py::optional(session->client.get(), "bot_authority_id").get()) : null();
+    const auto authority_id = session->linked ? link::botAuthorityId() : std::nullopt;
+    status.object["bot_authority_id"] = authority_id ? integer(*authority_id) : null();
     status.object["world_draw_enabled"] = draw;
     status.object["process_performance"] = processPerformance(now);
     status.object["runtime"] = runtimeStatus(now);
@@ -285,7 +280,7 @@ void scheduleRetry(double delay = -1., bool grow = true) {
 
 void retireRuntime(const std::string& reason) {
     const auto round = session->active_round;
-    if (reason != "round_complete" && session->client) py::set(session->client.get(), "bot_authority_id", Py_None);
+    if (reason != "round_complete" && session->linked) link::dropAuthority();
     std::string error;
     try { if (current()) startup::stopRound(true); } catch (const std::exception& e) { error = describe(e); }
     try { session->draw.restore(); } catch (const std::exception& e) { if (error.empty()) error = describe(e); }
@@ -313,22 +308,15 @@ bool failure(const std::string& error) {
     if (busy) session->retry_delay = BUSY_RETRY_SECONDS;
     log("simulation worker failed: " + error);
     if (session->active_round) session->retired_rounds.insert(*session->active_round);
-    session->pending_start = Object();
+    session->pending_start.reset();
     session->pending_deadline = -1.;
-    if (session->client) py::set(session->client.get(), "bot_authority_id", Py_None);
+    if (session->linked) link::dropAuthority();
     bool cleanup_failed = false;
     try { retireRuntime("worker_failed"); } catch (const std::exception& e) { cleanup_failed = true; log("worker cleanup failed: " + describe(e)); }
-    Object client = session->client;
     ++session->generation;
-    if (client) {
-        try {
-            py::set(client.get(), "on_event", Py_None);
-            py::call(client.get(), "stop");
-            if (session->client.get() == client.get()) session->client = Object();
-        } catch (const std::exception& e) {
-            cleanup_failed = true;
-            log("worker transport cleanup failed: " + describe(e));
-        }
+    if (session->linked) {
+        session->linked = false;
+        link::disconnect(false);
     }
     session->state = cleanup_failed ? "failed" : "retrying";
     if (cleanup_failed) session->stopped = true;
@@ -339,8 +327,10 @@ bool failure(const std::string& error) {
     return true;
 }
 
-bool startRound(PyObject* message) {
-    const auto round = exact(PyDict_GetItemString(message, "round_id"));
+bool startRound(const std::shared_ptr<const Value>& start) {
+    const Value& message = *start;
+    const auto& round_value = message.get("round_id").resolved();
+    const std::optional<std::int64_t> round = round_value.kind == Value::Kind::Integer ? std::optional<std::int64_t>(round_value.integer) : std::nullopt;
     if (!round || session->retired_rounds.count(*round) || !authorityHere()) return false;
     if (current() && session->active_round == round) return false;
     if (current() && session->active_round != round) {
@@ -350,47 +340,43 @@ bool startRound(PyObject* message) {
     bool lobby = false;
     try { lobby = p::flag(py::invoke(session->lobby_ready.get()).get()); } catch (const std::exception& e) { failure(describe(e)); return false; }
     if (!lobby) {
-        if (session->pending_start && exact(PyDict_GetItemString(session->pending_start.get(), "round_id")) != round) {
+        if (session->pending_start && session->pending_start->get("round_id") != message.get("round_id")) {
             failure("worker received overlapping pending rounds");
             return false;
         }
-        session->pending_start = own(p::Ref(PyDict_Copy(message)));
+        session->pending_start = start;
         session->pending_deadline = wall() + cs::read(session->config.get()).get("startupTimeoutSeconds").numeric(30.);
         session->state = "waiting_lobby";
         writeStatus(true);
         return true;
     }
-    session->pending_start = Object();
+    session->pending_start.reset();
     session->pending_deadline = -1.;
     session->last_progress_frame = 0;
     session->next_progress = 0.;
     if (current()) { failure("worker received overlapping round lifecycles"); return false; }
-    // The worker plays its own dummy Avatar projection, parked below the map.
-    PyObject* dummy = nullptr;
-    PyObject* players = PyDict_GetItemString(message, "players");
-    if (players && players != Py_None)
-        for (Py_ssize_t i = 0; i < PySequence_Size(players); ++i) {
-            auto row = p::item(players, i);
-            if (PyDict_Check(row.get()) && exact(PyDict_GetItemString(row.get(), "id")) == AUTHORITY_ID) { dummy = row.get(); break; }
-        }
+    // The worker plays its own carrier Avatar, parked below the map.
+    const Value* dummy = nullptr;
+    for (const auto& row : message.get("players").resolved().array)
+        if (row.get("id").resolved().kind == Value::Kind::Integer && row.get("id").resolved().integer == AUTHORITY_ID) { dummy = &row.resolved(); break; }
     if (!dummy) { failure("worker dummy Avatar projection is missing"); return false; }
     p::Ref config(PyDict_Copy(session->config.get()));
     p::set(config.get(), "worker_mode", p::boolean(true));
     p::set(config.get(), "native_remote_vehicles", p::boolean(false));
     p::set(config.get(), "bot_track_animation", p::boolean(false));
-    p::set(config.get(), "map", p::value(message, "map"));
+    p::set(config.get(), "map", p::Ref(cs::write(message.get("map"))));
     auto spawn = p::dict();
-    for (const char* axis : {"x", "y", "z"}) p::set(spawn.get(), axis, p::value(dummy, axis));
-    auto yaw = p::value(dummy, "yaw");
-    p::set(spawn.get(), "yaw", yaw.get() == Py_None ? p::number(0.) : std::move(yaw));
+    for (const char* axis : {"x", "y", "z"}) p::set(spawn.get(), axis, p::Ref(cs::write(dummy->get(axis))));
+    const Value& yaw = dummy->get("yaw").resolved();
+    p::set(spawn.get(), "yaw", yaw.kind == Value::Kind::Null ? p::number(0.) : p::Ref(cs::write(yaw)));
     p::set(config.get(), "spawn", spawn);
-    p::set(config.get(), "vehicle", p::value(dummy, "vehicle"));
-    p::set(config.get(), "name", p::value(dummy, "name"));
+    p::set(config.get(), "vehicle", p::Ref(cs::write(dummy->get("vehicle"))));
+    p::set(config.get(), "name", p::Ref(cs::write(dummy->get("name"))));
     session->active_round = round;
     session->state = "loading";
     std::string error;
     bool accepted = false;
-    try { accepted = startup::startRound(config.get(), message, session->client.get(), error); }
+    try { accepted = startup::startRound(config.get(), message, error); }
     catch (const std::exception& e) { failure(describe(e)); return false; }
     if (!accepted) { failure(error.empty() ? "worker battle runtime rejected start" : error); return false; }
     writeStatus(true);
@@ -402,7 +388,10 @@ bool publishProgress(const Battle& b) {
     if (now < session->next_progress || !b.bots || b.result.kind != Value::Kind::Null) return false;
     const auto frame = std::int64_t(b.bots->frame_callbacks);
     if (frame <= 0 || frame > 2147483647 || frame <= session->last_progress_frame) return false;
-    if (!p::flag(py::call(session->client.get(), "send_simulation_progress", p::integer(frame).get()).get())) return false;
+    Value progress = object();
+    progress.object["type"] = text("simulation_progress");
+    progress.object["frame_seq"] = integer(frame);
+    if (!link::send(const_cast<Battle&>(b), progress)) return false;
     session->last_progress_frame = frame;
     session->next_progress = now + PROGRESS_SECONDS;
     return true;
@@ -412,7 +401,7 @@ void monitor() {
     if (session->stopped) return;
     if (!current() && session->pending_start) {
         if (!authorityHere()) {
-            session->pending_start = Object();
+            session->pending_start.reset();
             session->pending_deadline = -1.;
             session->state = "standby";
         } else if (session->pending_deadline >= 0. && wall() >= session->pending_deadline) {
@@ -424,10 +413,10 @@ void monitor() {
         bool lobby = false;
         try { lobby = p::flag(py::invoke(session->lobby_ready.get()).get()); } catch (const std::exception& e) { failure(describe(e)); return; }
         if (lobby) {
-            Object pending = std::move(session->pending_start);
-            session->pending_start = Object();
+            auto pending = std::move(session->pending_start);
+            session->pending_start.reset();
             session->pending_deadline = -1.;
-            if (!startRound(pending.get())) return;
+            if (!startRound(pending)) return;
         }
     }
     if (Battle* b = current()) {
@@ -455,31 +444,18 @@ void monitor() {
 bool connect() {
     if (session->stopped) return false;
     const auto generation = ++session->generation;
-    auto module = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.authority_worker"));
-    p::Ref self(Py_BuildValue("(sK)", "event", static_cast<unsigned long long>(generation)));
-    static PyMethodDef eventDef = {"worker_event", nullptr, METH_VARARGS, nullptr};
-    eventDef.ml_meth = [](PyObject* self, PyObject* args) -> PyObject* {
-        PyObject *kind, *message;
-        if (!PyArg_ParseTuple(args, "OO", &kind, &message)) return nullptr;
-        if (!session || session->stopped || PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(self, 1)) != session->generation) Py_RETURN_NONE;
-        try { onEvent(p::string(kind), message); }
-        catch (const std::exception& e) { failure(describe(e)); }
-        Py_RETURN_NONE;
-    };
-    p::Ref on_event(PyCFunction_New(&eventDef, self.get()));
     auto config = cs::read(session->config.get());
-    auto host = p::text(config.get("host").kind == Value::Kind::Text ? config.get("host").text : std::string("127.0.0.1"));
-    auto port = p::integer(std::int64_t(config.get("port").numeric(28782.)));
-    auto kwargs = p::dict();
-    p::set(kwargs.get(), "on_event", on_event);
-    p::set(kwargs.get(), "bigworld", p::retain(session->bigworld.get()));
-    p::Ref positional(PyTuple_Pack(2, host.get(), port.get()));
-    session->client = own(p::Ref(PyObject_Call(py::attr(module.get(), "AuthorityWorkerLANClient").get(), positional.get(), kwargs.get())));
+    const std::string host = config.get("host").kind == Value::Kind::Text ? config.get("host").text : std::string("127.0.0.1");
+    const int port = int(config.get("port").numeric(28782.));
     session->state = "connecting";
     try {
-        if (!p::flag(py::call(session->client.get(), "start").get())) throw p::Error("worker LAN client could not start");
+        link::connect(session->bigworld.get(), host, port, [generation](const std::string& kind, const std::shared_ptr<const Value>& message) {
+            if (!session || session->stopped || generation != session->generation) return;
+            try { onEvent(kind, message); }
+            catch (const std::exception& e) { failure(describe(e)); }
+        });
+        session->linked = true;
     } catch (const std::exception& e) {
-        session->client = Object();
         log("worker connect failed: " + describe(e));
         scheduleRetry();
         return false;
@@ -489,42 +465,32 @@ bool connect() {
     return true;
 }
 
-std::string transportFailure(const std::string& kind, PyObject* message) {
-    std::string detail, code;
-    if (PyDict_Check(message)) {
-        PyObject* m = PyDict_GetItemString(message, "message");
-        PyObject* c = PyDict_GetItemString(message, "code");
-        if (m && p::flag(m)) detail = p::string(p::Ref(PyObject_Str(m)).get());
-        if (c && p::flag(c)) code = p::string(p::Ref(PyObject_Str(c)).get());
-    }
+std::string transportFailure(const std::string& kind, const Value& message) {
     auto trim = [](std::string s) { s.erase(0, s.find_first_not_of(" \t\r\n")); s.erase(s.find_last_not_of(" \t\r\n") + 1); return s; };
-    detail = trim(detail);
-    code = trim(code);
+    auto textOf = [](const Value& v) { const Value& r = v.resolved(); return r.kind == Value::Kind::Text ? r.text : r.kind == Value::Kind::Integer ? std::to_string(r.integer) : std::string(); };
+    const std::string detail = trim(textOf(message.get("message"))), code = trim(textOf(message.get("code")));
     if (!detail.empty() && !code.empty()) return detail + " (" + kind + ", code " + code + ")";
     if (!detail.empty()) return detail + " (" + kind + ")";
     if (!code.empty()) return "worker transport lost (" + kind + ", code " + code + ")";
-    std::vector<std::string> keys;
-    if (PyDict_Check(message)) {
-        Py_ssize_t cursor = 0;
-        PyObject *key, *value;
-        while (PyDict_Next(message, &cursor, &key, &value)) keys.push_back(p::string(p::Ref(PyObject_Str(key)).get()));
-    }
-    std::sort(keys.begin(), keys.end());
     std::string joined;
-    for (std::size_t i = 0; i < keys.size() && i < 12; ++i) joined += (i ? "," : "") + keys[i];
+    std::size_t count = 0;
+    for (const auto& entry : message.resolved().object) {
+        if (count++ == 12) break;
+        joined += (joined.empty() ? "" : ",") + entry.first;
+    }
     return "worker transport lost (" + kind + ", no message; payload keys: " + (joined.empty() ? "none" : joined) + ")";
 }
 }
 
-void onEvent(const std::string& kind, PyObject* raw) {
-    Object holder = own(PyDict_Check(raw) ? p::retain(raw) : p::dict());
-    PyObject* message = holder.get();
+void onEvent(const std::string& kind, const std::shared_ptr<const Value>& event) {
+    const Value& message = *event;
     if (kind == "welcome" || kind == "roster") {
         if (kind == "welcome") session->retry_delay = RETRY_SECONDS;
-        if (session->client && !authorityHere()) { session->pending_start = Object(); session->pending_deadline = -1.; }
+        if (session->linked && !authorityHere()) { session->pending_start.reset(); session->pending_deadline = -1.; }
         if (current() && !authorityHere() && !retireOrFail("authority_lost")) return;
-        if (p::string(p::value(message, "phase").get()) == "waiting") {
-            session->pending_start = Object();
+        const Value& phase = message.get("phase").resolved();
+        if (phase.kind == Value::Kind::Text && phase.text == "waiting") {
+            session->pending_start.reset();
             session->pending_deadline = -1.;
             if (current() && !retireOrFail("round_complete")) return;
             session->state = "waiting";
@@ -532,20 +498,21 @@ void onEvent(const std::string& kind, PyObject* raw) {
             session->state = "standby";
         }
     } else if (kind == "battle_start") {
-        if (authorityHere()) startRound(message);
+        if (authorityHere()) startRound(event);
         else session->state = "standby";
     } else if (kind == "snapshot" || kind == "events" || kind == "battle_live" || kind == "bot_observation" ||
                kind == "player_destructible_contact") {
         if (current() && !authorityHere()) { retireOrFail("authority_lost"); return; }
         Battle* b = current();
-        if (!b || exact(PyDict_GetItemString(message, "round_id")) != session->active_round) return;
-        startup::receive(*b, kind, message);
+        if (!b || !session->active_round || message.get("round_id") != integer(*session->active_round)) return;
+        startup::receive(*b, kind, event);
     } else if (kind == "battle_failed") {
-        auto text_value = p::value(message, "message");
-        failure(p::flag(text_value.get()) ? p::string(p::Ref(PyObject_Str(text_value.get())).get()) : "worker battle failed");
+        const Value& text_value = message.get("message").resolved();
+        failure(text_value.kind == Value::Kind::Text && !text_value.text.empty() ? text_value.text : "worker battle failed");
     } else if (kind == "error" || kind == "connection_lost" || kind == "disconnected") {
         failure(transportFailure(kind, message));
     }
+    writeStatus();
 }
 
 namespace {
@@ -580,33 +547,29 @@ void install(PyObject* config, PyObject* lobby_ready, PyObject* bigworld) {
 }
 
 bool start() {
-    if (!session || session->stopped || session->client) return false;
+    if (!session || session->stopped || session->linked) return false;
     return connect();
 }
 
 void stop(bool restore_account) {
     if (!session) return;
-    if (session->stopped && !current() && !session->client && !session->draw.active) return;
+    if (session->stopped && !current() && !session->linked && !session->draw.active) return;
     session->stopped = true;
     ++session->generation;
     cancel(session->monitor_id);
     cancel(session->retry_id);
-    Object client = session->client;
-    if (client) py::set(client.get(), "bot_authority_id", Py_None);
+    if (session->linked) link::dropAuthority();
     std::string error;
     try {
         if (current()) startup::stopRound(restore_account);
     } catch (const std::exception& e) { error = describe(e); }
     try { session->draw.restore(); } catch (const std::exception& e) { if (error.empty()) error = describe(e); }
-    if (client) {
-        try {
-            py::set(client.get(), "on_event", Py_None);
-            py::call(client.get(), "stop");
-            if (session->client.get() == client.get()) session->client = Object();
-        } catch (const std::exception& e) { if (error.empty()) error = describe(e); }
+    if (session->linked) {
+        session->linked = false;
+        link::disconnect(true);
     }
     session->active_round.reset();
-    session->pending_start = Object();
+    session->pending_start.reset();
     session->pending_deadline = -1.;
     session->last_progress_frame = 0;
     session->next_progress = 0.;
@@ -633,13 +596,14 @@ PyObject* stopEntry(PyObject*, PyObject* args) {
     try { stop(restore != 0); Py_RETURN_NONE; }
     catch (const std::exception& e) { if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what()); return nullptr; }
 }
-PyObject* clientEntry(PyObject*, PyObject*) {
-    if (!session || !session->client) Py_RETURN_NONE;
-    return p::retain(session->client.get()).release();
+// (connected, ready): the link is up and the server accepted the worker's welcome.
+PyObject* linkEntry(PyObject*, PyObject*) {
+    const bool linked = session && session->linked;
+    return Py_BuildValue("(NN)", PyBool_FromLong(linked && link::connected()), PyBool_FromLong(linked && !link::phase().empty()));
 }
 PyObject* stateEntry(PyObject*, PyObject*) { return p::text(session ? session->state : std::string("stopped")).release(); }
 PyMethodDef entries[] = {
-    {"worker_session_client", clientEntry, METH_NOARGS, "The worker's current LAN client, or None."},
+    {"worker_session_link", linkEntry, METH_NOARGS, "Whether the worker link is (connected, ready)."},
     {"worker_session_state", stateEntry, METH_NOARGS, "The worker session state name."},
     {"worker_session_install", installEntry, METH_VARARGS, "Install the hidden worker's native session."},
     {"worker_session_start", startEntry, METH_NOARGS, "Connect the hidden worker to the LAN server."},

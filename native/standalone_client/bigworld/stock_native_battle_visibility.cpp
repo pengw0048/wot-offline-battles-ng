@@ -4,6 +4,7 @@
 #endif
 #include "stock_native_battle_visibility_core.hpp"
 #include "stock_native_battle_vehicles.hpp"
+#include "stock_native_battle_link.hpp"
 #include "stock_native_client_drive_status.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_world_pipeline.hpp"
@@ -430,7 +431,7 @@ std::int64_t localTeam(const Battle& b) {
         const auto& team = local->state.get("team");
         if (team.resolved().kind != Value::Kind::Null) return std::int64_t(team.numeric());
     }
-    return p::integral(b.engine.client.get(), "team");
+    return b.worker ? link::team() : p::integral(b.engine.client.get(), "team");
 }
 
 void configureLocal(Battle& b, LocalVisibilityInputs inputs) {

@@ -5,6 +5,7 @@
 #endif
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_subsystems.hpp"
+#include "stock_native_battle_link.hpp"
 #include "stock_native_client_weapon_runtime.hpp"
 #include "stock_native_client_weapon_python.hpp"
 #include "stock_native_projectile_wire.hpp"
@@ -307,6 +308,10 @@ void epochChanged(Battle& b) {
 
 // ---- Server-time anchor (worker before its Bot owner exists, replay) -------------------------------------------------
 double oneWay(const Battle& b) {
+    if (b.worker) {
+        const auto rtt = link::minimumRttMs() ? link::minimumRttMs() : link::rttMs();
+        return rtt ? std::max(0., std::min(.25, *rtt / 2000.)) : 0.;
+    }
     auto minimum = py::optional(b.engine.client.get(), "minimum_rtt_ms");
     auto rtt = minimum.get() != Py_None ? std::move(minimum) : py::optional(b.engine.client.get(), "rtt_ms");
     if (rtt.get() == Py_None) return 0.;
@@ -341,7 +346,9 @@ bool anchorMessage(Battle& b, const Value& message) {
         }
     }
     Value epoch = message.get("authority_epoch");
-    if (isNull(epoch)) {
+    if (isNull(epoch) && b.worker) {
+        if (const auto link_epoch = link::authorityEpoch(b)) { epoch.kind = Value::Kind::Integer; epoch.integer = *link_epoch; }
+    } else if (isNull(epoch)) {
         auto client_epoch = py::optional(b.engine.client.get(), "authority_epoch");
         if (client_epoch.get() != Py_None) epoch = cs::read(client_epoch.get());
     }
@@ -834,10 +841,7 @@ namespace projectiles {
 bool isAuthority(const Battle& b) {
     if (b.replay) return false;
     if (!b.worker) return b.local_player > 0;
-    auto checker = py::optional(b.engine.client.get(), "is_bot_authority");
-    if (!py::callable(checker)) return false;
-    try { return p::flag(py::invoke(checker.get()).get()); }
-    catch (const std::exception&) { PyErr_Clear(); return false; }
+    return link::authority();
 }
 
 std::optional<std::int64_t> estimatedServerTime(const Battle& b, double now) {

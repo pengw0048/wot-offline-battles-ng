@@ -3,6 +3,8 @@
 // validated, built and encoded in C++ (no Python LAN client).
 #include "stock_native_battle.hpp"
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -24,12 +26,39 @@ namespace link {
 bool send(Battle& b, const Value& message);
 
 // The worker owns Bot authority for the current round (welcome/roster authority id and phase).
-bool authority(const Battle& b);
+bool authority();
+inline bool authority(const Battle&) { return authority(); }
 std::optional<std::int64_t> roundId(const Battle& b);
 std::optional<std::int64_t> authorityEpoch(const Battle& b);
 // Both the worker and the server advertised this capability.
 bool negotiated(const Battle& b, const std::string& capability);
-// Dispatches every message already received before a frame's urgent work (player fire intents).
+// Dispatches every message already received (between the Bot control slice and shell advancement).
 void drain(Battle& b);
+
+// The worker session's connection. The handler receives each admitted message: welcome, roster, battle_start,
+// battle_live, snapshot, events, bot_observation, player_destructible_contact, and error when the link ends.
+using Handler = std::function<void(const std::string& kind, const std::shared_ptr<const Value>& message)>;
+bool connect(PyObject* bigworld, const std::string& host, int port, Handler handler);
+// Sends leave and closes; `flush` lets queued frames drain briefly first. Idempotent.
+void disconnect(bool flush);
+bool connected();
+std::string phase();
+std::optional<std::int64_t> botAuthorityId();
+// The session gave up Bot authority for this connection.
+void dropAuthority();
+// The worker carrier's team (the first real player's).
+std::int64_t team();
+// The newest accepted snapshot of the current round's lineage.
+std::shared_ptr<const Value> lastSnapshot();
+std::optional<double> rttMs();
+std::optional<double> minimumRttMs();
+// Server battle timing projected onto now: seconds until combat starts and ends, its duration and phase.
+struct Timing {
+    std::optional<double> countdown, remaining, duration;
+    std::string phase;
+};
+Timing timing();
+// One hidden-render frame interval; worker_pong reports 1000 / the windowed frame rate.
+void recordFrame(double seconds);
 }
 }

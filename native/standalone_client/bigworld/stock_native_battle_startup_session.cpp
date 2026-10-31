@@ -65,26 +65,10 @@ void ignoreLivePayload(Battle& b, const char* kind, const std::string& error, Py
     b.warn(std::string("recoverable ") + kind + " payload", reason, false);
 }
 
-// One authority snapshot: each consumer ingests it; a bad frame is contained, not fatal.
-// The snapshot fields native consumers read. The worker's Bot owner takes players, the manifest and (once it exists)
-// projectiles from the original Python message, so the worker does not convert those large arrays.
-Value snapshotValue(Battle& b, PyObject* message) {
-    if (!PyDict_Check(message)) return fromPython(p::dict().get());
-    if (!b.worker) return fromPython(message);
-    const bool owner = b.bots && b.bots->owner;
-    Value out;
-    out.kind = Value::Kind::Object;
-    Py_ssize_t cursor = 0;
-    PyObject *key, *value;
-    while (PyDict_Next(message, &cursor, &key, &value)) {
-        const std::string name = p::string(key);
-        if (name == "players" || name == "bot_manifest" || (owner && name == "projectiles")) continue;
-        out.object.emplace(name, fromPython(value));
-    }
-    return out;
-}
-
-void snapshot(Battle& b, PyObject* message) {
+namespace {
+// One authority snapshot: each consumer ingests it; a bad frame is contained, not fatal. `python` is the visible
+// client's LAN message (its replica capsule and Python consumers); the worker's link hands decoded values only.
+void ingest(Battle& b, Value accepted, PyObject* python) {
     if (stopped(b)) return;
     auto& s = *b.startup;
     Value previous = std::move(s.last_snapshot);
@@ -93,9 +77,9 @@ void snapshot(Battle& b, PyObject* message) {
         ~Source() { b.source_message = nullptr; b.source_value = nullptr; }
     } source{b};
     try {
-        s.last_snapshot = snapshotValue(b, message);
+        s.last_snapshot = std::move(accepted);
         const Value& last = s.last_snapshot;
-        if (PyDict_Check(message)) { b.source_message = message; b.source_value = &last; }
+        if (python && PyDict_Check(python)) { b.source_message = python; b.source_value = &last; }
         if (!b.worker) gun::restoreEquipment(b, last, true);
         if (b.local) {
             local::acknowledgeContacts(b, last, false);
@@ -121,15 +105,26 @@ void snapshot(Battle& b, PyObject* message) {
             world::rememberRamBotSnapshot(b, last);
         }
         try {
-            vehicles::receiveSnapshotMessage(b, message, b.clock());
+            if (python) vehicles::receiveSnapshotMessage(b, python, b.clock());
+            else vehicles::receiveSnapshot(b, remote::readMessage(b, last), b.clock());
         } catch (const std::exception& e) {
             // The Bot state store consumed this frame; contain the presentation timeline alone.
-            ignoreLivePayload(b, "snapshot_sync", describe(e), message);
+            ignoreLivePayload(b, "snapshot_sync", describe(e), python);
         }
     } catch (const std::exception& e) {
         s.last_snapshot = std::move(previous);
-        ignoreLivePayload(b, "snapshot", describe(e), message);
+        ignoreLivePayload(b, "snapshot", describe(e), python);
     }
+}
+}
+
+void snapshot(Battle& b, PyObject* message) { ingest(b, fromPython(PyDict_Check(message) ? message : p::dict().get()), message); }
+
+void snapshot(Battle& b, const std::shared_ptr<const Value>& message) {
+    Value shared;
+    shared.kind = Value::Kind::Shared;
+    shared.reference = message;
+    ingest(b, std::move(shared), nullptr);
 }
 
 // A loading-phase roster is the only durable authority update before live snapshots.
@@ -230,6 +225,7 @@ p::Ref replayModule() { return module("gui.mods.offline_lan_0922.offline_replay"
 
 // The native recorder starts once per round, after the client is ready and the battle-ready barrier was sent.
 void ensureRecording(Battle& b) {
+    if (b.worker) return;
     PyObject* client = b.engine.client.get();
     auto replay = replayModule();
     py::call(replay.get(), "poll_process_status", client);

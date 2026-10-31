@@ -85,6 +85,8 @@ namespace startup {
 bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObject* message, PyObject* client, PyObject* on_local_leave);
 void stop(Battle& b, bool restore_account);
 void snapshot(Battle& b, PyObject* message);
+// The worker link's admitted snapshot, shared without a copy.
+void snapshot(Battle& b, const std::shared_ptr<const Value>& message);
 void battleLive(Battle& b, const Value& message);
 bool roster(Battle& b, const Value& message);
 bool teamChat(Battle& b, const Value& message);

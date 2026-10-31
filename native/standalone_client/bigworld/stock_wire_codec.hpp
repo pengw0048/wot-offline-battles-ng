@@ -23,6 +23,8 @@ std::size_t frame_size(const unsigned char* data, std::size_t size);
 // Decode one frame into owned native values without the GIL; false with a reason on failure.
 bool decode_value(const unsigned char* data, std::size_t size, stock_native_client_state::Value& out,
                   std::string& error);
+// Encode one owned message (with its "type") as a frame; same contract as encode, false with a reason.
+bool encode_value(const stock_native_client_state::Value& message, std::string& out, std::string& error);
 // Message id for a schema message name (0 when absent), and the id in a frame header.
 uint16_t message_id(const char* name);
 uint16_t frame_message(const unsigned char* data, std::size_t size);

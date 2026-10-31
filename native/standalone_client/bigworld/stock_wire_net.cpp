@@ -26,6 +26,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -56,6 +57,13 @@ struct Received {
     Clock::time_point arrival;
     std::shared_ptr<const stock_native_client_state::Value> snapshot;
     std::string resync;
+    // A native-owned connection decodes every frame here; a decode failure leaves `resync` as its reason.
+    std::shared_ptr<const stock_native_client_state::Value> message;
+};
+// One queued frame; a coalesced one may be replaced in place until the sender takes it.
+struct Outgoing {
+    std::string payload, type;
+    std::optional<std::string> key;
 };
 
 struct Shared {
@@ -64,14 +72,14 @@ struct Shared {
     State state = State::connecting;
     std::string error;
     Socket socket = invalid_socket;
-    std::deque<std::string> outgoing;
+    std::deque<Outgoing> outgoing;
     std::size_t outgoing_bytes = 0;
     std::deque<Received> frames;
     // Replay recording: every received frame in arrival order, on the replay clock.
     std::shared_ptr<stock_wire_replay::Writer> recorder;
     Clock::time_point record_origin;
     double record_offset = 0.;
-    bool closing = false;
+    bool closing = false, decode_all = false;
     double flush_seconds = 0.5;
 
     void finish(State terminal, const std::string& why) {
@@ -158,7 +166,7 @@ void sender(std::shared_ptr<Shared> shared) {
             continue;
         }
         std::string payload;
-        payload.swap(shared->outgoing.front());
+        payload.swap(shared->outgoing.front().payload);
         shared->outgoing.pop_front();
         shared->outgoing_bytes -= payload.size();
         Socket s = shared->socket;
@@ -214,7 +222,10 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
             Received item{std::string(buffer, used, size), now, {}, {}};
             used += size;
             const auto* data = reinterpret_cast<const unsigned char*>(item.frame.data());
-            if (stock_wire::frame_message(data, item.frame.size()) == replica) {
+            if (shared->decode_all) {
+                auto message = std::make_shared<stock_native_client_state::Value>();
+                if (stock_wire::decode_value(data, item.frame.size(), *message, item.resync)) item.message = std::move(message);
+            } else if (stock_wire::frame_message(data, item.frame.size()) == replica) {
                 // A delta that does not fit the merged rows asks the server for a full one.
                 stock_native_client_state::Value message;
                 try {
@@ -298,7 +309,7 @@ PyObject* sendPython(PyObject*, PyObject* args) {
     if (shared.closing || shared.state == State::closed || shared.state == State::failed ||
         shared.outgoing_bytes + static_cast<std::size_t>(size) > max_send_bytes)
         Py_RETURN_FALSE;
-    shared.outgoing.emplace_back(static_cast<const char*>(data), static_cast<std::size_t>(size));
+    shared.outgoing.push_back(Outgoing{std::string(static_cast<const char*>(data), static_cast<std::size_t>(size)), std::string(), {}});
     shared.outgoing_bytes += static_cast<std::size_t>(size);
     shared.wake.notify_all();
     Py_RETURN_TRUE;
@@ -368,6 +379,69 @@ PyObject* closePython(PyObject*, PyObject* args) {
     value->close();
     Py_RETURN_NONE;
 }
+}
+
+// ---- native-owned connections (the hidden worker's link) ---------------------------------
+struct Native {
+    Connection connection;
+};
+
+std::shared_ptr<Native> open(const std::string& host, int port, double timeout) {
+    startup();
+    auto value = std::make_shared<Native>();
+    value->connection.shared->decode_all = true;
+    runThreads(value->connection.shared, host, port, timeout);
+    return value;
+}
+
+Queued send(Native& native, std::string payload, const std::string& type, const std::optional<std::string>& key,
+            std::size_t max_messages, std::size_t max_bytes) {
+    Shared& shared = *native.connection.shared;
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    if (shared.closing || shared.state == State::closed || shared.state == State::failed) return Queued::refused;
+    if (key) {
+        // Only an unsent checkpoint with the same key may be superseded, never across another checkpoint or a ram report.
+        for (auto queued = shared.outgoing.rbegin(); queued != shared.outgoing.rend(); ++queued) {
+            if (queued->key) {
+                if (*queued->key != *key) break;
+                shared.outgoing_bytes = shared.outgoing_bytes - queued->payload.size() + payload.size();
+                queued->payload.swap(payload);
+                queued->type = type;
+                shared.wake.notify_all();
+                return Queued::replaced;
+            }
+            if (queued->type == "bot_ram_report") break;
+        }
+    }
+    if (shared.outgoing.size() >= max_messages || shared.outgoing_bytes + payload.size() > max_bytes) return Queued::refused;
+    shared.outgoing_bytes += payload.size();
+    shared.outgoing.push_back(Outgoing{std::move(payload), type, key});
+    shared.wake.notify_all();
+    return Queued::queued;
+}
+
+Status receive(Native& native, std::size_t limit, std::vector<Frame>& out) {
+    Shared& shared = *native.connection.shared;
+    std::deque<Received> taken;
+    Status status;
+    {
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        const std::size_t count = std::min(shared.frames.size(), limit);
+        for (std::size_t i = 0; i < count; ++i) { taken.push_back(std::move(shared.frames.front())); shared.frames.pop_front(); }
+        const State state = shared.frames.empty() ? shared.state : State::connected;
+        status.state = state == State::connecting ? "connecting" : state == State::connected ? "connected"
+                     : state == State::closed ? "closed" : "failed";
+        status.error = shared.error;
+    }
+    const Clock::time_point now = Clock::now();
+    for (auto& item : taken)
+        out.push_back(Frame{std::move(item.message), std::chrono::duration<double>(now - item.arrival).count(), std::move(item.resync)});
+    return status;
+}
+
+void close(Native& native, double flush) {
+    { std::lock_guard<std::mutex> lock(native.connection.shared->mutex); native.connection.shared->flush_seconds = flush; }
+    native.connection.close();
 }
 
 PyMethodDef* methods() {

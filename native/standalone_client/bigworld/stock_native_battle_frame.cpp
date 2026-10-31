@@ -5,6 +5,7 @@
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_vehicles_internal.hpp"
 #include "stock_native_battle_pending.hpp"
+#include "stock_native_battle_link.hpp"
 #include <chrono>
 
 namespace native_battle {
@@ -52,7 +53,10 @@ void startup::frame(Battle& b) {
     const double raw_dt = b.last_frame < 0. ? 0. : now - b.last_frame;
     double rule_dt = std::max(0., raw_dt);
     timing.raw_dt = raw_dt;
-    if (b.worker) bots::frameStarted(b, rule_dt, raw_dt);
+    if (b.worker) {
+        link::recordFrame(raw_dt);
+        bots::frameStarted(b, rule_dt, raw_dt);
+    }
     double dt = rule_dt;
     const double frame_start = b.last_frame;
     b.last_frame = now;

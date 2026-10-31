@@ -18,6 +18,12 @@ import json, sys
 sys.path.insert(0, sys.argv[1])
 import wire_test
 frames = json.load(open(sys.argv[2]))
+def text(value):
+    # Native values write UTF-8 str; the Python decoder returns unicode.
+    if isinstance(value, str): return value.decode('utf-8')
+    if isinstance(value, list): return [text(v) for v in value]
+    if isinstance(value, dict): return dict((text(k), text(v)) for k, v in value.items())
+    return value
 out = []
 for item in frames:
     data = item['frame'].decode('hex')
@@ -28,6 +34,9 @@ for item in frames:
     assert wire_test.frame_size(data[:8]) == len(data)
     again = wire_test.encode(message)
     assert wire_test.decode(again) == message, message.get('type')
+    # Map keys may encode in another order; the decoded message must be identical.
+    assert wire_test.decode(wire_test.encode_native(message)) == message, message.get('type')
+    assert text(wire_test.decode_native(data)) == message, message.get('type')
     out.append(message)
 json.dump(out, open(sys.argv[3], 'w'))
 for bad in (frames[0]['frame'].decode('hex')[:-1], '\x00' * 8):

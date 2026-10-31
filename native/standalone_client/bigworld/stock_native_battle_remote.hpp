@@ -63,6 +63,7 @@ void install(Battle& b, bool interpolate_motion, bool authority_geometry);
 // Accepted authority messages into the replica (cs::State) and the vehicle lifecycle.
 // `message` is the LAN message dict; its `_native_snapshot` capsule (merged on the receive thread) is consumed.
 Value readMessage(Battle& b, PyObject* message, bool manifest);
+Value readMessage(Battle& b, const Value& message);
 void receiveManifest(Battle& b, const Value& message);
 void receiveSnapshot(Battle& b, const Value& message, double now);
 // Per frame: interpolation and the native pose/aim/track/motion writes of replica-owned vehicles.

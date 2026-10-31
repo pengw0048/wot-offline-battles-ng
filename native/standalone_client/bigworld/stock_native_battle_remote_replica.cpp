@@ -266,6 +266,19 @@ Value readMessage(Battle& b, PyObject* raw, bool manifest) {
     return out;
 }
 
+// The worker link's decoded snapshot: the same fields, its rows already shared versions.
+Value readMessage(Battle&, const Value& message) {
+    auto out = object();
+    for (const char* name : {"round_id", "players", "bots", "sequence", "server_tick", "bot_state_revision", "motion_time_us",
+                             "bot_state_time_us", "timing", "server_time_ms", "_client_dispatch_delay", "_client_coalesced_timing",
+                             "bot_orders", "bot_order_revision"}) {
+        const auto& fields = message.resolved().object;
+        const auto found = fields.find(name);
+        if (found != fields.end()) out.object.emplace(name, found->second);
+    }
+    return out;
+}
+
 namespace {
 void receive(Battle& b, const Value& data, double now, bool manifest) {
     Remote* owner = b.remote.get();

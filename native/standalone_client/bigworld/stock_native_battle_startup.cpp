@@ -10,6 +10,8 @@
 #include "stock_native_battle_events.hpp"
 #include "stock_native_battle_critical.hpp"
 #include "stock_native_battle_feedback.hpp"
+#include "stock_native_battle_link.hpp"
+#include "stock_native_battle_bots.hpp"
 #include <algorithm>
 #include <cstdlib>
 
@@ -125,7 +127,8 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
         if (previous->phase != Phase::Idle && previous->phase != Phase::Stopped && previous->phase != Phase::Failed) return false;
         if (previous->startup && previous->startup->restore_pending) return false;
     }
-    if (client == Py_None) { PyErr_SetString(PyExc_ValueError, "LAN client is required"); throw p::Error("LAN client is required"); }
+    const bool worker = PyDict_Check(config) && p::flag(p::value(config, "worker_mode").get());
+    if (client == Py_None && !worker) { PyErr_SetString(PyExc_ValueError, "LAN client is required"); throw p::Error("LAN client is required"); }
     auto battle = std::make_unique<Battle>();
     Battle& b = *battle;
     b.engine.shell = borrow(shell);
@@ -135,17 +138,18 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
     b.engine.math = own(need(runtime_modules, "math"));
     b.engine.vehicles = own(need(runtime_modules, "vehicles"));
     b.engine.compatibility = own(need(runtime_modules, "compatibility"));
-    b.engine.client = borrow(client);
+    if (client != Py_None) b.engine.client = borrow(client);
     b.config = fromPython(PyDict_Check(config) ? config : p::dict().get());
     b.worker = field(b.config, "worker_mode").truth();
-    b.replay = p::flag(py::optional(client, "is_offline_replay").get());
+    b.replay = !worker && p::flag(py::optional(client, "is_offline_replay").get());
     if (b.worker) {
         writable(b.config).object["native_remote_vehicles"] = boolean(false);
         writable(b.config).object["bot_track_animation"] = boolean(false);
     }
     b.start = fromPython(PyDict_Check(message) ? message : p::dict().get());
     b.result = field(b.start, "battle_result");
-    b.local_player = asInt(py::attr(client, "player_id").get());
+    // The worker's carrier Avatar is the infrastructure authority row.
+    b.local_player = worker ? -1 : asInt(py::attr(client, "player_id").get());
     b.round_id = integer(field(b.start, "round_id"));
     b.startup = std::make_unique<Startup>();
     b.diagnostics = std::make_unique<Diagnostics>();
@@ -671,17 +675,25 @@ void finishEntityStartup(Battle& b) {
         vehicles::receiveManifest(b, manifest);
         projectiles::observe(b, b.start);
         world::reconcileDetachedTurrets(b, b.start);
-        auto latest = py::optional(b.engine.client.get(), "last_snapshot");
         std::optional<Value> last;
-        if (PyDict_Check(latest.get())) {
+        p::Ref latest = b.worker ? p::retain(Py_None) : py::optional(b.engine.client.get(), "last_snapshot");
+        if (b.worker) {
+            if (auto linked = link::lastSnapshot()) {
+                Value row;
+                row.kind = Value::Kind::Shared;
+                row.reference = linked;
+                if (field(row, "round_id") == field(b.start, "round_id")) last = std::move(row);
+            }
+        } else if (PyDict_Check(latest.get())) {
             Value row = fromPython(latest.get());
             if (field(row, "round_id") == field(b.start, "round_id")) last = std::move(row);
         }
         if (last) {
             projectiles::observe(b, *last);
             world::reconcileDetachedTurrets(b, *last);
-            gun::restoreEquipment(b, *last, true);
-            vehicles::receiveSnapshotMessage(b, latest.get(), b.clock());
+            if (!b.worker) gun::restoreEquipment(b, *last, true);
+            if (b.worker) vehicles::receiveSnapshot(b, remote::readMessage(b, *last), b.clock());
+            else vehicles::receiveSnapshotMessage(b, latest.get(), b.clock());
         }
         bots::start(b);
         if (last) {
@@ -704,7 +716,7 @@ void finishEntityStartup(Battle& b) {
         if (b.result.resolved().kind != Value::Kind::Null) events::applyBattleResult(b, b.result);
         if (!b.running()) return;
         // Engine-free harnesses have no socket load barrier: keep the local countdown.
-        if (!py::callable(py::optional(b.engine.client.get(), "send_battle_ready"))) {
+        if (!b.worker && !py::callable(py::optional(b.engine.client.get(), "send_battle_ready"))) {
             Value live; live.kind = Value::Kind::Object;
             live.object["countdown_seconds"] = number(prebattleSeconds(b));
             live.object["battle_duration_seconds"] = number(battleSeconds(b));
@@ -729,13 +741,19 @@ void battleLive(Battle& b, const Value& message) {
     };
     double countdown = std::max(0., read("countdown_seconds", prebattleSeconds(b)));
     double duration = std::max(1., read("battle_duration_seconds", battleSeconds(b)));
-    auto deadline = py::optional(b.engine.client.get(), "combat_deadline");
-    if (deadline.get() != Py_None) {
-        auto monotonic = py::call(module("gui.mods.offline_lan_0922.lan_client").get(), "_monotonic_time");
-        countdown = std::max(0., asFloat(deadline.get()) - asFloat(monotonic.get()));
+    if (b.worker) {
+        const auto timing = link::timing();
+        if (timing.countdown) countdown = std::max(0., *timing.countdown);
+        if (timing.duration) duration = std::max(1., *timing.duration);
+    } else {
+        auto deadline = py::optional(b.engine.client.get(), "combat_deadline");
+        if (deadline.get() != Py_None) {
+            auto monotonic = py::call(module("gui.mods.offline_lan_0922.lan_client").get(), "_monotonic_time");
+            countdown = std::max(0., asFloat(deadline.get()) - asFloat(monotonic.get()));
+        }
+        auto network_duration = py::optional(b.engine.client.get(), "combat_duration");
+        if (network_duration.get() != Py_None) duration = std::max(1., asFloat(network_duration.get()));
     }
-    auto network_duration = py::optional(b.engine.client.get(), "combat_duration");
-    if (network_duration.get() != Py_None) duration = std::max(1., asFloat(network_duration.get()));
     writable(b.config).object["battleDurationSeconds"] = number(duration);
     if (!b.worker) {
         binding::arenaPeriod(b, "prebattle", countdown);
@@ -751,7 +769,7 @@ void battleLive(Battle& b, const Value& message) {
 bool prebattleTransitionReady(Battle& b, double now) {
     if (b.prebattle_deadline < 0. || now < b.prebattle_deadline) return false;
     if (!b.worker) return true;
-    return p::string(py::optional(b.engine.client.get(), "combat_phase").get()) == "battle";
+    return link::timing().phase == "battle";
 }
 
 void beginBattle(Battle& b) {
@@ -759,10 +777,14 @@ void beginBattle(Battle& b) {
     // Close the final prebattle interval while reload progression is still frozen.
     if (!b.worker) gun::edge(b);
     double duration = battleSeconds(b);
-    auto deadline = py::optional(b.engine.client.get(), "combat_end_deadline");
-    if (deadline.get() != Py_None) {
-        auto monotonic = py::call(module("gui.mods.offline_lan_0922.lan_client").get(), "_monotonic_time");
-        duration = std::max(0.1, asFloat(deadline.get()) - asFloat(monotonic.get()));
+    if (b.worker) {
+        if (const auto remaining = link::timing().remaining) duration = std::max(0.1, *remaining);
+    } else {
+        auto deadline = py::optional(b.engine.client.get(), "combat_end_deadline");
+        if (deadline.get() != Py_None) {
+            auto monotonic = py::call(module("gui.mods.offline_lan_0922.lan_client").get(), "_monotonic_time");
+            duration = std::max(0.1, asFloat(deadline.get()) - asFloat(monotonic.get()));
+        }
     }
     const bool refresh_movement = !b.worker && p::flag(py::optional(b.engine.avatar.get(), "_PlayerAvatar__isOnArena").get());
     if (!b.worker) binding::arenaPeriod(b, "battle", duration);
@@ -871,18 +893,47 @@ void maybeSendBattleReady(Battle& b) {
     if (players != field(b.start, "players").resolved().array.size()) return;
     if (bots_count != field(b.start, "bots").resolved().array.size() || !b.roster->pending_order.empty() || !b.roster->pending_bot_creates.empty())
         return;
-    auto ready = py::optional(b.engine.client.get(), "send_battle_ready");
-    if (!py::callable(ready)) return;
-    auto bases = p::dict();
-    if (s.spawn) {
-        for (int team = 1; team <= 2; ++team) {
-            const auto& base = s.spawn->bases[team - 1];
-            p::Ref rows(s.spawn->base_radii ? Py_BuildValue("({s:d,s:d,s:d})", "x", base[0], "z", base[1], "radius", (*s.spawn->base_radii)[team - 1])
-                                            : Py_BuildValue("((dd))", base[0], base[1]));
-            PyDict_SetItem(bases.get(), p::integer(team).get(), rows.get());
+    if (b.worker) {
+        // The worker's readiness carries the same base rows through its native link.
+        Value message;
+        message.kind = Value::Kind::Object;
+        message.object["type"].kind = Value::Kind::Text;
+        message.object["type"].text = "battle_ready";
+        Value& bases = message.object["bases"];
+        bases.kind = Value::Kind::Object;
+        if (s.spawn) {
+            for (int team = 1; team <= 2; ++team) {
+                const auto& base = s.spawn->bases[team - 1];
+                Value row;
+                if (s.spawn->base_radii) {
+                    row.kind = Value::Kind::Object;
+                    row.object["x"] = number(base[0]);
+                    row.object["z"] = number(base[1]);
+                    row.object["radius"] = number((*s.spawn->base_radii)[team - 1]);
+                } else {
+                    row.kind = Value::Kind::Array;
+                    row.array = {number(base[0]), number(base[1])};
+                }
+                Value& list = bases.object[std::to_string(team)];
+                list.kind = Value::Kind::Array;
+                list.array.push_back(std::move(row));
+            }
         }
+        if (!link::send(b, message)) throw p::Error("LAN server did not accept battle readiness");
+    } else {
+        auto ready = py::optional(b.engine.client.get(), "send_battle_ready");
+        if (!py::callable(ready)) return;
+        auto bases = p::dict();
+        if (s.spawn) {
+            for (int team = 1; team <= 2; ++team) {
+                const auto& base = s.spawn->bases[team - 1];
+                p::Ref rows(s.spawn->base_radii ? Py_BuildValue("({s:d,s:d,s:d})", "x", base[0], "z", base[1], "radius", (*s.spawn->base_radii)[team - 1])
+                                                : Py_BuildValue("((dd))", base[0], base[1]));
+                PyDict_SetItem(bases.get(), p::integer(team).get(), rows.get());
+            }
+        }
+        if (!p::flag(py::invoke(ready.get(), bases.get()).get())) throw p::Error("LAN server did not accept battle readiness");
     }
-    if (!p::flag(py::invoke(ready.get(), bases.get()).get())) throw p::Error("LAN server did not accept battle readiness");
     s.battle_ready_sent = true;
     if (b.roster->bot_create_started) {
         const double now = b.clock();
@@ -945,6 +996,18 @@ void teardownAfterFailure(Battle& b) {
 }
 
 void reportFailure(Battle& b, bool lobby_restored) {
+    if (b.worker) {
+        Value payload;
+        payload.kind = Value::Kind::Object;
+        payload.object["message"].kind = Value::Kind::Text;
+        payload.object["message"].text = b.error;
+        payload.object["round_id"] = field(b.start, "round_id");
+        payload.object["lobby_restored"].kind = Value::Kind::Boolean;
+        payload.object["lobby_restored"].boolean = lobby_restored;
+        try { worker::onEvent("battle_failed", std::make_shared<const Value>(std::move(payload))); }
+        catch (const std::exception& e) { log("worker failure report failed: " + describe(e)); }
+        return;
+    }
     auto callback = py::optional(b.engine.client.get(), "on_event");
     if (py::callable(callback)) {
         try {

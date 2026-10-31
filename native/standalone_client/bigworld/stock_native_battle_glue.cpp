@@ -10,6 +10,7 @@
 #include "stock_native_battle_feedback_internal.hpp"
 #include "stock_native_battle_world_imports.hpp"
 #include "stock_native_battle_visibility_core.hpp"
+#include "stock_native_battle_link.hpp"
 
 namespace native_battle {
 // The local vehicle state is created by startup::start; its owners attach on the first drive slice.
@@ -47,6 +48,7 @@ bool vehicles::botAuthorityIsLocal(Battle& b, const Value& player_id) {
 
 // ai.planner.bot_initially_visible(team, own team, spotting enabled): an enemy model starts hidden.
 bool vehicles::botInitiallyVisible(Battle& b, std::int64_t team) {
+    if (b.worker) return team == link::team();
     auto own = py::optional(b.engine.client.get(), "team");
     if (own.get() == Py_None) return team == 1;
     return team == p::wide(own.get());
