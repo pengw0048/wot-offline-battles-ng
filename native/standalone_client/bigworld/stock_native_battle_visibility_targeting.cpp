@@ -275,7 +275,8 @@ void add(Battle& b, VisibilityCore& c, ID id) {
 void outline(Battle& b, double now) {
     auto* c = core(b);
     if (!c || !c->outline_clock.begin(now, b.visibility->outline_blocked)) return;
-    if (!b.engine.remote_factory || !c->query) { clear(b, *c); return; }
+    // The native remote presentation (remote::start) replaced the Python remote factory.
+    if (!b.remote || !c->query) { clear(b, *c); return; }
     const auto cursor = sampleMouse(*c);
     const auto server = projectiles::serverTimeMs(b, now);
     const auto pick = query::pickOutline(c->query.get(), cursor.start, cursor.direction, outline_maximum, outline_fov,

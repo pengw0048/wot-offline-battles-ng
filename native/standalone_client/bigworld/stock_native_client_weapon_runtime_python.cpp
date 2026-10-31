@@ -185,6 +185,8 @@ bool equipmentSnapshot(Battle&b,const shared::Value&snapshot,bool present){
     if(present&&b.gun->client_ready&&b.engine.avatar&&b.engine.server){Edges output;o->runtime->equipment(output,now,true);queue(b,*o,output,now);if(!o->advancing){Guard guard(*o);emitSafe(b,*o);}}
     return true;
 }
+// The rows stay current until the accepted wire changes again; actor state may still hold the previous ledger.
+void equipmentIngress(Battle&b,std::vector<Equipment> rows){auto o=ensure(b);o->runtime->equipment(std::move(rows));o->have_equipment=true;o->accepted_revision=o->state->revision;}
 // One HUD publication request; true when it produced an edge.
 bool publish(Battle&b,const std::string&action,double now,bool force,double remaining,double duration){
     auto o=ensure(b);refreshOwner(b,*o,now);Edges output;const bool ready=b.gun->client_ready;

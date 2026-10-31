@@ -98,6 +98,8 @@ void refreshWeapon(native_battle::Battle&,double now);
 void closeWeapon(native_battle::Battle&);
 bool audioFrame(native_battle::Battle&,double now);
 bool equipmentSnapshot(native_battle::Battle&,const stock_native_client_state::Value& snapshot,bool present);
+// The cold-restored equipment ledger replaces the live runtime's rows (the pinned equipment_ingress).
+void equipmentIngress(native_battle::Battle&,std::vector<Equipment> rows);
 bool publish(native_battle::Battle&,const std::string& kind,double now,bool force,double remaining,double duration);
 // Native modules of other subsystems still pass the battle shell; these reach the current round's gun.
 Gun* advanceWeapon(_object* battle,double now);

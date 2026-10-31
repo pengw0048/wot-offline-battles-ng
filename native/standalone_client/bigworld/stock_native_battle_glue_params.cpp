@@ -5,6 +5,7 @@
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_startup_needs.hpp"
 #include "stock_native_battle_visibility_core.hpp"
+#include "stock_native_client_weapon_runtime.hpp"
 #include <cmath>
 
 namespace native_battle {
@@ -186,7 +187,29 @@ bool restoreEquipmentCold(Battle& b, const Value& snapshot, bool present) {
         b.critical->report = Value();
         b.critical->owned = false;
     }
-    if (present && !b.worker && b.engine.avatar && b.engine.server) presentEquipments(b, now);
+    const bool live_gun = b.running() && !b.replay && !b.worker && b.gun->gun;
+    if (live_gun) {
+        // The live gun runtime owns the HUD equipment edges; hand it the restored rows.
+        std::vector<stock_native_client_weapon_runtime::Equipment> rows;
+        for (const auto& e : *s.equipment) {
+            stock_native_client_weapon_runtime::Equipment row;
+            row.compact = e.contract.compact_descr;
+            row.uses_left = int(e.uses_left);
+            row.active = e.active;
+            row.ready_at = e.ready_at;
+            row.rpm_limiter = e.contract.kind == "rpm_limiter";
+            row.fuel = e.contract.kind == "fuel";
+            row.repairkit = e.contract.kind == "repairkit";
+            row.repair_bonus = e.contract.bonus_value;
+            row.engine_power_factor = e.contract.engine_power_factor;
+            rows.push_back(row);
+        }
+        stock_native_client_weapon_runtime::equipmentIngress(b, std::move(rows));
+    }
+    if (present && !b.worker && b.engine.avatar && b.engine.server) {
+        if (live_gun) gun::publishKind(b, "equipment", now);
+        else presentEquipments(b, now);
+    }
     return true;
 }
 }
