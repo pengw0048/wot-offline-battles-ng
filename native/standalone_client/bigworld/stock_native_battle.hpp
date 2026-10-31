@@ -75,6 +75,7 @@ struct Diagnostics;
 struct Startup;
 struct Critical;
 struct Remote;
+struct Feedback;
 
 struct Battle {
     Battle();
@@ -101,6 +102,7 @@ struct Battle {
     std::unique_ptr<Startup> startup;
     std::unique_ptr<Critical> critical;
     std::unique_ptr<Remote> remote;
+    std::unique_ptr<Feedback> feedback;
 
     bool running() const { return phase == Phase::Running; }
     double clock() const;

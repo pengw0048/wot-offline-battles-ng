@@ -3,6 +3,7 @@
 #include "stock_native_battle_bots.hpp"
 #include "stock_native_battle_critical.hpp"
 #include "stock_native_battle_events.hpp"
+#include "stock_native_battle_feedback.hpp"
 #include "stock_native_battle_local.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_remote.hpp"
