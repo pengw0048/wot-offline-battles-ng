@@ -1,5 +1,6 @@
 #pragma once
 // Feedback subsystem internals: event field access and the calls it needs from other subsystems.
+#include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_feedback.hpp"
 #include <string>
 
@@ -83,7 +84,6 @@ p::Ref bodyPose(Battle& b);
 }
 namespace remote {
 // factory.present_hit_impulse(engine_id, direction, impulse) for a native remote vehicle.
-bool presentHitImpulse(Battle& b, std::int64_t engine_id, PyObject* direction, double impulse);
 }
 namespace visibility {
 double shotCamouflageSeconds();

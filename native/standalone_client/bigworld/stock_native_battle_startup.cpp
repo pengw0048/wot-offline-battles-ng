@@ -646,7 +646,7 @@ void finishEntityStartup(Battle& b) {
         vehicles::markLocalReady(b);
         local::attach(b);
         b.feature("persistent Siege mode hint", [&] { local::enableSiegeHints(b); });
-        b.feature("initial Siege mode indicator", [&] { local::seedSiegeHud(b); });
+        b.feature("initial Siege mode indicator", [&] { if (Actor* own = b.localVehicle()) local::seedSiegeHud(b, *own); });
         PyObject* descriptor = b.startup->local_descriptor.get();
         if (!b.worker) {
             std::uint64_t generation = b.generation;

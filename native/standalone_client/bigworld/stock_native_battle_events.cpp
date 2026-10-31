@@ -10,7 +10,7 @@
 #include <set>
 
 namespace native_battle {
-bool RecentIds::add(const std::string& id) {
+bool EventIds::add(const std::string& id) {
     if (!ids_.insert(id).second) return false;
     order_.push_back(id);
     while (order_.size() > limit_) { ids_.erase(order_.front()); order_.pop_front(); }
@@ -369,7 +369,7 @@ bool ready(Battle& b, Value& event, bool& wait) {
 bool applyOrdered(Battle& b, const Value& event) {
     const std::string kind = text(field(event, "kind"));
     if (kind == "authority") {
-        if (b.worker) bots::projectileEvent(b, event);
+        if (b.worker) bots::projectileEvent(b, p::Ref(cs::write(event)).get(), b.clock());
         projectiles::setEpoch(b, field(event, "authority_epoch"), b.clock());
         bots::reconcileAuthority(b, field(event, "player_id"));
     } else if (shotKind(kind)) {

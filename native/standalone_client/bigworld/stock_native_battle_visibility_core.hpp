@@ -1,5 +1,6 @@
 #pragma once
 // Private state shared by the visibility sources.
+#include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_visibility.hpp"
 #include "stock_native_client_drive_python.hpp"
 #include "stock_native_client_environment.hpp"

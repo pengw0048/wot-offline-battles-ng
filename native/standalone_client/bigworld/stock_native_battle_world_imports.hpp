@@ -1,5 +1,6 @@
 #pragma once
 // Calls the world makes into other subsystems. Each owner adopts its declaration into its own header.
+#include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle.hpp"
 #include "stock_native_client_drive_python.hpp"
 
@@ -22,7 +23,6 @@ bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* sta
 std::size_t detachedAdvance(Battle& b, double now);
 bool worldIngress(Battle& b, const Value& event);
 void prewarmBots(Battle& b, double now);
-void prewarmPlayers(Battle& b, double now);
 std::size_t playerContacts(Battle& b, const Value& players, double now);
 // Foliage, motion and registry step of the worker Bot world (native_bot_runtime.frame).
 bool frame(Battle& b, double now, bool force);

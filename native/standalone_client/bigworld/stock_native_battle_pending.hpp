@@ -1,6 +1,7 @@
 #pragma once
 // Cross-subsystem calls the vehicle and event code makes before their owners' headers declare them.
 // Integration moves each declaration into its owner's header and deletes this file.
+#include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle.hpp"
 
 namespace native_battle {
@@ -31,10 +32,7 @@ void rememberLineage(Battle& b, const Value& shot_event);
 bool missingAttackerAllowed(Battle& b, const Value& event);
 std::int64_t maxDamageSticker(Battle& b);
 std::optional<double> presentationDue(Battle& b, const Value& terminal_event);
-void setEpoch(Battle& b, const Value& epoch, double now);
 void observeMessage(Battle& b, const Value& message);
-void ricochet(Battle& b, const Value& event);
-void terminal(Battle& b, const Value& event);
 }
 namespace startup {
 double serverClock(Battle& b);
@@ -54,13 +52,9 @@ void vehicleChanged(Battle& b, Actor& vehicle);
 double shotCamouflageSeconds();
 }
 namespace bots {
-double rememberTrackTurn(Actor& vehicle, double yaw, double now);
 // The track feed with a turn rate the caller already took from rememberTrackTurn (the pinned turn_override).
 bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 void frameStarted(Battle& b, double rule_dt, double raw_dt);
-void playerEnvironment(Battle& b, double dt, double now);
-void prewarm(Battle& b, double now);
-void projectileEvent(Battle& b, const Value& event);
 void reconcileAuthority(Battle& b, const Value& player_id);
 }
 }
