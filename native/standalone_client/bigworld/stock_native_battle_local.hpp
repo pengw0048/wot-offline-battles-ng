@@ -2,6 +2,8 @@
 // The player's own vehicle: drive, physics, suspension, Siege, contacts, drowning, overturn, the local critical
 // tick, engine audio and RPM, body swinging, camera and the LAN input controls.
 #include "stock_native_battle.hpp"
+#include "stock_native_battle_local_laws.hpp"
+#include "stock_native_bot_step_state.hpp"
 
 namespace native_battle {
 struct LocalVehicle {
@@ -21,8 +23,11 @@ struct LocalVehicle {
     double siege_aim_pitch = 0., siege_aim_center_z = 0.;
     std::int64_t siege_edge_reports = 0;
 
-    // Exact physics and suspension parameters derived from the mounted descriptor.
-    Object physics, suspension_params;
+    // Exact drive and suspension parameters derived from the mounted descriptor; each derivation bumps its revision
+    // so the drive owner reinstalls the player driver or the suspension solver.
+    std::optional<local::DriveParams> physics;
+    std::optional<wot::offline_bot_step::SuspensionDescriptor> suspension_params;
+    std::uint64_t physics_revision = 0, suspension_revision = 0;
     bool suspension_disabled = false;
     Point air_lateral{};
 
@@ -43,6 +48,15 @@ struct LocalVehicle {
     std::optional<std::pair<bool, std::string>> suspension_report;
     bool siege_hud_seeded = false;
 
+    // The stock Siege indicator callbacks wrapped for this battle's session provider (PersistentSiegeHints).
+    struct SiegeHint { std::string name; Object original, replacement; };
+    Object siege_hint_type, siege_hint_provider;
+    std::vector<SiegeHint> siege_hints;
+    bool siege_hints_installed = false;
+
+    // The last ordered input the LAN transport admitted this round (0 before the first).
+    std::int64_t input_seq = 0;
+
     // LAN input controls; the drive owns them once the player driver exists.
     struct Controls {
         double forward = 0., turn = 0., aim_yaw = 0., gun_pitch = 0., aim_pitch = 0.;
@@ -53,6 +67,19 @@ struct LocalVehicle {
 };
 
 namespace local {
+// vehicle_physics.derive_params: the drive parameters of a stock descriptor; `factors` is the #1513 attribute-factor
+// mapping (crew skills, grousers, consumables) or null. Throws when the chassis rotation or pivot geometry is invalid.
+DriveParams deriveParams(PyObject* descriptor, PyObject* factors = nullptr);
+// The same parameters published as effective params ("physics" keys of derive_params), and read back.
+Value physicsValue(const DriveParams&);
+DriveParams physicsFromValue(const Value&);
+// vehicle_physics.suspension_trial_excluded: #1513 hydraulic hull-aiming suspension.
+bool suspensionTrialExcluded(PyObject* descriptor);
+// vehicle_physics.derive_suspension_params: the ten-spring trial for one descriptor. Throws when it is unavailable.
+wot::offline_bot_step::SuspensionDescriptor deriveSuspension(PyObject* descriptor);
+// The latest input sequence the LAN transport admitted this round, if any.
+std::optional<std::int64_t> inputSequence(const Battle& b);
+
 // Per frame on the visible client while live.
 void drive(Battle& b, double dt);
 void tickCritical(Battle& b, double dt);
@@ -80,8 +107,10 @@ void restoreRamContactHook(Battle& b);
 bool seedSiegeHud(Battle& b, Actor& local);
 // Advances the visible world owner's scene and destruction ledger (the foliage/frame chain).
 void worldFrame(Battle& b, double now);
-// The exact suspension parameters for the mounted descriptor, or None when detailed suspension is excluded.
-PyObject* ensureSuspensionParams(Battle& b, PyObject* descriptor);
+// The exact suspension parameters for the mounted descriptor, or null when detailed suspension is excluded/inactive.
+const wot::offline_bot_step::SuspensionDescriptor* ensureSuspensionParams(Battle& b, PyObject* descriptor);
+// Releases the persistent Siege hint wrappers (also done by retire).
+void closeSiegeHints(Battle& b);
 // Accepted canonical destruction for the visible world owner.
 bool ingress(Battle& b, const Value& event, double now);
 // Snapshot acknowledgements of the local ram and destructible contact receipts.

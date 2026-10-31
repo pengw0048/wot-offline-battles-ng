@@ -64,7 +64,7 @@ void poseOverlay(Battle& b, PyObject* entity, PyObject* motion) {
     p::Ref done(PyObject_Call(overlay.get(), args.get(), kwargs.get()));
 }
 void resetSuspension(LocalVehicle& l, bool disabled) {
-    l.suspension_params = Object();
+    l.suspension_params.reset();
     l.suspension_disabled = disabled;
 }
 void reportSuspension(LocalVehicle& l, const std::string& outcome) {
@@ -82,10 +82,7 @@ void reportSiegeEdge(Battle& b, const char* stage, PyObject* state, PyObject* le
     const auto& s = access.driver->state();
     const auto& c = access.driver->controls();
     std::string limits = "(None,None)";
-    if (l.physics && PyDict_Check(l.physics.get())) {
-        auto fwd = p::value(l.physics.get(), "speedFwd"), bwd = p::value(l.physics.get(), "speedBwd");
-        limits = "(" + text(fwd.get()) + "," + text(bwd.get()) + ")";
-    }
+    if (l.physics) limits = "(" + text(p::number(l.physics->forward).get()) + "," + text(p::number(l.physics->reverse).get()) + ")";
     std::string pending = s.siege_pending ? (*s.siege_pending ? "True" : "False") : "None";
     log(std::string("SIEGE edge=") + stage + " state=" + text(state) + " remaining_ms=" + text(left) + " input_seq=" + text(sequence) +
         " pending=" + pending + " speed_mps=" + std::to_string(s.speed) + " limits_mps=" + limits + " input=(" + std::to_string(c.forward) +
@@ -94,15 +91,13 @@ void reportSiegeEdge(Battle& b, const char* stage, PyObject* state, PyObject* le
 // Rederives the drive physics after the active descriptor changed (Siege travel/hydraulic descriptors).
 void derivePhysics(Battle& b, PyObject* descriptor) {
     auto factors = params::localFactors(b, descriptor);
-    auto physics = py::call(p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics")).get(), "derive_params", descriptor, factors.get());
-    b.local->physics = own(std::move(physics));
+    b.local->physics = deriveParams(descriptor, factors.get());
+    ++b.local->physics_revision;
 }
 // One stopped-drivetrain input carrying the Siege mode request.
 bool sendSiegeRequest(Battle& b, PyObject* entity, bool enabled) {
     if (!stock_native_client_input::sendCurrent(b, enabled)) return false;
-    auto raw = py::optional(b.engine.client.get(), "_input_seq");
-    std::optional<std::int64_t> sequence;
-    if (!PyBool_Check(raw.get()) && (PyInt_Check(raw.get()) || PyLong_Check(raw.get())) && p::wide(raw.get()) > 0) sequence = p::wide(raw.get());
+    const auto sequence = inputSequence(b);
     dr::driverAccess(b).driver->siege_admitted(enabled, sequence);
     auto seq = sequence ? p::integer(*sequence) : p::retain(Py_None);
     reportSiegeEdge(b, "request", py::optional(entity, "siegeState").get(), Py_None, seq.get());
@@ -191,6 +186,82 @@ PyObject* observeAfterNative(PyObject* original, PyObject* args) {
     return result;
 }
 PyMethodDef observeMethod = {"handleVehicleCollidedVehicle", observeAfterNative, METH_VARARGS, nullptr};
+
+// PersistentSiegeHints: the stock indicator keeps choosing text, key, animation and visibility; for this battle's
+// session provider its finite hint quota is bypassed and a stable mode shows the next switch duration.
+enum SiegeHintKind { HintView, SiegeState, IndicatorView };
+const char* const siege_hint_names[] = {"_SiegeModeIndicator__updateHintView", "_SiegeModeIndicator__updateSiegeState",
+                                        "_SiegeModeIndicator__updateIndicatorView"};
+constexpr long siege_disabled = 0, siege_enabled = 2;  // siege_mechanics.DISABLED / ENABLED
+// One stock call with indicator.<name> = value (unchanged when null), restored afterwards even when the call raises.
+PyObject* callWith(PyObject* original, PyObject* args, PyObject* kwargs, PyObject* indicator, const char* name, PyObject* value) {
+    PyObject* previous = PyObject_GetAttrString(indicator, name);
+    if (!previous) return nullptr;
+    PyObject* result = nullptr;
+    if (!value || PyObject_SetAttrString(indicator, name, value) == 0) result = PyObject_Call(original, args, kwargs);
+    PyObject *type, *error, *trace;
+    PyErr_Fetch(&type, &error, &trace);
+    const int restored = PyObject_SetAttrString(indicator, name, previous);
+    Py_DECREF(previous);
+    if (restored < 0) {
+        Py_XDECREF(type); Py_XDECREF(error); Py_XDECREF(trace); Py_XDECREF(result);
+        return nullptr;
+    }
+    PyErr_Restore(type, error, trace);
+    return result;
+}
+PyObject* siegeHint(PyObject* closure, PyObject* args, PyObject* kwargs) {
+    PyObject* original = PyTuple_GET_ITEM(closure, 0);
+    const long kind = PyInt_AsLong(PyTuple_GET_ITEM(closure, 1));
+    try {
+        const Battle* b = current();
+        const LocalVehicle* l = b ? b->local.get() : nullptr;
+        PyObject* indicator = PyTuple_GET_SIZE(args) ? PyTuple_GET_ITEM(args, 0) : nullptr;
+        if (!indicator || !l || !l->siege_hints_installed) return PyObject_Call(original, args, kwargs);
+        if (py::attr(indicator, "sessionProvider").get() != l->siege_hint_provider.get()) return PyObject_Call(original, args, kwargs);
+        if (kind != IndicatorView) {
+            auto one = p::integer(1);
+            return callWith(original, args, kwargs, indicator, "_hintsLeft", kind == HintView ? one.get() : nullptr);
+        }
+        // Stable LAN states carry zero remaining time; Flash shows the next switch duration from the native table.
+        auto state = py::attr(indicator, "_siegeState");
+        auto stable = [&](long n) { const int same = PyObject_RichCompareBool(state.get(), p::integer(n).get(), Py_EQ); if (same < 0) throw p::Error("_siegeState"); return same == 1; };
+        if (!stable(siege_disabled) && !stable(siege_enabled)) return PyObject_Call(original, args, kwargs);
+        auto row = p::Ref(PyObject_GetItem(py::attr(indicator, "_switchTimeTable").get(), state.get()));
+        auto engine = p::Ref(PyObject_GetItem(py::attr(indicator, "_devices").get(), p::text("engine").get()));
+        auto duration = p::Ref(PyObject_GetItem(row.get(), engine.get()));
+        return callWith(original, args, kwargs, indicator, "_switchTime", duration.get());
+    } catch (const std::exception& e) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what());
+        return nullptr;
+    }
+}
+PyMethodDef siegeHintMethod = {"persistent_siege_hint", reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)(void)>(siegeHint)),
+                               METH_VARARGS | METH_KEYWORDS, nullptr};
+bool enableSiegeHints(Battle& b) {
+    auto& l = *b.local;
+    if (b.worker || !b.engine.avatar || l.siege_hint_type || !l.descriptor || !hasSiege(l.descriptor.get())) return false;
+    auto type = py::attr(b.engine.modules.get(), "siege_mode_indicator_type");
+    auto provider = py::attr(b.engine.avatar.get(), "guiSessionProvider");
+    l.siege_hint_type = borrow(type.get());
+    l.siege_hint_provider = own(std::move(provider));
+    auto dict = py::attr(type.get(), "__dict__");
+    std::vector<p::Ref> originals;
+    for (const char* name : siege_hint_names) originals.push_back(p::Ref(PyObject_GetItem(dict.get(), p::text(name).get())));
+    for (const auto& original : originals)
+        if (!PyCallable_Check(original.get())) throw p::Error("stock Siege hint callback is unavailable");
+    for (long kind = HintView; kind <= IndicatorView; ++kind) {
+        PyObject* original = originals[kind].get();
+        p::Ref closure(Py_BuildValue("(Ol)", original, kind));
+        p::Ref function(PyCFunction_NewEx(&siegeHintMethod, closure.get(), nullptr));
+        // An unbound method binds the indicator instance as the stock callback's first argument.
+        p::Ref method(PyMethod_New(function.get(), nullptr, type.get()));
+        py::set(type.get(), siege_hint_names[kind], method.get());
+        l.siege_hints.push_back({siege_hint_names[kind], borrow(original), own(std::move(method))});
+    }
+    l.siege_hints_installed = true;
+    return true;
+}
 }
 
 void preparePresentation(Battle& b, PyObject* entity) {
@@ -214,7 +285,10 @@ void preparePresentation(Battle& b, PyObject* entity) {
     derivePhysics(b, descriptor.get());
     if (b.replay) {
         const auto snapshot = params::acceptedLocalEffectiveParams(b);
-        if (snapshot.resolved().kind != Value::Kind::Null) l.physics = own(p::Ref(cs::write(snapshot.get("physics"))));
+        if (snapshot.resolved().kind != Value::Kind::Null) {
+            l.physics = physicsFromValue(snapshot.get("physics"));
+            ++l.physics_revision;
+        }
     }
     resetSuspension(l, false);
 }
@@ -235,6 +309,24 @@ void attachPresentation(Battle& b) {
     // Body swinging and engine audio motion bind natively on the first drive slice (self presentation).
     py::call(b.engine.compatibility.get(), "bind_vehicle_pose_sources", b.engine.avatar.get(), entity.get());
     l.model = own(std::move(model));
+    b.feature("persistent Siege mode hint", [&] { enableSiegeHints(b); });
+}
+
+void closeSiegeHints(Battle& b) {
+    if (!b.local) return;
+    auto& l = *b.local;
+    l.siege_hints_installed = false;
+    if (l.siege_hint_type) {
+        auto dict = py::attr(l.siege_hint_type.get(), "__dict__");
+        // A later mod owns its own hook; restore only callbacks that are still ours.
+        for (auto hint = l.siege_hints.rbegin(); hint != l.siege_hints.rend(); ++hint) {
+            auto installed = py::call(dict.get(), "get", p::text(hint->name).get());
+            if (installed.get() == hint->replacement.get()) py::set(l.siege_hint_type.get(), hint->name.c_str(), hint->original.get());
+        }
+    }
+    l.siege_hints.clear();
+    l.siege_hint_provider = Object();
+    l.siege_hint_type = Object();
 }
 
 void bindControlSources(Battle& b, PyObject* handler, PyObject* mode) {
@@ -334,29 +426,33 @@ bool changeVehicleSetting(Battle& b, int code, PyObject* value) {
     return sendSiegeRequest(b, entity.get(), enabled);
 }
 
-PyObject* ensureSuspensionParams(Battle& b, PyObject* descriptor) {
+const wot::offline_bot_step::SuspensionDescriptor* ensureSuspensionParams(Battle& b, PyObject* descriptor) {
     auto& l = *b.local;
-    p::Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));
-    if (p::flag(py::call(physics.get(), "suspension_trial_excluded", descriptor).get())) {
+    if (suspensionTrialExcluded(descriptor)) {
         resetSuspension(l, true);
         reportSuspension(l, "excluded: #1513 hydraulic suspension");
-        Py_RETURN_NONE;
+        return nullptr;
     }
-    if (l.suspension_disabled) Py_RETURN_NONE;
+    if (l.suspension_disabled) return nullptr;
     if (!l.suspension_params) {
         try {
-            l.suspension_params = own(py::call(physics.get(), "derive_suspension_params", descriptor));
+            l.suspension_params = deriveSuspension(descriptor);
+            ++l.suspension_revision;
         } catch (const std::exception& e) {
             const auto error = describe(e);
             resetSuspension(l, true);
             reportSuspension(l, "inactive: " + error);
             b.warn("ten-spring suspension trial", error);
-            Py_RETURN_NONE;
+            return nullptr;
         }
         reportSuspension(l, "active");
     }
-    Py_INCREF(l.suspension_params.get());
-    return l.suspension_params.get();
+    return &*l.suspension_params;
+}
+
+std::optional<std::int64_t> inputSequence(const Battle& b) {
+    if (!b.local || b.local->input_seq <= 0) return {};
+    return b.local->input_seq;
 }
 
 bool installRamContactHook(Battle& b) {

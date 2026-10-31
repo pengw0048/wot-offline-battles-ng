@@ -50,31 +50,11 @@ void require(bool value){if(!value)throw p::Error("Native player drive installat
 p::Ref engineEntity(std::int64_t id){auto*c=BW::ConnectionControl::pInstance();auto*e=c?c->findEntity(static_cast<BW::EntityID>(id)):nullptr;if(!e||e->isDestroyed()||!e->isInWorld())return p::retain(Py_None);return p::Ref(e->pPyEntity().newRef());}
 void attribute(PyObject*object,const char*name,const p::Ref&value){if(PyObject_SetAttrString(object,name,value.get())<0)throw p::Error("Native player drive mirror assignment failed");}
 std::optional<Point> optionalPoint(PyObject*object,const char*name){auto v=p::value(object,name);return v.get()==Py_None?std::nullopt:std::optional<Point>(p::numbers<3>(v.get()));}
-step::SuspensionDescriptor descriptor(PyObject*params){step::SuspensionDescriptor out;
-    const char*names[]={"mass","pitch_inertia","roll_inertia","fixed_step","constraint_iterations"};
-    for(unsigned i=0;i<5;++i)out.parameters[i]=p::numeric(params,names[i]);
-    p::Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));
-    const char*tuning[]={"GRAVITY","CONTACT_PENETRATION","AIRBORNE_ANGULAR_DAMPING","AIRBORNE_ANGULAR_SPEED_LIMIT","FREEZE_ACCEL_EPSILON","FREEZE_VEL_EPSILON","FREEZE_ANG_ACCEL_EPSILON","FREEZE_ANG_VEL_EPSILON","SERVER_PHYSICS_MAX_SUBSTEPS"};
-    for(unsigned i=0;i<9;++i)out.tuning[i]=p::numeric(physics.get(),tuning[i]);out.maximum_steps=int(out.tuning[8]);
-    out.width=p::numeric(params,"width");out.clearance=p::numeric(params,"clearance");out.rest_length=p::numeric(params,"rest_length");
-    out.contact_memory_distance=p::numeric(params,"contact_memory_distance");out.footprint_half_width=p::numeric(params,"footprint_half_width");
-    auto read=[&](const char*name,std::vector<step::SuspensionContact>&rows,bool spring){auto raw=p::value(params,name);if(raw.get()==Py_None)return;
-        for(Py_ssize_t i=0;i<p::size(raw.get());++i){auto v=p::item(raw.get(),i);step::SuspensionContact c;
-            c.x=p::numeric(v.get(),"x");c.y=p::numeric(v.get(),"y");c.z=p::numeric(v.get(),"z");auto side=p::value(v.get(),"side"),kind=p::value(v.get(),"kind");
-            const auto text=p::string(side.get());c.side=text=="left"?-1:text=="right"?1:0;c.spring=spring;c.rigid=p::string(kind.get())=="rigid";c.track=p::string(kind.get())=="track";
-            if(spring){c.stiffness=p::numeric(v.get(),"stiffness");c.damping=p::numeric(v.get(),"damping");c.compression=p::numeric(v.get(),"static_compression");
-                c.maximum=p::numeric(v.get(),"max_compression");c.force=p::numeric(v.get(),"max_force");c.rest_length=p::numeric(v.get(),"rest_length");
-                const double footprint=p::numeric(params,"footprint_half_length",.3);c.footprint_front=p::numeric(v.get(),"footprint_front",footprint);c.footprint_rear=p::numeric(v.get(),"footprint_rear",footprint);
-            }else c.penetration=p::numeric(v.get(),"penetration",.1);rows.push_back(c);}};
-    read("springs",out.springs,true);read("pseudo_contacts",out.pseudo,false);read("rigid_contacts",out.rigid,false);
-    out.turret_origin=optionalPoint(params,"turret_origin");auto turrets=p::value(params,"turret_contacts");if(turrets.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(turrets.get());++i){auto v=p::item(turrets.get(),i);out.turret_contacts.push_back(p::numbers<3>(v.get()));}
-    return out;
-}
 struct NativeOwner {
     BW::ClientSpacePtr space;world::Registry registry;stock_native_destructible::NativeBackend backend;
     world::NativeScene scene;world::Pipeline pipeline;SceneGround ground;LocalGeometry local_geometry;
     std::unique_ptr<p::Ref> sensor,authority;native_battle::Battle*battle=nullptr;
-    std::unique_ptr<Owner> drive;std::unique_ptr<p::Ref> params;std::uint64_t generation=0;bool retired=false;
+    std::unique_ptr<Owner> drive;std::optional<std::uint64_t> params_revision;std::uint64_t generation=0;bool retired=false;
     StatusOwner statuses;
     std::unique_ptr<PlayerDriver> player;
     PlayerContacts player_contacts;
@@ -84,7 +64,7 @@ struct NativeOwner {
     std::unique_ptr<PlayerImpact> impact;
     std::unique_ptr<PlayerRam> ram;
     std::unique_ptr<NativePlayerWorld> actual;
-    std::unique_ptr<p::Ref> player_entity,player_physics,player_resource;
+    std::unique_ptr<p::Ref> player_entity,player_resource;std::optional<std::uint64_t> player_physics;
     std::uint64_t player_descriptor_revision=0;
     std::shared_ptr<const void>player_geometry;
     std::uint64_t full_frames=0,cold_projections=0;
@@ -133,24 +113,23 @@ struct NativeOwner {
     void mirrorJournal(){if(registry.journal.empty()||registry.journal.back().sequence<=mirrored_journal)return;const auto first=std::upper_bound(registry.journal.begin(),registry.journal.end(),mirrored_journal,[](std::uint64_t sequence,const world::Event&event){return sequence<event.sequence;});bool changed=false;for(auto at=first;at!=registry.journal.end();++at){require(events&&events->mirrorOnly(at->destruction));mirrored_journal=at->sequence;changed=true;}if(changed){bumpLedger();syncLedger();}}
     void frame(double now){if(!std::isfinite(now))throw p::Error("Native player world clock is invalid");syncLedger();
         if(events){require(events->mappingChanged(now));backend.runtime().update(last_frame?std::max(0.,now-*last_frame):0.,now);require(events->synchronizeGeometry());}last_frame=now;}
-    void installParams(PyObject*value){if(params&&params->get()==value)return;
-        drive.reset(new Owner(descriptor(value)));params.reset(new p::Ref(p::retain(value)));}
+    void installParams(const step::SuspensionDescriptor&value,std::uint64_t revision){if(params_revision==revision)return;
+        drive.reset(new Owner(value));params_revision=revision;}
     void installActual(native_battle::Battle&battle,PyObject*entity,const std::shared_ptr<stock_native_client_state::State>&state){
         const auto key="player:"+std::to_string(state->local_player_id);const auto found=state->actors.find(key);if(found==state->actors.end()||!found->second->local)throw p::Error("Native local actor installation is unavailable");
-        auto physics=p::retain(battle.local->physics?battle.local->physics.get():Py_None),resource=p::value(entity,"typeDescriptor");const bool changed=!player_entity||player_entity->get()!=entity||!player_physics||player_physics->get()!=physics.get()||!player_resource||player_resource->get()!=resource.get()||player_descriptor_revision!=found->second->descriptor_revision||player_geometry!=found->second->geometry;
+        const auto&physics=battle.local->physics;if(!physics)throw p::Error("Native player effective physics are unavailable");auto resource=p::value(entity,"typeDescriptor");const bool changed=!player_entity||player_entity->get()!=entity||player_physics!=battle.local->physics_revision||!player_resource||player_resource->get()!=resource.get()||player_descriptor_revision!=found->second->descriptor_revision||player_geometry!=found->second->geometry;
         if(actual&&!changed)return;
-        actual.reset();auto metadata=readPlayerDescriptor(battle,entity,physics.get());if(player)player->descriptor(std::move(metadata));else{player=std::make_unique<PlayerDriver>(std::move(metadata),readPlayerInitialState(battle,*found->second));player->controls()=readPlayerInitialControls(battle);}
+        actual.reset();auto metadata=readPlayerDescriptor(battle,resource.get(),*physics);if(player)player->descriptor(std::move(metadata));else{player=std::make_unique<PlayerDriver>(std::move(metadata),readPlayerInitialState(battle,*found->second));player->controls()=readPlayerInitialControls(battle);}
         // The fixed descriptor projection is a cold producer. Its original
         // exclusion/error lifecycle remains intact; no physical slice calls it.
-        ++cold_projections;p::Ref suspension(native_battle::local::ensureSuspensionParams(battle,resource.get()));
-        if(suspension.get()!=Py_None)installParams(suspension.get());else{drive.reset();params.reset();}
+        ++cold_projections;if(const auto*suspension=native_battle::local::ensureSuspensionParams(battle,resource.get()))installParams(*suspension,battle.local->suspension_revision);else{drive.reset();params_revision.reset();}
         player->state().suspension_disabled=battle.local->suspension_disabled;
-        if(!peers){p::Ref collision(PyImport_ImportModule("gui.mods.offline_lan_0922.tank_collision")),laws(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));peers=std::make_unique<NativePeers>(player_contacts,p::numeric(collision.get(),"CONTACT_BROADPHASE_PADDING"),p::numeric(laws.get(),"SERVER_PHYSICS_STEP"));}
+        if(!peers)peers=std::make_unique<NativePeers>(player_contacts,native_battle::local::law::CONTACT_BROADPHASE_PADDING,native_battle::local::law::SERVER_PHYSICS_STEP);
         {step::InternalLayout layout;if(!step::load_internal_layout(resource.get(),layout))throw p::Error("Native player internal geometry installation failed");auto impact_config=readPlayerImpactConfig(entity);if(impact)impact->metadata(std::move(impact_config),std::move(layout));else impact=std::make_unique<PlayerImpact>(publication,std::move(impact_config),std::move(layout));}
         if(!ram)ram=std::make_unique<PlayerRam>(publication,state,found->second,nativeRamGeometry());
         auto config=readNativeWorldConfig(battle,entity,player->descriptor());auto turrets=stock_native_client_query::projectileTurrets(battle);
         actual=std::make_unique<NativePlayerWorld>(battle,entity,state,found->second,*player,scene,pipeline,ground,drive.get(),*peers,player_contacts,publication,*impact,*ram,std::move(turrets),std::move(config),local_geometry,sensor->get());
-        player_entity=std::make_unique<p::Ref>(p::retain(entity));player_physics=std::make_unique<p::Ref>(p::retain(physics.get()));player_resource=std::make_unique<p::Ref>(p::retain(resource.get()));player_descriptor_revision=found->second->descriptor_revision;player_geometry=found->second->geometry;
+        player_entity=std::make_unique<p::Ref>(p::retain(entity));player_physics=battle.local->physics_revision;player_resource=std::make_unique<p::Ref>(p::retain(resource.get()));player_descriptor_revision=found->second->descriptor_revision;player_geometry=found->second->geometry;
     }
 };
 std::shared_ptr<NativeOwner> existing(const native_battle::Battle&b){auto owner=b.local?std::static_pointer_cast<NativeOwner>(b.local->drive):std::shared_ptr<NativeOwner>{};return owner&&owner->current(b)?owner:std::shared_ptr<NativeOwner>{};}
@@ -165,13 +144,13 @@ void synchronizeStatus(const native_battle::Battle&b,double now){
     auto owner=owned(b);const auto anchor=native_battle::projectiles::serverClockAnchor(b);std::optional<double>estimated;if(anchor)estimated=anchor->first+std::max(0.,now-anchor->second)*1000.;owner->statuses.synchronize(*b.vehicles,now,estimated);
 }
 DriverAccess driverAccess(native_battle::Battle&b){
-    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=engineEntity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity is unavailable");installPlayer(b,entity.get(),b.local->physics?b.local->physics.get():Py_None);}
+    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=engineEntity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity is unavailable");if(!b.local->physics)throw p::Error("Native player effective physics are unavailable");installPlayer(b,entity.get(),*b.local->physics);}
     return {owner,owner->player.get(),&owner->player_contacts,&owner->publication};
 }
-void installPlayer(native_battle::Battle&b,PyObject*entity,PyObject*params){
+void installPlayer(native_battle::Battle&b,PyObject*entity,const native_battle::local::DriveParams&params){
     auto owner=owned(b);auto&state=*b.vehicles;
     auto*actor=state.find("player:"+std::to_string(state.local_player_id));if(!actor||!actor->local)throw p::Error("Native local player actor is unavailable");
-    auto metadata=readPlayerDescriptor(b,entity,params);
+    auto resource=p::value(entity,"typeDescriptor");auto metadata=readPlayerDescriptor(b,resource.get(),params);
     if(owner->player)owner->player->descriptor(std::move(metadata));else{owner->player=std::make_unique<PlayerDriver>(std::move(metadata),readPlayerInitialState(b,*actor));owner->player->controls()=readPlayerInitialControls(b);const auto&s=owner->player->state();const auto&c=owner->player->controls();require(state.updateLocal({s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll,c.aim_yaw,c.gun_pitch},{},s.speed));}
 }
 void mirrorDestruction(const native_battle::Battle&b,const world::Destruction&event){auto owner=owned(b);if(!owner->events||!owner->events->mirrorOnly(event))throw p::Error("Native accepted destruction mirror failed");owner->bumpLedger();owner->syncLedger();}
@@ -197,7 +176,7 @@ void prepare(Battle&b){
 }
 void retire(Battle&b){
     if(!b.local)return;
-    stock_native_client_survival::retire(b);stock_native_client_critical::close(b);
+    stock_native_client_survival::retire(b);stock_native_client_critical::close(b);try{closeSiegeHints(b);}catch(const std::exception&){PyErr_Clear();}
     auto owner=std::static_pointer_cast<dr::NativeOwner>(b.local->drive);if(owner){try{owner->retire();}catch(const std::exception&){PyErr_Clear();}}b.local->drive.reset();
 }
 void worldFrame(Battle&b,double now){auto owner=dr::existing(b);if(owner)owner->frame(now);}
@@ -212,7 +191,7 @@ void drive(Battle&b,double dt){
     const auto levels=stock_native_client_survival::levels(b);owner->actual->environment(levels[0],levels[1],stock_native_client_critical::report(b).resolved().kind!=Value::Kind::Null);owner->actual->battleOver(b.result.resolved().kind!=Value::Kind::Null);
     owner->player->controls().autorotation=stock_native_client_input::autorotationEnabled(b);const auto publication=owner->player->advance(*owner->actual,dt);++owner->full_frames;owner->mirrorJournal();
     if(!owner->current(b)||state->retired)return;dr::publishPose(*b.local,owner->player->state());
-    struct Sink final:dr::PlayerPublicationSink {Battle&b;double now;Sink(Battle&battle,double n):b(battle),now(n){}bool barriers()override{return stock_native_client_input::flushBarrierInputsAt(b,now);}bool current(std::optional<bool>mode={})override{return stock_native_client_input::sendCurrentAt(b,now,mode);}bool landing()override{return stock_native_client_input::flushLandingAt(b,now);}std::optional<dr::ID>inputSequence()const override{auto sequence=p::value(b.engine.client.get(),"_input_seq");if(sequence.get()==Py_None||PyBool_Check(sequence.get())||(!PyInt_Check(sequence.get())&&!PyLong_Check(sequence.get())))return {};const auto n=p::wide(sequence.get());return n>0?std::optional<dr::ID>{n}:std::nullopt;}}sink(b,now);
+    struct Sink final:dr::PlayerPublicationSink {Battle&b;double now;Sink(Battle&battle,double n):b(battle),now(n){}bool barriers()override{return stock_native_client_input::flushBarrierInputsAt(b,now);}bool current(std::optional<bool>mode={})override{return stock_native_client_input::sendCurrentAt(b,now,mode);}bool landing()override{return stock_native_client_input::flushLandingAt(b,now);}std::optional<dr::ID>inputSequence()const override{return native_battle::local::inputSequence(b);}}sink(b,now);
     dr::publishPlayer(*owner->player,owner->publication,publication,sink);
 }
 bool acknowledgeContacts(Battle&b,const Value&snapshot,bool destructible){try{auto owner=dr::existing(b);if(!owner)return false;const auto&players=snapshot.get("players").resolved();if(players.kind!=Value::Kind::Array)return false;

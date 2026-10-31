@@ -1,4 +1,5 @@
 #include "stock_native_client_drive_runtime.hpp"
+#include "stock_native_battle_local_laws.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -21,8 +22,7 @@ void restore_vertical(PlayerState&s,const PlayerState&saved){s.vertical_speed=sa
     s.left_flying=saved.left_flying;s.right_flying=saved.right_flying;s.surface_up_cosine=saved.surface_up_cosine;s.downhill=saved.downhill;s.slope_tangent=saved.slope_tangent;
     s.slide_speed=saved.slide_speed;s.air_lateral_x=saved.air_lateral_x;s.air_lateral_z=saved.air_lateral_z;s.turn_speed=saved.turn_speed;s.drive_turn=saved.drive_turn;s.ground_plane=saved.ground_plane;}
 }
-double pivot_offset(const PlayerDescriptor&d,double speed,double omega,bool airborne,double throttle){if(airborne||d.rotation_around_center||std::abs(omega)<=1.e-9)return 0.;
-    const double radius=std::max(0.,d.motion.track_center-std::abs(speed/omega));const double direction=speed<-1.e-9||(std::abs(speed)<=1.e-9&&throttle<0.)?-1.:1.;return radius*direction*(omega>0.?1.:-1.);}
+double pivot_offset(const PlayerDescriptor&d,double speed,double omega,bool airborne,double throttle){return native_battle::local::trackPivotOffset(d.rotation_around_center,d.motion.track_center,speed,omega,airborne,throttle);}
 Vec push_step(const PlayerDescriptor&d,const PlayerState&s,Vec push,double dt,bool rolling){if(dt<=0.)return push;const double normal=std::cos(s.pitch)*std::cos(s.roll);
     const auto&law=d.motion.drive;const double rr=law.rolling(0,0.)*law.mass/std::max(law.mass,1.),hold=law.t[18]*law.t[0]*std::max(normal,.1);
     const double forward_budget=rolling?rr:std::max(hold,rr),side_budget=std::max(rr,hold*grip(d,normal));const double sn=std::sin(s.yaw),cs=std::cos(s.yaw);
