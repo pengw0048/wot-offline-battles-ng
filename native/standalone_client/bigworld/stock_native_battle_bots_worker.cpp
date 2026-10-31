@@ -24,10 +24,6 @@ namespace {
 constexpr double MONITOR_SECONDS = 0.10, RETRY_SECONDS = 1.0, BUSY_RETRY_SECONDS = 5.0, RETRY_MAX_SECONDS = 15.0;
 constexpr double PROGRESS_SECONDS = 1.0, STATUS_SECONDS = 2.0;
 constexpr std::int64_t AUTHORITY_ID = -1;
-const char* const VISIBILITY_COUNTERS[] = {"visibility_admitted", "visibility_completed", "visibility_deferred",
-                                           "visibility_selected_services", "visibility_fire_services", "visibility_new_services",
-                                           "visibility_ordinary_services"};
-const char* const SHOT_LANE_COUNTERS[] = {"shot_lane_completed_pairs", "shot_lane_budget_deferred_attempts"};
 
 double wall() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 Value null() { return Value(); }
@@ -199,9 +195,6 @@ Value sample(const Battle& b) {
     out.object["bot_count"] = integer(std::int64_t(a->bot_count));
     out.object["simulation_caps"] = integer(std::int64_t(a->simulation_caps));
     out.object["bot_state_revision"] = a->last_snapshot ? cs::read(p::value(a->last_snapshot.get(), "bot_state_revision").get()) : null();
-    auto diagnostics = cs::read(bots::diagnosticTotals(b).get());
-    out.object["alive_bot_ticks"] = diagnostics.get("alive_bot_ticks");
-    out.object["bot_diagnostics"] = diagnostics;
     out.object["control"] = cs::read(bots::controlSnapshot(b).get());
     return out;
 }
@@ -232,19 +225,6 @@ Value runtimeStatus(double now) {
         value.object["catchup_delta"] = optional(delta(control, previous_control, "catchup_callbacks"));
         value.object["debt_callback_delta"] = optional(delta(control, previous_control, "debt_callbacks"));
         value.object["astar_budget_exhausted_delta"] = optional(delta(control, previous_control, "astar_budget_exhausted_callbacks"));
-        const Value &diagnostics = value.get("bot_diagnostics"), &previous_diagnostics = previous.get("bot_diagnostics");
-        auto counters = [&](const char* const* names, std::size_t count, const char* delta_name, const char* hz_name) {
-            auto deltas = object(), rates = object();
-            for (std::size_t i = 0; i < count; ++i)
-                if (auto d = delta(diagnostics, previous_diagnostics, names[i])) {
-                    deltas.object[names[i]] = integer(*d);
-                    rates.object[names[i]] = number(double(*d) / seconds);
-                }
-            value.object[delta_name] = deltas;
-            value.object[hz_name] = rates;
-        };
-        counters(VISIBILITY_COUNTERS, std::size(VISIBILITY_COUNTERS), "visibility_counter_delta", "visibility_counter_hz");
-        counters(SHOT_LANE_COUNTERS, std::size(SHOT_LANE_COUNTERS), "shot_lane_counter_delta", "shot_lane_counter_hz");
     } else {
         value.object["window_seconds"] = null();
     }

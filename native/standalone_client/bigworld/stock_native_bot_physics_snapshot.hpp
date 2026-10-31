@@ -1,6 +1,6 @@
 #pragma once
 #include "stock_native_bot_physics_host.hpp"
-struct _object;
+#include "stock_native_client_state.hpp"
 namespace stock_native_bot_physics {
 struct PhysicsSnapshot {Geometry geometry;HostMemory memory;Config config;};
 // Vehicle is the native, strongly owned descriptor geometry. This template
@@ -18,7 +18,8 @@ template<class Vehicle> stock_native_bot_turret::DetachedDescriptor detachedDesc
     result.gun.offset=vehicle.gun_offset;return result;
 }
 // Installation/mode-change only. No Python object survives this call.
-bool readPhysicsSnapshot(_object * battle_runtime,_object * bot_state,_object * descriptor,
+// `siege_travel` is a Siege vehicle's travel descriptor, else null.
+bool readPhysicsSnapshot(const stock_native_client_state::Value & state,_object * descriptor,_object * siege_travel,
     stock_native_bot_turret::MovingDescriptor,bool detailed_suspension,PhysicsSnapshot&);
 // Called only while decoding an accepted cold/event-ingress row. Query paths
 // retain the resulting value and never consult the original Python mapping.

@@ -31,7 +31,7 @@ struct HumanDescriptor {
 struct HumanIngress {Human human;step::WeaponTarget target;double radius=0.;};
 // Installation may invoke the reviewed descriptor/effective_params producers.
 // It freezes all crew/fire spotting states and retains no interpreter objects.
-bool readHumanDescriptor(_object* runtime,_object* raw,_object* descriptor,HumanDescriptor&);
+bool readHumanDescriptor(_object* raw,_object* descriptor,HumanDescriptor&);
 bool readHumanProjections(_object* raw,_object* effective,_object* descriptor,HumanDescriptor&);
 // This ingress reads dictionaries/sequences only; it never invokes Python.
 bool readHumanInput(_object* raw,const HumanDescriptor&,HumanIngress&);

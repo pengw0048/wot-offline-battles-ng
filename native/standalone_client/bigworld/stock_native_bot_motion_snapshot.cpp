@@ -43,17 +43,8 @@ double index(PyObject * p,Py_ssize_t n){Ref x(PySequence_GetItem(p,n));return nu
 Point point(PyObject * p)
 {return {{index(p,0),index(p,1),index(p,2)}};}
 double attribute(PyObject * p,const char * name){Ref x(PyObject_GetAttrString(p,name));return number(x.p);}
-PyObject * actorValue(PyObject * runtime,const char * name,PyObject * id)
-{
-    Ref values(PyObject_GetAttrString(runtime,name));
-    if(!PyDict_Check(values.p))throw std::runtime_error("motion actor map shape");
-    auto p=PyDict_GetItem(values.p,id);if(!p)p=Py_None;Py_INCREF(p);return p;
-}
-double actorNumber(PyObject * runtime,const char * name,PyObject * id,double fallback=0.)
-{Ref p(actorValue(runtime,name,id));return p.p==Py_None?fallback:number(p.p);}
-stock_native_bot_python::Ref deriveDrive(PyObject* runtime,PyObject* id,PyObject* vehicle,PyObject* physics,bool mode,bool withCrew=true){
+stock_native_bot_python::Ref deriveDrive(std::optional<int> crew_level,PyObject* vehicle,PyObject* physics){
  namespace p=stock_native_bot_python;
- if(!mode){auto cache=p::value(runtime,"_physics_params");if(PyDict_Check(cache.get())){auto* existing=PyDict_GetItem(cache.get(),id);if(existing&&existing!=Py_None)return p::retain(existing);}}
  auto descriptorPhysics=p::value(vehicle,"physics"),chassis=p::value(vehicle,"chassis");
  const double gravity=attribute(physics,"GRAVITY"),cohesion=attribute(physics,"COHESION");
  double mass=5730.,power=45.*735.49875,forward=32./3.6,reverse=12./3.6,rotation=38.*3.14159265358979323846/180.,friction=.6867,brake=cohesion*gravity,track=1.5,ratio=1.;
@@ -75,9 +66,8 @@ stock_native_bot_python::Ref deriveDrive(PyObject* runtime,PyObject* id,PyObject
   auto raw=p::value(chassis.get(),"rotationSpeed");if(raw.get()==Py_None)throw std::runtime_error("#1513 chassis rotation speed is unavailable");rotation=p::scalar(raw.get());if(rotation>6.3)rotation*=3.14159265358979323846/180.;}
  try{auto factors=p::value(descriptorPhysics.get(),"rollingFrictionFactors");if(factors.get()!=Py_None)for(unsigned i=0;i<3;++i)rolling[i]=index(factors.get(),i);}catch(const std::exception&){PyErr_Clear();rolling={{1.,1.,1.}};}
  std::array<double,3> crew{{1.,1.,1.}};
- if(withCrew){
- const int level=stock_native_bot_descriptor::botCrewLevel(runtime,id);
- p::Ref factors(stock_native_bot_descriptor::defaultCrewFactors(vehicle,level));
+ if(crew_level){
+ p::Ref factors(stock_native_bot_descriptor::defaultCrewFactors(vehicle,*crew_level));
  try{auto v=p::value(factors.get(),"chassis/terrainResistance");if(v.get()!=Py_None)for(unsigned i=0;i<3;++i)crew[i]=index(v.get(),i);}catch(const std::exception&){PyErr_Clear();crew={{1.,1.,1.}};}
  const auto factor=[&](const char* name){try{return std::max(0.,p::numeric(factors.get(),name,1.));}catch(const std::exception&){PyErr_Clear();return 1.;}};
  rotation*=factor("vehicle/rotationSpeed");power*=factor("engine/power");
@@ -89,27 +79,23 @@ void readBodyBounds(PyObject* vehicle,stock_native_bot_motion::Descriptor& d){
  const auto hull=stock_native_bot_descriptor::hullBounds(vehicle),body=stock_native_bot_descriptor::bodyBounds(vehicle);
  d.hull_minimum=hull.minimum;d.hull_maximum=hull.maximum;d.body_minimum=body.minimum;d.body_maximum=body.maximum;
 }
-std::vector<std::optional<wot::offline_bot_step::GroundMemory>> memories(PyObject * raw)
-{
-    std::vector<std::optional<wot::offline_bot_step::GroundMemory>> out;
-    if(!raw||raw==Py_None)return out;
-    for(Py_ssize_t i=0;i<count(raw);++i) {
-        Ref row(PySequence_GetItem(raw,i));if(row.p==Py_None){out.push_back(std::nullopt);continue;}
-        const auto n=count(row.p);if(n<6||n>7)throw std::runtime_error("motion ground memory shape");
-        wot::offline_bot_step::GroundMemory m;
-        m.origin_x=index(row.p,0);m.origin_z=index(row.p,1);m.height=index(row.p,2);
-        m.last_x=index(row.p,3);m.last_z=index(row.p,4);m.travelled=index(row.p,5);
-        if(n==7){Ref v(PySequence_GetItem(row.p,6));const int b=PyObject_IsTrue(v.p);if(b<0)throw std::runtime_error("motion ground memory flag");m.last_query_missed=b!=0;}
-        out.push_back(m);
-    }
-    return out;
+using SeedValue=stock_native_client_state::Value;
+double num(const SeedValue& state,const char* key,double fallback=0.){
+    const auto& v=state.get(key);if(v.kind==SeedValue::Kind::Null)return fallback;
+    if(v.kind==SeedValue::Kind::Integer)return double(v.integer);
+    if(v.kind!=SeedValue::Kind::Number||!std::isfinite(v.number))throw std::runtime_error("native motion snapshot invalid numeric field");return v.number;
 }
+bool flag(const SeedValue& state,const char* key,bool fallback=false){return state.object.count(key)?state.get(key).truth(false):fallback;}
+std::optional<double> optional(const SeedValue& state,const char* key){return state.get(key).kind==SeedValue::Kind::Null?std::nullopt:std::optional<double>(num(state,key));}
 }
-static bool readSnapshot(PyObject * runtime,PyObject * raw,PyObject * vehicle,MotionSnapshot & output,bool mode)
+// One Bot's motion state and descriptor laws at the round start. The seed row carries no in-flight
+// contact, ground-memory or ram history: a fresh round starts with none.
+static bool readSnapshot(const BotSeed& bot,PyObject * vehicle,MotionSnapshot & output,bool mode)
 {
     try {
+        const auto& raw=bot.state;
         MotionSnapshot value;auto & s=value.state;auto & d=value.descriptor;auto & u=value.suspension;
-        auto id=field(raw,"id");s.id=integer(id);value.team=int(integer(field(raw,"team")));value.slot=int(integer(field(raw,"slot")));
+        s.id=std::int64_t(num(raw,"id"));value.team=int(num(raw,"team"));value.slot=int(num(raw,"slot"));
         s.position={{num(raw,"x"),num(raw,"y"),num(raw,"z")}};
 #define NUMBER(member,key) s.member=num(raw,key)
         NUMBER(yaw,"yaw");NUMBER(pitch,"pitch");NUMBER(roll,"roll");NUMBER(speed,"speed");
@@ -122,7 +108,8 @@ static bool readSnapshot(PyObject * runtime,PyObject * raw,PyObject * vehicle,Mo
         NUMBER(rotation_refused_until,"_native_rotation_refused_until");NUMBER(support_repair_elapsed,"_support_repair_elapsed");
         NUMBER(support_vertical_speed,"_suspension_support_vertical_speed");
 #undef NUMBER
-        s.turn_speed=actorNumber(runtime,"_turn_speeds",id);s.hard_grinds=int(actorNumber(runtime,"_hard_contact_grinds",id));
+        // battle_start installs a zero turn speed and no hard-contact grind.
+        s.turn_speed=0.;s.hard_grinds=0;
         s.movement_direction=int(num(raw,"movement_dir"));s.rotation_direction=int(num(raw,"rotation_dir"));
         s.alive=flag(raw,"alive",true);s.airborne=flag(raw,"airborne");s.grounded_once=flag(raw,"grounded_once");
         s.left_flying=flag(raw,"left_flying");s.right_flying=flag(raw,"right_flying");s.service_brake=flag(raw,"service_brake");
@@ -131,22 +118,11 @@ static bool readSnapshot(PyObject * runtime,PyObject * raw,PyObject * vehicle,Mo
         s.basic_continuous_support=flag(raw,"_basic_continuous_support");
         s.slope_basis_yaw=optional(raw,"_basic_slope_basis_yaw");s.ground_height=optional(raw,"ground_height");
         s.destructible_contact_speed=optional(raw,"destructible_contact_speed");
-        if(auto p=field(raw,"_contact_motor_turn"))if(p!=Py_None)s.contact_motor_turn=int(integer(p));
-        if(auto p=field(raw,"_suspension_support_gradient"))if(p!=Py_None)s.support_gradient={{index(p,0),index(p,1)}};
-        if(auto p=field(raw,"_slope_pose_target"))if(p!=Py_None)s.slope_target={{index(p,0),index(p,1)}};
-        if(auto p=field(raw,"_suspension_ground_plane"))if(p!=Py_None) {
-            wot::offline_bot_step::SupportPlane plane;
-            plane.gradient_x=num(p,"gradient_x");plane.gradient_z=num(p,"gradient_z");
-            plane.center_x=num(p,"center_x");plane.center_y=num(p,"center_y");plane.center_z=num(p,"center_z");
-            plane.normal=point(field(p,"normal"));s.ground_plane=plane;
-        }
-        value.memory.springs=memories(field(raw,"_spring_ground_memory"));value.memory.pseudo=memories(field(raw,"_pseudo_ground_memory"));
         d.half_length=num(raw,"half_length");d.half_width=num(raw,"half_width");
-        auto shape=field(raw,"collision_shape");if(count(shape)!=4)throw std::runtime_error("motion hull shape width");
-        for(unsigned i=0;i<4;++i)d.collision_shape[i]=index(shape,i);
+        const auto& shape=raw.get("collision_shape");if(shape.kind!=SeedValue::Kind::Array||shape.array.size()!=4)throw std::runtime_error("motion hull shape width");
+        for(unsigned i=0;i<4;++i)d.collision_shape[i]=shape.array[i].numeric(NAN);
         Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));
-        Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_runtime"));
-        auto params=deriveDrive(runtime,id,vehicle,physics.p,mode);
+        auto params=deriveDrive(bot.crew_level,vehicle,physics.p);
         const char * names[]={"GRAVITY","GRAVITY_FACTOR","COHESION","COH_DECAY_Y","COH_DECAY_FACTOR","COH_DECAY_POW",
             "SLOPE_COH_DECAY_Y","SLOPE_COH_DECAY","COH_DECAY_BOUND","POWER_FACTOR","BKWD_POWER_FRACTION","ENGINE_MIN_V",
             "DRIVE_TRACTION","SLOPE_GRIP_LNG_MIN_Y","SLOPE_GRIP_LNG_FULL_Y","SLOPE_GRIP_LNG_MIN","SLOPE_GRIP_LNG_FULL",
@@ -175,43 +151,26 @@ static bool readSnapshot(PyObject * runtime,PyObject * raw,PyObject * vehicle,Mo
         u.maximum_steps=int(u.tuning[8]);u.half_length=d.half_length;u.half_width=d.half_width;
         u.slide_hold_tan=attribute(physics.p,"SLIDE_HOLD_TAN");u.cohesion=attribute(physics.p,"COHESION");
         u.slide_drag=attribute(physics.p,"SLIDE_DRAG");u.slide_max=attribute(physics.p,"SLIDE_MAX");
-        Ref full(PyObject_GetAttrString(module.p,"BOT_FULL_SUPPORT_ENABLED"));
-        const int enabled=PyObject_IsTrue(full.p);if(enabled<0)throw std::runtime_error("invalid detailed suspension switch");
-        if(enabled)throw std::runtime_error("detailed bot suspension is unsupported by the pinned configuration");
+        // The pinned configuration keeps the detailed Bot suspension off (bot_runtime.BOT_FULL_SUPPORT_ENABLED).
         value.detailed_suspension=false;
         if(mode){namespace p=stock_native_bot_python;auto misc=p::value(vehicle,"miscAttrs");const double spall=p::numeric(misc.get(),"antifragmentationLiningFactor",1.);if(spall<1.)throw std::runtime_error("#1513 Spall Liner factor is invalid");value.ram.spall=spall;value.ram.bonus=0.;}
-        else if(auto ram=field(raw,"ram_profile")){if(ram!=Py_None){value.ram.spall=num(ram,"spall_coefficient",1.);value.ram.bonus=num(ram,"ramming_bonus");value.ram.contact_armor=optional(ram,"contact_armor");}}
+        else{const auto& ram=raw.get("ram_profile");if(ram.kind!=SeedValue::Kind::Null){value.ram.spall=num(ram,"spall_coefficient",1.);value.ram.bonus=num(ram,"ramming_bonus");value.ram.contact_armor=optional(ram,"contact_armor");}}
         value.ram_sequence=std::int64_t(num(raw,"_ram_motion_seq"));
-        if(auto p=field(raw,"contact_push_acks"))if(p!=Py_None)for(Py_ssize_t i=0;i<count(p);++i) {
-            Ref row(PySequence_GetItem(p,i));if(count(row.p)!=7)throw std::runtime_error("motion push acknowledgement width");
-            Ref a(PySequence_GetItem(row.p,0)),b(PySequence_GetItem(row.p,1));
-            stock_native_bot_contacts::Checkpoint checkpoint;checkpoint.actor=integer(a.p);checkpoint.sequence=integer(b.p);
-            for(unsigned j=0;j<5;++j)checkpoint.totals[j]=index(row.p,2+j);
-            if(!value.push_acknowledgements.emplace(checkpoint.actor,checkpoint).second)throw std::runtime_error("duplicate motion push acknowledgement");
-        }
-        if(auto p=field(raw,"ram_motion"))if(p!=Py_None)for(Py_ssize_t i=0;i<count(p);++i) {
-            Ref row(PySequence_GetItem(p,i));if(count(row.p)!=21)throw std::runtime_error("motion ram checkpoint width");
-            Ref a(PySequence_GetItem(row.p,0)),b(PySequence_GetItem(row.p,1)),c(PySequence_GetItem(row.p,2));
-            stock_native_bot_contacts::RamMotion r;r.player=integer(a.p);r.sequence=integer(b.p);r.sample_us=integer(c.p);
-            Point * points[]={&r.velocity,&r.position,&r.angles,&r.player_position,&r.player_angles,&r.player_velocity};
-            for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)(*points[j])[k]=index(row.p,3+3*j+k);
-            if(!value.ram_motion.emplace(r.player,r).second)throw std::runtime_error("duplicate motion ram checkpoint");
-        }
         stock_native_bot_motion::validate(d);output=std::move(value);return true;
     } catch(const std::exception& error) {
         if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return false;
     }
 }
 PyObject* readUnmodifiedDrive(PyObject* vehicle){
- try{Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));auto result=deriveDrive(nullptr,nullptr,vehicle,physics.p,true,false);return result.release();}
+ try{Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));auto result=deriveDrive(std::nullopt,vehicle,physics.p);return result.release();}
  catch(const std::exception& error){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return nullptr;}
 }
-bool readMotionSnapshot(PyObject * runtime,PyObject * raw,PyObject * vehicle,MotionSnapshot & output)
-{return readSnapshot(runtime,raw,vehicle,output,false);}
-bool readMotionMode(PyObject * runtime,PyObject * raw,PyObject * vehicle,MotionModeSnapshot & output)
+bool readMotionSnapshot(const BotSeed & bot,PyObject * vehicle,MotionSnapshot & output)
+{return readSnapshot(bot,vehicle,output,false);}
+bool readMotionMode(const BotSeed & bot,PyObject * vehicle,MotionModeSnapshot & output)
 {
     MotionSnapshot snapshot;
-    if(!readSnapshot(runtime,raw,vehicle,snapshot,true))return false;
+    if(!readSnapshot(bot,vehicle,snapshot,true))return false;
     output={std::move(snapshot.descriptor),std::move(snapshot.suspension),snapshot.ram,snapshot.detailed_suspension};
     return true;
 }

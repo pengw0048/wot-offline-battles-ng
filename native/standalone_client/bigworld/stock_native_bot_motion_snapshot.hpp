@@ -1,6 +1,6 @@
 #pragma once
 #include "stock_native_bot_contacts.hpp"
-struct _object;
+#include "stock_native_bot_seed.hpp"
 
 namespace stock_native_bot {
 struct MotionSnapshot {
@@ -27,8 +27,6 @@ struct MotionModeSnapshot {
 // contains mass, powerW, nativePowerRatio, speedFwd, speedBwd,
 // specificFriction, brakeDecel, rotSpd, trackCenter, and terrainResist.
 _object* readUnmodifiedDrive(_object* descriptor);
-bool readMotionSnapshot(_object * runtime,_object * state,_object * descriptor,
-    MotionSnapshot & result);
-bool readMotionMode(_object * runtime,_object * state,_object * descriptor,
-    MotionModeSnapshot & result);
+bool readMotionSnapshot(const BotSeed & bot,_object * descriptor,MotionSnapshot & result);
+bool readMotionMode(const BotSeed & bot,_object * descriptor,MotionModeSnapshot & result);
 }

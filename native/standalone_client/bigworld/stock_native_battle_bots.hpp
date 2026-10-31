@@ -1,6 +1,7 @@
 #pragma once
 // Bot authority on the hidden worker: simulation step, manifests, outgoing Bot messages, poses and tracks.
 #include "stock_native_battle.hpp"
+#include "stock_native_bot_seed.hpp"
 #include <array>
 
 namespace stock_native_bot { struct Owner; }
@@ -12,19 +13,24 @@ struct BotAssignments {
 };
 
 struct BotAuthority {
-    // The Python BotRuntime still builds the round manifest and holds the per-Bot rows the native
-    // owner's cold installation reads; everything around it is here.
-    Object runtime;
     // The native simulation owner, created when this client becomes the authority. Callers hold a
     // copy across any stock call that can re-enter and retire it.
     std::shared_ptr<stock_native_bot::Owner> owner;
     Object last_snapshot;   // the latest accepted snapshot message: human input, ram probes, takeover
-    // BotRuntime facts adopted after each battle_start; no frame reads the BotRuntime.
+    // The round start (the pinned BotRuntime.battle_start state).
+    bool started = false;
+    Value round_id;
     std::optional<std::int64_t> authority_id;
-    bool finished = false, adapter = false;
-    Value runtime_round;
-    std::int64_t native_generation = 0;
-    Object pending_manifest;   // the frozen unsent manifest of this round and authority
+    bool finished = false, manifest_sent = false;
+    double control_seconds = 0.;      // the worker's fixed control period
+    double refresh_bank = 0.;         // control refresh debt the first physical slice owes
+    std::int64_t generation = 0;      // the native simulation generation of the latest manifest
+    stock_native_bot::ServerOrders orders;
+    // The manifest the native owner installs; null until this authority built one.
+    std::shared_ptr<const stock_native_bot::RoundSeed> seed;
+    // The frozen unsent manifest of this round and authority (Null when none).
+    Value pending_manifest, pending_round;
+    std::optional<std::int64_t> pending_authority;
     // Each Bot's static collision profile (mass, collision_shape, ram_profile, vehicle, team).
     std::map<std::int64_t, Value> profiles;
     // Player water sampling clock and sequence; they outlive an owner replaced by an authority change.
@@ -54,7 +60,7 @@ struct BotAuthority {
     double max_control_step = 0., control_debt = 0., max_control_debt = 0.;
     // Visible-client Bot belt turn rates measured from presented yaw.
     std::map<std::int64_t, double> yaw_rates;
-    // The Bot line-up startup prepares before the BotRuntime exists.
+    // The Bot line-up startup prepares before the round start.
     std::shared_ptr<BotAssignments> assignments;
 };
 
@@ -63,12 +69,16 @@ namespace bots {
 // Creates the BotAuthority when startup calls it first.
 bool prepareVehicleAssignments(Battle& b, PyObject* player_descriptor);
 const std::map<std::pair<std::int64_t, std::int64_t>, std::string>& vehicleAssignments(const Battle& b);
-// Creates the round's BotRuntime (startup::createBotRuntime), runs its battle_start, materializes
-// the authority manifest's Bots and sends its opening messages.
+// Runs the round start, materializes the authority manifest's Bots and sends its opening messages.
 void start(Battle& b);
-// Startup installs the round's BotRuntime; retirement closes the native owner.
-void install(Battle& b, PyObject* runtime);
+// Retirement closes the native owner.
 void retire(Battle& b);
+// The pinned BotRuntime.battle_start: the outgoing messages (the authority manifest) of one start.
+std::vector<Value> roundStart(Battle& b, const Value& message);
+// BotRuntime.pending_manifest / discard_pending_manifest / mark_manifest_enqueued.
+const Value* pendingManifest(const Battle& b);
+bool discardPendingManifest(Battle& b);
+bool markManifestEnqueued(Battle& b, const Value& message);
 // The worker's native owner drives this round's Bots (the pinned native_bot_runtime.enabled).
 bool enabled(const Battle& b);
 bool isAuthority(const Battle& b);
@@ -89,8 +99,7 @@ bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 // Measures a presented yaw's turn rate for the belt feed.
 double rememberTrackTurn(Actor& vehicle, double yaw, double now);
 
-// The round roster (battle_start/roster) and authority changes.
-void battleStart(Battle& b, PyObject* message);
+// Authority changes from a roster or snapshot.
 bool reconcileAuthority(Battle& b, PyObject* player_id);
 // Server-owned combat state for the authority simulation.
 void snapshot(Battle& b, PyObject* message);
@@ -127,9 +136,8 @@ std::size_t playerContacts(Battle& b, const Value& players, double now);
 const Value* currentState(const Battle& b, std::int64_t bot_id);
 // Every live record entered the native space (the worker acquires draw-off after this).
 bool readyForDrawOff(const Battle& b);
-// One worker PERF row: fixed-control debt and Bot diagnostics.
+// One worker PERF row: fixed-control debt.
 p::Ref controlSnapshot(const Battle& b);
-p::Ref diagnosticTotals(const Battle& b);
 }
 
 // The hidden worker's process session (the pinned authority_worker.WorkerSession).

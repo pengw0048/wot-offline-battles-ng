@@ -2,7 +2,7 @@
 #include "stock_native_bot_combat.hpp"
 #include "stock_native_bot_weapon.hpp"
 #include "stock_native_bot_armor_law.hpp"
-struct _object;
+#include "stock_native_bot_seed.hpp"
 
 namespace wot::offline_bot_step {
 // Python objects are consumed synchronously at bootstrap; none are retained.
@@ -47,11 +47,10 @@ struct CombatModeSnapshot {
     std::vector<AimSample> target_samples;
     double base_repair_factor=0,repair_speed_factor=1,crew_factor=1,gun_rotation_factor=1;
 };
-// Returns false with a Python exception and leaves output untouched on error.
-bool load_combat_snapshot(_object* runtime,_object* state,_object* descriptor,
-                          _object* profile,CombatSnapshot& output);
-bool load_combat_mode(_object* runtime,_object* state,_object* descriptor,
-                      _object* profile,CombatModeSnapshot& output);
+// One Bot of the native round start's seed. Returns false with a Python exception and leaves output
+// untouched on error.
+bool load_combat_snapshot(const stock_native_bot::BotSeed& bot,_object* descriptor,CombatSnapshot& output);
+bool load_combat_mode(const stock_native_bot::BotSeed& bot,_object* descriptor,CombatModeSnapshot& output);
 bool load_aim_samples(_object* descriptor,std::vector<AimSample>& output);
 bool readServerCombat(_object* raw,_object* server_tick,const CriticalState& metadata,ServerCombat& output);
 bool adopt_combat_mode(offline_simulation::weapons::Store&,offline_simulation::ActorKey,

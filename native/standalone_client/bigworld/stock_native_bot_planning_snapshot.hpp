@@ -5,6 +5,7 @@
 #include "stock_native_bot_strategy.hpp"
 #include "stock_native_bot_perception.hpp"
 #include "stock_native_bot_parking.hpp"
+#include "stock_native_bot_seed.hpp"
 struct _object;
 
 namespace stock_native_bot_planning {
@@ -36,15 +37,17 @@ struct PlanningSnapshot {
     std::map<std::int64_t,stock_native_bot_navigation::Point> parking_origins;
     std::map<int,std::map<std::string,std::vector<std::array<double,2>>>> routes;
 };
-// Cold startup only: called after manifest/descriptor installation and before
-// the first BotRuntime.update. No borrowed Python reference survives success.
-// A running legacy search/probe/decision owner is a precise precondition error.
-bool readPlanningSnapshot(_object * runtime,PlanningSnapshot & result);
-bool readNavigationMode(_object * runtime,_object * state,_object * descriptor,
+// Cold startup only: the native round start's manifest seed and the accepted server orders. No
+// borrowed Python reference survives success.
+bool readPlanningSnapshot(const stock_native_bot::RoundSeed & seed,const stock_native_bot::ServerOrders & orders,
+    PlanningSnapshot & result);
+// The round's baked grid: its validated graph with the shore-classified hazards.
+bool readMapInput(const stock_native_bot::RoundSeed & seed,offline_navigation::MapInput & result);
+bool readNavigationMode(const stock_native_client_state::Value & state,_object * descriptor,
     stock_native_bot_navigation::ExactDescriptor & result);
 // Undamaged visibility/radio coefficients and descriptor checkpoints for one
 // vehicle mode. Apply live critical vision/signal factors exactly once later.
-bool readPerceptionMode(_object * runtime,_object * state,_object * descriptor,
+bool readPerceptionMode(const stock_native_bot::BotSeed & bot,_object * descriptor,
     stock_native_bot_perception::Actor & result);
 // The same plain parser handles accepted server order replacement at ingress;
 // no Python strategy, geometry or simulation callback is invoked here.
