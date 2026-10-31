@@ -244,9 +244,22 @@ void dispatchOutgoing(Battle& b, const std::vector<Value>& outgoing, bool materi
         if (message.get("type").resolved().text != "bot_manifest") throw p::Error("unexpected Bot round start message");
         if (materialize) {
             // The authority already owns the Bot poses it publishes: create them now, not on the server echo.
-            for (const auto& state : message.get("bots").resolved().array)
-                if (state.resolved().kind == Value::Kind::Object && state.get("id").resolved().kind != Value::Kind::Null)
-                    vehicles::queueBotCreate(b, state.resolved());
+            for (const auto& state : message.get("bots").resolved().array) {
+                const auto& id = state.resolved().get("id").resolved();
+                if (state.resolved().kind != Value::Kind::Object || id.kind == Value::Kind::Null) continue;
+                Value event;
+                event.kind = Value::Kind::Object;
+                for (const auto& field : {std::make_pair("type", std::string("create")), std::make_pair("entity", "bot:" + std::to_string(id.integer)),
+                                          std::make_pair("kind", std::string("bot"))}) {
+                    Value text;
+                    text.kind = Value::Kind::Text;
+                    text.text = field.second;
+                    event.object[field.first] = std::move(text);
+                }
+                event.object["id"] = id;
+                event.object["state"] = state.resolved();
+                vehicles::queueBotCreate(b, event);
+            }
         }
         enqueueManifest(b, message, b.clock());
     }

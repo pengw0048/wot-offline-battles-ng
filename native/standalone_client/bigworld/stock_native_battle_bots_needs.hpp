@@ -8,8 +8,8 @@ namespace native_battle {
 namespace world {
 }
 namespace vehicles {
-// _queue_bot_create({'type': 'create', 'entity': 'bot:<id>', 'kind': 'bot', 'id': id, 'state': state}).
-void queueBotCreate(Battle& b, const Value& state);
+// _queue_bot_create(event) with event {'type': 'create', 'entity': 'bot:<id>', 'kind': 'bot', 'id': id, 'state': state}.
+bool queueBotCreate(Battle& b, const Value& event);
 }
 namespace local {
 // vehicle_physics.track_scroll(derive_params(descriptor), speed, turn, airborne, direction): the

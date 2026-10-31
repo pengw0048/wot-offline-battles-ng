@@ -223,10 +223,9 @@ struct Owner {
         auto descriptor=native_battle::startup::playerDescriptor(battle,cs::read(input));
         if(descriptor.get()==Py_None)throw p::Error("Native human descriptor is unavailable");
         HumanDescriptor frozen;require(readHumanDescriptor(input,descriptor.get(),frozen));
-        // The spawn pose installed for this (team, slot) (the pinned BattleRuntime._spawn_cache).
-        const auto&spawns=battle.startup->spawn_cache;const auto spawn=spawns.find({p::integral(input,"team",1),p::integral(input,"slot")});
-        if(spawn==spawns.end())throw p::Error("Native actor spawn pose was not installed");
-        frozen.spawn_anchor=Point{spawn->second.first[0],spawn->second.first[1],spawn->second.first[2]};
+        // The formation spawn of this (team, slot) (the pinned BattleRuntime._formation_pose and its cache).
+        const auto spawn=native_battle::startup::formationPose(battle,p::integral(input,"team",1),p::integral(input,"slot"));
+        frozen.spawn_anchor=Point{spawn.first[0],spawn.first[1],spawn.first[2]};
         const Key key=humanKey(id);
         const auto*record=battle.vehicle(recordName(key));
         human_descriptors[id].reset(new p::Ref(p::retain(descriptor.get())));humans[id]=std::move(frozen);
