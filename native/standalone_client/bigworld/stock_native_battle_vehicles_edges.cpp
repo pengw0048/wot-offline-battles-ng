@@ -504,16 +504,11 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
         d.aim_signature = aim;
     }
     if (v.kind == "bot" || v.kind == "player") {
-        double turn = 0.;
-        if (d.track_turn_sample && now > (*d.track_turn_sample)[0]) {
-            double delta = pose[3] - (*d.track_turn_sample)[1];
-            delta = std::remainder(delta, 2. * M_PI);
-            turn = delta / (now - (*d.track_turn_sample)[0]);
-        }
-        if (!d.track_turn_sample || now - (*d.track_turn_sample)[0] >= 0.05) d.track_turn_sample = std::array<double, 2>{now, pose[3]};
+        const double turn = bots::rememberTrackTurn(v, pose[3], now);
         const std::array<double, 3> track{field(state, "speed").numeric(), is_alive ? 1. : 0., turn};
         if (pose_changed || d.track_pending || d.track_signature != track) {
-            const bool updated = b.feature("remote track animation", [&] { bots::tracks(b, v, now); });
+            bool updated = false;
+            b.feature("remote track animation", [&] { updated = bots::tracksWithTurn(b, v, turn, now); });
             d.track_pending = !updated;
             if (updated) d.track_signature = track;
         }

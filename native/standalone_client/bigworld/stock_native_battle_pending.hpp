@@ -64,6 +64,9 @@ void prewarmLayout(Battle& b);
 std::optional<bool> reconcile(Battle& b, Actor& vehicle, const Value& source, Value* canonical);
 }
 namespace bots {
+double rememberTrackTurn(Actor& vehicle, double yaw, double now);
+// The track feed with a turn rate the caller already took from rememberTrackTurn (the pinned turn_override).
+bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 void frameStarted(Battle& b, double rule_dt, double raw_dt);
 void playerEnvironment(Battle& b, double dt, double now);
 void prewarm(Battle& b, double now);
