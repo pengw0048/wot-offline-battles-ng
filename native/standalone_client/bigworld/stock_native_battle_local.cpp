@@ -67,7 +67,8 @@ p::Ref playerEntity(Battle& b) {
 void poseOverlay(Battle& b, PyObject* entity, PyObject* motion) {
     const auto& l = *b.local;
     auto position = vector(b, l.position);
-    auto matrix = bodyPose(l), steady = obj(steadyRotation(l)), stabilised = obj(stabilisedPose(l));
+    auto matrix = bodyPose(l);
+    auto steady = obj(steadyRotation(l)), stabilised = obj(stabilisedPose(l));
     remote::OverlayPose pose{position.get(), l.yaw, matrix.get(), l.speed, l.turn_speed, motion, motion,
                              steady.get() == Py_None ? nullptr : steady.get(), stabilised.get() == Py_None ? nullptr : stabilised.get()};
     remote::publishOverlay(entity, pose);

@@ -2,6 +2,7 @@
 // launch/progress/terminal queue. Battle state comes from native_battle; stock objects stay engine handles.
 #include "pch.hpp"
 #include "stock_native_battle_projectiles.hpp"
+#include "stock_native_battle_local.hpp"
 #include "stock_native_client_projectile.hpp"
 #include "stock_native_client_projectile_world.hpp"
 #include "stock_native_client_input.hpp"
