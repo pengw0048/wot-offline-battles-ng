@@ -633,7 +633,14 @@ PyObject* stopEntry(PyObject*, PyObject* args) {
     try { stop(restore != 0); Py_RETURN_NONE; }
     catch (const std::exception& e) { if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what()); return nullptr; }
 }
+PyObject* clientEntry(PyObject*, PyObject*) {
+    if (!session || !session->client) Py_RETURN_NONE;
+    return p::retain(session->client.get()).release();
+}
+PyObject* stateEntry(PyObject*, PyObject*) { return p::text(session ? session->state : std::string("stopped")).release(); }
 PyMethodDef entries[] = {
+    {"worker_session_client", clientEntry, METH_NOARGS, "The worker's current LAN client, or None."},
+    {"worker_session_state", stateEntry, METH_NOARGS, "The worker session state name."},
     {"worker_session_install", installEntry, METH_VARARGS, "Install the hidden worker's native session."},
     {"worker_session_start", startEntry, METH_NOARGS, "Connect the hidden worker to the LAN server."},
     {"worker_session_stop", stopEntry, METH_VARARGS, "Stop the hidden worker session."},

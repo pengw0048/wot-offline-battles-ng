@@ -169,6 +169,16 @@ WORKER_SESSION = '''class WorkerSession(object):
         import offline_native_battle
         return offline_native_battle.worker_session_start()
 
+    @property
+    def client(self):
+        import offline_native_battle
+        return offline_native_battle.worker_session_client()
+
+    @property
+    def state(self):
+        import offline_native_battle
+        return offline_native_battle.worker_session_state()
+
     def stop(self, show_login=False, restore_account=False, release_join=False):
         import offline_native_battle
         offline_native_battle.worker_session_stop(int(bool(restore_account)))
