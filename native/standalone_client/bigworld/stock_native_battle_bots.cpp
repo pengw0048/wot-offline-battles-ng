@@ -41,16 +41,17 @@ void diagnose(Battle& b, BotAuthority& a, stock_native_bot::Owner& o, double now
     if (generation != b.generation) { generation = b.generation; next = now + 10.; previous.clear(); owner::stageTiming(o, true); return; }
     if (now < next) return;
     next = now + 10.;
+    // Motion from the poses this worker presents, independent of the server echo.
     int bots = 0, moved = 0, alive = 0;
-    for (const auto& entry : b.vehicles->actors) {
-        const auto& v = *entry.second;
-        if (v.kind != "bot" || !v.has_current) continue;
+    for (const auto& entry : a.presented) {
+        if (!entry.second.sample) continue;
         ++bots;
-        if (!v.dead) ++alive;
-        const std::array<double, 2> at{v.current[0], v.current[2]};
-        auto found = previous.find(entry.first);
+        if (entry.second.vehicle && !entry.second.vehicle->dead) ++alive;
+        const std::array<double, 2> at{(*entry.second.sample)[0], (*entry.second.sample)[2]};
+        const std::string key = std::to_string(entry.first);
+        auto found = previous.find(key);
         if (found != previous.end() && std::hypot(at[0] - found->second[0], at[1] - found->second[1]) > 1.) ++moved;
-        previous[entry.first] = at;
+        previous[key] = at;
     }
     auto stats = owner::statistics(o);
     p::Ref text(PyObject_Repr(stats.get()));
@@ -201,7 +202,8 @@ bool resolveFire(Battle& b, PyObject* message) {
             auto row = p::item(wave.get(), i);
             auto bot = p::item(row.get(), 0), sequence = p::item(row.get(), 1), args = p::item(row.get(), 2), kwargs = p::item(row.get(), 3);
             bool accepted = false;
-            PyObject* result = PyObject_Call(sender.get(), args.get(), kwargs.get());
+            p::Ref positional(PySequence_Tuple(args.get()));
+            PyObject* result = PyObject_Call(sender.get(), positional.get(), kwargs.get());
             if (result) {
                 accepted = PyObject_RichCompareBool(result, sequence.get(), Py_EQ) == 1;
                 Py_DECREF(result);
