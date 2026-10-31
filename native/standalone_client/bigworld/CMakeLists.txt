@@ -258,6 +258,8 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_visibility.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_visibility_targeting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_world.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_world_catalog.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_world_space.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_world_foliage.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_world_turrets.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_recording.cpp"
