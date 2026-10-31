@@ -1,6 +1,7 @@
 #pragma once
 // The #1513 device and crew damage model of every vehicle, and the local player's critical lineage.
 #include "stock_native_battle.hpp"
+#include "stock_native_bot_internal_geometry.hpp"
 #include <map>
 #include <memory>
 #include <set>
@@ -58,5 +59,11 @@ bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::in
 // Repair timers, owner-CAS track repair and the stock repair HUD of the local vehicle.
 void tick(Battle& b, double dt);
 void retire(Battle& b);
+
+// The interior hit layout of one installed configuration (internal_hit_layouts.build_layout via
+// critical_damage._offh_internal_layout): the validated layout, else an empty invalid one. Cached per configuration.
+wot::offline_bot_step::InternalLayout internalLayout(PyObject* descriptor);
+// Builds the layout once every component hit-tester bound exists; false while one is still loading.
+bool prewarmLayout(PyObject* descriptor);
 }
 }
