@@ -54,14 +54,23 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_record_worker_control_diagnostics', '_worker_diagnostic_totals', '_worker_control_snapshot',
            '_drain_worker_transport', '_remember_remote_track_turn', '_update_bot_tracks', '_send_bot_message',
            '_enqueue_bot_message', '_simulated_rpm_and_gear', '_publish_rpm', '_report_track_surface', '_bot_track_params',
-           '_bot_engine_mode', '_report_bot_tracks')
+           '_bot_engine_mode', '_report_bot_tracks', 'on_battle_live', 'on_bot_observation', '_collection_counts',
+           '_present_splash_hit', '_log_bot_motion_probes', '_spotting_profile', '_vision_radius',
+           'acknowledge_local_damage_report', '_reconcile_critical_authority', '_authority_worker_probe_sample',
+           'authority_worker_ready_for_draw_off', '_enqueue_bot_manifest', '_resolve_player_descriptor',
+           '_server_entity', '_record_alive', '_server_clock', '_critical_state', '_combat_target_is_spotted',
+           '_store_remote_visual_components', '_record_position', '_bot_authority_is_local', '_shot_invisibility_factor',
+           '_base_invisibility', '_local_factors', '_local_state', '_set_gun_locked', '_echo_local_gun_angles',
+           '_enable_expert_visibility', '_advance_local_gun_edge', '_apply_authority_bot_poses', '_present_authority_bot_poses',
+           '_tick_drowning', '_tick_overturn', '_tick_expert_target', '_update_target_outline', '_refresh_fallen_tree_foliage',
+           '_advance_detached_turrets')
 CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES', '_EFFECT_REPORT_LIMIT', '_HIT_IMPULSE_REPORT_LIMIT')
 GLOBALS = ('_xyz', '_format_xyz', '_number', 'DESTRUCTIBLE_CONTACT_INFLIGHT_LIMIT', '_WORKER_DIAGNOSTIC_FIELDS',
            'REMOTE_TRACK_PRESENTATION_SECONDS', 'TRACK_SCROLL_LIMITS', 'RPM_PRESENTATION_SECONDS', 'TRACK_REPORT_SECONDS',
            'ENGINE_MODE_OFF', 'ENGINE_MODE_IDLE', 'ENGINE_MODE_RUNNING', 'BOT_MOVING_SPEED', 'BOT_TURNING_RATE', '_MOVEMENT_FORWARD',
            '_MOVEMENT_BACKWARD', '_MOVEMENT_ROTATE_LEFT', '_MOVEMENT_ROTATE_RIGHT', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
            '_MutedShootingExtra', 'PROJECTILE_MAX_TIME_MS', '_angle_delta',
-           'PROJECTILE_SUSTAIN_SECONDS', 'PROJECTILE_CHORDS_PER_FRAME', 'PROJECTILE_MAX_CHORDS_PER_FRAME', 'PROJECTILE_PROGRESS_SECONDS')
+           'PROJECTILE_SUSTAIN_SECONDS', 'BOT_MANIFEST_RETRY_SECONDS', 'PROJECTILE_CHORDS_PER_FRAME', 'PROJECTILE_MAX_CHORDS_PER_FRAME', 'PROJECTILE_PROGRESS_SECONDS')
 
 FIXTURE = r'''
 METHOD_NAMES = %r
@@ -162,7 +171,10 @@ def run(name, make, args):
             '_worker_probe_max_control_debt', '_worker_probe_control_steps', '_worker_probe_max_control_step',
             '_worker_probe_catchup_callbacks', '_worker_probe_control_debt_callbacks', '_worker_probe_astar_max_pending',
             '_worker_probe_astar_budget_exhausted', 'state', '_generation', '_next_rpm_time', '_last_presented_rpm',
-            '_engine_audio_report_at', '_track_report_time'))
+            '_engine_audio_report_at', '_track_report_time', '_prebattle_deadline', '_config', '_motion_probe_epoch',
+            '_motion_probe_next', '_motion_probe_count', '_local_spotting_cache', '_remote_spotting_cache',
+            '_local_critical_server_revision', '_local_critical_base_revision', '_local_critical_next_seq', '_local_critical_owned',
+            '_local_damage_report', '_descriptor_cache', '_local_factors_cache', '_expert_visibility_enabled'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -358,6 +370,43 @@ NATIVE = {
     '_bot_track_params': lambda b, r, e: native.bot_track_params(b, r, e, globals()),
     '_bot_engine_mode': lambda b, a, sp, t: native.bot_engine_mode(b, a, sp, t, globals()),
     '_report_bot_tracks': lambda b, ve, l, r, m, n: native.report_bot_tracks(b, ve, l, r, m, n, globals()),
+    'on_battle_live': lambda b, m: native.on_battle_live(b, m, globals()),
+    'on_bot_observation': lambda b, m: native.on_bot_observation(b, m, globals()),
+    '_collection_counts': lambda b: native.collection_counts(b, globals()),
+    '_present_splash_hit': lambda b, r, d, i, p, di, f: native.present_splash_hit(b, r, d, i, p, di, f, globals()),
+    '_log_bot_motion_probes': lambda b, n: native.log_bot_motion_probes(b, n, globals()),
+    '_spotting_profile': lambda b, d, local=False: native.spotting_profile(b, d, local, globals()),
+    '_vision_radius': lambda b, d, e=None, still=0.0, local=False: native.vision_radius(b, d, e, still, local, globals()),
+    'acknowledge_local_damage_report': lambda b, base, ack, server: native.acknowledge_local_damage_report(b, base, ack, server, globals()),
+    '_reconcile_critical_authority': lambda b, r, src, c=None: native.reconcile_critical_authority(b, r, src, c, native_client_critical, globals()),
+    '_authority_worker_probe_sample': lambda b: native.authority_worker_probe_sample(b, globals()),
+    'authority_worker_ready_for_draw_off': lambda b: native.authority_worker_ready_for_draw_off(b, globals()),
+    '_enqueue_bot_manifest': lambda b, m, now=None: native.enqueue_bot_manifest(b, m, now, native_bot_runtime, globals()),
+    '_resolve_player_descriptor': lambda b, st: native.resolve_player_descriptor(b, st, globals()),
+    '_server_entity': native.server_entity,
+    '_record_alive': lambda b, r, e: native.record_alive(r, e),
+    '_server_clock': native.server_clock,
+    '_critical_state': lambda b, p: native.critical_state_copy(p),
+    '_combat_target_is_spotted': lambda b, r: native.combat_target_is_spotted(r),
+    '_store_remote_visual_components': lambda b, r, w, m: native.store_remote_visual_components(r, w, m),
+    '_record_position': lambda b, r: native.record_position(b, r, globals()),
+    '_bot_authority_is_local': native.bot_authority_is_local,
+    '_shot_invisibility_factor': lambda b, d: native.shot_invisibility_factor(d, globals()),
+    '_base_invisibility': lambda b, d, p, c=None: native.base_invisibility(d, p, c, globals()),
+    '_local_factors': lambda b, d: native.local_factors(b, d, globals()),
+    '_local_state': native.battle_local_state,
+    '_set_gun_locked': native.set_gun_locked,
+    '_echo_local_gun_angles': lambda b, t=None, p=None: native.echo_local_gun_angles(b, t, p),
+    '_enable_expert_visibility': native.enable_expert_visibility,
+    '_advance_local_gun_edge': lambda b, st, n=None: native.advance_local_gun_edge(b, st, n),
+    '_apply_authority_bot_poses': lambda b, st: native.apply_authority_bot_poses(b, st, native_bot_runtime),
+    '_present_authority_bot_poses': native.present_authority_bot_poses,
+    '_tick_drowning': native.tick_drowning,
+    '_tick_overturn': native.tick_overturn,
+    '_tick_expert_target': native.tick_expert_target,
+    '_update_target_outline': native.update_target_outline,
+    '_refresh_fallen_tree_foliage': lambda b, n, force=False: native.refresh_fallen_tree_foliage(b, n, force, native_client_environment),
+    '_advance_detached_turrets': lambda b, n: native.advance_detached_turrets(b, n, native_client_turret_presentation, native_bot_runtime),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -2994,6 +3043,353 @@ for variant in range(60):
         if v % 9 == 4: del entity.__dict__['track_feed_state']
         return b, (entity, 1.25, -0.5, (2, 1), 20.0)
     run('_report_bot_tracks', lambda log, v=variant: tracks_case(log, v), (variant,)); cases += 1
+# Observation, battle-live, splash presentation and spotting inputs.
+_monotonic_time = lambda: 40.0
+pose_animation_writes = lambda: 12
+diagnostics_module = types.ModuleType('gui.mods.offline_lan_0922.native_input_diagnostics')
+sys.modules[diagnostics_module.__name__] = diagnostics_module
+for variant in range(72):
+    def live_battle(log, v):
+        b = battle(log, worker=v % 5 == 4)
+        b.state = ('running', 'running', 'running', 'finished')[v % 4] if v % 7 else 'running'
+        b._battle_live = v % 11 == 10
+        b._prebattle_deadline = 3.0 if v % 13 == 12 else None
+        b._config = {'other': 1}
+        stub(b, log, '_observe_destructibles_disabled')
+        stub(b, log, '_prebattle_seconds', (10, '7', 'bad', float('inf'))[v % 4])
+        stub(b, log, '_battle_seconds', (900, 'x', 0.25)[v % 3])
+        client = WObj()
+        if v % 3 == 1: client.combat_deadline = (45.0, '38')[v % 2]
+        if v % 5 == 2: client.combat_duration = (600, '0.5')[v % 2]
+        b.client = client
+        stub(b, log, '_reset_prebattle_native_visuals')
+        stub(b, log, '_show_prebattle_crosshair')
+        stub(b, log, '_clock', 50.0)
+        stub(b, log, '_prebattle_transition_ready', v % 2 == 0)
+        stub(b, log, '_begin_battle')
+        return b
+    for message in (None, {}, {'countdown_seconds': 5, 'battle_duration_seconds': 300}, {'countdown_seconds': 'x', 'battle_duration_seconds': float('nan')},
+                    {'countdown_seconds': -3, 'battle_duration_seconds': 0.5}, {'countdown_seconds': 0}):
+        run('on_battle_live', lambda log, v=variant, m=message: (live_battle(log, v), (copy.deepcopy(m),)), (variant, repr(message))); cases += 1
+    def observation_battle(log, v):
+        b = battle(log)
+        b.state = 'running' if v % 6 else 'loading'
+        b._start_message = None if v % 9 == 8 else {'round_id': 2}
+        stub(b, log, '_clock', 7.5)
+        def team(message, now):
+            if v % 7 == 3: raise ValueError('team')
+            return (0, 1, None, [])[v % 4]
+        def enemy(message, now):
+            if v % 10 == 6: raise KeyError('enemy')
+            return (True, 0, '')[v % 3]
+        stub(b, log, '_apply_team_observation', team)
+        stub(b, log, '_observe_local_vehicle', enemy)
+        stub(b, log, '_fail')
+        return b
+    for message in ({'round_id': 2, 'contacts': [1]}, {'round_id': 3}, {}, ['round_id'], None):
+        run('on_bot_observation', lambda log, v=variant, m=message: (observation_battle(log, v), (copy.deepcopy(m),)), (variant, repr(message))); cases += 1
+    def counts_battle(log, v):
+        b = battle(log, records={'bot:1': {'state': {'alive': False}}, 'bot:2': {'state': None}, 'bot:3': {'state': {'alive': 0}}, 'p:4': {}})
+        b._event_journal, b._accepted_event_ids, b._applied_event_ids = [1, 2], set([1]), {}
+        b._last_health, b._pending_bot_creates, b._grounded_bot_ids = {1: 2}, [], set()
+        b._bot_vehicle_assignments, b._bot_fire_seen = {1: 1, 2: 2}, {}
+        if v % 4 == 1: b._projectiles = [1, 2, 3]
+        elif v % 4 == 2: b._projectiles = None
+        elif v % 4 == 3: b._projectiles = WObj(__len__=None)
+        b._destructibles = (WObj(registry_counts=lambda: {'a': 1, 'bb': 2}), WObj(), WObj(registry_counts=5))[v % 3]
+        b._bots = (WObj(states={1: 1}), WObj(states=None), WObj(), WObj(states=[1, 2]))[v % 4]
+        return b
+    run('_collection_counts', lambda log, v=variant: (counts_battle(log, v), ()), (variant,)); cases += 1
+    def splash_battle(log, v):
+        b = battle(log)
+        add = Log(log, 'bound', {'addNewToNode': 'added'})
+        bound = (WObj(addNewToNode=add.addNewToNode), WObj(addNewToNode=3), WObj())[v % 3]
+        appearance = WObj(boundEffects=bound) if v % 8 != 5 else WObj()
+        target = (None, WObj(isStarted=False, appearance=appearance), WObj(isStarted=True, appearance=appearance),
+                  WObj(appearance=appearance), WObj(isStarted=1, appearance=appearance))[v % 5 if v % 3 else 2]
+        stub(b, log, '_server_entity', target)
+        stub(b, log, '_record_alive', v % 7 != 3)
+        stub(b, log, '_optional_feature_enabled', v % 11 != 9)
+        parts = WObj(HULL='hull') if v % 10 != 7 else WObj()
+        b._runtime = WObj(tank_part_names=parts, math=WObj(Matrix=lambda *a: Log(log, 'matrix')))
+        stub(b, log, '_report_effect')
+        stub(b, log, '_warn_optional_failure')
+        return b
+    for effects in ({}, None, {'armorSplashHit': None}, {'armorSplashHit': ('st', 'ef')}, {'armorSplashHit': ('st', 'ef', 'u')},
+                    {'armorSplashHit': 5}, {'armorSplashHit': ['s2', 'e2', None]}):
+        run('_present_splash_hit', lambda log, v=variant, e=effects: (splash_battle(log, v), ({'engine_id': 7}, copy.deepcopy(e), 4, (1.0, 2.0, 3.0), (0, 1, 0), 0.5)),
+            (variant, repr(effects))); cases += 1
+    def probe_battle(log, v):
+        b = battle(log)
+        diagnostics_module.write_json_record = lambda tag, payload: log.append(('json', tag, repr(payload)))
+        b._start_message = {'round_id': 5} if v % 5 else None
+        b._generation = 2
+        if v % 4: b._motion_probe_epoch = ((2, 5), (2, None), (1, 5))[v % 3]
+        b._motion_probe_next = (0.0, 20.0)[v % 6 == 1]
+        b._motion_probe_count = (0, 899, 900)[v % 9 % 3] if v % 9 < 6 else 0
+        rows = {}
+        for index, (x, z) in enumerate(((1.0, 2.0), (4.0, 4.0), (1.0, 2.0), (-3.0, 0.0), (9.0, 9.0), (0.0, 0.5))):
+            rows['bot:%d' % index] = {'presented_pose': {'x': x, 'z': z}, 'speed': index}
+        b._sync = WObj(take_motion_probes=lambda now: rows if v % 7 else {})
+        b._records = dict(('bot:%d' % index, {'engine_id': 100 + index, 'ready': index != 4 or v % 2, 'spot_visible': index != 5})
+                          for index in range(6))
+        b._avatar = WObj(position=WObj(x=1, z=2)) if v % 3 else WObj()
+        model = WObj(matrix=WObj(t=1)) if v % 2 else None
+        b._remote_factory = WObj(get=lambda engine: WObj(model=model) if engine != 101 else None)
+        b._runtime = WObj(math=WObj(Matrix=lambda m: WObj(translation=WObj(x=1, y=2.5, z='3'))))
+        return b
+    run('_log_bot_motion_probes', lambda log, v=variant: (probe_battle(log, v), ((10.0, 30.0)[v % 2],)), (variant,)); cases += 1
+    def spotting_battle(log, v):
+        b = battle(log)
+        globals()['loadout_law'] = Log(log, 'loadout_law', {'crew_skill_names': lambda crew: ('skills',) + tuple(crew),
+                                                             'crew_level_increase': lambda *a: len(a), 'spotting_profile': lambda d, crew: ('profile', crew),
+                                                             'device_names': lambda d: ('optics',) if v % 2 else (), 'attribute_factors': 'factors',
+                                                             'still_device_active': lambda still, delay: still >= delay})
+        b._replay_mode = v % 5 == 1
+        stub(b, log, '_accepted_local_effective_params', None if v % 3 else {'spotting': 'replayed'})
+        b._local_spotting_cache = None if v % 4 else 'cached'
+        stub(b, log, '_garage_loadout_snapshot', {'crew': (['commander'], [], None)[v % 3], 'equipments': ['optics']})
+        stub(b, log, '_local_factors', 'local factors')
+        b._remote_spotting_cache = {('T-34', ()): 'warm'} if v % 6 == 2 else {}
+        return b
+    for descriptor in ({'name': 'T-34'}, WObj(name='IS'), {}, WObj()):
+        for local in (False, True, 1):
+            run('_spotting_profile', lambda log, v=variant, d=descriptor, l=local: (spotting_battle(log, v), (copy.deepcopy(d), l)),
+                (variant, repr(descriptor), local)); cases += 1
+    def vision_battle(log, v):
+        b = spotting_battle(log, v)
+        globals()['critical_damage'] = Log(log, 'critical_damage', {'stat_factor': lambda e, name: 0.5},
+                                           _device_damage=Log(log, 'device_damage', {'clamp_vision_factor': lambda f: f * 2}))
+        globals()['spotting'] = Log(log, 'spotting', {'effective_view_range': lambda radius: radius}, SHOT_CAMOUFLAGE_SECONDS=0.75)
+        profile = {'vision_factor': 1.1, 'binocular_factor': 1.25, 'has_binoculars': (True, False, 0)[v % 3], 'binocular_delay': 3}
+        if v % 7 != 6: stub(b, log, '_spotting_profile', profile)
+        return b
+    for descriptor in ({'turret': {'circularVisionRadius': 380}, 'miscAttrs': {'circularVisionRadiusFactor': 1.1}, 'name': 'A'},
+                       WObj(turret=WObj(circularVisionRadius=420), miscAttrs=WObj(), name='B'), {}, WObj()):
+        run('_vision_radius', lambda log, v=variant, d=descriptor: (vision_battle(log, v), (copy.deepcopy(d),) + (
+            (None, WObj(id=3))[v % 2], (0.0, 4.0)[v % 3 == 1], v % 4 == 3)[:1 + v % 4]), (variant, repr(descriptor))); cases += 1
+# Authority steps: critical revisions, worker probe sample, draw-off, Bot manifest and player descriptor.
+import base64
+PROBE_KINDS = ('a', 'b', 'c', 'd', 'e', 'f')
+for variant in range(60):
+    def ack_battle(log, v):
+        b = battle(log)
+        b._local_critical_server_revision = (5, 0)[v % 2]
+        b._local_critical_base_revision = (2, 3)[v % 3 == 1]
+        b._local_critical_next_seq = 4
+        b._local_critical_owned = v % 4 != 3
+        b._local_damage_report = (None, {'critical_seq': 3, 'tracks': [{'state': 'critical'}, {'state': 'critical'}]},
+                                  {'critical_seq': '7', 'tracks': [{'state': 'critical'}, {'state': 'repaired'}]}, {'tracks': []},
+                                  {'critical_seq': 1}, {'critical_seq': 2, 'tracks': ({'state': 'critical'},)})[v % 6]
+        return b
+    for values in ((2, 4, 6), ('3', 2, 5), (-1, 'x', 6), (2, 3.7, 4), (2, 0, 5), (2, 9, 5), (3, 9, 5)):
+        run('acknowledge_local_damage_report', lambda log, v=variant, a=values: (ack_battle(log, v), a), (variant, values)); cases += 1
+    def critical_battle(log, v):
+        b = ack_battle(log, v)
+        b._local_damage_report = (None, {'critical_seq': 1, 'tracks': [{'name': 'leftTrackHealth', 'state': 'critical'}, 'x']},
+                                  {'critical_seq': 1, 'tracks': [{'name': 'rightTrackHealth'}]}, {'critical_seq': 1})[v % 4]
+        b._local_critical_base_revision = 2
+        b._local_critical_server_revision = 0
+        globals()['native_client_critical'] = Log(log, 'critical', {'reconcile': None if v % 7 else 'native'})
+        if v % 5 == 4: stub(b, log, 'acknowledge_local_damage_report', v % 2 == 0)
+        return b
+    local_state = {'devices': [{'name': 'leftTrackHealth', 'state': 'destroyed'}, {'name': 'gun', 'state': 'normal'}],
+                   'destroyed': ['leftTrackHealth', 'engine', 'rightTrackHealth']}
+    for record in ({'kind': 'bot'}, {'kind': 'player'}, {'kind': 'player', 'local': True, 'critical_revision': 4, 'critical_state': local_state},
+                   {'kind': 'player', 'local': 1, 'critical_revision': '9'}):
+        for source in ({}, {'critical_revision': 5, 'critical_base_revision': 2, 'critical_ack_seq': 3},
+                       {'critical_revision': '4', 'critical_base_revision': 2, 'critical_ack_seq': -1}, {'critical_revision': 5, 'critical_base_revision': 2}):
+            for canonical in (None, {'devices': [{'name': 'leftTrackHealth', 'state': 'normal'}, {'name': 'gun', 'state': 'critical'}],
+                                     'destroyed': ['engine', 'leftTrackHealth']},
+                              {'devices': [{'name': 'rightTrackHealth', 'state': 'destroyed'}], 'destroyed': ('rightTrackHealth',)},
+                              {'devices': [{'name': 'rightTrackHealth', 'state': 'normal'}], 'destroyed': ['rightTrackHealth']},
+                              {'devices': [{'name': 'rightTrackHealth', 'state': 'critical'}, 'row'], 'destroyed': []}):
+                run('_reconcile_critical_authority', lambda log, v=variant, r=record, src=source, c=canonical: (
+                    critical_battle(log, v), (copy.deepcopy(r), copy.deepcopy(src)) + ((copy.deepcopy(c),) if v % 3 else ())),
+                    (variant, repr(record)[:30], repr(source)[:30], repr(canonical)[:30])); cases += 1
+    def probe_sample_battle(log, v):
+        b = worker_battle(log, v)
+        def raising(): raise ValueError('provider')
+        if b._bots is not None:
+            b._bots.probe_totals = (lambda: [1, '2', 'x', 3.9, 10 ** 30], raising, lambda: 'list', lambda: (4,), 5)[v % 5]
+            b._bots.probe_duration_totals = (lambda: (0.5, -1, float('nan'), 'q', 2, float('inf')), raising, lambda: [10 ** 400])[v % 3]
+            b._bots.probe_timing_state = (lambda: 'on', raising, lambda: u'\xe9', 7)[v % 4]
+        b._last_snapshot = (None, {}, {'bot_state_revision': 4})[v % 3]
+        b._frame_diagnostics = (WObj(snapshot=lambda: {'fps': 1}), WObj(snapshot=raising), WObj(), None)[v % 4]
+        b._battle_result = None if v % 2 else 'win'
+        for index, name in enumerate(('_worker_frame_callbacks', '_worker_probe_authority_callbacks', '_worker_probe_bot_generated',
+                                      '_worker_probe_bot_enqueued', '_worker_probe_bot_send_failed', '_worker_probe_bot_count',
+                                      '_worker_probe_simulation_caps', '_authority_pose_writes', '_authority_pose_skips',
+                                      '_authority_aim_writes', '_authority_aim_skips')):
+            setattr(b, name, index * v)
+        if v % 6 == 5:
+            stub(b, log, '_worker_diagnostic_totals', {'alive_bot_ticks': 3})
+            stub(b, log, '_worker_control_snapshot', {'debt': 1})
+        return b
+    run('_authority_worker_probe_sample', lambda log, v=variant: (probe_sample_battle(log, v), ()), (variant,)); cases += 1
+    def draw_battle(log, v):
+        b = battle(log, worker=v % 5 != 0, records=({}, {'a': {'ready': True}, 'b': {'tombstone': True}}, {'a': {'ready': 0}})[v % 3])
+        b.state = 'running' if v % 7 else 'loading'
+        b._pending_bot_create_order = [] if v % 4 else [1]
+        b._pending_bot_creates = {} if v % 6 else {1: 1}
+        return b
+    run('authority_worker_ready_for_draw_off', lambda log, v=variant: (draw_battle(log, v), ()), (variant,)); cases += 1
+    def manifest_battle(log, v, message):
+        b = battle(log)
+        def pending():
+            if v % 11 == 10: raise ValueError('pending')
+            return (copy.deepcopy(message), None, {'type': 'bot_manifest', 'bots': [9]})[v % 3] if isinstance(message, dict) else message
+        b._bots = None if v % 13 == 12 else WObj(pending_manifest=pending if v % 9 != 8 else 3, authority_id='auth',
+                                                  mark_manifest_enqueued=(lambda m: v % 4 != 2) if v % 10 != 7 else None)
+        stub(b, log, '_send_bot_message', v % 2 == 0)
+        stub(b, log, '_clock', 50.0)
+        stub(b, log, '_discard_pending_bot_manifest')
+        b._generation = 2
+        b._start_message = {'round_id': 9} if v % 5 else None
+        b.client = WObj(authority_epoch=1) if v % 3 else WObj()
+        identity = (2, 9 if v % 5 else None, 'auth', 1 if v % 3 else None)
+        b._bot_manifest_retry_identity = (None, identity, (1, 9, 'auth', 1))[(v // 3) % 3]
+        b._bot_manifest_retry_deadline = (0.0, 5.0, 100.0)[(v // 2) % 3]
+        b._next_bot_manifest_retry = (0.0, 5.0, 100.0)[(v // 4) % 3]
+        b._config = (None, {'startupTimeoutSeconds': '12'}, {})[v % 3]
+        return b
+    for message in (['x'], {'type': 'other'}, {'type': 'bot_manifest', 'bots': [1]}):
+        for now in ((), (10.0,), ('4.5',), (None,), (5.0 - 1.0e-9,)):
+            run('_enqueue_bot_manifest', lambda log, v=variant, m=message, n=now: (manifest_battle(log, v, m), (copy.deepcopy(m),) + n),
+                (variant, repr(message), now)); cases += 1
+    def descriptor_battle(log, v):
+        b = battle(log)
+        globals()['lan_protocol'] = Log(log, 'lan_protocol', {'_canonical_vehicle_compact_descr': lambda value: None if v % 9 == 8 else value},
+                                        MAX_PROJECTILE_DAMAGE_STICKER=1000)
+        b._descriptor_cache = {('player', 'AAEC'): 'cached'} if v % 7 == 6 else {}
+        def descr(compactDescr):
+            if v % 8 == 5: raise ValueError(u'bad \xe9')
+            return WObj(type=WObj(name=('ussr:T-34', '', None)[v % 3]) if v % 10 != 4 else WObj(), raw=compactDescr)
+        b._runtime = WObj(vehicles=WObj(VehicleDescr=descr))
+        b._remote_factory = None if v % 6 == 5 else Log(log, 'factory', {'prepare_descriptor': lambda d: ('prepared', d.raw)})
+        return b
+    for state in ({'vehicle_compact_descr': 'AAEC', 'vehicle': 'ussr:T-34'}, {'vehicle_compact_descr': 'AAEC', 'vehicle': 'ussr:IS'},
+                  {'vehicle_compact_descr': '!!!', 'vehicle': 'ussr:T-34'}, {'vehicle_compact_descr': u'\xe9', 'vehicle': 'x'},
+                  {'vehicle_compact_descr': 'AAEC'}, {'vehicle': 'ussr:T-34'}):
+        run('_resolve_player_descriptor', lambda log, v=variant, st=state: (descriptor_battle(log, v), (copy.deepcopy(st),)), (variant, repr(state))); cases += 1
+# Entity, gun, Expert, invisibility and per-frame presentation helpers.
+for variant in range(48):
+    def entity_battle(log, v):
+        b = battle(log)
+        entity = WObj(position=(1, '2', 3.5) if v % 2 else WObj(x=1, y=2, z=3), typeDescriptor=None if v % 9 == 8 else 'td')
+        b._remote_factory = None if v % 5 == 4 else Log(log, 'factory', {'get': lambda engine: entity if v % 3 else None})
+        b._runtime = WObj(bigworld=Log(log, 'bigworld', {'entity': lambda engine: None if v % 7 == 6 else entity,
+                                                         'serverTime': (lambda: 12.5) if v % 4 == 0 else (lambda: 'x')}),
+                          constants=WObj(VEHICLE_MISC_STATUS=WObj(OTHER_VEHICLE_DAMAGED_DEVICES_VISIBLE='3')) if v % 6 else WObj())
+        if v % 4 == 3: b._runtime.bigworld = WObj(entity=lambda engine: entity)
+        stub(b, log, '_clock', 9.0)
+        return b
+    run('_server_entity', lambda log, v=variant: (entity_battle(log, v), (7,)), (variant,)); cases += 1
+    run('_server_clock', lambda log, v=variant: (entity_battle(log, v), ()), (variant,)); cases += 1
+    for record in ({'state': {'alive': True, 'health': 5}}, {'state': {'alive': 1, 'health': None}}, {'state': {'alive': False}},
+                   {'state': {'alive': True, 'health': '0'}}, {'state': None}, {}, {'state': {'health': 3}}):
+        for entity in (WObj(isAlive=lambda: v_alive) for v_alive in (True, 0)):
+            run('_record_alive', lambda log, r=record, e=entity: (battle(log), (copy.deepcopy(r), e)), (repr(record), variant)); cases += 1
+        run('_record_alive', lambda log, r=record: (battle(log), (copy.deepcopy(r), WObj(isAlive=variant % 2))), (repr(record), variant)); cases += 1
+        run('_record_alive', lambda log, r=record: (battle(log), (copy.deepcopy(r), WObj())), (repr(record),)); cases += 1
+    for payload in ({'a': 1, 'events': [1]}, [1], None, {}):
+        run('_critical_state', lambda log, p=payload: (battle(log), (copy.deepcopy(p),)), (repr(payload),)); cases += 1
+    for record in ({}, {'spot_visible': False}, {'spot_marker_visible': 0, 'spot_visible': True}, {'spot_marker_visible': 'y'}):
+        run('_combat_target_is_spotted', lambda log, r=record: (battle(log), (copy.deepcopy(r),)), (repr(record),)); cases += 1
+        run('_store_remote_visual_components', lambda log, r=record, v=variant: (battle(log), (copy.deepcopy(r), v % 2, (None, [1], '')[v % 3])),
+            (repr(record), variant)); cases += 1
+    for record in ({'local': True}, {'state': {'x': 1, 'y': '2', 'z': 'q'}, 'engine_id': 7}, {'state': {'x': 1, 'y': 2}, 'engine_id': 7}, {'engine_id': 7}):
+        def position_battle(log, v):
+            b = entity_battle(log, v)
+            b._local_position = [1.0, 2.0, 3.0]
+            return b
+        run('_record_position', lambda log, v=variant, r=record: (position_battle(log, v), (copy.deepcopy(r),)), (variant, repr(record))); cases += 1
+    for player_id in (None, 4, '4', 'x', 5, float('inf')):
+        def authority_battle(log, v):
+            b = battle(log)
+            b.client = WObj(player_id=(4, None, '4.0', 4.0)[v % 4]) if v % 5 else WObj()
+            return b
+        run('_bot_authority_is_local', lambda log, v=variant, p=player_id: (authority_battle(log, v), (p,)), (variant, player_id)); cases += 1
+    def invisibility_battle(log, v):
+        b = battle(log)
+        globals()['spotting'] = Log(log, 'spotting', {'clamp': lambda value, low, high: ('clamped', value), 'base_camouflage': lambda moving, still: (moving, still)},
+                                    SHOT_CAMOUFLAGE_SECONDS=0.75)
+        return b
+    def raising(*a): raise ValueError('calc')
+    for descriptor in ({'gun': {'invisibilityFactorAtShot': 0.4}}, WObj(gun=WObj()), {}, WObj(computeBaseInvisibility=lambda c, cam: [0.3, '0.2', 9]),
+                       WObj(computeBaseInvisibility=lambda c, cam: (1,)), WObj(computeBaseInvisibility=raising, type={'invisibility': [0.5, 0.25]}, miscAttrs=WObj(invisibilityFactor=0.9)),
+                       {'type': WObj(invisibility='x')}, WObj(computeBaseInvisibility=lambda c, cam: 'ab')):
+        run('_shot_invisibility_factor', lambda log, v=variant, d=descriptor: (invisibility_battle(log, v), (d,)), (variant, repr(descriptor))); cases += 1
+        run('_base_invisibility', lambda log, v=variant, d=descriptor: (invisibility_battle(log, v), (d, {'camouflage_factor': 1.1}) + ((5,) if v % 2 else ())),
+            (variant, repr(descriptor))); cases += 1
+    def factors_battle(log, v):
+        b = battle(log)
+        globals()['loadout_law'] = Log(log, 'loadout_law', {'equipment_names': lambda items: [str(items[0]).lower()], 'attribute_factors': lambda d, crew, eq: (None, {}, {'f': eq})[v % 3]})
+        b._local_factors_cache = None if v % 4 else ('cached', False)[v % 8 == 4]
+        stub(b, log, '_garage_loadout_snapshot', {'equipments': ['RemovedRpmLimiter', 'food'], 'crew': ([], ['c'])[v % 2],
+                                                  'battle_boosters': ('booster',)} if v % 5 else {'equipments': (), 'crew': None})
+        return b
+    run('_local_factors', lambda log, v=variant: (factors_battle(log, v), ('desc',)), (variant,)); cases += 1
+    def state_battle(log, v):
+        b = battle(log)
+        b._start_message = {'players': ([{'id': 4, 'name': 'me'}], [{'id': 5}], None, ())[v % 4]}
+        b.client = WObj(player_id=4, name='n', vehicle='ussr:T-34', team=1, slot=2, max_health=500)
+        if v % 2: b.client.marks_on_gun = 3
+        return b
+    run('_local_state', lambda log, v=variant: (state_battle(log, v), ()), (variant,)); cases += 1
+    def gun_battle(log, v):
+        b = entity_battle(log, v)
+        b._worker_mode = v % 11 == 10
+        rotator = Log(log, 'rotator', turretYaw=(0.5, 'x', None)[v % 3], gunPitch=-0.1)
+        if v % 7 == 5: rotator = WObj(turretYaw=0.2)
+        b._avatar = None if v % 13 == 12 else Log(log, 'avatar', {'updateVehicleMiscStatus': None}, gunRotator=None if v % 10 == 9 else rotator,
+                                                   missing=('updateVehicleMiscStatus',) if v % 8 == 7 else ())
+        b._replay_mode = v % 6 == 1
+        b._server = None if v % 9 == 4 else WObj(vehicle_id=4)
+        b._binding = Log(log, 'binding') if v % 12 != 3 else None
+        b._local_yaw = (1.0, '2')[v % 2]
+        b._has_expert = v % 5 != 2
+        b._expert_visibility_enabled = v % 14 == 13
+        b._gun_state = 'gun state'
+        b._gun_last_tick = None if v % 15 == 14 else 1.0
+        stub(b, log, '_advance_local_gun_to', lambda e, now: 'gun state' if v % 3 else 'other')
+        return b
+    for locked in (True, 0, None):
+        run('_set_gun_locked', lambda log, v=variant, l=locked: (gun_battle(log, v), (l,)), (variant, locked)); cases += 1
+    for angles in ((), (0.3,), (None, 0.2), ('1', '2'), ('x',)):
+        run('_echo_local_gun_angles', lambda log, v=variant, a=angles: (gun_battle(log, v), a), (variant, angles)); cases += 1
+    run('_enable_expert_visibility', lambda log, v=variant: (gun_battle(log, v), ()), (variant,)); cases += 1
+    for state in ('gun state', None, 'other'):
+        for now in ((), (None,), ('3.5',)):
+            run('_advance_local_gun_edge', lambda log, v=variant, st=state, n=now: (gun_battle(log, v), (st,) + n), (variant, state, now)); cases += 1
+    def poses_battle(log, v):
+        b = battle(log, worker=True)
+        b._bots = WObj(_standalone_battle=b)
+        fake_module('native_bot_runtime', Log(log, 'bot_runtime', {'enabled': True, 'apply_presentation': lambda bots, states, now: len(states),
+                                                                    'detached_advance': 'advanced'}))
+        globals()['native_client_turret_presentation'] = Log(log, 'turret_presentation', {'frame': 'framed'})
+        globals()['native_client_environment'] = Log(log, 'environment', {'foliage': (False, True)[v % 2]})
+        stub(b, log, '_clock', 4.0)
+        if v % 5 == 4: stub(b, log, '_apply_authority_bot_poses', 'stubbed')
+        return b
+    run('_apply_authority_bot_poses', lambda log, v=variant: (poses_battle(log, v), ([{'id': 1}] * (v % 3),)), (variant,)); cases += 1
+    run('_present_authority_bot_poses', lambda log, v=variant: (poses_battle(log, v), (lambda now: [now] * (v % 4), 2.0)), (variant,)); cases += 1
+    run('_refresh_fallen_tree_foliage', lambda log, v=variant: (poses_battle(log, v), (3.0,) + ((v % 2,) if v % 3 else ())), (variant,)); cases += 1
+    def turrets_battle(log, v):
+        b = poses_battle(log, v)
+        b._worker_mode = v % 2 == 0
+        return b
+    run('_advance_detached_turrets', lambda log, v=variant: (turrets_battle(log, v), (3.0,)), (variant,)); cases += 1
+    def ticks_battle(log, v):
+        b = battle(log)
+        b.state = 'running'
+        for name in ('offline_client_environment_native', 'offline_client_query_native'):
+            sys.modules[name] = Log(log, name, {'drowning': v % 2, 'overturn': (v % 3, 'x')[v % 2], 'tick_expert': v, 'target_outline': None})
+        return b
+    run('_tick_drowning', lambda log, v=variant: (ticks_battle(log, v), (0.1, 5.0)), (variant,)); cases += 1
+    run('_tick_overturn', lambda log, v=variant: (ticks_battle(log, v), (0.1, 5.0)), (variant,)); cases += 1
+    run('_tick_expert_target', lambda log, v=variant: (ticks_battle(log, v), (5.0,)), (variant,)); cases += 1
+    run('_update_target_outline', lambda log, v=variant: (ticks_battle(log, v), (5.0,)), (variant,)); cases += 1
 sys.stdout = sys.__stdout__
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):

@@ -145,7 +145,7 @@ PyObject* projectileSourceEntity(PyObject*, PyObject* args) {
     try {
         auto record = recordFor(battle, meta);
         if (record.get() == Py_None) Py_RETURN_NONE;
-        return method(battle, "_server_entity", method(record.get(), "get", p::text("engine_id").get()).get()).release();
+        return serverEntity(battle, method(record.get(), "get", p::text("engine_id").get()).get()).release();
     } catch (const std::exception& e) { return fail(e); }
 }
 
@@ -643,7 +643,7 @@ PyObject* projectileRecordPositions(PyObject*, PyObject* args) {
             const bool local = truthy(method(record, "get", p::text("local").get()));
             // player:-1 is a private native-space carrier, never a projectile target.
             if (worker && local) continue;
-            auto entity = method(battle, "_server_entity", method(record, "get", p::text("engine_id").get()).get());
+            auto entity = serverEntity(battle, method(record, "get", p::text("engine_id").get()).get());
             if (entity.get() == Py_None || !truthy(optionalAttr(entity.get(), "isStarted"))) continue;
             if (truthy(method(record, "get", p::text("local").get()))) {
                 if (PyObject_SetItem(result.get(), key, p::Ref(PySequence_Tuple(attr(battle, "_local_position").get())).get()) < 0)
@@ -902,7 +902,7 @@ PyObject* projectileRecordPose(PyObject*, PyObject* args) {
             auto source_position = all_axes(state.get()) ? triple(state.get()) : p::retain(position);
             replace(pose, boundaryPose(source_position.get(), state.get(), g));
         }
-        auto entity = method(battle, "_server_entity", method(record, "get", p::text("engine_id").get()).get());
+        auto entity = serverEntity(battle, method(record, "get", p::text("engine_id").get()).get());
         if (entity.get() == Py_None) Py_RETURN_NONE;
         if (truthy(method(record, "get", p::text("local").get()))) {
             auto local = attr(battle, "_local_position");
@@ -1318,9 +1318,9 @@ PyObject* presentProjectileWreckHit(PyObject*, PyObject* args) {
         if (!textIn(target_kind.get(), {"player", "bot"}) || compareInt(target_id.get(), 0, Py_LE)) Py_RETURN_FALSE;
         auto target_record = recordsGet(battle, formatKey(target_kind.get(), target_id.get()).get());
         if (target_record.get() == Py_None) Py_RETURN_FALSE;
-        auto target = method(battle, "_server_entity", method(target_record.get(), "get", p::text("engine_id").get()).get());
+        auto target = serverEntity(battle, method(target_record.get(), "get", p::text("engine_id").get()).get());
         if (target.get() == Py_None || !truthy(optionalAttr(target.get(), "isStarted")) ||
-            truthy(method(battle, "_record_alive", target_record.get(), target.get())) ||
+            truthy(recordAlive(battle, target_record.get(), target.get())) ||
             (!truthy(method(target_record.get(), "get", p::text("local").get())) &&
              !truthy(method(target_record.get(), "get", p::text("spot_visible").get(), Py_True))))
             Py_RETURN_FALSE;
@@ -1824,10 +1824,6 @@ PyObject* advanceProjectiles(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
-bool overridden(PyObject* battle, const char* name) {
-    PyObject** dict = _PyObject_GetDictPtr(battle);
-    return dict && *dict && PyDict_GetItemString(*dict, name);
-}
 // self._projectile_wire_meta(raw): the instance override, else the native normalization.
 p::Ref wireMeta(PyObject* battle, PyObject* raw, PyObject* g) {
     return overridden(battle, "_projectile_wire_meta") ? method(battle, "_projectile_wire_meta", raw) : projectileWireMeta(raw, g);

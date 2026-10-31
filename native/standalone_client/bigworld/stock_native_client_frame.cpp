@@ -199,8 +199,8 @@ PyObject* frame(PyObject*, PyObject* args) {
             feature(battle, "detached turret lifecycle", attr(battle, "_advance_detached_turrets").get(), {now.get()}, nullptr, Py_False);
             stage("critical");
             if (truthy(attr(battle, "_battle_live")) && !worker && !replay) {
-                method(battle, "_tick_drowning", rule_dt.get(), now.get());
-                method(battle, "_tick_overturn", rule_dt.get(), now.get());
+                dispatch(battle, "_tick_drowning", "tick_drowning", {rule_dt.get(), now.get()});
+                dispatch(battle, "_tick_overturn", "tick_overturn", {rule_dt.get(), now.get()});
             }
             stage("drown");
             auto bots = attr(battle, "_bots");
@@ -259,8 +259,8 @@ PyObject* frame(PyObject*, PyObject* args) {
                 if (worker) method(battle, "_publish_player_environment", rule_dt.get(), now.get());
                 else if (!replay) {
                     method(battle, "_tick_critical_states", rule_dt.get());
-                    method(battle, "_tick_drowning", rule_dt.get(), now.get());
-                    method(battle, "_tick_overturn", rule_dt.get(), now.get());
+                    dispatch(battle, "_tick_drowning", "tick_drowning", {rule_dt.get(), now.get()});
+                    dispatch(battle, "_tick_overturn", "tick_overturn", {rule_dt.get(), now.get()});
                 }
             }
             stage("transition");
@@ -340,7 +340,7 @@ PyObject* frame(PyObject*, PyObject* args) {
             if (truthy(attr(battle, "_battle_live")) && bots.get() != Py_None && !replay) {
                 auto states = optionalAttr(bots.get(), "presentation_states");
                 if (!isCallable(states)) throw p::Error("authority bot presentation boundary is unavailable");
-                auto presented = worker ? method(battle, "_present_authority_bot_poses", states.get(), now.get())
+                auto presented = worker ? dispatch(battle, "_present_authority_bot_poses", "present_authority_bot_poses", {states.get(), now.get()})
                                         : feature(battle, "bot pose presentation", attr(battle, "_present_authority_bot_poses").get(),
                                                   {states.get(), now.get()}, nullptr, Py_False);
                 if (truthy(presented)) replace(bot_count, p::item(presented.get(), 0));
@@ -703,7 +703,7 @@ PyObject* prewarmCriticalLayout(PyObject*, PyObject* args) {
             PyObject* k = PyList_GET_ITEM(keys.get(), i);
             p::Ref record(PyObject_GetItem(records.get(), k));
             if (!truthy(get(record.get(), "ready")) || truthy(get(record.get(), "tombstone")) || truthy(get(record.get(), "local"))) continue;
-            auto entity = method(battle, "_server_entity", get(record.get(), "engine_id").get());
+            auto entity = serverEntity(battle, get(record.get(), "engine_id").get());
             if (entity.get() == Py_None || !truthy(optionalAttr(entity.get(), "isStarted"))) continue;
             auto descriptor = optionalAttr(entity.get(), "typeDescriptor");
             if (descriptor.get() == Py_None || get(record.get(), "critical_layout_prewarmed").get() == descriptor.get()) continue;
@@ -854,9 +854,9 @@ PyObject* tickCriticalStates(PyObject*, PyObject* args) {
         auto record = method(attr(battle, "_records").get(), "get", key.get());
         if (record.get() == Py_None) Py_RETURN_NONE;
         auto engine = p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get()));
-        auto entity = method(battle, "_server_entity", engine.get());
+        auto entity = serverEntity(battle, engine.get());
         if (entity.get() == Py_None || attr(entity.get(), "typeDescriptor").get() == Py_None) Py_RETURN_NONE;
-        if (!truthy(method(battle, "_record_alive", record.get(), entity.get()))) Py_RETURN_NONE;
+        if (!truthy(recordAlive(battle, record.get(), entity.get()))) Py_RETURN_NONE;
         if (!PyObject_HasAttrString(entity.get(), "maxHealth"))
             setAttr(entity.get(), "maxHealth", p::Ref(PyNumber_Int(attr(attr(entity.get(), "typeDescriptor").get(), "maxHealth").get())).get());
         auto now = method(battle, "_clock");
@@ -1012,7 +1012,7 @@ PyObject* ammoTick(PyObject*, PyObject* args) {
         if (truthy(replay_mode)) Py_RETURN_NONE;
         if (test(attr(battle, "state").get(), p::text("running").get(), Py_NE) || attr(battle, "_server").get() == Py_None) Py_RETURN_NONE;
         if (!contained([&] {
-                auto entity = method(battle, "_server_entity", attr(attr(battle, "_server").get(), "vehicle_id").get());
+                auto entity = serverEntity(battle, attr(attr(battle, "_server").get(), "vehicle_id").get());
                 method(battle, "_advance_local_gun_to", entity.get());
                 feature(battle, "local gun-marker selection", attr(battle, "_sync_local_server_marker").get());
             })) {

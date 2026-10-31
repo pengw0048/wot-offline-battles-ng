@@ -1,4 +1,5 @@
 """Route the pinned remote vehicle lifecycle methods to their native ports."""
+import ast
 import re
 
 PORTS = (
@@ -174,6 +175,41 @@ PORTS = (
     ('_bot_track_params', 'bot_track_params(self, record, entity, globals())'),
     ('_bot_engine_mode', 'bot_engine_mode(self, alive, speed, turn, globals())'),
     ('_report_bot_tracks', 'report_bot_tracks(self, vehicle, left, right, mode, now, globals())'),
+    ('on_battle_live', 'on_battle_live(self, message, globals())'),
+    ('on_bot_observation', 'on_bot_observation(self, message, globals())'),
+    ('_collection_counts', 'collection_counts(self, globals())'),
+    ('_present_splash_hit', 'present_splash_hit(self, target_record, effects_descr, effects_index, impact_position, '
+                            'direction, damage_factor, globals())'),
+    ('_log_bot_motion_probes', 'log_bot_motion_probes(self, now, globals())'),
+    ('_spotting_profile', 'spotting_profile(self, descriptor, local, globals())'),
+    ('_vision_radius', 'vision_radius(self, descriptor, entity, still_seconds, local, globals())'),
+    ('acknowledge_local_damage_report',
+     'acknowledge_local_damage_report(self, base_revision, ack_seq, server_revision, globals())'),
+    ('_reconcile_critical_authority',
+     'reconcile_critical_authority(self, record, source, canonical, native_client_critical, globals())'),
+    ('_authority_worker_probe_sample', 'authority_worker_probe_sample(self, globals())'),
+    ('authority_worker_ready_for_draw_off', 'authority_worker_ready_for_draw_off(self, globals())'),
+    ('_enqueue_bot_manifest', 'enqueue_bot_manifest(self, message, now, native_bot_runtime, globals())'),
+    ('_resolve_player_descriptor', 'resolve_player_descriptor(self, state, globals())'),
+    ('_server_entity', 'server_entity(self, entity_id)'),
+    ('_server_clock', 'server_clock(self)'),
+    ('_record_position', 'record_position(self, record, globals())'),
+    ('_bot_authority_is_local', 'bot_authority_is_local(self, player_id)'),
+    ('_local_factors', 'local_factors(self, descriptor, globals())'),
+    ('_local_state', 'battle_local_state(self)'),
+    ('_set_gun_locked', 'set_gun_locked(self, locked)'),
+    ('_echo_local_gun_angles', 'echo_local_gun_angles(self, turret_yaw, gun_pitch)'),
+    ('_enable_expert_visibility', 'enable_expert_visibility(self)'),
+    ('_advance_local_gun_edge', 'advance_local_gun_edge(self, state, now)'),
+    ('_apply_authority_bot_poses', 'apply_authority_bot_poses(self, states, native_bot_runtime)'),
+    ('_present_authority_bot_poses', 'present_authority_bot_poses(self, presentation_states, now)'),
+    ('_tick_drowning', 'tick_drowning(self, dt, now)'),
+    ('_tick_overturn', 'tick_overturn(self, dt, now)'),
+    ('_tick_expert_target', 'tick_expert_target(self, now)'),
+    ('_update_target_outline', 'update_target_outline(self, now)'),
+    ('_refresh_fallen_tree_foliage', 'refresh_fallen_tree_foliage(self, now, force, native_client_environment)'),
+    ('_advance_detached_turrets',
+     'advance_detached_turrets(self, now, native_client_turret_presentation, native_bot_runtime)'),
 )
 
 
@@ -186,27 +222,48 @@ STATIC_PORTS = (
     ('_projectile_cosmetic_allowed', 'projectile_cosmetic_allowed(event, visual_meta, globals())'),
     ('_event_entity_key', 'event_entity_key(event, role, globals())'),
     ('_combat_event_source', 'combat_event_source(event, globals())'),
+    ('_record_alive', 'record_alive(record, entity)'),
+    ('_critical_state', 'critical_state_copy(payload)'),
+    ('_combat_target_is_spotted', 'combat_target_is_spotted(record)'),
+    ('_store_remote_visual_components', 'store_remote_visual_components(record, world_marker, minimap)'),
+    ('_shot_invisibility_factor', 'shot_invisibility_factor(descriptor, globals())'),
+    ('_base_invisibility', 'base_invisibility(descriptor, profile, camouflage_id, globals())'),
 )
 
 
+_PACKAGE_MODULES = ('native_client_query', 'native_client_environment', 'native_client_drive', 'native_client_replica',
+                    'native_client_projectile', 'native_bot_runtime', 'native_client_critical',
+                    'native_client_turret_presentation')
+
+
 def battle(source):
-    for name, call in STATIC_PORTS:
-        pattern = r'(^    @staticmethod\n    def ' + re.escape(name) + r'\([^)]*\):\n)'
-        matches = list(re.finditer(pattern, source, re.M))
-        if len(matches) != 1:
-            raise ValueError('The pinned lifecycle static seam changed: ' + name)
-        index = matches[0].end()
-        source = source[:index] + '        return _offline_lifecycle_native.' + call + '\n' + source[index:]
-    for name, call in PORTS:
-        pattern = r'(^    def ' + re.escape(name) + r'\(\s*self[^:]*\):\n)'
-        matches = list(re.finditer(pattern, source, re.M))
-        if len(matches) != 1:
-            raise ValueError('The pinned lifecycle seam changed: ' + name)
-        index = matches[0].end()
-        imports = ''.join('        from . import %s\n' % module for module in (
-            'native_client_query', 'native_client_environment', 'native_client_drive',
-            'native_client_replica', 'native_client_projectile', 'native_bot_runtime', 'native_client_critical') if module in call)
-        source = (source[:index] + imports + '        return _offline_lifecycle_native.' + call + '\n' + source[index:])
+    # Each ported method keeps its signature and decorators; its pinned body is replaced by the native route.
+    routes = dict((name, (call, False)) for name, call in PORTS)
+    routes.update((name, (call, True)) for name, call in STATIC_PORTS)
+    tree = ast.parse(source)
+    runtime = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'BattleRuntime']
+    if len(runtime) != 1:
+        raise ValueError('The pinned lifecycle class seam changed')
+    names = [node.name for node in runtime[0].body if isinstance(node, ast.FunctionDef)]
+    if any(names.count(name) != 1 for name in routes):
+        raise ValueError('The pinned lifecycle seam changed: ' + ', '.join(sorted(name for name in routes if names.count(name) != 1)))
+    lines = source.splitlines(True)
+    edits = []
+    for node in runtime[0].body:
+        if not isinstance(node, ast.FunctionDef) or node.name not in routes:
+            continue
+        call, static = routes.pop(node.name)
+        decorators = [getattr(item, 'id', None) for item in node.decorator_list]
+        if static != ('staticmethod' in decorators) or (not static and node.args.args[0].arg != 'self'):
+            raise ValueError('The pinned lifecycle seam changed: ' + node.name)
+        imports = ''.join('        from . import %s\n' % module for module in _PACKAGE_MODULES
+                          if re.search(r'\b%s\b' % module, call))
+        edits.append((node.body[0].lineno - 1, node.end_lineno, imports + '        return _offline_lifecycle_native.' + call + '\n'))
+    if routes:
+        raise ValueError('The pinned lifecycle seam changed: ' + ', '.join(sorted(routes)))
+    for start, end, body in sorted(edits, reverse=True):
+        lines[start:end] = [body]
+    source = ''.join(lines)
     seam = '            _FrameDiagnostics(\n                initial_window_seconds='
     if source.count(seam) != 1:
         raise ValueError('The pinned frame diagnostics seam changed')

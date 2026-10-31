@@ -1193,7 +1193,7 @@ PyObject* reportLocalDecals(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
     try {
         auto server = attr(battle, "_server");
-        auto entity = server.get() != Py_None ? method(battle, "_server_entity", attr(server.get(), "vehicle_id").get()) : none();
+        auto entity = server.get() != Py_None ? serverEntity(battle, attr(server.get(), "vehicle_id").get()) : none();
         auto descriptor = optionalAttr(entity.get(), "typeDescriptor");
         if (descriptor.get() == Py_None) Py_RETURN_FALSE;
         for (const char* part_name : {"chassis", "hull", "turret"}) {

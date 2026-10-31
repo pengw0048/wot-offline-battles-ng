@@ -125,7 +125,7 @@ class Battle(object):
 for name in names+('_cleanup',):setattr(Battle,name,env[name])
 def battle(latest=False):
  b=Battle();b.state='loading_entities';b.failure=None;b.model_ready=False
- b._worker_mode=b._replay_mode=False;b._config={};b._disabled_optional_features=set();b._local_descriptor=object();b._records={'player:4':dict(ready=False,engine_id=4)}
+ b._worker_mode=b._replay_mode=False;b._config={};b._disabled_optional_features=set();b._remote_factory=Box(get=lambda id:Box(id=id));b._local_descriptor=object();b._records={'player:4':dict(ready=False,engine_id=4)}
  b._runtime=Box(compatibility=Box(set_control_mode_listener=lambda f:None),vehicle_view_state=None)
  b._avatar=Box(guiSessionProvider=None);b._detached_turret_obstacles=None
  b._start_message=dict(type='battle_start',round_id=9,players=[],bots=[]);b._last_snapshot=None;b._projectile_epoch=1

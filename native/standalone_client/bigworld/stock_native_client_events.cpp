@@ -587,10 +587,10 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
             !truthy(method(battle, "_missing_projectile_attacker_allowed", event)))
             raise("ordered combat event attacker is unavailable: " + attacker_text());
         auto attacker_id = attacker_record.get() != Py_None ? get(attacker_record.get(), "engine_id") : integer(0);
-        auto entity = method(battle, "_server_entity", p::Ref(PyObject_GetItem(r, p::text("engine_id").get())).get());
+        auto entity = serverEntity(battle, p::Ref(PyObject_GetItem(r, p::text("engine_id").get())).get());
         if (entity.get() == Py_None) raise("ordered combat event target has no native entity: " + keyText(target_key.get()));
         if (attacker_record.get() != Py_None &&
-            method(battle, "_server_entity", p::Ref(PyObject_GetItem(attacker_record.get(), p::text("engine_id").get())).get()).get() == Py_None)
+            serverEntity(battle, p::Ref(PyObject_GetItem(attacker_record.get(), p::text("engine_id").get())).get()).get() == Py_None)
             raise("ordered combat event attacker has no native entity: " + attacker_text());
         dispatch(battle, "_present_damage_sticker", "present_damage_sticker", {event, r});
         const bool blind = attacker_record.get() != Py_None && truthy(dispatch(battle, "_is_blind_local_attack", "blind_local_attack", {r, attacker_record.get()}));
@@ -1363,7 +1363,7 @@ PyObject* showShot(PyObject*, PyObject* args) {
             }
         }
         if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_TRUE;
-        auto entity = method(battle, "_server_entity", p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get())).get());
+        auto entity = serverEntity(battle, p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get())).get());
         if (entity.get() == Py_None) raise("ordered shot event attacker has no native entity: " + keyText(key.get()));
         if (equal(method(record.get(), "get", p::text("kind").get()).get(), p::text("bot").get())) {
             auto sync = attr(battle, "_sync");
@@ -1539,7 +1539,7 @@ PyObject* presentDamageSticker(PyObject*, PyObject* args) {
             truthy(method(event, "get", p::text("splash").get(), Py_False)) ||
             !truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text(feature_name).get()})))
             Py_RETURN_FALSE;
-        auto target = method(battle, "_server_entity", method(target_record, "get", p::text("engine_id").get()).get());
+        auto target = serverEntity(battle, method(target_record, "get", p::text("engine_id").get()).get());
         if (target.get() == Py_None) Py_RETURN_FALSE;
         if (!truthy(optionalAttr(target.get(), "isStarted")) || optionalAttr(target.get(), "typeDescriptor").get() == Py_None)
             Py_RETURN_FALSE;

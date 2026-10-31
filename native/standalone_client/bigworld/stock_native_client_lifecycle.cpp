@@ -200,7 +200,7 @@ PyObject* criticalState(PyObject*, PyObject* args) {
         if (equal(canonical.get(), get(record, "critical_state").get())) Py_RETURN_FALSE;
         auto engine = PyDict_GetItemString(record, "engine_id");
         if (!engine) throw p::Error("record has no engine_id");
-        auto entity = method(battle, "_server_entity", engine);
+        auto entity = serverEntity(battle, engine);
         if (entity.get() == Py_None) Py_RETURN_FALSE;
         auto gun_edge = p::retain(Py_None);
         auto gun = attr(battle, "_gun_state");
@@ -252,7 +252,7 @@ PyObject* stunState(PyObject*, PyObject* args) {
         const double remaining = stunned ? std::max(0., (number(end.get()) - p::scalar(estimated.get())) / 1000.) : 0.;
         auto engine = PyDict_GetItemString(record, "engine_id");
         if (!engine) throw p::Error("record has no engine_id");
-        auto entity = method(battle, "_server_entity", engine);
+        auto entity = serverEntity(battle, engine);
         if (entity.get() == Py_None) throw p::Error("stunned LAN vehicle is unavailable");
         const bool worker = truthy(attr(battle, "_worker_mode"));
         auto local_gun = p::retain(Py_None);
@@ -342,7 +342,7 @@ PyObject* siegeState(PyObject*, PyObject* args) {
         }
         auto engine = PyDict_GetItemString(record, "engine_id");
         if (!engine) throw p::Error("record has no engine_id");
-        auto entity = method(battle, "_server_entity", engine);
+        auto entity = serverEntity(battle, engine);
         auto descriptor = optionalAttr(entity.get(), "typeDescriptor");
         if (descriptor.get() == Py_None) throw p::Error("Siege vehicle descriptor is unavailable");
         const bool has_siege = truthy(optionalAttr(descriptor.get(), "hasSiegeMode"));
@@ -404,7 +404,7 @@ PyObject* presentCritical(PyObject*, PyObject* args) {
         if (truthy(attr(battle, "_worker_mode")) || (!local && !truthy(get(record, "spot_visible", Py_True)))) Py_RETURN_FALSE;
         auto engine = PyDict_GetItemString(record, "engine_id");
         if (!engine) throw p::Error("record has no engine_id");
-        auto entity = method(battle, "_server_entity", engine);
+        auto entity = serverEntity(battle, engine);
         if (entity.get() == Py_None || attr(entity.get(), "typeDescriptor").get() == Py_None) Py_RETURN_FALSE;
         method(battle, "_sync_fire_effect", entity.get());
         if (PyObject_IsTrue(events) <= 0) Py_RETURN_FALSE;
@@ -506,7 +506,7 @@ bool syncRemoteVisualComponents(PyObject* battle, PyObject* record, PyObject* ve
     try {
         auto binding = attr(battle, "_binding");
         auto dead = [&]() {
-            if (!truthy(method(battle, "_record_alive", record, vehicle))) method(battle, "_present_vehicle_dead", record, Py_True);
+            if (!truthy(recordAlive(battle, record, vehicle))) method(battle, "_present_vehicle_dead", record, Py_True);
         };
         if (team_visible) {
             if (world_visible && !world && !minimap) {
@@ -568,7 +568,7 @@ PyObject* spotVisibility(PyObject*, PyObject* args) {
         auto vehicle = method(attr(battle, "_remote_factory").get(), "get", engine);
         if (vehicle.get() == Py_None || attr(vehicle.get(), "model").get() == Py_None) throw p::Error("spotted remote vehicle has no model");
         setAttr(vehicle.get(), "_spot_visible", visible ? Py_True : Py_False);
-        const bool alive = truthy(method(battle, "_record_alive", record, vehicle.get()));
+        const bool alive = truthy(recordAlive(battle, record, vehicle.get()));
         const bool draw = visible || !alive;
         p::Ref signature(PyTuple_Pack(4, p::boolean(visible).get(), p::boolean(marker).get(), p::boolean(draw).get(), p::boolean(alive).get()));
         if (!equal(signature.get(), get(record, "_spot_presentation_signature").get())) {
@@ -621,7 +621,7 @@ PyObject* spotPresentation(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OOOO", &battle, &record, &entity, &remembered_raw)) return nullptr;
     try {
         auto remembered = p::retain(remembered_raw);
-        if (!truthy(method(battle, "_record_alive", record, entity)) && truthy(get(record, "dead_marker_known", Py_False)))
+        if (!truthy(recordAlive(battle, record, entity)) && truthy(get(record, "dead_marker_known", Py_False)))
             replace(remembered, p::boolean(true));
         auto fn = attr(battle, "_spot_presentation_visibility");
         p::Ref positional(PyTuple_Pack(2, entity, remembered.get()));
@@ -751,7 +751,7 @@ PyObject* applyHealth(PyObject*, PyObject* args) {
         auto attack = integer(attack_reason), reason_value = integer(reason);
         if (previous_dead && dead) {
             if (ammo_rack_death) {
-                auto entity = method(battle, "_server_entity", engine);
+                auto entity = serverEntity(battle, engine);
                 if (entity.get() == Py_None) Py_RETURN_NONE;
                 auto previous_native = attr(entity.get(), "health");
                 method(battle, "_detach_late_ammo_turret", record, entity.get(), state);
@@ -765,7 +765,7 @@ PyObject* applyHealth(PyObject*, PyObject* args) {
             Py_RETURN_NONE;
         }
         if (!durable_changed && !p::flag(force_raw)) Py_RETURN_NONE;
-        auto entity = method(battle, "_server_entity", engine);
+        auto entity = serverEntity(battle, engine);
         if (entity.get() == Py_None) Py_RETURN_NONE;
         if (dead && !previous_dead && !local) {
             put(record, "dead_marker_known", method(battle, "_combat_target_is_spotted", record));
@@ -977,14 +977,13 @@ void incrementRevision(PyObject* battle) {
 }
 // _server_entity(engine) is not None, with ReferenceError meaning "not visible".
 bool serverEntityVisible(PyObject* battle, PyObject* engine) {
-    auto fn = attr(battle, "_server_entity");
-    PyObject* entity = PyObject_CallFunctionObjArgs(fn.get(), engine, nullptr);
-    if (!entity) {
-        if (PyErr_ExceptionMatches(PyExc_ReferenceError)) { PyErr_Clear(); return false; }
-        throw p::Error("Native server entity lookup failed");
+    try {
+        return serverEntity(battle, engine).get() != Py_None;
+    } catch (const p::Error&) {
+        if (!PyErr_ExceptionMatches(PyExc_ReferenceError)) throw;
+        PyErr_Clear();
+        return false;
     }
-    p::Ref held(entity);
-    return entity != Py_None;
 }
 p::Ref engineOf(PyObject* record) {
     PyObject* engine = PyDict_GetItemString(record, "engine_id");
@@ -1478,7 +1477,7 @@ PyObject* materializeRecord(PyObject*, PyObject* args) {
             put(record, "visual_started", p::boolean(true));
             put(record, "world_marker_started", p::boolean(true));
             put(record, "minimap_started", p::boolean(true));
-            if (!truthy(method(battle, "_record_alive", record, vehicle.get()))) method(battle, "_present_vehicle_dead", record, Py_True);
+            if (!truthy(recordAlive(battle, record, vehicle.get()))) method(battle, "_present_vehicle_dead", record, Py_True);
         }
         if (presentation && !worker) {
             auto spot = get(record, "spot_visible", Py_True);
@@ -1550,11 +1549,14 @@ PyMethodDef* feedback_methods();
 PyMethodDef* snapshot_ingest_methods();
 PyMethodDef* worker_steps_methods();
 PyMethodDef* presentation_steps_methods();
+PyMethodDef* observation_steps_methods();
+PyMethodDef* authority_steps_methods();
+PyMethodDef* helper_steps_methods();
 // Lifecycle and event-journal ports share one Python module.
 PyMethodDef* lifecycle_methods() {
     static std::vector<PyMethodDef> all;
     if (all.empty()) {
-        for (PyMethodDef* table : {methods, events_methods(), frame_methods_table(), shots_methods(), diagnostics_methods(), recording_methods(), lan_poll_methods(), feedback_methods(), snapshot_ingest_methods(), worker_steps_methods(), presentation_steps_methods()})
+        for (PyMethodDef* table : {methods, events_methods(), frame_methods_table(), shots_methods(), diagnostics_methods(), recording_methods(), lan_poll_methods(), feedback_methods(), snapshot_ingest_methods(), worker_steps_methods(), presentation_steps_methods(), observation_steps_methods(), authority_steps_methods(), helper_steps_methods()})
             for (PyMethodDef* m = table; m->ml_name; ++m) all.push_back(*m);
         all.push_back({nullptr, nullptr, 0, nullptr});
     }

@@ -81,7 +81,7 @@ PyObject* hitDamageFactor(PyObject*, PyObject* args) {
         auto state = orDict(valueGet(target_record, "state"));
         double maximum = number(valueGet(state.get(), "max_health").get(), 0.0);
         if (maximum <= 0.0) {
-            auto target = method(battle, "_server_entity", valueGet(target_record, "engine_id").get());
+            auto target = serverEntity(battle, valueGet(target_record, "engine_id").get());
             auto zero = flt(0.0);
             maximum = number(field(attrOr(target.get(), "typeDescriptor", Py_None).get(), "maxHealth", zero.get()).get(), 0.0);
         }
@@ -227,7 +227,7 @@ PyObject* decodedHitImpulseDirection(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OOOO", &battle, &event, &target_record, &g)) return nullptr;
     try {
         if (!member(event, p::text("damage_sticker").get())) Py_RETURN_NONE;
-        auto target = method(battle, "_server_entity", valueGet(target_record, "engine_id").get());
+        auto target = serverEntity(battle, valueGet(target_record, "engine_id").get());
         auto appearance = attrOr(target.get(), "appearance", Py_None);
         auto descriptor = attrOr(target.get(), "typeDescriptor", Py_None);
         auto compound = attrOr(appearance.get(), "compoundModel", Py_None);
@@ -318,7 +318,7 @@ PyObject* eventShell(PyObject*, PyObject* args) {
     PyObject *battle, *attacker_record, *event, *g;
     if (!PyArg_ParseTuple(args, "OOOO", &battle, &attacker_record, &event, &g)) return nullptr;
     try {
-        auto entity = method(battle, "_server_entity", p::Ref(PyObject_GetItem(attacker_record, p::text("engine_id").get())).get());
+        auto entity = serverEntity(battle, p::Ref(PyObject_GetItem(attacker_record, p::text("engine_id").get())).get());
         if (entity.get() == Py_None || attr(entity.get(), "typeDescriptor").get() == Py_None)
             raise("combat attacker descriptor is unavailable");
         auto empty = p::dict();

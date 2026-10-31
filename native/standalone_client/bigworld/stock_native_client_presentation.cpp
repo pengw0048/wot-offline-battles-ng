@@ -107,7 +107,7 @@ PyObject* publishRpm(PyObject*, PyObject* args) {
         if (test(now, getattrOr(battle, "_engine_audio_report_at", zero.get()).get(), Py_GE)) {
             setAttr(battle, "_engine_audio_report_at", p::Ref(PyNumber_Add(now, flt(5.0).get())).get());
             auto server = attr(battle, "_server");
-            auto entity = server.get() != Py_None ? method(battle, "_server_entity", attr(server.get(), "vehicle_id").get()) : none();
+            auto entity = server.get() != Py_None ? serverEntity(battle, attr(server.get(), "vehicle_id").get()) : none();
             auto appearance = getattrOr(entity.get(), "appearance", Py_None);
             auto detailed = getattrOr(appearance.get(), "detailedEngineState", Py_None);
             p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.engine_audio"));

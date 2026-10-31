@@ -11,6 +11,9 @@
 #include "../bigworld/stock_native_client_snapshot.cpp"
 #include "../bigworld/stock_native_client_worker.cpp"
 #include "../bigworld/stock_native_client_presentation.cpp"
+#include "../bigworld/stock_native_client_observation.cpp"
+#include "../bigworld/stock_native_client_authority.cpp"
+#include "../bigworld/stock_native_client_helpers.cpp"
 PyMODINIT_FUNC initoffline_client_lifecycle_native(void) {
     Py_InitModule("offline_client_lifecycle_native", stock_native_client_lifecycle::lifecycle_methods());
 }

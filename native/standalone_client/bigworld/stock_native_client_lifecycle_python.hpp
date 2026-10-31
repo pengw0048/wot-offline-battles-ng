@@ -284,5 +284,36 @@ inline void optionalFeatureArgs(PyObject* battle, const char* name, PyObject* fn
     }
     optionalFeature(battle, name, fn, call_args);
 }
+// Whether this battle instance overrides a ported method (test fakes do).
+inline bool overridden(PyObject* battle, const char* name) {
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    return dict && *dict && PyDict_GetItemString(*dict, name);
+}
+// BattleRuntime._server_entity(entity_id): the remote factory's entity, else the BigWorld entity.
+inline p::Ref serverEntity(PyObject* battle, PyObject* entity_id) {
+    if (overridden(battle, "_server_entity")) return method(battle, "_server_entity", entity_id);
+    auto factory = attr(battle, "_remote_factory");
+    if (factory.get() != Py_None) {
+        auto entity = method(factory.get(), "get", entity_id);
+        if (entity.get() != Py_None) return entity;
+    }
+    return method(attr(attr(battle, "_runtime").get(), "bigworld").get(), "entity", entity_id);
+}
+// BattleRuntime._record_alive(record, entity) (staticmethod)
+inline p::Ref recordAlive(PyObject* battle, PyObject* record, PyObject* entity) {
+    if (overridden(battle, "_record_alive")) return method(battle, "_record_alive", record, entity);
+    auto raw = method(record, "get", p::text("state").get());
+    auto state = truthy(raw) ? std::move(raw) : p::dict();
+    const int has = PySequence_Contains(state.get(), p::text("alive").get());
+    if (has < 0) throw p::Error("record alive membership failed");
+    if (has) {
+        if (!truthy(method(state.get(), "get", p::text("alive").get()))) return p::boolean(false);
+        auto health = method(state.get(), "get", p::text("health").get(), integer(1).get());
+        return p::boolean(greaterThanZero(toInt(truthy(health) ? health.get() : integer(0).get()).get()));
+    }
+    auto alive = optionalAttr(entity, "isAlive");
+    if (PyCallable_Check(alive.get())) replace(alive, p::Ref(PyObject_CallFunctionObjArgs(alive.get(), nullptr)));
+    return p::boolean(truthy(alive));
+}
 }
 }
