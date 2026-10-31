@@ -247,6 +247,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_projectiles.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_remote.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_visibility.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_link_send.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_local.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_local_physics.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_local_replay.cpp"

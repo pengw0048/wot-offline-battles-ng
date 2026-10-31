@@ -11,7 +11,7 @@ struct SenderState {
     std::string phase;    // waiting | loading | battle
     std::optional<std::int64_t> round_id, authority_epoch, bot_authority_id;
     std::set<std::string> capabilities, server_capabilities;
-    // Sender-owned bookkeeping (per-round sequences and the like) follows; reset when round_id changes.
+    // Sender-owned bookkeeping: none. The pinned worker senders (battle_ready included) read only the fields above.
 };
 // The exact wire message to encode. A coalesced message replaces the newest queued unsent message with an equal key
 // unless another keyed message or a bot_ram_report sits between them.
