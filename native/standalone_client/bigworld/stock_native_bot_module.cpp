@@ -161,7 +161,7 @@ struct Owner {
     }
     void installBot(PyObject*raw,Battle&battle,Key key,const VehicleRecord&record,PyObject*descriptor){
         const auto a=runtime->actors().find(key.id);if(a==runtime->actors().end())return;
-        auto e=battle.entity(record.engine_id);if(e.get()==Py_None||!p::truth(e.get(),"isStarted"))return;
+        auto e=p::Ref(readNativeEntity(nullptr,record.engine_id));if(e.get()==Py_None||!p::truth(e.get(),"isStarted"))return;
         auto id=p::integer(key.id);
         auto*pair=PyDict_GetItem(pairs.get(),id.get());
         auto d0=pair&&pair!=Py_None?p::item(pair,0):p::retain(descriptor);
@@ -201,7 +201,7 @@ struct Owner {
                 std::vector<PyObject*> modes{descriptor};
                 auto*pair=key.kind==offline_simulation::ActorKind::Bot?PyDict_GetItem(pairs.get(),index.get()):nullptr;
                 if(pair&&pair!=Py_None&&(PyTuple_Check(pair)||PyList_Check(pair))){modes.clear();for(Py_ssize_t i=0;i<PySequence_Fast_GET_SIZE(pair);++i)modes.push_back(PySequence_Fast_GET_ITEM(pair,i));}
-                auto e=version.ready&&!version.tombstone?battle.entity(record.engine_id):p::retain(Py_None);
+                auto e=version.ready&&!version.tombstone?p::Ref(readNativeEntity(nullptr,record.engine_id)):p::retain(Py_None);
                 require(readResourceStamp(e.get(),modes,version.resources,nullptr));
                 const auto old=installed.find(key);if(old!=installed.end()&&old->second==version)continue;
                 installed[key]=version;services.remove(key);services.recordReady(key,version.ready&&!version.tombstone);
@@ -230,7 +230,7 @@ struct Owner {
         row.target.record_revision=++record_serial;row.target.descriptor_revision=record_serial;
         if(record&&record->ready&&!record->tombstone){
             row.record_ready=true;
-            try{auto e=battle.entity(record->engine_id);if(e.get()!=Py_None&&p::truth(e.get(),"isStarted")){
+            try{auto e=p::Ref(readNativeEntity(nullptr,record->engine_id));if(e.get()!=Py_None&&p::truth(e.get(),"isStarted")){
                     require(geometry::readVehicle(descriptor,e.get(),record->native_remote,record_serial,row.geometry[0]));
                     require(step::load_internal_layout(descriptor,row.interior[0]));
                     p::Ref critical(readNativeEntityField(nullptr,e.get(),"_offline_critical_descriptor"));

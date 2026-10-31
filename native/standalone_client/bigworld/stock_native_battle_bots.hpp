@@ -52,6 +52,9 @@ struct BotAuthority {
 };
 
 namespace bots {
+// Creates the round's BotRuntime (startup::createBotRuntime), runs its battle_start, materializes
+// the authority manifest's Bots and sends its opening messages.
+void start(Battle& b);
 // Startup installs the round's BotRuntime; retirement closes the native owner.
 void install(Battle& b, PyObject* runtime);
 void retire(Battle& b);

@@ -51,7 +51,7 @@ bool readAndAdvance(native_battle::Battle& battle,double dt,bool authority,Owner
  for(const auto& entry:battle.vehicles->actors){const auto& record=*entry.second;
   try {if(record.kind!="player"||record.local)continue;
    const auto id=record.id;if(id<=0)continue;present.insert(id);
-   p::Ref entity=battle.entity(record.engine_id);if(entity.get()==Py_None)continue;
+   p::Ref entity=p::Ref(stock_native_bot::readNativeEntity(nullptr,record.engine_id));if(entity.get()==Py_None)continue;
    p::Ref descriptor(stock_native_bot::readNativeEntityField(nullptr,entity.get(),"typeDescriptor"));if(descriptor.get()==Py_None)continue;
    auto entry=cache.find(id);if(entry==cache.end()||entry->second.descriptor.get()!=descriptor.get()){
     Metadata metadata;if(!readMetadata(descriptor.get(),metadata)){PyErr_Clear();continue;}

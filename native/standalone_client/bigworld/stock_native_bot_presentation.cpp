@@ -121,7 +121,7 @@ std::size_t presentNativeBotPoses(native_battle::Battle&b,const Runtime&runtime,
             if(!vehicle->ready){authority.presented.erase(bot);continue;}
             const auto*installed=services.find({offline_simulation::ActorKind::Bot,bot});if(!installed)continue;
             const auto&geometry=installed->geometry[installed->mode];const auto engine=vehicle->engine_id;
-            p::Ref entity=b.entity(engine);if(entity.get()==Py_None)throw p::Error("Native pose entity is unavailable");
+            p::Ref entity=p::Ref(readNativeEntity(nullptr,engine));if(entity.get()==Py_None)throw p::Error("Native pose entity is unavailable");
             auto presentation=field(entity.get(),"_offlineLANPresentation");
             if(presentation.get()!=Py_True)throw p::Error("Native worker pose requires its RemoteVehicle owner");
             auto&shown=authority.presented[bot];
