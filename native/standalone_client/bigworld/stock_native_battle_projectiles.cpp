@@ -526,7 +526,7 @@ bool rejectLocalFire(Battle& b, const std::string& reason) {
     double remaining = -1.;
     if (b.gun->gun) if (auto* gun = stock_native_client_weapon::gun(b.gun->gun.get())) remaining = gun->reload_time;
     char line[160];
-    std::snprintf(line, sizeof(line), "LOCAL FIRE rejected reason=%s reload=%.3f", reason.c_str(), remaining);
+    snprintf(line, sizeof(line), "LOCAL FIRE rejected reason=%s reload=%.3f", reason.c_str(), remaining);
     log(line);
     return false;
 }

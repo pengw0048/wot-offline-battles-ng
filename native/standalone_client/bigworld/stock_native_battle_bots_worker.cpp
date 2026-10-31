@@ -51,13 +51,13 @@ void encode(const Value& raw, std::ostringstream& out) {
     case Value::Kind::Integer: out << v.integer; return;
     case Value::Kind::Number:
         if (!std::isfinite(v.number)) { out << "null"; return; }
-        { char buffer[32]; std::snprintf(buffer, sizeof buffer, "%.17g", v.number); out << buffer; }
+        { char buffer[32]; snprintf(buffer, sizeof buffer, "%.17g", v.number); out << buffer; }
         return;
     case Value::Kind::Text:
         out << '"';
         for (unsigned char c : v.text) {
             if (c == '"' || c == '\\') out << '\\' << c;
-            else if (c < 0x20) { char buffer[8]; std::snprintf(buffer, sizeof buffer, "\\u%04x", c); out << buffer; }
+            else if (c < 0x20) { char buffer[8]; snprintf(buffer, sizeof buffer, "\\u%04x", c); out << buffer; }
             else out << c;
         }
         out << '"';

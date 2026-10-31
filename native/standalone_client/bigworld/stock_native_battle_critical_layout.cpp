@@ -468,7 +468,7 @@ std::vector<InternalPrimitive> ringPrimitives(const Vec& c, const Vec& h, const 
         const Vec mid{(first[0] + second[0]) * .5, (first[1] + second[1]) * .5, (first[2] + second[2]) * .5};
         const double dx = second[0] - first[0], dz = second[2] - first[2];
         char id[16];
-        std::snprintf(id, sizeof id, ":ring%02d", index);
+        snprintf(id, sizeof id, ":ring%02d", index);
         out.push_back(capsule(mid, tube, std::sqrt(dx * dx + dz * dz) * .5, 0, zone + id, std::atan2(dz, dx) * 180. / pi));
     }
     return out;
@@ -857,7 +857,7 @@ InternalLayout internalLayout(PyObject* descriptor) {
             if (found) bounds[parent] = *found;
             char text[160] = "-";
             if (found)
-                std::snprintf(text, sizeof text, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g", found->minimum[0], found->minimum[1], found->minimum[2],
+                snprintf(text, sizeof text, "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g", found->minimum[0], found->minimum[1], found->minimum[2],
                               found->maximum[0], found->maximum[1], found->maximum[2]);
             key += std::string("\n") + parent + "=" + text;
         }

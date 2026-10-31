@@ -21,7 +21,7 @@ StockAuxVehiclePhysicsData unpackStockAuxVehiclePhysicsData(std::uint64_t);}
 #include "stock_native_bot_turret_obstacles.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_battle_local.hpp"
-namespace stock_native_client_query {struct ProjectileTurrets;
+namespace stock_native_client_query {class ProjectileTurrets;
 // Provided by the query subsystem: the battle's projectile turret obstacle owner.
 std::shared_ptr<ProjectileTurrets> projectileTurrets(native_battle::Battle&);
 }

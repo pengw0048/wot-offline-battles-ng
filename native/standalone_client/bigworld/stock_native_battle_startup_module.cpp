@@ -143,7 +143,7 @@ public:
     void init() override {
         PyObject* module = Py_InitModule("offline_native_battle", native_battle::startup::moduleMethods());
         // The hidden worker's session entry points live in the same module.
-        for (PyMethodDef* def = module ? native_battle::bots::worker::methods() : nullptr; def && def->ml_name; ++def) {
+        for (PyMethodDef* def = module ? native_battle::worker::methods() : nullptr; def && def->ml_name; ++def) {
             PyObject* function = PyCFunction_NewEx(def, nullptr, nullptr);
             if (!function || PyModule_AddObject(module, def->ml_name, function) < 0) { module = nullptr; break; }
         }

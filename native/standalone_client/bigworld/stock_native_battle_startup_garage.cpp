@@ -381,7 +381,7 @@ void prepareSpawnAssignments(Battle& b) {
             const auto& enemy = centres[2 - team];
             const double dx = enemy[0] - own_centre[0], dz = enemy[1] - own_centre[1];
             std::vector<std::int64_t> rear(15);
-            for (std::int64_t i = 0; i < 15; ++i) rear[i] = i;
+            for (std::size_t i = 0; i < 15; ++i) rear[i] = std::int64_t(i);
             std::stable_sort(rear.begin(), rear.end(), [&](std::int64_t a, std::int64_t c) {
                 const double da = (f[team - 1][a][0] - own_centre[0]) * dx + (f[team - 1][a][2] - own_centre[1]) * dz;
                 const double dc = (f[team - 1][c][0] - own_centre[0]) * dx + (f[team - 1][c][2] - own_centre[1]) * dz;

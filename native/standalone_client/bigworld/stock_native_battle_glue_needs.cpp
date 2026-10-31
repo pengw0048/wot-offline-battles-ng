@@ -47,7 +47,7 @@ std::string formatXyz(PyObject* value) {
     try {
         const auto v = xyz(value);
         char line[96];
-        std::snprintf(line, sizeof(line), "(%.2f, %.2f, %.2f)", v[0], v[1], v[2]);
+        snprintf(line, sizeof(line), "(%.2f, %.2f, %.2f)", v[0], v[1], v[2]);
         return line;
     } catch (const std::exception&) {
         PyErr_Clear();

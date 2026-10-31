@@ -85,7 +85,7 @@ std::shared_ptr<RuntimeOwner> ensure(Battle&b,PyObject*entity=nullptr){
     auto&o=b.gun->runtime;if(!o||!active(b,*o)||o->gun_object.get()!=b.gun->gun.get()){if(o)o->closed=true;return install(b,entity);}return o;
 }
 void refreshOwner(Battle&b,RuntimeOwner&o,double now){
-    drive::synchronizeStatus(b.engine.shell.get(),now);if(!active(b,o))throw p::Error("Native player weapon retired during status synchronization");
+    drive::synchronizeStatus(b,now);if(!active(b,o))throw p::Error("Native player weapon retired during status synchronization");
     auto*d=stock_native_client_query::descriptor(*o.actor);if(!d)throw p::Error("Native player weapon descriptor resources are not installed");
     if(o.descriptor.get()!=d||o.descriptor_revision!=o.actor->descriptor_revision){auto value=metadata(b,d,o.gun_object.get());o.runtime->metadata(std::move(value));replace(o.descriptor,p::retain(d));o.descriptor_revision=o.actor->descriptor_revision;}
     if(o.accepted_revision==o.state->revision&&o.have_equipment)return;
@@ -106,7 +106,7 @@ void reportCrew(RuntimeOwner&o,const Factors&f){
     const auto status=drive::status(*o.actor);const auto&impaired=status->critical().crew_ko;
     if(o.reported&&o.reported_impaired==impaired)return;o.reported=true;o.reported_impaired=impaired;
     std::string names;for(const auto&role:impaired){if(!names.empty())names+=",";names+=role;}if(names.empty())names="-";
-    char line[256];std::snprintf(line,sizeof(line),"CREW out=%s reload=%.3f aim=%.3f disp=%.3f turret=%.3f mobility=%.3f vision=%.3f",names.c_str(),f.reload,f.aim_time,f.dispersion,f.turret_speed,status->factor(step::CriticalStat::mobility),status->factor(step::CriticalStat::vision));
+    char line[256];snprintf(line,sizeof(line),"CREW out=%s reload=%.3f aim=%.3f disp=%.3f turret=%.3f mobility=%.3f vision=%.3f",names.c_str(),f.reload,f.aim_time,f.dispersion,f.turret_speed,status->factor(step::CriticalStat::mobility),status->factor(step::CriticalStat::vision));
     native_battle::log(line);
 }
 void queue(RuntimeOwner&o,HudEdge edge){if(!o.pending.count(edge.id))o.order.push_back(edge.id);auto key=edge.id;o.pending[key]=std::move(edge);}
@@ -139,7 +139,7 @@ void emitSafe(Battle&b,RuntimeOwner&o){try{emit(b,o);o.publication_error.clear()
 struct Guard {RuntimeOwner&o;explicit Guard(RuntimeOwner&value):o(value){o.advancing=true;}~Guard(){o.advancing=false;}};
 Gun*advanceWithMotion(Battle&b,double now,std::optional<std::array<double,2>>frozen){
     auto o=ensure(b);if(o->advancing)return &o->runtime->gun();Guard guard(*o);refreshOwner(b,*o,now);const auto f=factors(*o);
-    if(!b.replay){const auto driver=drive::driverAccess(b.engine.shell.get());if(!driver.driver)throw p::Error("Native local gun has no current player driver");const auto&motion=driver.driver->state();
+    if(!b.replay){const auto driver=drive::driverAccess(b);if(!driver.driver)throw p::Error("Native local gun has no current player driver");const auto&motion=driver.driver->state();
         const auto output=o->runtime->advance(now,b.live,frozen?(*frozen)[0]:motion.speed,frozen?(*frozen)[1]:motion.turn_speed,f,b.gun->client_ready);
         b.gun->last_tick=now;reportCrew(*o,f);if(!active(b,*o))throw p::Error("Native gun retired during crew diagnostics");queue(b,*o,output,now);emitSafe(b,*o);}
     if(!active(b,*o))throw p::Error("Native player gun retired during presentation");return &o->runtime->gun();

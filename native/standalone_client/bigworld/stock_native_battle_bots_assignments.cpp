@@ -151,7 +151,7 @@ std::string pyStr(const Value* v) {
         if (std::isnan(v->number)) return "nan";
         if (std::isinf(v->number)) return v->number < 0 ? "-inf" : "inf";
         char buffer[64];
-        std::snprintf(buffer, sizeof(buffer), "%.12g", v->number);
+        snprintf(buffer, sizeof(buffer), "%.12g", v->number);
         std::string out = buffer;
         if (out.find_first_of(".e") == std::string::npos) out += ".0";
         return out;

@@ -153,13 +153,13 @@ std::optional<std::pair<std::wstring, std::wstring>> referenceBody(const std::ws
         {"HOLLOW_CHARGE", L"高爆反坦克弹"}, {"HIGH_EXPLOSIVE", L"高爆弹"}};
     auto title = titles.find(kind);
     if (title == titles.end()) return {};
-    std::wstring damage, near, far, speed, radius;
+    std::wstring damage, near_text, far_text, speed, radius;
     bool has_radius = false;
     try {
         damage = plainNumber(item(shotField(shell, "damage").get(), 0).get());
         auto piercing = shotField(shot, "piercingPower");
-        near = plainNumber(item(piercing.get(), 0).get());
-        far = plainNumber(item(piercing.get(), 1).get());
+        near_text = plainNumber(item(piercing.get(), 0).get());
+        far_text = plainNumber(item(piercing.get(), 1).get());
         speed = plainNumber(shotField(shot, "speed").get());
         if (kind == "HIGH_EXPLOSIVE") {
             auto value = shotField(shell, "explosionRadius");
@@ -183,7 +183,7 @@ std::optional<std::pair<std::wstring, std::wstring>> referenceBody(const std::ws
         return label + L": " + value;
     };
     const bool affected = kind == "ARMOR_PIERCING" || kind == "ARMOR_PIERCING_CR";
-    const std::wstring power = near + (affected ? L"-" + far : L"");
+    const std::wstring power = near_text + (affected ? L"-" + far_text : L"");
     std::vector<std::wstring> result = {
         row(L"平均伤害", damage + L"点"),
         row(L"平均穿深", power + L"毫米*"),

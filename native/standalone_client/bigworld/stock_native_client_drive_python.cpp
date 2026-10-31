@@ -28,7 +28,7 @@ namespace projectiles {
 // Provided by the projectiles subsystem: the latest server time (ms) and the local clock it was received at.
 std::optional<std::pair<double,double>> serverClockAnchor(const Battle&);
 }}
-namespace stock_native_client_query {struct ProjectileTurrets;std::shared_ptr<ProjectileTurrets> projectileTurrets(native_battle::Battle&);}
+namespace stock_native_client_query {class ProjectileTurrets;std::shared_ptr<ProjectileTurrets> projectileTurrets(native_battle::Battle&);}
 #include "space/space_manager.hpp"
 #include "pyscript/script.hpp"
 #include "connection_control.hpp"
