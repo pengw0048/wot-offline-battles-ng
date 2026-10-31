@@ -45,8 +45,10 @@ void acknowledgePlayerEnvironment(Owner& o, Battle& b, std::int64_t sequence, bo
 p::Ref humanRam(Owner& o, Battle& b);
 
 // Detached turrets. `vehicle` keys the queue by kind, engine id and network id.
-bool detachedQueue(Owner& o, const native_battle::Actor& vehicle, PyObject* entity, PyObject* state, double now);
-bool detachedIngress(Owner& o, PyObject* message, double now);
+bool detachedQueue(Owner& o, Battle& b, const native_battle::Actor& vehicle, PyObject* entity,
+                   const native_battle::Value* state, double now);
+bool detachedIngress(Owner& o, Battle& b, const native_battle::Value& message);
+// The terminal tail rows when due after the battle result, else None.
 p::Ref detachedAdvance(Owner& o, Battle& b, double now);
 p::Ref detachedRows(Owner& o);
 

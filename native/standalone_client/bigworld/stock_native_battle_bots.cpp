@@ -520,14 +520,6 @@ bool worldIngress(Battle& b, PyObject* event, double now) {
     OwnerRef o = prepare(b);
     return o && owner::worldIngress(*o, event, now);
 }
-bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, PyObject* state, double now) {
-    OwnerRef o = existing(b) ? existing(b) : prepare(b);
-    return o && owner::detachedQueue(*o, vehicle, entity, state, now);
-}
-bool detachedIngress(Battle& b, PyObject* message, double now) {
-    OwnerRef o = existing(b);
-    return o && owner::detachedIngress(*o, message, now);
-}
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence) {
     OwnerRef o = existing(b);
     return o && owner::acknowledgeLaunch(*o, bot_id, sequence);
@@ -603,20 +595,23 @@ bool worldIngress(Battle& b, const Value& event) {
 std::optional<bool> detachedIngress(Battle& b, const Value& message) {
     OwnerRef o = existing(b);
     if (!o) return std::nullopt;
-    p::Ref raw(cs::write(message));
-    return owner::detachedIngress(*o, raw.get(), b.clock());
+    return owner::detachedIngress(*o, b, message);
 }
 bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* state) {
-    p::Ref raw(state ? p::Ref(cs::write(*state)) : p::retain(Py_None));
-    return detachedQueue(b, vehicle, entity, raw.get(), b.clock());
+    OwnerRef o = existing(b) ? existing(b) : prepare(b);
+    return o && owner::detachedQueue(*o, b, vehicle, entity, state, b.clock());
 }
 std::size_t detachedAdvance(Battle& b, double now) {
     OwnerRef o = existing(b);
     if (!o) return 0;
     auto rows = owner::detachedAdvance(*o, b, now);
-    if (rows.get() == Py_None || !PySequence_Check(rows.get())) return 0;
-    const Py_ssize_t count = PySequence_Size(rows.get());
-    return count > 0 ? std::size_t(count) : 0;
+    if (rows.get() == Py_None) return 0;
+    // After the battle result no bot_state carries proposals: send_bot_state([], detached_turrets=rows).
+    auto kwargs = p::dict();
+    p::set(kwargs.get(), "detached_turrets", rows);
+    auto empty = p::list();
+    callKeywords(py::attr(client(b).get(), "send_bot_state").get(), {empty.get()}, kwargs.get());
+    return std::size_t(PyList_GET_SIZE(rows.get()));
 }
 void prewarmBots(Battle& b, double now) { prewarm(b, now); }
 std::size_t playerContacts(Battle& b, const Value& players, double now) {

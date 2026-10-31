@@ -109,8 +109,6 @@ bool projectileObserve(Battle& b, PyObject* message, double now);
 bool projectileEvent(Battle& b, PyObject* event, double now);
 std::size_t projectileAdvance(Battle& b, double now, bool force_progress);
 bool worldIngress(Battle& b, PyObject* event, double now);
-bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, PyObject* state, double now);
-bool detachedIngress(Battle& b, PyObject* message, double now);
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence);
 bool acknowledgeRam(Battle& b, std::int64_t player_id, std::int64_t sequence);
 // Worker prebattle prewarm of the native world receipts; returns the prewarmed count.
@@ -127,7 +125,7 @@ bool worldIngress(Battle& b, const Value& event);
 // nullopt when no native owner handles detached turrets yet.
 std::optional<bool> detachedIngress(Battle& b, const Value& message);
 bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* state);
-// Advances native detached turrets; returns the advanced row count.
+// Advances native detached turrets and sends the terminal tail when due; returns the sent row count.
 std::size_t detachedAdvance(Battle& b, double now);
 void prewarmBots(Battle& b, double now);
 // The worker Bot world's per-frame foliage, motion and registry step; false without a live owner.

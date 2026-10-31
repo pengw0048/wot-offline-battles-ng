@@ -11,6 +11,8 @@ bool readComponents(PyObject* descriptor,std::vector<Component>&);
 bool readVehicleGeometry(PyObject* descriptor,VehicleGeometry&);
 bool readLaunchGeometry(PyObject* descriptor,LaunchInput&);
 bool readPlayerImpulses(PyObject* player,std::vector<PlayerImpulse>&);
+// One player's turret_pushes checkpoints (None or a list) attributed to that player.
+bool readPlayerImpulses(std::int64_t player,PyObject* pushes,std::vector<PlayerImpulse>&);
 PyObject* packRow(const Row&);
 stock_native_bot_turret::Record obstacleRecord(const Row&);
 }

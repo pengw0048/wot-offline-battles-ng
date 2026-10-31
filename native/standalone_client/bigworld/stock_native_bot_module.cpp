@@ -106,7 +106,7 @@ struct Owner {
     player_environment::MetadataCache environment_metadata;
     NativeServices services;
     std::unique_ptr<Runtime> runtime;
-    std::unique_ptr<stock_native_detached_turret::PythonOwner> detached_runtime;
+    std::unique_ptr<stock_native_detached_turret::NativeOwner> detached_runtime;
     std::unique_ptr<stock_native_projectile::NativeProjectiles> projectiles;
     std::unique_ptr<foliage::Trees> trees;
     std::map<Key,RecordVersion> installed;
@@ -321,9 +321,9 @@ std::shared_ptr<Owner> create(Battle&b){
         if(PyDict_SetItem(profiles.get(),key.get(),value.get())<0)throw p::Error("Native Bot ram profile allocation failed");}
     o.profiles=native_battle::own(std::move(profiles));
     o.records(b);
-    o.detached_runtime.reset(new stock_native_detached_turret::PythonOwner(*o.runtime,o.registry,
-        o.scene,o.vehicles,o.services,VEHICLE_SKIP_FLAGS));
-    require(o.detached_runtime->install(shell));
+    o.detached_runtime.reset(new stock_native_detached_turret::NativeOwner(*o.runtime,o.registry,
+        o.scene,o.vehicles,VEHICLE_SKIP_FLAGS));
+    o.detached_runtime->install(b);
     o.projectiles.reset(new stock_native_projectile::NativeProjectiles(o.registry,o.scene,
         o.vehicles,o.events,*o.runtime,o.services));
     require(o.projectiles->install(shell));
@@ -422,34 +422,27 @@ p::Ref humanRam(Owner&o,Battle&b){
 }
 
 namespace {
-void detachedErrors(Owner&o){
-    p::Ref errors(o.detached_runtime->takeErrors());
-    for(Py_ssize_t i=0;i<p::size(errors.get());++i){auto message=p::item(errors.get(),i);o.local(p::Error(p::string(message.get())));}
+void detachedErrors(Owner&o){for(const auto&error:o.detached_runtime->takeErrors())o.local(p::Error(error));}
+void detachedFailure(Owner&o,const char*context,const std::exception&e){o.local(p::Error(std::string(context)+": "+e.what()));}
 }
-}
-bool detachedQueue(Owner&o,const native_battle::Actor&vehicle,PyObject*entity,PyObject*state,double now){
-    if(!live(o))return false;
-    // The detached owner keys its queue by the vehicle identity: kind, engine id and network id.
-    auto record=p::dict();
-    p::set(record.get(),"kind",p::text(vehicle.kind));
-    p::set(record.get(),"engine_id",p::integer(vehicle.engine_id));
-    p::set(record.get(),"network_id",p::integer(vehicle.id));
-    const bool queued=o.detached_runtime->queue(record.get(),entity,state?state:Py_None,now);
-    if(PyErr_Occurred())o.local(p::Error("Native detached turret launch failed"));
+bool detachedQueue(Owner&o,Battle&b,const native_battle::Actor&vehicle,PyObject*entity,const cs::Value*state,double now){
+    if(!live(o))return false;bool queued=false;
+    try{queued=o.detached_runtime->queue(b,vehicle,entity,state,now);}
+    catch(const std::exception&e){detachedFailure(o,"Native detached turret launch failed",e);}
     detachedErrors(o);return queued;
 }
-bool detachedIngress(Owner&o,PyObject*message,double now){
-    if(!live(o))return false;const bool changed=o.detached_runtime->ingress(message,now);
-    if(PyErr_Occurred())o.local(p::Error("Native detached turret snapshot failed"));
+bool detachedIngress(Owner&o,Battle&b,const cs::Value&message){
+    if(!live(o))return false;bool changed=false;
+    try{changed=o.detached_runtime->ingress(b,message);}
+    catch(const std::exception&e){detachedFailure(o,"Native detached turret snapshot failed",e);}
     detachedErrors(o);return changed;
 }
 p::Ref detachedAdvance(Owner&o,Battle&b,double now){
     if(!live(o))return p::retain(Py_None);
-    PyObject*result=o.detached_runtime->advance(b.engine.shell.get(),now);
-    if(!result){o.local(p::Error("Native detached turret advance failed"));return p::retain(Py_None);}
-    p::Ref tail(result);detachedErrors(o);o.detached(b);return tail;
+    try{auto tail=o.detached_runtime->advance(b,now);detachedErrors(o);o.detached(b);return tail;}
+    catch(const std::exception&e){detachedFailure(o,"Native detached turret advance failed",e);return p::retain(Py_None);}
 }
-p::Ref detachedRows(Owner&o){return p::Ref(o.detached_runtime->rows());}
+p::Ref detachedRows(Owner&o){return o.detached_runtime->rows();}
 
 bool projectileIngress(Owner&o,PyObject*message,double now){
     if(!live(o))return false;const bool changed=o.projectiles->ingress(message,now);
