@@ -988,6 +988,80 @@ PyObject* advanceAuthorityWorkerProbe(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+// BattleRuntime._sync_local_server_marker(): use the firing client's native marker.
+PyObject* syncLocalServerMarker(PyObject*, PyObject* args) {
+    PyObject *battle, *g;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
+    try {
+        auto rotator = optionalAttr(attr(battle, "_avatar").get(), "gunRotator");
+        if (rotator.get() == Py_None || !truthy(attr(rotator.get(), "showServerMarker"))) Py_RETURN_FALSE;
+        setAttr(rotator.get(), "showServerMarker", Py_False);
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._ammo_tick(): the 10 Hz gun clock and server-marker selection, then reschedule.
+PyObject* ammoTick(PyObject*, PyObject* args) {
+    PyObject *battle, *g;
+    if (!PyArg_ParseTuple(args, "OO", &battle, &g)) return nullptr;
+    try {
+        // Replay timeline presentation owns every reload, clip and ammo edge.
+        PyObject* replay = PyObject_GetAttrString(battle, "_replay_mode");
+        if (!replay) { if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return nullptr; PyErr_Clear(); }
+        p::Ref replay_mode(replay ? replay : p::retain(Py_False).release());
+        if (truthy(replay_mode)) Py_RETURN_NONE;
+        if (test(attr(battle, "state").get(), p::text("running").get(), Py_NE) || attr(battle, "_server").get() == Py_None) Py_RETURN_NONE;
+        if (!contained([&] {
+                auto entity = method(battle, "_server_entity", attr(attr(battle, "_server").get(), "vehicle_id").get());
+                method(battle, "_advance_local_gun_to", entity.get());
+                feature(battle, "local gun-marker selection", attr(battle, "_sync_local_server_marker").get());
+            })) {
+            auto error = caught(std::runtime_error("ammo tick"));
+            method(battle, "_fail", error.get());
+            Py_RETURN_NONE;
+        }
+        callKw(battle, "_schedule", {frameGlobal(g, "AMMO_SECONDS").get(), attr(battle, "_ammo_tick").get()}, {{"ammo", Py_True}});
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// BattleRuntime._observe_local_vehicle(message, now): authority visibility for the #1513 Sixth Sense HUD.
+PyObject* observeLocalVehicle(PyObject*, PyObject* args) {
+    PyObject *battle, *message, *now, *g;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &message, &now, &g)) return nullptr;
+    try {
+        auto sixth_sense = attr(battle, "_sixth_sense");
+        if (sixth_sense.get() == Py_None ||
+            test(method(message, "get", p::text("type").get()).get(), p::text("bot_observation").get(), Py_NE))
+            Py_RETURN_FALSE;
+        auto client = attr(battle, "client");
+        auto local_id = p::Ref(PyNumber_Int(attr(client.get(), "player_id").get()));
+        auto local_team = p::Ref(PyNumber_Int(attr(client.get(), "team").get()));
+        auto contacts = method(message, "get", p::text("contacts").get());
+        if (!truthy(contacts)) replace(contacts, p::Ref(PyTuple_New(0)));
+        bool visible = false;
+        p::Ref iterator(PyObject_GetIter(contacts.get()));
+        while (PyObject* raw = PyIter_Next(iterator.get())) {
+            p::Ref contact(raw);
+            if (!PyDict_Check(contact.get())) continue;
+            auto get = [&](const char* name, PyObject* fallback) {
+                return fallback ? method(contact.get(), "get", p::text(name).get(), fallback) : method(contact.get(), "get", p::text(name).get());
+            };
+            if (test(get("target_kind", nullptr).get(), p::text("human").get(), Py_EQ) &&
+                test(p::Ref(PyNumber_Int(get("target_id", integer(-1).get()).get())).get(), local_id.get(), Py_EQ) &&
+                test(p::Ref(PyNumber_Int(get("observing_team", integer(0).get()).get())).get(), local_team.get(), Py_NE) &&
+                truthy(get("fresh", nullptr))) {
+                visible = true;
+                break;
+            }
+        }
+        if (PyErr_Occurred()) throw p::Error("contacts");
+        auto result = p::retain(visible ? Py_True : Py_False);
+        method(sixth_sense.get(), "observe", result.get(), now);
+        return result.release();
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyMethodDef frame_methods[] = {
     {"frame", frame, METH_VARARGS, "Run one battle render callback."},
     {"optional_feature_enabled", optionalFeatureEnabled, METH_VARARGS, "Whether a presentation feature is still enabled."},
@@ -1002,6 +1076,9 @@ PyMethodDef frame_methods[] = {
     {"tick_critical_states", tickCriticalStates, METH_VARARGS, "Present canonical critical state and local track repair."},
     {"advance_artillery_arcs", advanceArtilleryArcs, METH_VARARGS, "Advance the artillery arc preview rays."},
     {"advance_authority_worker_probe", advanceAuthorityWorkerProbe, METH_VARARGS, "Advance the opt-in authority worker probe."},
+    {"sync_local_server_marker", syncLocalServerMarker, METH_VARARGS, "Use the firing client's native gun marker."},
+    {"ammo_tick", ammoTick, METH_VARARGS, "Advance the 10 Hz local gun clock."},
+    {"observe_local_vehicle", observeLocalVehicle, METH_VARARGS, "Feed authority visibility into the Sixth Sense HUD."},
     {nullptr, nullptr, 0, nullptr}};
 }
 

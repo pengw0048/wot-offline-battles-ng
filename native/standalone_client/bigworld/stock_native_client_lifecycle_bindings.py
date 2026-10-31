@@ -132,6 +132,28 @@ PORTS = (
     ('_tick_critical_states', 'tick_critical_states(self, dt, native_client_critical, globals())'),
     ('_advance_artillery_arcs', 'advance_artillery_arcs(self, now, native_bot_runtime, globals())'),
     ('_advance_authority_worker_probe', 'advance_authority_worker_probe(self, globals())'),
+    ('_hit_damage_factor', 'hit_damage_factor(self, event, target_record, globals())'),
+    ('_impact_sound_identity',
+     'impact_sound_identity(self, target_record, attacker_id, direction, damage_factor, globals())'),
+    ('_surface_effect_material', 'surface_effect_material(self, impact, globals())'),
+    ('_release_target_lock', 'release_target_lock(self, engine_id, globals())'),
+    ('_report_effect', 'report_effect(self, kind, material, effects_index, where, direction, event, globals())'),
+    ('_report_hit_impulse', 'report_hit_impulse(self, target_record, direction, impulse, presented, globals())'),
+    ('_decoded_hit_impulse_direction', 'decoded_hit_impulse_direction(self, event, target_record, globals())'),
+    ('_present_hit_impulse',
+     'present_hit_impulse(self, event, target_record, effects_descr, splash_direction, globals())'),
+    ('_event_shell', 'event_shell(self, attacker_record, event, globals())'),
+    ('_shell_is_gold', 'shell_is_gold(self, shell, globals())'),
+    ('_report_feedback_shell_failure', 'report_feedback_shell_failure(self, reason, globals())'),
+    ('_feedback_shell_fields', 'feedback_shell_fields(self, event, attacker_record, globals())'),
+    ('_fallback_postmortem_viewpoint', 'fallback_postmortem_viewpoint(self, excluded_engine_id, globals())'),
+    ('_report_local_kill_contract',
+     'report_local_kill_contract(self, target_record, attacker_id, reason_id, globals())'),
+    ('on_snapshot', 'on_snapshot(self, message, globals())'),
+    ('_apply_rules', 'apply_rules(self, rules, globals())'),
+    ('_ammo_tick', 'ammo_tick(self, globals())'),
+    ('_sync_local_server_marker', 'sync_local_server_marker(self, globals())'),
+    ('_observe_local_vehicle', 'observe_local_vehicle(self, message, now, globals())'),
 )
 
 
@@ -141,6 +163,9 @@ STATIC_PORTS = (
     ('_projectile_plain_pose', 'projectile_plain_pose(position, state, globals())'),
     ('_projectile_boundary_pose', 'projectile_boundary_pose(position, state, globals())'),
     ('_projectile_visual_age', 'projectile_visual_age(raw, globals())'),
+    ('_projectile_cosmetic_allowed', 'projectile_cosmetic_allowed(event, visual_meta, globals())'),
+    ('_event_entity_key', 'event_entity_key(event, role, globals())'),
+    ('_combat_event_source', 'combat_event_source(event, globals())'),
 )
 
 

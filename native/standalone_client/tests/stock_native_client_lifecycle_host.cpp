@@ -7,6 +7,8 @@
 #include "../bigworld/stock_native_client_diagnostics.cpp"
 #include "../bigworld/stock_native_client_recording.cpp"
 #include "../bigworld/stock_native_client_lan_poll.cpp"
+#include "../bigworld/stock_native_client_feedback.cpp"
+#include "../bigworld/stock_native_client_snapshot.cpp"
 PyMODINIT_FUNC initoffline_client_lifecycle_native(void) {
     Py_InitModule("offline_client_lifecycle_native", stock_native_client_lifecycle::lifecycle_methods());
 }

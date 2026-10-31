@@ -43,9 +43,14 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_accept_projectile_event', '_apply_projectile_ricochet_event', '_apply_projectile_terminal_event',
            '_projectile_launch_mismatches', 'on_fire_intent_result', '_defer_local_projectile_presentation',
            '_reconcile_projectile_snapshot', '_clock', '_tick_critical_states', '_advance_artillery_arcs',
-           '_advance_authority_worker_probe')
-CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES',)
-GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
+           '_advance_authority_worker_probe', '_hit_damage_factor', '_impact_sound_identity', '_surface_effect_material',
+           '_release_target_lock', '_report_effect', '_report_hit_impulse', '_decoded_hit_impulse_direction',
+           '_present_hit_impulse', '_event_shell', '_shell_is_gold', '_report_feedback_shell_failure',
+           '_feedback_shell_fields', '_fallback_postmortem_viewpoint', '_report_local_kill_contract',
+           '_projectile_cosmetic_allowed', '_diagnostic_int', '_diagnostic_vehicle_info', '_diagnostic_value',
+           'on_snapshot', '_apply_rules', '_ammo_tick', '_sync_local_server_marker', '_observe_local_vehicle')
+CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES', '_EFFECT_REPORT_LIMIT', '_HIT_IMPULSE_REPORT_LIMIT')
+GLOBALS = ('_xyz', '_format_xyz', '_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
            '_MutedShootingExtra', 'PROJECTILE_MAX_TIME_MS', '_angle_delta',
            'PROJECTILE_SUSTAIN_SECONDS', 'PROJECTILE_CHORDS_PER_FRAME', 'PROJECTILE_MAX_CHORDS_PER_FRAME', 'PROJECTILE_PROGRESS_SECONDS')
 
@@ -140,7 +145,8 @@ def run(name, make, args):
             '_pose_motion_local_time', '_projectile_perf', '_projectile_scan_count', '_projectile_candidate_count',
             '_projectile_target_positions', '_projectile_previous_positions', '_projectile_current_positions',
             '_projectile_frame_start', '_projectile_frame_end', '_projectile_advance_active', '_projectile_historic_pose_cache',
-            '_projectile_revision', '_next_critical_report_time', '_worker_probe_attempted', '_worker_probe'))
+            '_projectile_revision', '_next_critical_report_time', '_worker_probe_attempted', '_worker_probe', '_last_snapshot',
+            '_rules_state'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -297,6 +303,26 @@ NATIVE = {
     '_tick_critical_states': lambda b, dt: native.tick_critical_states(b, dt, native_client_critical, globals()),
     '_advance_artillery_arcs': lambda b, now: native.advance_artillery_arcs(b, now, native_bot_runtime, globals()),
     '_advance_authority_worker_probe': lambda b: native.advance_authority_worker_probe(b, globals()),
+    '_hit_damage_factor': lambda b, e, r: native.hit_damage_factor(b, e, r, globals()),
+    '_impact_sound_identity': lambda b, r, a, d, f: native.impact_sound_identity(b, r, a, d, f, globals()),
+    '_surface_effect_material': lambda b, i: native.surface_effect_material(b, i, globals()),
+    '_release_target_lock': lambda b, e: native.release_target_lock(b, e, globals()),
+    '_report_effect': lambda b, k, m, i, w, d, event=None: native.report_effect(b, k, m, i, w, d, event, globals()),
+    '_report_hit_impulse': lambda b, r, d, i, p: native.report_hit_impulse(b, r, d, i, p, globals()),
+    '_decoded_hit_impulse_direction': lambda b, e, r: native.decoded_hit_impulse_direction(b, e, r, globals()),
+    '_present_hit_impulse': lambda b, e, r, fx, sd=None: native.present_hit_impulse(b, e, r, fx, sd, globals()),
+    '_event_shell': lambda b, a, e: native.event_shell(b, a, e, globals()),
+    '_shell_is_gold': lambda b, sh: native.shell_is_gold(b, sh, globals()),
+    '_report_feedback_shell_failure': lambda b, r: native.report_feedback_shell_failure(b, r, globals()),
+    '_feedback_shell_fields': lambda b, e, a: native.feedback_shell_fields(b, e, a, globals()),
+    '_fallback_postmortem_viewpoint': lambda b, x: native.fallback_postmortem_viewpoint(b, x, globals()),
+    '_report_local_kill_contract': lambda b, r, a, reason: native.report_local_kill_contract(b, r, a, reason, globals()),
+    '_projectile_cosmetic_allowed': lambda b, e, v: native.projectile_cosmetic_allowed(e, v, globals()),
+    'on_snapshot': lambda b, m: native.on_snapshot(b, m, globals()),
+    '_apply_rules': lambda b, r: native.apply_rules(b, r, globals()),
+    '_ammo_tick': lambda b: native.ammo_tick(b, globals()),
+    '_sync_local_server_marker': lambda b: native.sync_local_server_marker(b, globals()),
+    '_observe_local_vehicle': lambda b, m, n: native.observe_local_vehicle(b, m, n, globals()),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -2481,6 +2507,210 @@ for variant in range(288):
         globals()['os'] = Log(log, 'os', {'getpid': 4242})
         return b, ()
     run('_advance_authority_worker_probe', make, (variant,)); cases += 1
+
+# Hit, shell and kill feedback helpers.
+log_sink = []
+class FObj(object):
+    """A plain engine-like object whose attributes may include 'name'."""
+    def __init__(self, label, **attrs):
+        self.__dict__.update(attrs)
+        self._label = label
+    def __repr__(self):
+        return '<%s>' % self._label
+class FVec(object):
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+    @property
+    def length(self):
+        return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    def __sub__(self, other):
+        return FVec(self.x - other.x, self.y - other.y, self.z - other.z)
+    def __eq__(self, other):
+        return isinstance(other, FVec) and (self.x, self.y, self.z) == (other.x, other.y, other.z)
+    def __ne__(self, other):
+        return not self == other
+    def normalise(self):
+        n = self.length
+        self.x, self.y, self.z = self.x / n, self.y / n, self.z / n
+    def __repr__(self):
+        return 'FVec(%.4f,%.4f,%.4f)' % (self.x, self.y, self.z)
+def feedback_battle(log, v):
+    # Diagnostic lines are part of the compared log.
+    sys.stdout = Recorder(log)
+    b = battle(log, records={'player:4': {'engine_id': 4, 'state': {'team': 1}}, 'bot:7': {'engine_id': 7, 'state': {'team': 2 if v % 3 else 1}},
+                             'bot:9': {'engine_id': 9, 'state': None}})
+    descriptor = Log(log, 'descriptor', maxHealth=(500, 0, 'x')[v % 3],
+                     gun={'shots': [Log(log, 'shot0', shell=FObj('shell0', kind='ARMOR_PIERCING', id=(1, 2), name='ap')),
+                                    Log(log, 'shot1', shell=FObj('shell1', type=FObj('stype', name='HIGH_EXPLOSIVE'), id=[0], name='he')),
+                                    {'shell': None if v % 7 == 6 else {'kind': 'BOGUS', 'id': 'x', 'name': None}}][: 1 + v % 4]})
+    entity = Log(log, 'entity', typeDescriptor=None if v % 11 == 10 else descriptor, position=(10.0 + v, 0.0, 3.0 * v), isStarted=v % 5 != 4,
+                 appearance=Log(log, 'appearance', compoundModel=None if v % 13 == 12 else Log(log, 'compound', {'node': lambda name: None if name == 'gun' else Log(log, 'node')}),
+                                swingingAnimator='anim' if v % 2 else 'other'))
+    stub(b, log, '_server_entity', lambda engine: None if v % 17 == 16 else entity)
+    stub(b, log, '_spectator_record', lambda engine: (None, None) if engine == 9 and v % 2 else ({'engine_id': engine}, Log(log, 'spect', position=(1.0 if engine == 9 else float(engine), 0.0, float(v)))))
+    stub(b, log, '_switch_postmortem_viewpoint', lambda flag, engine: engine in ((7,), (9, 4), (4,), (-1,))[v % 4])
+    stub(b, log, '_release_postmortem_visibility')
+    stub(b, log, '_warn_optional_failure')
+    stub(b, log, '_vector', lambda value: FVec(*[float(x) for x in value]))
+    stub(b, log, '_local_vehicle_appearance', lambda: entity.appearance)
+    stub(b, log, '_optional_feature_enabled', lambda name: v % 9 != 8)
+    b._local_swinging_animator = 'anim' if v % 4 else None
+    b._local_position = (1.0, 0.0, 2.0)
+    b._spectated_engine_id = (7, 8)[v % 5 == 4]
+    b._server = None if v % 6 == 5 else Log(log, 'server', vehicle_id=4)
+    b._effect_reports = (0, 11, 12)[v % 3]
+    b._hit_impulse_reports = (0, 15, 16)[v % 3]
+    b._feedback_shell_failures = set(['seen']) if v % 2 else set('abcdefghijklmnopqrstuvwxyz0123456789')
+    def factory_present(engine, direction, impulse):
+        log.append(('factory', 'present_hit_impulse', engine, repr(direction), impulse))
+        return v % 3 != 1
+    b._remote_factory = Log(log, 'factory', {'present_hit_impulse': factory_present}, missing=() if v % 8 else ('present_hit_impulse',))
+    constants = Log(log, 'constants', SHELL_TYPES_INDICES={'ARMOR_PIERCING': 0, 'HIGH_EXPLOSIVE': 2} if v % 10 != 9 else {})
+    def calc(at, normal, space):
+        log.append(('calc', repr(at), repr(normal), space))
+        if v % 7 == 5: raise ValueError('no surface')
+        return Log(log, 'surface', effectIdx=(None, 1, 7)[v % 3])
+    b._runtime = Log(log, 'runtime', bigworld=Log(log, 'bigworld', {'entity': lambda i: None if v % 9 == 7 else entity}),
+                     constants=constants, nations=Log(log, 'nations', NAMES=('ussr', 'germany') if v % 5 else ()),
+                     battle_feedback_common=Log(log, 'common', NONE_SHELL_TYPE=(255, None)[v % 19 == 18]),
+                     compatibility=Log(log, 'compat', {'release_target_lock': lambda avatar, engine: v % 2}, missing=() if v % 3 else ('release_target_lock',)),
+                     effect_material_calculation=Log(log, 'calc', {'calcSurfaceMaterialNearPoint': calc}),
+                     material_kinds=Log(log, 'materials', EFFECT_MATERIALS=('ground', 'stone')),
+                     math=Log(log, 'math', {'Matrix': lambda node: Log(log, 'matrix', {'applyVector': lambda d: FVec(d.x, d.y, -d.z)}),
+                                            'Vector3': lambda d: FVec(d.x, d.y, d.z)}))
+    def vehicle_info(i):
+        if v % 4 == 0: raise ValueError('no info')
+        return {'vehicleID': i, 'team': 1 if i == 4 else 2}
+    arena_dp = Log(log, 'arena_dp', {'getVehicleInfo': vehicle_info,
+                                     'getNumberOfTeam': lambda flag: ((1, 2)[(v // 4) % 2], 'x')[v % 7 == 3]})
+    b._avatar = None if v % 23 == 22 else Log(log, 'avatar', playerVehicleID=(4, 0, None)[v % 3 if v % 5 == 1 else 0], team=(1, 2)[(v // 4) % 2], spaceID=3,
+                                              arena=Log(log, 'arena', vehicles={4: {'id': 4, 'team': 1}, 7: Log(log, 'av7', vehicleID=7, team=2)}),
+                                              guiSessionProvider=Log(log, 'gui', {'getArenaDP': lambda: arena_dp}))
+    return b
+globals()['present_shot_impulse'] = lambda math_module, appearance, direction, impulse: ('presented', repr(direction), impulse)
+globals()['is_gold_shell'] = lambda nation, name: (nation, name) == ('germany', 'ap')
+vehicle_effects = types.ModuleType('VehicleEffects')
+class Decoder(object):
+    @staticmethod
+    def decodeSegment(sticker, descriptor):
+        if sticker == 'boom': raise KeyError('sticker')
+        return {'a': ('hull', None, FVec(0, 0, 0), FVec(1, 2, 3)), 'b': ('', None, None, None), 'c': ('gun', None, FVec(0, 0, 0), FVec(0, 0, 1)),
+                'd': ('hull', None, FVec(1, 1, 1), FVec(1, 1, 1)), 'e': ('hull', None, FVec(0, 0, 0), FVec(0.0001, 0, 0))}[sticker]
+vehicle_effects.DamageFromShotDecoder = Decoder
+sys.modules['VehicleEffects'] = vehicle_effects
+events = [{'kind': 'hit', 'source': 'shot', 'damage': 120, 'shell_index': 1, 'damage_sticker': 'a', 'projectile_id': 'p1', 'event_id': 5},
+          {'kind': 'bot_hit', 'source': 'shot', 'damage': '7', 'shell_index': 9, 'splash': True, 'damage_sticker': 'c'},
+          {'kind': 'hit', 'source': 'fire', 'damage': 0}, {'kind': 'hit', 'source': 'shot', 'damage': 5000, 'damage_sticker': 'a'},
+          {'kind': 'bot_bot_hit', 'source': 'shot', 'damage': None, 'shell_index': -3, 'damage_sticker': 'boom', 'dead': False},
+          {'kind': 'hit', 'source': 'ram'}, {'kind': 'health', 'source': 'shot', 'damage_sticker': 'd', 'projectile_id': 7},
+          {'kind': 'hit', 'source': 'shot', 'damage': 40, 'damage_sticker': 'e', 'dead': True},
+          {'kind': 'bot_human_hit', 'source': 'shot', 'damage_sticker': 'b'}, {'source': 'bogus'}, {}]
+targets = [{'engine_id': 7, 'state': {'max_health': 800, 'alive': True, 'health': 300}, 'native_remote': True},
+           {'engine_id': 4, 'local': True, 'state': {'max_health': 0}},
+           {'engine_id': 9, 'state': None}, {'engine_id': '7', 'state': {'alive': False}}, {'state': {'health': 0}}]
+for variant in range(40):
+    for ei, event in enumerate(events):
+        for ti, target in enumerate(targets):
+            if (variant + ei + ti) % 3: continue
+            mk = lambda log, v=variant: feedback_battle(log, v)
+            run('_hit_damage_factor', lambda log, v=variant, e=event, t=target: (mk(log, v), (copy.deepcopy(e), copy.deepcopy(t))), (variant, ei, ti)); cases += 1
+            run('_impact_sound_identity', lambda log, v=variant, t=target: (mk(log, v), (copy.deepcopy(t), (7, None, 'x', 2.5)[v % 4], FVec(0, 1, 0), 33.0)), (variant, ti)); cases += 1
+            run('_decoded_hit_impulse_direction', lambda log, v=variant, e=event, t=target: (mk(log, v), (copy.deepcopy(e), copy.deepcopy(t))), (variant, ei, ti)); cases += 1
+            run('_present_hit_impulse', lambda log, v=variant, e=event, t=target: (mk(log, v), (copy.deepcopy(e), copy.deepcopy(t),
+                {'targetImpulse': (2.0, 0, 'x', -1)[(v // 4) % 4]} if v % 5 else Log(log, 'fx', targetImpulse=4.0), FVec(1, 0, 0) if v % 2 else None)), (variant, ei, ti)); cases += 1
+            run('_report_effect', lambda log, v=variant, e=event: (mk(log, v), ('armour_hit', 'armorHit', v, (1.0, 2.0, 3.0), FVec(0, 1, 0) if v % 2 else (0, 1, 0)) +
+                ((copy.deepcopy(e),) if v % 3 else ())), (variant, ei)); cases += 1
+            run('_report_hit_impulse', lambda log, v=variant, t=target: (mk(log, v), (copy.deepcopy(t), FVec(0.1, 0.2, 0.3) if v % 2 else None, 2.5, v % 3)), (variant, ti)); cases += 1
+            run('_feedback_shell_fields', lambda log, v=variant, e=event, t=target: (mk(log, v), (copy.deepcopy(e), None if v % 6 == 0 else copy.deepcopy(t))), (variant, ei, ti)); cases += 1
+            run('_event_shell', lambda log, v=variant, e=event, t=target: (mk(log, v), (copy.deepcopy(t), copy.deepcopy(e))), (variant, ei, ti)); cases += 1
+            run('_projectile_cosmetic_allowed', lambda log, v=variant, e=event: (mk(log, v), (copy.deepcopy(e) if v % 4 else 'raw',
+                {'p1': {'admitted': v % 2}, '7': {}} if v % 3 else {'p1': None})), (variant, ei)); cases += 1
+    run('_surface_effect_material', lambda log, v=variant: (feedback_battle(log, v), ((1.0, 2.0, 3.0) if v % 2 else {'x': 1, 'y': 2, 'z': 3},)), (variant,)); cases += 1
+    run('_release_target_lock', lambda log, v=variant: (feedback_battle(log, v), (7,)), (variant,)); cases += 1
+    for shell in (FObj('gold', id=(1, 3), name='ap'), {'id': [0], 'name': 'ap'}, {'id': (5,), 'name': 'x'}, {'id': ('x',), 'name': 'x'},
+                  {'id': 3, 'name': 'x'}, {'id': (), 'name': 'x'}, {'name': None}):
+        run('_shell_is_gold', lambda log, v=variant, sh=shell: (feedback_battle(log, v), (sh,)), (variant, repr(shell)[:20])); cases += 1
+    run('_report_feedback_shell_failure', lambda log, v=variant: (feedback_battle(log, v), (('seen', 'new reason', 'z')[v % 3],)), (variant,)); cases += 1
+    run('_fallback_postmortem_viewpoint', lambda log, v=variant: (feedback_battle(log, v), ((7, '7', 8)[v % 3],)), (variant,)); cases += 1
+    for target in ({'engine_id': 7, 'state': {'team': 2}}, {'engine_id': 7, 'local': True}, {'engine_id': 'x'}, {'engine_id': 7, 'state': None, 'dead_marker_known': True}):
+        run('_report_local_kill_contract', lambda log, v=variant, t=target: (feedback_battle(log, v), (copy.deepcopy(t), (4, 7, 'x', None)[v % 4], (2, 'r')[v % 11 == 10])), (variant, repr(target)[:20])); cases += 1
+sys.stdout = sys.__stdout__
+
+# Snapshot ingest.
+def ingest_battle(log, v):
+    b = battle(log)
+    b.state = ('running', 'failed', 'leaving', 'loading')[v % 4 if v % 9 == 0 else 0]
+    b._last_snapshot = {'previous': True}
+    b._worker_mode = v % 5 == 4
+    for name in ('_ack_local_ram_contacts', '_ack_local_destructible_contacts', '_observe_destructibles_disabled',
+                 '_observe_projectile_message', '_reconcile_projectile_snapshot', '_reconcile_detached_turret_snapshot',
+                 '_apply_battle_result', '_apply_destructible_state', '_reconcile_bot_authority', '_remember_ram_bot_snapshot',
+                 '_ignore_live_payload', '_apply_rules'):
+        fail = (v // 3) % 13 == len(name) % 13 and v % 2
+        stub(b, log, name, (lambda fail=fail, name=name: (lambda *a, **k: (_ for _ in ()).throw(ValueError(name)) if fail else name))())
+    def restore(snapshot, present=False):
+        log.append(('restore', present))
+        b._last_snapshot = dict(snapshot, restored=v % 7 == 3) if v % 7 == 3 else snapshot
+    b._restore_local_equipment_snapshot = restore
+    b._bots = None if v % 4 == 0 else Log(log, 'bots', {'apply_snapshot': (lambda s: (_ for _ in ()).throw(KeyError('bots'))) if v % 11 == 10 else None})
+    b._sync = None if v % 6 == 0 else Log(log, 'sync', {'snapshot': (lambda m: (_ for _ in ()).throw(RuntimeError('sync'))) if v % 8 == 7 else []})
+    callback = lambda *a: log.append(('onTeamBasePointsUpdate',) + a)
+    arena = Log(log, 'arena', missing=('onTeamBasePointsUpdate',))
+    if v % 7:
+        arena.onTeamBasePointsUpdate = callback
+    b._avatar = Log(log, 'avatar', arena=arena)
+    b._rules_state = {} if v % 3 else {'bases': {'1': {'points': 5, 'time_left': 0.0, 'invaders': 1, 'stopped': False}}}
+    return b
+snapshots = [None, {}, {'rules': {'bases': {'1': {'points': 5, 'invaders': 1}}}, 'battle_result': {'winner': 1}, 'destructibles': [1]},
+             {'bot_authority_id': 9, 'rules': None}, {'battle_result': None, 'bots': [1]}, 'not a dict']
+rule_sets = [None, {}, {'bases': None}, {'bases': {'1': {'points': 120, 'time_left': -3, 'invaders': 2.9, 'stopped': 1}, 2: {'points': '7'}}},
+             {'bases': {'1': {'points': 5, 'time_left': 0, 'invaders': 1}, '2': None}}, {'bases': {'1': {'points': 'x'}}},
+             {'bases': {'2': {'points': -4, 'time_left': float('nan'), 'invaders': 'y'}}}]
+for variant in range(60):
+    for si, snapshot in enumerate(snapshots):
+        run('on_snapshot', lambda log, v=variant, m=snapshot: (ingest_battle(log, v), (copy.deepcopy(m),)), (variant, si)); cases += 1
+    for ri, rules in enumerate(rule_sets):
+        def make(log, v=variant, r=rules):
+            b = ingest_battle(log, v)
+            del b.__dict__['_apply_rules']
+            return b, (copy.deepcopy(r),)
+        run('_apply_rules', make, (variant, ri)); cases += 1
+
+# Local gun tick and observation.
+AMMO_SECONDS = 0.1
+for variant in range(48):
+    def make(log, v=variant):
+        b = battle(log)
+        if v % 9 == 8: b._replay_mode = v % 2 == 0
+        b.state = ('running', 'loading')[v % 7 == 6]
+        b._server = None if v % 11 == 10 else Log(log, 'server', vehicle_id=4)
+        stub(b, log, '_server_entity', 'entity')
+        stub(b, log, '_advance_local_gun_to', (lambda e: (_ for _ in ()).throw(ValueError('gun'))) if v % 5 == 4 else 'gun')
+        stub(b, log, '_sync_local_server_marker', True)
+        stub(b, log, '_run_optional_feature', lambda name, fn, args=(), *rest, **kw: fn(*args))
+        stub(b, log, '_fail')
+        stub(b, log, '_schedule')
+        return b, ()
+    run('_ammo_tick', make, (variant,)); cases += 1
+    def make(log, v=variant):
+        b = battle(log)
+        rotator = Log(log, 'rotator', showServerMarker=(True, False, 1, 0)[v % 4])
+        b._avatar = Log(log, 'avatar', missing=('gunRotator',) if v % 5 == 4 else ())
+        if v % 5 != 4: b._avatar.gunRotator = None if v % 7 == 6 else rotator
+        b._entity_probe = rotator
+        return b, ()
+    run('_sync_local_server_marker', make, (variant,)); cases += 1
+    for message in ({'type': 'bot_observation', 'contacts': [{'target_kind': 'human', 'target_id': 4, 'observing_team': 2, 'fresh': True}]},
+                    {'type': 'bot_observation', 'contacts': [7, {'target_kind': 'bot'}, {'target_kind': 'human', 'target_id': '4', 'observing_team': 1, 'fresh': 1},
+                                                             {'target_kind': 'human', 'target_id': 4, 'observing_team': 3, 'fresh': 0}]},
+                    {'type': 'bot_observation', 'contacts': None}, {'type': 'snapshot'}, {'type': 'bot_observation', 'contacts': [{'target_kind': 'human', 'target_id': 'x'}]},
+                    {'type': 'bot_observation', 'contacts': ({'target_kind': 'human', 'target_id': 4, 'observing_team': 2, 'fresh': True},)}):
+        def make(log, v=variant, m=message):
+            b = battle(log)
+            b._sixth_sense = None if v % 6 == 5 else Log(log, 'sixth')
+            b.client = Log(log, 'client', player_id=(4, '4')[v % 2], team=(1, 2)[v % 3 == 2])
+            return b, (copy.deepcopy(m), 12.5)
+        run('_observe_local_vehicle', make, (variant, repr(message)[:30])); cases += 1
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))

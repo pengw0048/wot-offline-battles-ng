@@ -257,6 +257,14 @@ inline p::Ref dispatch(PyObject* battle, const char* name, const char* port, std
     if (!fn) fn = nativePort(port);
     return p::Ref(fn(nullptr, tuple.get()));
 }
+// BattleRuntime._combat_event_source (staticmethod)
+inline p::Ref combatEventSource(PyObject* event) {
+    if (!PyDict_GetItemString(event, "source")) raise("ordered combat event has no source");
+    auto source = get(event, "source");
+    if (!textIn(source.get(), {"shot", "fire", "ram", "client_simulation", "player_left", "environment"}))
+        raise("ordered combat event has invalid source: " + p::string(str(source.get()).get()));
+    return source;
+}
 inline p::Ref recordsGet(PyObject* battle, PyObject* k) { return method(attr(battle, "_records").get(), "get", k); }
 // self._run_optional_feature(name, fn, args)
 inline p::Ref optionalFeature(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {

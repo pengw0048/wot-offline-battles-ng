@@ -26,14 +26,6 @@ p::Ref stunEntityKey(PyObject* event) {
         raise("stun event has an invalid target identity");
     return key(p::string(str(kind.get()).get()).c_str(), integer(strictInt(target.get())).get());
 }
-// BattleRuntime._combat_event_source (staticmethod)
-p::Ref combatEventSource(PyObject* event) {
-    if (!PyDict_GetItemString(event, "source")) raise("ordered combat event has no source");
-    auto source = get(event, "source");
-    if (!textIn(source.get(), {"shot", "fire", "ram", "client_simulation", "player_left", "environment"}))
-        raise("ordered combat event has invalid source: " + p::string(str(source.get()).get()));
-    return source;
-}
 bool pendingCreate(PyObject* battle, PyObject* k) { return member(attr(battle, "_pending_bot_creates").get(), k); }
 
 PyObject* pendingEventReferences(PyObject*, PyObject* args) {
@@ -1182,7 +1174,7 @@ PyObject* presentCombatHit(PyObject*, PyObject* args) {
             !textIn(method(event, "get", p::text("kind").get()).get(), {"hit", "bot_hit", "bot_human_hit", "bot_bot_hit"}))
             Py_RETURN_FALSE;
         if (!truthy(method(event, "get", p::text("world_pose").get()))) raise("shot hit event has no world impact pose");
-        auto shell_pair = unpack(method(battle, "_event_shell", attacker_record, event).get(), 2);
+        auto shell_pair = unpack(dispatch(battle, "_event_shell", "event_shell", {attacker_record, event}, {g}).get(), 2);
         PyObject *shot = shell_pair[0].get(), *shell = shell_pair[1].get();
         auto attacker_position = method(battle, "_record_position", attacker_record);
         auto target_position = method(battle, "_record_position", target_record);
@@ -1240,7 +1232,7 @@ PyObject* presentCombatHit(PyObject*, PyObject* args) {
         // Retail rocks the hull before it spawns the armour effect.
         p::Ref impulse_args(PyTuple_Pack(4, event, target_record, effects_descr.get(), direction.get()));
         optionalFeature(battle, "vehicle hit impulse", attr(battle, "_present_hit_impulse").get(), impulse_args.get());
-        auto damage_factor = method(battle, "_hit_damage_factor", event, target_record);
+        auto damage_factor = dispatch(battle, "_hit_damage_factor", "hit_damage_factor", {event, target_record}, {g});
         if (truthy(method(event, "get", p::text("splash").get(), Py_False)))
             return method(battle, "_present_splash_hit", target_record, effects_descr.get(), effects_index.get(), impact.get(),
                           direction.get(), damage_factor.get()).release();
@@ -1255,15 +1247,20 @@ PyObject* presentCombatHit(PyObject*, PyObject* args) {
         if (!callableAttr(terrain.get(), "addNew", add_effect)) raise("#1513 terrain hit-effects boundary is unavailable");
         if (!truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text("projectile impact presentation").get()})))
             Py_RETURN_FALSE;
-        callKw(battle, "_report_effect", {p::text("armour_hit").get(), effect_group.get(), effects_index.get(), number3(g, event).get(),
-                                          direction.get()}, {{"event", event}});
+        {
+            auto kind = p::text("armour_hit");
+            auto where = number3(g, event);
+            dispatch(battle, "_report_effect", "report_effect", {kind.get(), effect_group.get(), effects_index.get(), where.get(), direction.get()},
+                     {{"event", event}}, {kind.get(), effect_group.get(), effects_index.get(), where.get(), direction.get(), event, g});
+        }
         try {
             const bool local = truthy(method(target_record, "get", p::text("local").get()));
             auto offset = method(direction.get(), "scale", p::number(0.4).get());
             p::Ref start(PyNumber_Subtract(hit_position.get(), offset.get()));
             auto far_offset = method(direction.get(), "scale", p::number(0.4).get());
             p::Ref end(PyNumber_Add(hit_position.get(), far_offset.get()));
-            auto identity = method(battle, "_impact_sound_identity", target_record, attacker_id, direction.get(), damage_factor.get());
+            auto identity = dispatch(battle, "_impact_sound_identity", "impact_sound_identity",
+                                     {target_record, attacker_id, direction.get(), damage_factor.get()}, {g});
             p::Ref positional(PyTuple_Pack(4, hit_position.get(), parts[1].get(), parts[0].get(), Py_None));
             callWithMapping(add_effect.get(), positional.get(), {{"dir", direction.get()}, {"start", start.get()}, {"end", end.get()},
                             {"showShockWave", local ? Py_True : Py_False}, {"showFlashBang", local ? Py_True : Py_False}}, identity.get());

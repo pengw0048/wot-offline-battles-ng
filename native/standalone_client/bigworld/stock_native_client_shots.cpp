@@ -1277,7 +1277,7 @@ PyObject* projectileExplosion(PyObject*, PyObject* args) {
             if (!PyErr_Occurred() || !effectsLookupError()) throw;
             PyErr_Clear(); Py_RETURN_NONE;
         }
-        auto material = method(battle, "_surface_effect_material", impact);
+        auto material = dispatch(battle, "_surface_effect_material", "surface_effect_material", {impact}, {g});
         if (material.get() == Py_None) Py_RETURN_NONE;
         auto velocity = method(meta.get(), "get", p::text("terminal_velocity").get());
         if (!truthy(velocity) || PyObject_Size(p::Ref(PySequence_Tuple(velocity.get())).get()) < 3) {
@@ -1290,8 +1290,9 @@ PyObject* projectileExplosion(PyObject*, PyObject* args) {
         if (direction.get() == Py_None) Py_RETURN_NONE;
         auto event = p::dict();
         put(event.get(), "projectile_id", p::retain(projectile_id));
-        callKw(battle, "_report_effect", {p::text("world_explosion").get(), material.get(), effects_index.get(), impact, direction.get()},
-               {{"event", event.get()}});
+        auto kind = p::text("world_explosion");
+        dispatch(battle, "_report_effect", "report_effect", {kind.get(), material.get(), effects_index.get(), impact, direction.get()},
+                 {{"event", event.get()}}, {kind.get(), material.get(), effects_index.get(), impact, direction.get(), event.get(), g});
         return PyTuple_Pack(3, effects_descr.get(), material.get(), direction.get());
     } catch (const std::exception& e) { return fail(e); }
 }
@@ -1365,7 +1366,12 @@ PyObject* presentProjectileWreckHit(PyObject*, PyObject* args) {
         if (!PyCallable_Check(add_effect.get()) ||
             !truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text("projectile impact presentation").get()})))
             Py_RETURN_FALSE;
-        method(battle, "_report_effect", p::text("wreck_hit").get(), p::text("armorHit").get(), effects_index.get(), impact.get(), direction.get());
+        {
+            auto kind = p::text("wreck_hit");
+            auto material = p::text("armorHit");
+            dispatch(battle, "_report_effect", "report_effect", {kind.get(), material.get(), effects_index.get(), impact.get(), direction.get()},
+                     {}, {kind.get(), material.get(), effects_index.get(), impact.get(), direction.get(), Py_None, g});
+        }
         try {
             // The #1513 impact trio needs the shooter and target identities, as for a live vehicle hit.
             auto offset = method(direction.get(), "scale", p::number(0.4).get());
@@ -1373,7 +1379,8 @@ PyObject* presentProjectileWreckHit(PyObject*, PyObject* args) {
             auto far_offset = method(direction.get(), "scale", p::number(0.4).get());
             p::Ref end(PyNumber_Add(hit_position.get(), far_offset.get()));
             auto attacker = dispatch(battle, "_projectile_attacker_engine_id", "projectile_attacker_engine_id", {meta.get()});
-            auto identity = method(battle, "_impact_sound_identity", target_record.get(), attacker.get(), direction.get(), pyFloat(0.).get());
+            auto identity = dispatch(battle, "_impact_sound_identity", "impact_sound_identity",
+                                     {target_record.get(), attacker.get(), direction.get(), pyFloat(0.).get()}, {g});
             p::Ref positional(PyTuple_Pack(4, hit_position.get(), parts[1].get(), parts[0].get(), Py_None));
             callWithMapping(add_effect.get(), positional.get(), {{"dir", direction.get()}, {"start", start.get()}, {"end", end.get()},
                             {"showShockWave", Py_False}, {"showFlashBang", Py_False}}, identity.get());
