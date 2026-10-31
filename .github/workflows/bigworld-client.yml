@@ -55,16 +55,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # Windows System32 tar hangs on this xz stream and produces no output.
-          $tar = Join-Path $env:ProgramFiles "Git\usr\bin\tar.exe"
-          if (-not (Test-Path -LiteralPath $tar)) {
-              throw "Git tar is required to extract the Wwise SDK."
-          }
-          # A drive-letter path contains a colon. Without --force-local, this tar
-          # treats "D:" as a remote host and waits on that connection.
-          $dest = Join-Path $PWD "wwise-sdk"
-          New-Item -ItemType Directory -Path $dest | Out-Null
-          & $tar --force-local -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
+          # Windows tar treats a drive-letter path as a remote host, so it either
+          # waits on "D:" or rewrites the path. Python reads the local archive.
+          $env:WWISE_ARCHIVE = Join-Path $PWD "wwise-private\wwise-sdk.tar.xz"
+          $env:WWISE_DEST = Join-Path $PWD "wwise-sdk"
+          New-Item -ItemType Directory -Path $env:WWISE_DEST | Out-Null
+          @'
+import os, sys, tarfile
+kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+with tarfile.open(os.environ["WWISE_ARCHIVE"], "r:xz") as archive:
+    archive.extractall(os.environ["WWISE_DEST"], **kwargs)
+'@ | py -3 -
           if ($LASTEXITCODE -ne 0) { throw "The licensed Wwise SDK archive could not be extracted." }
       - name: Select the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
