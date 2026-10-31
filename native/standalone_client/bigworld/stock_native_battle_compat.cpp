@@ -246,20 +246,27 @@ bool undrawnLanRemote(PyObject* entity) {
     auto& s = stock_state;
     const bool vehicle = s.vehicle_getattribute && s.vehicle_type && PyObject_IsInstance(entity, s.vehicle_type.get()) == 1;
     PyErr_Clear();
-    auto read = [&](const char* name) -> p::Ref {
-        if (vehicle) return call(s.vehicle_getattribute, {entity, p::text(name).get()});
-        return p::Ref(PyObject_GetAttrString(entity, name));
-    };
-    try {
-        if (!p::flag(read("_offlineNativeRemote").get())) return false;
-        return !p::flag(read("_offlineNativeDrawVisible").get());
-    } catch (const p::Error&) {
-        if (PyErr_ExceptionMatches(PyExc_AttributeError) || PyErr_ExceptionMatches(PyExc_ReferenceError) || PyErr_ExceptionMatches(PyExc_TypeError)) {
+    static PyObject* const remote_name = PyString_InternFromString("_offlineNativeRemote");
+    static PyObject* const drawn_name = PyString_InternFromString("_offlineNativeDrawVisible");
+    // Hot hook path: a missing marker is the common case, so it is read without raising a C++ exception.
+    auto read = [&](PyObject* name, bool& present) -> bool {
+        PyObject* raw = vehicle ? PyObject_CallFunctionObjArgs(s.vehicle_getattribute.get(), entity, name, nullptr) : PyObject_GetAttr(entity, name);
+        if (!raw) {
+            if (!PyErr_ExceptionMatches(PyExc_AttributeError) && !PyErr_ExceptionMatches(PyExc_ReferenceError) && !PyErr_ExceptionMatches(PyExc_TypeError))
+                throw p::Error("native remote draw marker read failed");
             PyErr_Clear();
+            present = false;
             return false;
         }
-        throw;
-    }
+        present = true;
+        const int truth = PyObject_IsTrue(raw);
+        Py_DECREF(raw);
+        if (truth < 0) throw p::Error("native remote draw marker is invalid");
+        return truth != 0;
+    };
+    bool present = false;
+    if (!read(remote_name, present)) return false;
+    return !read(drawn_name, present) && present;
 }
 
 // ---- installation ---------------------------------------------------------------------------------------------

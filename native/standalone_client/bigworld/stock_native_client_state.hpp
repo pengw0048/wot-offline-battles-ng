@@ -47,6 +47,8 @@ public:
 struct Value {
     enum class Kind {Null,Boolean,Integer,Number,Text,Array,Object,Shared};
     Kind kind=Kind::Null;bool boolean=false;std::int64_t integer=0;double number=0.;
+    // An Integer above int64 (wire u64, e.g. damage stickers): `integer` holds its bits.
+    bool unsigned_integer=false;
     std::string text;std::vector<Value> array;ObjectFields object;
     std::shared_ptr<const Value> reference;
     const Value& resolved()const{return reference?reference->resolved():*this;}

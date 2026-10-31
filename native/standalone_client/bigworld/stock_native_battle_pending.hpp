@@ -24,7 +24,6 @@ std::optional<double> estimatedServerTimeMs(Battle& b, double now);
 bool inLineage(Battle& b, const Value& projectile_id);
 void rememberLineage(Battle& b, const Value& shot_event);
 bool missingAttackerAllowed(Battle& b, const Value& event);
-std::int64_t maxDamageSticker(Battle& b);
 std::optional<double> presentationDue(Battle& b, const Value& terminal_event);
 void observeMessage(Battle& b, const Value& message);
 }

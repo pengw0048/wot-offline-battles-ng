@@ -121,8 +121,6 @@ bool missingAttackerAllowed(Battle& b, const Value& event) {
     const auto& projectile = event.get("projectile_id");
     return !isNull(projectile) && inLineage(b, projectile);
 }
-// lan_client.MAX_PROJECTILE_DAMAGE_STICKER is (1 << 64) - 1; the event reader holds a sticker as int64.
-std::int64_t maxDamageSticker(Battle&) { return std::numeric_limits<std::int64_t>::max(); }
 
 // A Bot terminal waits until its displayed flight reaches the resolved time.
 std::optional<double> presentationDue(Battle& b, const Value& terminal_event) {

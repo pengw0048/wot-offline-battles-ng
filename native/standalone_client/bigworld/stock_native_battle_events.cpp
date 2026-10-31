@@ -258,8 +258,9 @@ void validateCombat(Battle& b, const Value& event) {
         throw p::Error("ordered combat event has inconsistent blocked_damage");
     if (has(event, "damage_sticker")) {
         const auto& sticker = field(event, "damage_sticker");
-        if (source != "shot" || field(event, "splash").truth() || !exactInteger(sticker) || integer(sticker) < 0 ||
-            integer(sticker) > projectiles::maxDamageSticker(b))
+        // Stickers span the full u64 range (2**64 - 1), as the pinned check allowed.
+        if (source != "shot" || field(event, "splash").truth() || !exactInteger(sticker) ||
+            (!sticker.resolved().unsigned_integer && integer(sticker) < 0))
             throw p::Error("ordered combat event has invalid damage_sticker");
     }
     const auto attacker = entityKey(event, true);
