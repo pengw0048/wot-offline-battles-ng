@@ -18,7 +18,12 @@ Stock stock_state;
 Scopes scope_state;
 
 // ---- hook objects ---------------------------------------------------------------------------------------------
-struct Hook { PyObject_HEAD Body body; const char* name; };
+// Stock Event owners hold weak references to their handlers, so hooks support them.
+struct Hook { PyObject_HEAD Body body; const char* name; PyObject* weakrefs; };
+void hookDealloc(PyObject* self) {
+    if (reinterpret_cast<Hook*>(self)->weakrefs) PyObject_ClearWeakRefs(self);
+    PyObject_Del(self);
+}
 PyTypeObject hook_type = {PyVarObject_HEAD_INIT(nullptr, 0) "offline_native_battle.StockHook"};
 PyObject* hookCall(PyObject* self, PyObject* args, PyObject* kwargs) { return reinterpret_cast<Hook*>(self)->body(args, kwargs); }
 // Bind like a Python function so an installed hook receives the instance first.
@@ -133,6 +138,8 @@ void readyTypes() {
     hook_type.tp_basicsize = sizeof(Hook);
     hook_type.tp_flags = Py_TPFLAGS_DEFAULT;
     hook_type.tp_call = hookCall;
+    hook_type.tp_dealloc = hookDealloc;
+    hook_type.tp_weaklistoffset = offsetof(Hook, weakrefs);
     hook_type.tp_descr_get = hookBind;
     hook_type.tp_repr = hookRepr;
     ready(hook_type);
@@ -171,6 +178,7 @@ p::Ref hook(Body body, const char* name) {
     if (!h) throw p::Error("native stock hook allocation failed");
     h->body = body;
     h->name = name;
+    h->weakrefs = nullptr;
     return p::Ref(reinterpret_cast<PyObject*>(h));
 }
 p::Ref constant(PyObject* value) { return p::Ref(PyCFunction_NewEx(&constant_def, value, nullptr)); }
