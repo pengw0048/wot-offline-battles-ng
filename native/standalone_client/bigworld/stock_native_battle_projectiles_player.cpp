@@ -196,7 +196,6 @@ class Owner final : public PlayerProjectiles {
     static constexpr double shot_camouflage_ = .75;
     std::int64_t current_setting_ = 0, next_setting_ = 0, partial_setting_ = 0;
 
-    PyObject* shell(const Battle& b) const { return b.engine.shell.get(); }
     Actor& local() {
         auto* a = state_->find("player:" + std::to_string(state_->local_player_id));
         if (!a || !a->local || !a->ready || !a->has_current || a->tombstone) throw p::Error("Native projectile local actor is unavailable");
@@ -275,12 +274,13 @@ class Owner final : public PlayerProjectiles {
         t.stickers = stickers_[t.shell];
         const auto* g = stock_native_client_query::geometry(a);
         if (!g) return false;
-        auto access = stock_native_client_drive::driverAccess(shell(b));
+        auto access = stock_native_client_drive::driverAccess(b);
         if (!access.driver) return false;
         auto& controls = access.driver->controls();
         controls.aim_yaw = a.current[3] + turret;
         controls.gun_pitch = pitch;
-        stock_native_client_input::mirrorControls(shell(b));
+        b.local->controls.aim_yaw = controls.aim_yaw;
+        b.local->controls.gun_pitch = controls.gun_pitch;
         BW::Matrix body, turret_world, gun_world;
         stabilised_->matrix(body);
         turret_world.setRotateY(float(turret));
@@ -423,7 +423,7 @@ class Owner final : public PlayerProjectiles {
 public:
     Owner(Battle& b, std::int64_t sequence)
         : state_(b.vehicles), epoch_(state_->epoch), generation_(b.generation), client_(b.engine.client),
-          scene_(stock_native_client_drive::sceneAccess(b.engine.shell.get())),
+          scene_(stock_native_client_drive::sceneAccess(b)),
           world_(state_, scene_, stock_native_client_query::projectileTurrets(b.engine.shell.get())), flights_(world_), lifecycle_(flights_) {
         if (!scene_.registry || !scene_.scene || !scene_.pipeline) throw p::Error("Native player projectile scene is unavailable");
         if (!world_.install(b)) throw p::Error("Native player projectile world installation failed");
@@ -551,7 +551,7 @@ public:
         auto& a = local();
         if (!a.alive) return reject("player_dead");
         if (a.siege_state == 1 || a.siege_state == 3) return reject("siege_switching");
-        stock_native_client_drive::synchronizeStatus(shell(b), now);
+        stock_native_client_drive::synchronizeStatus(b, now);
         auto status = stock_native_client_drive::status(a);
         if (!status) throw p::Error("Native player projectile critical status is unavailable");
         const auto& crew = status->critical().crew_roster;
@@ -573,7 +573,7 @@ public:
         frozen.shell = gun->shot;
         frozen.mounted = shots_[gun->shot];
         frozen.stickers = stickers_[gun->shot];
-        if (!stock_native_client_input::sendCurrentAt(shell(b), now)) return reject("input_send_failed");
+        if (!stock_native_client_input::sendCurrentAt(b, now)) return reject("input_send_failed");
         frozen.input_sequence = p::integral(client_.get(), "_input_seq");
         if (!world_.ingress(b, now)) throw p::Error("Native player projectile world ingress failed");
         const auto* pending = lifecycle_.begin(frozen, *gun, world_.random(), [](Point value) {

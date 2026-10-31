@@ -431,9 +431,8 @@ double rememberTrackTurn(Actor& vehicle, double yaw, double now) {
 
 bool tracks(Battle& b, Actor& vehicle, double yaw, double now) {
     // Belt scroll and engine mode are presentation owned by the visible client.
-    if (b.worker || !b.engine.remote_factory) return false;
-    auto engine = p::integer(vehicle.engine_id);
-    auto entity = py::call(b.engine.remote_factory.get(), "get", engine.get());
+    if (b.worker || !vehicle.engine_id) return false;
+    auto entity = b.entity(vehicle.engine_id);
     if (entity.get() == Py_None) return false;
     if (vehicle.native_remote && PyObject_HasAttrString(entity.get(), "_offlineNativeDrawVisible") &&
         !p::flag(py::attr(entity.get(), "_offlineNativeDrawVisible").get()) && !vehicle.presented.track_pending)
@@ -442,11 +441,10 @@ bool tracks(Battle& b, Actor& vehicle, double yaw, double now) {
 }
 
 bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now) {
-    if (b.worker || !b.engine.remote_factory) return false;
+    if (b.worker || !vehicle.engine_id) return false;
     const auto& shown = vehicle.presented;
     if (shown.track_next_update > 0. && now + 1.0e-9 < shown.track_next_update) return false;
-    auto engine = p::integer(vehicle.engine_id);
-    auto entity = py::call(b.engine.remote_factory.get(), "get", engine.get());
+    auto entity = b.entity(vehicle.engine_id);
     if (entity.get() == Py_None) return false;
     return feedTracks(b, vehicle, entity.get(), turn, now);
 }
@@ -537,18 +535,6 @@ bool reconcileAuthority(Battle& b, PyObject* player_id) {
     auto result = p::value(snapshot.get(), "battle_result");
     if (result.get() != Py_None) p::set(start.get(), "battle_result", result);
     dispatchOutgoing(b, py::call(runtime, "battle_start", start.get()).get());
-    if (b.engine.remote_factory) {
-        // Native pose providers interpolate only while this client owns the Bots.
-        auto setter = py::optional(b.engine.remote_factory.get(), "set_entity_interpolate_motion");
-        const bool local = PyObject_RichCompareBool(player_id, p::integer(b.local_player).get(), Py_EQ) == 1;
-        if (py::callable(setter))
-            for (auto& entry : b.vehicles->actors) {
-                auto& v = *entry.second;
-                if (v.kind != "bot" || !v.native_remote || v.tombstone) continue;
-                auto engine = p::integer(v.engine_id);
-                if (p::flag(py::invoke(setter.get(), engine.get(), p::boolean(local).get()).get())) v.presented.track_turn_sample.reset();
-            }
-    }
     return true;
 }
 
