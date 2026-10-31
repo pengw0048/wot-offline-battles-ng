@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 struct _object;
+namespace native_battle { struct Battle; }
 namespace stock_native_client_weapon_runtime {
 using Gun=stock_native_client_weapon::Gun;
 bool audioDue(std::optional<double> deadline,double now);
@@ -80,11 +81,26 @@ public:
     double enginePowerFactor()const;
     double repairBonus()const;
 };
-// These preserve one gun identity and exact shared-state/scene epoch. They do
-// not call Python gun/critical/equipment business methods. Only changed stock
-// HUD/audio presentation edges may enter the interpreter.
-Gun* advanceWeapon(_object* battle,double now);
+// These preserve one gun identity and exact shared-state/scene epoch. They do not call Python gun, critical or
+// equipment business methods; only changed stock HUD and audio edges reach the Avatar.
+Gun* advanceWeapon(native_battle::Battle&,double now);
 // A queued contact checkpoint retains the motion that produced that input.
+Gun* advanceWeaponMotion(native_battle::Battle&,double now,double speed,double turn);
+Gun* bindWeapon(native_battle::Battle&,_object* entity);
+double reloadFactor(native_battle::Battle&);
+double activeEnginePowerFactor(native_battle::Battle&);
+double activeRepairBonus(native_battle::Battle&);
+Checkpoint checkpoint(native_battle::Battle&,double now);
+Checkpoint currentCheckpoint(native_battle::Battle&);
+int livingSkillCount(native_battle::Battle&,const std::string& skill);
+int livingSkillCount(const stock_native_client_state::Value&,const std::string&,const std::set<std::string>&);
+void refreshWeapon(native_battle::Battle&,double now);
+void closeWeapon(native_battle::Battle&);
+bool audioFrame(native_battle::Battle&,double now);
+bool equipmentSnapshot(native_battle::Battle&,const stock_native_client_state::Value& snapshot,bool present);
+bool publish(native_battle::Battle&,const std::string& kind,double now,bool force,double remaining,double duration);
+// Native modules of other subsystems still pass the battle shell; these reach the current round's gun.
+Gun* advanceWeapon(_object* battle,double now);
 Gun* advanceWeaponMotion(_object* battle,double now,double speed,double turn);
 double reloadFactor(_object* battle);
 double activeEnginePowerFactor(_object* battle);
@@ -92,12 +108,4 @@ double activeRepairBonus(_object* battle);
 Checkpoint checkpoint(_object* battle,double now);
 Checkpoint currentCheckpoint(_object* battle);
 int livingSkillCount(_object* battle,const std::string& skill);
-int livingSkillCount(const stock_native_client_state::Value&,const std::string&,const std::set<std::string>&);
-_object* bind(_object*,_object*);
-_object* refresh(_object*,_object*);
-_object* advance(_object*,_object*);
-_object* audioFrame(_object*,_object*);
-_object* equipmentIngress(_object*,_object*);
-_object* publish(_object*,_object*);
-_object* close(_object*,_object*);
 }
