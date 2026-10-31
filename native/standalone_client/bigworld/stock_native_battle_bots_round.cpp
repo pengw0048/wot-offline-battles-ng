@@ -107,7 +107,7 @@ std::string pyStr(const Value& v) {
         return r.text;
     case Kind::Number: {
         char buffer[64];
-        std::snprintf(buffer, sizeof(buffer), "%.12g", r.number);
+        snprintf(buffer, sizeof(buffer), "%.12g", r.number);
         std::string s(buffer);
         if (s.find_first_of(".eni") == std::string::npos) s += ".0";
         return s;
@@ -944,7 +944,7 @@ void prepareSpgPositions(RoundSeed& seed, const std::string& map_name, const Val
         bot->state.object["_spg_initial_status"] = text(outcome->second);
         const Value* p = plan != plans.end() ? &plan->second : nullptr;
         char point[160] = "-";
-        if (p) std::snprintf(point, sizeof(point), "(%.12g, %.12g, %.12g)", at(at(*p, "point"), "x").numeric(),
+        if (p) snprintf(point, sizeof(point), "(%.12g, %.12g, %.12g)", at(at(*p, "point"), "x").numeric(),
                              at(at(*p, "point"), "y").numeric(), at(at(*p, "point"), "z").numeric());
         log("SPG INITIAL map=" + map_name + " bot=" + std::to_string(id) + " status=" + outcome->second + " side=" +
             (p ? at(*p, "side").resolved().text : "-") + " zone=" + (p ? at(*p, "zone").resolved().text : "-") + " cell=" +
