@@ -10,7 +10,6 @@ struct BotAuthority {
     Object runtime;
     Object native;          // offline_bot_runtime_native
     Object owner;           // the native simulation owner, created when this client becomes the authority
-    Object artillery;       // ArtilleryController (visible-client SPG arcs)
     Object last_snapshot;   // the latest accepted snapshot message, for an authority takeover
     // One manifest enqueue tenure: generation, round, authority id, authority epoch.
     double next_manifest_retry = 0., manifest_retry_deadline = 0.;
@@ -28,13 +27,13 @@ struct BotAuthority {
 
 namespace bots {
 // Startup installs the round's BotRuntime; retirement closes the native owner.
-void install(Battle& b, PyObject* runtime, PyObject* artillery);
+void install(Battle& b, PyObject* runtime);
 void retire(Battle& b);
 // The worker's native owner drives this round's Bots (the pinned native_bot_runtime.enabled).
 bool enabled(const Battle& b);
 bool isAuthority(const Battle& b);
 
-// Per frame while live: artillery arcs, the Bot simulation step and its outgoing messages.
+// Per frame while live: the Bot simulation step and its outgoing messages.
 void update(Battle& b, double now, double dt);
 // Applies the accepted authority pose set; returns the presented Bot count.
 std::size_t presentPoses(Battle& b, double now);
@@ -73,5 +72,25 @@ bool readyForDrawOff(const Battle& b);
 // One worker PERF row: fixed-control debt and Bot diagnostics.
 p::Ref controlSnapshot(const Battle& b);
 p::Ref diagnosticTotals(const Battle& b);
+}
+
+// The hidden worker's process session (the pinned authority_worker.WorkerSession).
+namespace worker {
+void install(PyObject* config, PyObject* lobby_ready, PyObject* bigworld);
+bool start();
+void stop(bool restore_account);
+void onEvent(const std::string& kind, PyObject* message);
+// worker_session_install/start/stop for the stock bootstrap entry.
+PyMethodDef* methods();
+}
+
+// Defined by the startup subsystem; the worker session drives a round through them.
+namespace startup {
+// Creates and installs the round's Battle from the worker config; false with `error` when rejected.
+bool startRound(PyObject* config, PyObject* message, PyObject* client, std::string& error);
+// Stops the current round's Battle (the pinned BattleRuntime.stop(show_login=False, restore_account=...)).
+void stopRound(bool restore_account);
+// One LAN message for the current round: snapshot, events, battle_live, bot_observation, player_destructible_contact.
+void receive(Battle& b, const std::string& kind, PyObject* message);
 }
 }

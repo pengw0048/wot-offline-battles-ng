@@ -12,7 +12,6 @@ namespace native_battle {
 namespace bots {
 namespace {
 constexpr double MANIFEST_RETRY_SECONDS = 0.25;
-constexpr double ARTILLERY_RAYS_PER_FRAME = 4;
 constexpr double REMOTE_TRACK_SECONDS = 1.0 / 20.0;
 constexpr double TRACK_SCROLL_MIN = -15.0, TRACK_SCROLL_MAX = 30.0;
 constexpr double MOVING_SPEED = 0.05, TURNING_RATE = 0.02;
@@ -265,10 +264,9 @@ void recordControl(Battle& b, std::int64_t sample_before) {
 }
 }
 
-void install(Battle& b, PyObject* runtime, PyObject* artillery) {
+void install(Battle& b, PyObject* runtime) {
     if (!b.bots) b.bots = std::make_unique<BotAuthority>();
     b.bots->runtime = borrow(runtime);
-    b.bots->artillery = borrow(artillery && artillery != Py_None ? artillery : nullptr);
     b.bots->native = own(p::Ref(PyImport_ImportModule("offline_bot_runtime_native")));
     py::set(runtime, "_standalone_battle", shell(b));
 }
@@ -294,12 +292,6 @@ void update(Battle& b, double now, double dt) {
     auto* a = authority(b);
     if (!a || !b.live || b.replay) return;
     if (b.worker) ++a->authority_callbacks;
-    if (a->artillery) {
-        auto probe = py::attr(shell(b), "_artillery_arc_probe");
-        auto rays = p::integer(std::int64_t(ARTILLERY_RAYS_PER_FRAME));
-        auto at = p::number(now);
-        py::call(a->artillery.get(), "advance", at.get(), rays.get(), probe.get());
-    }
     // Only the hidden worker's native owner simulates; a visible client is never the Bot authority.
     if (!enabled(b)) return;
     PyObject* runtime = a->runtime.get();
@@ -483,8 +475,6 @@ bool reconcileAuthority(Battle& b, PyObject* player_id) {
     if (!a || !a->runtime) return false;
     PyObject* runtime = a->runtime.get();
     if (PyObject_RichCompareBool(py::optional(runtime, "authority_id").get(), player_id, Py_EQ) == 1) return false;
-    // Arc jobs and launch receipts are proofs made by one authority; they never survive a handoff.
-    if (a->artillery) py::call(a->artillery.get(), "reset");
     Object start = own(p::Ref(cs::write(b.start)));
     if (!PyDict_Check(start.get())) start = own(p::dict());
     p::set(start.get(), "bot_authority_id", p::retain(player_id));
