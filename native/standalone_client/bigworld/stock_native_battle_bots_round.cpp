@@ -1369,7 +1369,13 @@ std::vector<Value> roundStart(Battle& b, const Value& raw) {
     auto& a = authorityOf(b);
     const Value& message = raw.resolved();
     if (message.kind != Kind::Object) throw p::Error("Bot round start message is invalid");
-    if (has(message, "bot_tactics")) throw p::Error("Bot tactics profiles are not part of the native round start");
+    // The server pins bot_tactics.empty() when no profile is configured; authored profiles are not ported yet.
+    if (has(message, "bot_tactics")) {
+        const Value& tactics = at(message, "bot_tactics").resolved();
+        const bool empty = tactics.kind == Kind::Null || (tactics.kind == Kind::Object && at(tactics, "behavior").resolved().array.empty() &&
+                                                          at(tactics, "maps").resolved().object.empty());
+        if (!empty) throw p::Error("authored Bot tactics profiles are not part of the native round start");
+    }
     if (b.worker) a.control_seconds = WORKER_CONTROL_SECONDS;
     const Value round_id = at(message, "round_id");
     if (round_id != a.round_id) {

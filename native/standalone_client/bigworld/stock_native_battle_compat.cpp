@@ -52,6 +52,8 @@ PyObject* surrogateGet(PyObject* self, PyObject* name) {
     } catch (const std::exception&) { return nullptr; }
     return PyObject_GenericGetAttr(self, name);
 }
+// `owner.onCameraChanged -= callback` assigns the event back; the surrogates accept and drop it.
+int surrogateSet(PyObject*, PyObject*, PyObject*) { return 0; }
 PyObject* inplaceSelf(PyObject* self, PyObject*) { Py_INCREF(self); return self; }
 PyNumberMethods surrogate_number = {};
 
@@ -139,6 +141,7 @@ void readyTypes() {
     surrogate_type.tp_basicsize = sizeof(Surrogate);
     surrogate_type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_CHECKTYPES;
     surrogate_type.tp_getattro = surrogateGet;
+    surrogate_type.tp_setattro = surrogateSet;
     surrogate_type.tp_as_number = &surrogate_number;
     ready(surrogate_type);
     deferred_type.tp_basicsize = sizeof(Deferred);
