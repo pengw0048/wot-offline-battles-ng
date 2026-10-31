@@ -6,6 +6,10 @@
 #include <cmath>
 #include "stock_native_battle_startup_needs.hpp"
 #include "stock_native_battle_vehicles_internal.hpp"
+#include "stock_native_battle_pending.hpp"
+#include "stock_native_battle_feedback_internal.hpp"
+#include "stock_native_battle_world_imports.hpp"
+#include "stock_native_battle_visibility_core.hpp"
 
 namespace native_battle {
 // The local vehicle state is created by startup::start; its owners attach on the first drive slice.
@@ -54,5 +58,29 @@ bool showDamageInfo(Battle& b, std::int64_t engine_id, int damage_index, int ext
 // The local critical owner publishes with int indices.
 bool vehicles::showDamageInfo(Battle& b, std::int64_t engine_id, int damage_index, int extra_index, std::int64_t attacker) {
     return showDamageInfo(b, engine_id, std::int64_t(damage_index), std::int64_t(extra_index), attacker);
+}
+
+// Visibility: inputs come from startup's accepted local snapshot; the query owner re-ingests on vehicle changes.
+void visibility::start(Battle& b) {
+    LocalVisibilityInputs inputs;
+    inputs.arena_type = b.startup->arena_type;
+    inputs.sixth_sense = b.startup->has_sixth_sense;
+    inputs.expert = b.startup->has_expert;
+    inputs.sixth_sense_delay = params::boosterSkillValue(b.startup->effective_params, "sixth_sense_delay", 3.0);
+    configureLocal(b, std::move(inputs));
+    bind(b);
+}
+void visibility::enableExpert(Battle& b) { enableExpertVisibility(b); }
+void visibility::disableExpertPresentation(Battle& b) { disableExpert(b); }
+bool visibility::monitorDamagedDevices(Battle& b, std::int64_t vehicle_id) {
+    return monitorExpert(b, p::integer(vehicle_id).get(), "target_clear");
+}
+void visibility::vehicleChanged(Battle& b, Actor&) { if (b.visibility && !b.worker) ingest(b); }
+void world::vehicleChanged(Battle& b, Actor&) { if (b.visibility && !b.worker) visibility::ingest(b); }
+// spotting.SHOT_CAMOUFLAGE_SECONDS
+double visibility::shotCamouflageSeconds() { return 0.75; }
+// A viewpoint switch re-evaluates spotting at once (the pinned _next_spotting_time = 0).
+void visibility::resetSpottingTimer(Battle& b) {
+    if (b.visibility && b.live && !b.worker) b.feature("spotting", [&] { spotting(b, b.clock(), false); }, false);
 }
 }
