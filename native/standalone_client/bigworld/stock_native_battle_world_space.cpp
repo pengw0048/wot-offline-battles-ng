@@ -334,9 +334,12 @@ void withdrawCatalog(Battle& b) {
 }
 
 bool ingressDestructible(Battle& b, const Value& event) {
-    if (!b.world || b.world->destructibles_disabled || !b.featureEnabled("destructible interactions")) return false;
+    // Canonical rows always reach the space (WorldEvents records a tree logically when no catalog proves it).
     auto* owner = current(b);
-    if (!owner) invalid("#1513 destructible runtime is unavailable");
+    if (!owner) {
+        if (!b.world || b.world->destructibles_disabled || !b.featureEnabled("destructible interactions")) return false;
+        invalid("#1513 destructible runtime is unavailable");
+    }
     p::Ref raw(cs::write(event));
     const bool accepted = owner->events.ingress(raw.get(), b.clock());
     if (!accepted && PyErr_Occurred()) {

@@ -124,5 +124,8 @@ bool activateFallenTree(Battle& b, std::uint32_t chunk_id, std::uint32_t item_in
 // Accepted visible detached-turret obstacles (shell/hull/navigation/target queries); null on the worker.
 const stock_native_bot_turret::Obstacles* turretObstacles(const Battle& b);
 std::map<std::string, std::int64_t> registryCounts(const Battle& b);
+// Native emit / stop_lifetime / remove_light_sound for NativeBackend's destructible presentation seam
+// (replaces stock_native_destructible_present.py).
+std::array<Object, 3> presentationCallables();
 }
 }

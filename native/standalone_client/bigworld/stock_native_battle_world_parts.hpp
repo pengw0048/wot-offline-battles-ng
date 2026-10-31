@@ -63,7 +63,5 @@ bool ingressDestructible(Battle& b, const Value& event);
 void closeSpace(Battle& b);
 // Stream remapping and native destructible bodies, once per frame before drive and Bot steps.
 void spaceFrame(Battle& b, double now);
-// Native emit / stop_lifetime / remove_light_sound for NativeBackend's presentation seam.
-std::array<Object, 3> presentationCallables();
 }
 }
