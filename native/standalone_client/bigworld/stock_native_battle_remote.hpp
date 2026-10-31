@@ -46,6 +46,7 @@ struct Remote {
     std::map<std::int64_t, std::unique_ptr<RemoteVehicle>> vehicles;
     std::set<std::int64_t> failed_creates;
     std::map<PyObject*, Object> descriptors;       // prepared descriptors pinned for the round
+    std::map<PyObject*, Object> hit_testers;       // worker: BSP models this owner loaded, released at teardown
     std::set<std::string> reported_capabilities;
     // Replica.
     std::map<std::string, std::unique_ptr<ReplicaBinding>> bindings;

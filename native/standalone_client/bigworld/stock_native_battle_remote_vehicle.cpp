@@ -458,8 +458,26 @@ void install(Battle& b, bool interpolate_motion, bool authority_geometry) {
 // ---- factory ----------------------------------------------------------------------------------------------
 
 p::Ref prepareDescriptor(Battle& b, PyObject* descriptor) {
-    // Stock Vehicle prerequisites and CompoundAppearance own the BSP references; pin the descriptor.
-    b.remote->descriptors[descriptor] = borrow(descriptor);
+    auto& r = *b.remote;
+    // The worker reads hit-tester bounds before any Vehicle prerequisite loads them, so it owns the BSP models;
+    // on the visible client stock Vehicle prerequisites and CompoundAppearance own them.
+    if (r.authority_geometry) {
+        auto testers = py::call(descriptor, "getHitTesters");
+        p::Ref iterator(PyObject_GetIter(testers.get()));
+        while (PyObject* raw = PyIter_Next(iterator.get())) {
+            p::Ref tester(raw);
+            if (tester.get() == Py_None) throw p::Error("#1513 vehicle hit tester is unavailable");
+            if (r.hit_testers.count(tester.get())) continue;
+            py::call(tester.get(), "loadBspModel");
+            if (py::optional(tester.get(), "bbox").get() == Py_None) {
+                py::call(tester.get(), "releaseBspModel");
+                throw p::Error("#1513 vehicle hit tester bbox did not load");
+            }
+            r.hit_testers[tester.get()] = borrow(tester.get());
+        }
+        if (PyErr_Occurred()) throw p::Error("#1513 vehicle hit tester iteration failed");
+    }
+    r.descriptors[descriptor] = borrow(descriptor);
     return p::retain(descriptor);
 }
 
@@ -573,6 +591,11 @@ void destroyAll(Battle& b) {
         try { destroy(b, id); }
         catch (const std::exception& e) { if (!first) first = describe(e); }
     }
+    for (auto& tester : b.remote->hit_testers) {
+        try { py::call(tester.second.get(), "releaseBspModel"); }
+        catch (const std::exception& e) { if (!first) first = describe(e); PyErr_Clear(); }
+    }
+    b.remote->hit_testers.clear();
     b.remote->descriptors.clear();
     clearOverlays();
     if (first) throw p::Error(*first);
