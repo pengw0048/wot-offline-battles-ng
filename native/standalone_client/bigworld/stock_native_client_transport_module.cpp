@@ -24,10 +24,6 @@ public:
             methods_.push_back(*method);
         for(auto*method=stock_native_client_landing::methods();method->ml_name;++method)
             methods_.push_back(*method);
-        methods_.push_back({"send_current",stock_native_client_input::sendCurrentPython,METH_VARARGS,"Publish the native player's current input."});
-        methods_.push_back({"control",stock_native_client_input::control,METH_VARARGS,"Apply an original player input edge."});
-        methods_.push_back({"align_control",stock_native_client_input::alignControl,METH_VARARGS,"Align the player's native gun controls."});
-        methods_.push_back({"assign_control",stock_native_client_input::assignControl,METH_VARARGS,"Mirror a discrete stock control edge."});
         methods_.push_back({"configure_admission",stock_native_client_admission::configure,METH_VARARGS,"Install native snapshot admission."});
         methods_.push_back({"accept",stock_native_client_admission::accept,METH_VARARGS,"Admit one ordered snapshot."});
         methods_.push_back({"timing",stock_native_client_admission::timing,METH_VARARGS,"Accept server timeline fields."});

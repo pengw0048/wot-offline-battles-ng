@@ -5,6 +5,11 @@
 #include "stock_native_bot_motion_snapshot.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_python.hpp"
+#include "stock_native_battle.hpp"
+namespace native_battle {namespace bots {
+// Provided by the Bot subsystem: {"tactics","mode","pins":[[team,slot,tier]],"round"} of the round's Bot skills.
+stock_native_client_state::Value peerSkillContext(const Battle&);
+}}
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -23,7 +28,9 @@ struct Context {
  std::map<std::pair<int,int>,std::string>pins;
  std::string mode="mixed",round;
 };
-Context context(PyObject*battle){Context out;auto bots=p::value(battle,"_bots");if(bots.get()==Py_None)throw p::Error("Native peer Bot context is unavailable");auto tactics=p::value(bots.get(),"_bot_tactics"),mode=p::value(bots.get(),"_bot_skill_mode"),pins=p::value(bots.get(),"_bot_skill_pins"),round=p::value(bots.get(),"round_id");out.tactics=cs::read(tactics.get());out.mode=p::string(mode.get());if(out.mode!="easy"&&out.mode!="relaxed"&&out.mode!="mixed"&&out.mode!="hard"&&out.mode!="brutal")out.mode="mixed";p::Ref round_text(PyObject_Str(round.get()));out.round=p::string(round_text.get());if(PyDict_Check(pins.get())){Py_ssize_t index=0;PyObject*key,*value;while(PyDict_Next(pins.get(),&index,&key,&value)){const auto pair=p::numbers<2>(key);out.pins[{int(pair[0]),int(pair[1])}]=p::string(value);}}return out;}
+// The Bot skill context the visible client's Bot runtime owns: tactics, skill mode, pinned tiers and round.
+Context context(const native_battle::Battle&b){const Value raw=native_battle::bots::peerSkillContext(b);Context out;out.tactics=raw.get("tactics");out.mode=raw.get("mode").resolved().text;if(out.mode!="easy"&&out.mode!="relaxed"&&out.mode!="mixed"&&out.mode!="hard"&&out.mode!="brutal")out.mode="mixed";out.round=raw.get("round").resolved().text;
+ for(const auto&pin:raw.get("pins").resolved().array){const auto&row=pin.resolved().array;if(row.size()==3)out.pins[{int(row[0].numeric()),int(row[1].numeric())}]=row[2].resolved().text;}return out;}
 double draw(const Context&context,int team,int slot){
  const auto payload="bot-skill-rating-v1|"+context.round+"|"+context.mode+"|"+std::to_string(team)+"|"+std::to_string(slot);
  p::Ref hashlib(PyImport_ImportModule("hashlib"));auto producer=p::value(hashlib.get(),"sha1");if(!PyCFunction_Check(producer.get()))throw p::Error("Native peer seed producer is not the reviewed builtin");auto bytes=p::text(payload);p::Ref digest(PyObject_CallFunctionObjArgs(producer.get(),bytes.get(),nullptr));auto hex=p::value(digest.get(),"hexdigest");if(!PyCFunction_Check(hex.get()))throw p::Error("Native peer seed digest is not the reviewed builtin");p::Ref empty(PyTuple_New(0)),text(PyObject_CallObject(hex.get(),empty.get()));const auto seed=std::stoul(p::string(text.get()).substr(0,8),nullptr,16)&0x7ffffffful;
@@ -45,7 +52,7 @@ struct PeerInstaller::Impl {
 };
 PeerInstaller::PeerInstaller():impl_(new Impl){}
 PeerInstaller::~PeerInstaller()=default;
-void PeerInstaller::synchronize(PyObject*battle,cs::State&state,NativePeers&peers){if(state.retired){impl_->entries.clear();peers.forget({});return;}if(impl_->epoch!=state.epoch){impl_->entries.clear();impl_->context.reset();impl_->epoch=state.epoch;peers.forget({});}std::set<std::string>live;const std::vector<std::pair<std::string,std::shared_ptr<cs::Actor>>>actors(state.actors.begin(),state.actors.end());
+void PeerInstaller::synchronize(const native_battle::Battle&battle,cs::State&state,NativePeers&peers){if(state.retired){impl_->entries.clear();peers.forget({});return;}if(impl_->epoch!=state.epoch){impl_->entries.clear();impl_->context.reset();impl_->epoch=state.epoch;peers.forget({});}std::set<std::string>live;const std::vector<std::pair<std::string,std::shared_ptr<cs::Actor>>>actors(state.actors.begin(),state.actors.end());
  for(const auto&row:actors){const auto&actor=row.second;if(!actor||actor->local||!actor->ready||actor->tombstone||actor->missing)continue;auto*descriptor=stock_native_client_query::descriptor(*actor);if(!descriptor||descriptor==Py_None||!stock_native_client_query::geometry(*actor))continue;auto input=signature(*actor);auto&entry=impl_->entries[row.first];const bool changed=entry.actor!=actor||entry.descriptor_revision!=actor->descriptor_revision||entry.descriptor!=descriptor||entry.input!=input;if(!changed){if(entry.installed)live.insert(row.first);continue;}
   p::Ref retained_descriptor(p::retain(descriptor));const bool retain=entry.installed&&entry.actor==actor&&entry.descriptor_revision==actor->descriptor_revision&&entry.descriptor==descriptor;entry.actor=actor;entry.descriptor_revision=actor->descriptor_revision;entry.descriptor=descriptor;entry.input=std::move(input);entry.installed=false;
   try{auto params=[&](){if(actor->kind=="player"){const auto&physics=actor->state.get("effective_params").get("physics").resolved();if(physics.kind!=Value::Kind::Object)throw p::Error("Native human peer effective physics are unavailable");return p::Ref(cs::write(physics));}if(actor->kind!="bot")throw p::Error("Native peer actor kind is invalid");if(!impl_->context)impl_->context=context(battle);return botPhysics(descriptor,crewLevel(*impl_->context,actor->state,descriptor));}();auto entity=p::dict();p::set(entity.get(),"typeDescriptor",p::retain(descriptor));auto installed=readPlayerDescriptor(battle,entity.get(),params.get());installed.team=int(actor->state.get("team").numeric());if(state.retired||state.epoch!=impl_->epoch||state.actors.find(row.first)==state.actors.end()||state.actors.at(row.first)!=actor||actor->tombstone||actor->descriptor_revision!=entry.descriptor_revision)continue;peers.install(actor,std::move(installed));entry.installed=true;entry.failure.clear();live.insert(row.first);

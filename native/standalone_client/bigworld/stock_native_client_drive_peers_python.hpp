@@ -2,6 +2,7 @@
 #include "stock_native_client_state.hpp"
 #include <memory>
 struct _object;
+namespace native_battle {struct Battle;}
 namespace stock_native_client_drive {
 class NativePeers;
 // The round owns tactics and default-crew producers. Accepted actor/resource
@@ -14,6 +15,6 @@ public:
     ~PeerInstaller();
     PeerInstaller(const PeerInstaller&)=delete;
     PeerInstaller&operator=(const PeerInstaller&)=delete;
-    void synchronize(_object* battle,stock_native_client_state::State&,NativePeers&);
+    void synchronize(const native_battle::Battle&,stock_native_client_state::State&,NativePeers&);
 };
 }
