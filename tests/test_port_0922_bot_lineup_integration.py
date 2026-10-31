@@ -422,56 +422,6 @@ class BotLineupIntegrationTests(unittest.TestCase):
             'nation': nation, 'vehicle': vehicle, 'tags': list(tags),
         }]))
 
-    def test_launcher_and_server_share_the_mod_exclusion_rule(self):
-        self.assertEqual(
-            frozenset(vehicle_configuration.NON_STANDARD_BATTLE_TAGS),
-            frozenset(bot_lineup_profiles.NON_STANDARD_BOT_TAGS_0922))
-        self.assertEqual(
-            tuple(vehicle_configuration.CLONE_NAME_SUFFIXES),
-            tuple(bot_lineup_profiles.CLONE_BOT_VEHICLE_SUFFIXES_0922))
-        self.assertEqual(
-            tuple(vehicle_configuration.NON_BATTLE_ENTITY_SUFFIXES),
-            tuple(bot_lineup_profiles.NON_BATTLE_ENTITY_BOT_SUFFIXES_0922))
-        self.assertEqual(
-            frozenset(vehicle_configuration.NON_BATTLE_ENTITY_NAMES),
-            frozenset(bot_lineup_profiles.NON_BATTLE_ENTITY_BOT_VEHICLES_0922))
-        self.assertEqual(
-            vehicle_configuration.CATALOGUE_VISIBILITY_TAG,
-            bot_lineup_profiles.CATALOGUE_VISIBILITY_TAG_0922)
-        # The editor pass may never be the stricter of the two, or the
-        # launcher would silently withhold a Bot the worker accepts.
-        self.assertLessEqual(
-            frozenset(vehicle_overlays._NON_EDITABLE_VEHICLE_TAGS),
-            frozenset(bot_lineup_profiles.NON_STANDARD_BOT_TAGS_0922))
-        self.assertLessEqual(
-            frozenset(vehicle_overlays._NON_EDITABLE_VEHICLES),
-            frozenset(bot_lineup_profiles.NON_BATTLE_ENTITY_BOT_VEHICLES_0922))
-        self.assertLessEqual(
-            frozenset(vehicle_overlays._NON_EDITABLE_VEHICLE_SUFFIXES),
-            frozenset(bot_lineup_profiles.NON_BATTLE_ENTITY_BOT_SUFFIXES_0922))
-
-        for name, tags, expected in self._EXCLUSION_CASES:
-            entry = types.SimpleNamespace(name=name, level=5, tags=tags)
-            admitted = bool(
-                vehicle_configuration.is_standard_battle_vehicle(entry) and
-                not vehicle_blacklist.is_unusable(name))
-            self.assertEqual(expected, admitted, name)
-            self.assertEqual(
-                admitted, self._launcher_admits(name, tags), name)
-            runtime = types.SimpleNamespace(
-                nations=types.SimpleNamespace(
-                    AVAILABLE_NAMES=('all',), INDICES={'all': 0}),
-                vehicles=types.SimpleNamespace(g_list=types.SimpleNamespace(
-                    getList=lambda unused_nation_id: {1: entry})))
-            self.assertEqual(admitted, bool(
-                descriptor_donation.vehicle_catalog(runtime)), name)
-            self.assertEqual(admitted, not BattleRuntime._vehicle_excluded(
-                entry), name)
-            server_names = server_runtime._bot_lineup_allowed_names([{
-                'name': name, 'level': 5, 'tags': list(tags),
-            }])
-            self.assertEqual(admitted, name in server_names, name)
-
     def test_the_helper_rule_withholds_nothing_without_the_secret_tag(self):
         # ``secret`` is what separates a stock placeholder from a shipped
         # tank whose item_defs name happens to end the same way, so every

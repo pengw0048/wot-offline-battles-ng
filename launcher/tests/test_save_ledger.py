@@ -28,6 +28,16 @@ def _state(credits_amount=100000, gold=0, free_xp=0, **extra):
 
 
 class SaveLedgerTest(unittest.TestCase):
+    def test_four_currency_edits_queue_actual_deltas_once(self):
+        self._write(_state())
+        wanted={'credits':123,'gold':456,'freeXP':789,'crystal':42}
+        save_ledger.write_balances(self.slot,wanted,root=self.root,is_running=lambda:False)
+        saved=self._read();rows=saved['ledger']['personalMissions']['notifications']
+        kinds={reward['kind'] for row in rows for change in row['settlement']['account_changes'] for reward in change['rewards']}
+        self.assertEqual(set(wanted),kinds)
+        save_ledger.write_balances(self.slot,wanted,root=self.root,is_running=lambda:False)
+        self.assertEqual(saved,self._read())
+
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.slot = "career"
@@ -54,12 +64,14 @@ class SaveLedgerTest(unittest.TestCase):
                          save_ledger.DEFAULT_BALANCES[save_slots.MODE_NEW_ACCOUNT])
         self.assertEqual(economy.SANDBOX_WALLET,
                          save_ledger.DEFAULT_BALANCES[save_slots.MODE_UNLOCKED])
+        self.assertEqual(1000000, economy.SANDBOX_WALLET['crystal'])
+        self.assertEqual(0, economy.CAREER_WALLET['crystal'])
 
     def test_balances_are_read_from_the_saved_ledger(self):
         self._write(_state(credits_amount=250000, gold=1500, free_xp=90))
 
         self.assertEqual(
-            {"credits": 250000, "gold": 1500, "freeXP": 90},
+            {"credits": 250000, "gold": 1500, "freeXP": 90, "crystal": 0},
             save_ledger.read_balances(self.slot, root=self.root))
 
     def test_a_save_that_never_ran_reports_initial_balances(self):
@@ -96,11 +108,11 @@ class SaveLedgerTest(unittest.TestCase):
         self._write(_state())
 
         save_ledger.write_balances(
-            self.slot, {"credits": 5, "gold": 6, "freeXP": 7},
+            self.slot, {"credits": 5, "gold": 6, "freeXP": 7, "crystal": 12345},
             root=self.root, is_running=lambda: False)
 
         self.assertEqual(
-            {"credits": 5, "gold": 6, "freeXP": 7},
+            {"credits": 5, "gold": 6, "freeXP": 7, "crystal": 12345},
             save_ledger.read_balances(self.slot, root=self.root))
 
     def test_a_negative_or_unreadable_amount_becomes_zero(self):
