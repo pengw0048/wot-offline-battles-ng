@@ -190,13 +190,32 @@ def offline_replay(source):
     return source.replace(future, future + '\nimport offline_client_lifecycle_native as _offline_lifecycle_native\n')
 
 
+LAN_POLL_PORTS = (
+    ('_poll', 'lan_poll(self, globals())'),
+    ('_poll_messages', 'lan_poll_messages(self, globals())'),
+    ('_take_ready_messages', 'lan_take_ready_messages(self, generation, globals())'),
+    ('_dispatch_message', 'lan_dispatch_message(self, message, generation, globals())'),
+    ('_notify', 'lan_notify(self, kind, message, replay_hint, globals())'),
+    ('_notify_message', 'lan_notify_message(self, kind, message, replay_hint, globals())'),
+    ('transport_performance_snapshot', 'lan_performance_snapshot(self, globals())'),
+    ('_report_snapshot_stall', 'lan_report_snapshot_stall(self, now, globals())'),
+)
+
+
 def lan_client(source):
-    """Construct the transport timing as the native TransportPerformance."""
+    """Route the transport timing and the main-thread poll chain to their native ports."""
     seam = '\n\ntry:\n    string_types = (basestring,)\n'
     if source.count(seam) != 1 or source.count('class _TransportPerformance(object):') != 1:
         raise ValueError('The pinned transport performance seam changed')
     source = source.replace(seam, '\n\ndef _TransportPerformance(generation):\n'
                                   '    return _offline_lifecycle_native.TransportPerformance(globals(), generation)\n' + seam)
+    for name, call in LAN_POLL_PORTS:
+        pattern = r'(^    def ' + re.escape(name) + r'\(self[^:]*\):\n)'
+        matches = list(re.finditer(pattern, source, re.M))
+        if len(matches) != 1:
+            raise ValueError('The pinned LAN poll seam changed: ' + name)
+        index = matches[0].end()
+        source = source[:index] + '        return _offline_lifecycle_native.' + call + '\n' + source[index:]
     future = 'from __future__ import print_function\n'
     if not source.startswith(future):
         raise ValueError('The pinned transport performance import seam changed')
