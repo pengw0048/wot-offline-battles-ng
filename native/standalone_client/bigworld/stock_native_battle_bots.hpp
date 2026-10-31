@@ -6,6 +6,11 @@
 namespace stock_native_bot { struct Owner; }
 
 namespace native_battle {
+// The round's Bot line-up, derived identically on every process from the server roster.
+struct BotAssignments {
+    std::map<std::pair<std::int64_t, std::int64_t>, std::string> vehicles;   // (team, slot) -> vehicle type
+};
+
 struct BotAuthority {
     // The Python BotRuntime still builds the round manifest and holds the per-Bot rows the native
     // owner's cold installation reads; everything around it is here.
@@ -49,9 +54,15 @@ struct BotAuthority {
     double max_control_step = 0., control_debt = 0., max_control_debt = 0.;
     // Visible-client Bot belt turn rates measured from presented yaw.
     std::map<std::int64_t, double> yaw_rates;
+    // The Bot line-up startup prepares before the BotRuntime exists.
+    std::shared_ptr<BotAssignments> assignments;
 };
 
 namespace bots {
+// The pinned _prepare_bot_vehicle_assignments: false when the roster cannot be filled from this catalogue.
+// Creates the BotAuthority when startup calls it first.
+bool prepareVehicleAssignments(Battle& b, PyObject* player_descriptor);
+const std::map<std::pair<std::int64_t, std::int64_t>, std::string>& vehicleAssignments(const Battle& b);
 // Creates the round's BotRuntime (startup::createBotRuntime), runs its battle_start, materializes
 // the authority manifest's Bots and sends its opening messages.
 void start(Battle& b);
