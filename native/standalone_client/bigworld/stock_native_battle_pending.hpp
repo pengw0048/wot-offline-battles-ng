@@ -42,10 +42,8 @@ namespace local {
 void presentReplay(Battle& b, double dt);
 }
 namespace world {
-void refreshDetachedWreck(Battle& b, PyObject* entity);
+bool refreshDetachedWreck(Battle& b, PyObject* entity);
 void vehicleChanged(Battle& b, Actor& vehicle);
-bool destructibleEvent(Battle& b, const Value& event);
-void observeDisabled(Battle& b, const Value& message);
 }
 namespace visibility {
 void vehicleChanged(Battle& b, Actor& vehicle);

@@ -214,7 +214,7 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
             const std::int64_t retired = asInt(py::call(navigation.get(), "clip_graph_to_arena", b.startup->navigation_graph.get(), bounds.get()).get());
             if (retired) log("retired " + std::to_string(retired) + " baked navigation cell(s) outside the " + p::string(short_name.get()) + " arena rectangle");
         }
-        world::start(b);
+        world::start(b, p::string(py::call(navigation.get(), "mod_dir").get()));
         observeDestructiblesDisabled(b, b.start);
         prepareSpawn(b);
         const Value local_identity = localState(b);
@@ -276,7 +276,7 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
         if (!p::flag(py::optional(b.engine.avatar.get(), "_offlineLANPlayerReady").get()))
             throw p::Error("stock OfflineMapCreator did not promote its Avatar");
         if (!b.worker) local::installRamContactHook(b);
-        world::bindSpace(b, asInt(py::attr(b.engine.avatar.get(), "spaceID").get()));
+        world::openSpace(b);
         if (has(b.start, "destructibles")) world::applyDestructibleState(b, field(b.start, "destructibles"));
         // From here every stock Avatar branch must see a real battle, not the map viewer.
         py::call(creator.get(), "SetActive", Py_False);
@@ -520,7 +520,7 @@ bool observeDestructiblesDisabled(Battle& b, const Value& message) {
     start.object["destructibles_disabled"] = boolean(true);
     Value why; why.kind = Value::Kind::Text; why.text = reason;
     start.object["destructibles_disabled_reason"] = why;
-    if (world::destructiblesEnabled(b)) world::disableDestructibles(b, "LAN server disabled destructible interactions: " + reason);
+    if (b.world && b.world->catalog) world::disableDestructibles(b, "LAN server disabled destructible interactions: " + reason);
     return true;
 }
 
@@ -664,7 +664,7 @@ void finishEntityStartup(Battle& b) {
         writable(manifest).object["bots"].kind = Value::Kind::Array;
         vehicles::receiveManifest(b, manifest);
         projectiles::observe(b, b.start);
-        world::reconcileTurrets(b, b.start);
+        world::reconcileDetachedTurrets(b, b.start);
         auto latest = py::optional(b.engine.client.get(), "last_snapshot");
         std::optional<Value> last;
         if (PyDict_Check(latest.get())) {
@@ -673,18 +673,17 @@ void finishEntityStartup(Battle& b) {
         }
         if (last) {
             projectiles::observe(b, *last);
-            world::reconcileTurrets(b, *last);
+            world::reconcileDetachedTurrets(b, *last);
             gun::restoreEquipment(b, *last, true);
             vehicles::receiveSnapshotMessage(b, latest.get(), b.clock());
         }
         bots::start(b);
         if (last) {
             bots::applySnapshot(b, *last);
-            world::rememberRamSnapshot(b, *last);
+            world::rememberRamBotSnapshot(b, *last);
         }
         visibility::start(b);
         local::start(b);
-        world::startEnvironment(b);
         b.phase = Phase::Running;
         b.startup->stage = Stage::None;
         if (!b.worker) {

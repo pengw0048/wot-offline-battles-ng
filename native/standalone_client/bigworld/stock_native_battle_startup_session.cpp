@@ -75,18 +75,18 @@ void snapshot(Battle& b, PyObject* message) {
         const Value& last = s.last_snapshot;
         if (!b.worker) gun::restoreEquipment(b, last, true);
         local::ackRamContacts(b, last);
-        world::ackDestructibleContacts(b, last);
+        if (b.local) local::acknowledgeContacts(b, last, true);
         observeDestructiblesDisabled(b, last);
         projectiles::observe(b, last);
         projectiles::reconcile(b, last);
-        world::reconcileTurrets(b, last);
+        world::reconcileDetachedTurrets(b, last);
         if (has(last, "rules")) events::applyRules(b, field(last, "rules"));
         if (field(last, "battle_result").resolved().kind != Value::Kind::Null) events::applyBattleResult(b, field(last, "battle_result"));
         if (has(last, "destructibles")) world::applyDestructibleState(b, field(last, "destructibles"));
         if (b.bots) {
             if (has(last, "bot_authority_id")) bots::reconcileAuthority(b, field(last, "bot_authority_id"));
             bots::applySnapshot(b, last);
-            world::rememberRamSnapshot(b, last);
+            world::rememberRamBotSnapshot(b, last);
         }
         try {
             vehicles::receiveSnapshotMessage(b, message, b.clock());

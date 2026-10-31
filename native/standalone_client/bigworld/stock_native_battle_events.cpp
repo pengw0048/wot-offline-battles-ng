@@ -386,7 +386,11 @@ bool applyOrdered(Battle& b, const Value& event) {
         if (!v || !v->engine_id) throw p::Error("stun event has no ready target");
         vehicles::applyStun(b, *v, v->presented.state);
     } else if (kind == "destructible") {
-        if (!world::destructibleEvent(b, event)) return false;
+        if (!b.world) return false;
+        Value rows;
+        rows.kind = Value::Kind::Array;
+        rows.array.push_back(event);
+        world::applyDestructibleState(b, rows);
     } else if (kind == "projectile_ricochet") projectiles::ricochet(b, event);
     else if (kind == "projectile_impact") projectiles::terminal(b, event);
     else if (kind == "battle_result") battleResult(b, event);
@@ -416,7 +420,7 @@ void ignore(Battle& b, const std::string& error, const Value* event) {
 bool receive(Battle& b, const Value& message) {
     if (b.phase == Phase::Failed || b.phase == Phase::Stopped || b.phase == Phase::Leaving) return false;
     try {
-        world::observeDisabled(b, message);
+        world::observeDestructiblesDisabled(b, message);
         projectiles::observeMessage(b, message);
     } catch (const std::exception& e) {
         ignore(b, describe(e), nullptr);

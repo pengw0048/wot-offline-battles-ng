@@ -429,18 +429,21 @@ std::pair<Point, double> worldPose(Battle& b, const Value& state) {
 
 // Upward-facing support below rejected overhead surfaces: the near-hull band, then a layered wide query.
 std::optional<double> groundY(Battle& b, double x, double z, double hint, bool allow_wide) {
-    auto filter = world::groundFilter(b, x, z);
-    auto vector = [&](double y) {
-        return py::call(b.engine.math.get(), "Vector3", p::number(x).get(), p::number(y).get(), p::number(z).get());
+    // (y, normal y) of the first ground hit between the two heights, or none.
+    auto collide = [&](double from, double to) -> std::optional<std::pair<double, double>> {
+        world::Hit hit;
+        const auto status = world::ground(b, Point{{x, from, z}}, Point{{x, to, z}}, hit);
+        if (status == world::QueryStatus::Failed) throw p::Error("native ground query failed");
+        if (status != world::QueryStatus::Found) return {};
+        return std::make_pair(hit.point[1], hit.normal[1]);
     };
-    auto collide = [&](double from, double to) { return world::collideDown(b, vector(from).get(), vector(to).get(), filter.get()); };
     double start_y = hint + 8., end_y = hint - 30.;
     for (int layer = 0; layer < 4; ++layer) {
         try {
             auto hit = collide(start_y, end_y);
-            if (hit.get() == Py_None) break;
-            const double value = asFloat(py::attr(p::item(hit.get(), 0).get(), "y").get());
-            if (-14. < value - hint && value - hint < 6. && asFloat(py::attr(p::item(hit.get(), 1).get(), "y").get()) > 0.) return value;
+            if (!hit) break;
+            const double value = hit->first;
+            if (-14. < value - hint && value - hint < 6. && hit->second > 0.) return value;
             const double next_y = value - 0.05;
             if (!(end_y < next_y && next_y < start_y)) break;
             start_y = next_y;
@@ -451,10 +454,10 @@ std::optional<double> groundY(Battle& b, double x, double z, double hint, bool a
     std::optional<double> height;
     for (int layer = 0; layer < 4; ++layer) {
         auto hit = collide(from_y, -1000.);
-        if (hit.get() == Py_None) return {};
-        height = asFloat(py::attr(p::item(hit.get(), 0).get(), "y").get());
+        if (!hit) return {};
+        height = hit->first;
         auto below = collide(*height - 0.4, -1000.);
-        if (below.get() == Py_None || *height - asFloat(py::attr(p::item(below.get(), 0).get(), "y").get()) < 2.5) return height;
+        if (!below || *height - below->first < 2.5) return height;
         from_y = *height - 0.4;
     }
     return height;

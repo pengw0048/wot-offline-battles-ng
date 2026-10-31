@@ -6,8 +6,6 @@
 
 namespace native_battle {
 namespace world {
-// battle._detached_turret_rows: the canonical detached turret rows keyed by owner, or None.
-p::Ref detachedTurretRows(Battle& b);
 }
 namespace startup {
 // The pinned BattleRuntime's BotRuntime(...) construction with its resolver bundle (descriptor,

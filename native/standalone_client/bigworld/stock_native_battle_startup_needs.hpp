@@ -55,16 +55,6 @@ void start(Battle& b);
 void enableExpert(Battle& b);
 bool monitorDamagedDevices(Battle& b, std::int64_t vehicle_id);
 }
-namespace world {
-// Loads the destructible catalog and foliage for the map; installs the destructible compat layer.
-void start(Battle& b);
-void bindSpace(Battle& b, std::int64_t space_id);
-void disableDestructibles(Battle& b, const std::string& reason);
-bool destructiblesEnabled(const Battle& b);
-void reconcileTurrets(Battle& b, const Value& message);
-void rememberRamSnapshot(Battle& b, const Value& snapshot);
-void ackDestructibleContacts(Battle& b, const Value& snapshot);
-}
 namespace local {
 void ackRamContacts(Battle& b, const Value& snapshot);
 }
@@ -100,13 +90,6 @@ namespace params {
 Value canonical(Battle& b, const Value& raw);
 std::int64_t livingSkillCount(Battle& b, const Value& snapshot, const char* skill, PyObject* crew_critical);
 double boosterSkillValue(Battle& b, const Value& snapshot, const char* name, double fallback);
-}
-namespace world {
-// The #1513 fifth-argument ground filter for a column (callable or None) and the vertical motion probe.
-p::Ref groundFilter(Battle& b, double x, double z);
-// (position, normal) of the first hit between start and end, or None.
-p::Ref collideDown(Battle& b, PyObject* start, PyObject* end, PyObject* ground_filter);
-void startEnvironment(Battle& b);
 }
 namespace local {
 void applyPhysicsTuning(Battle& b, const Value& tuning);

@@ -18,6 +18,7 @@
 #include "stock_native_bot_world_adapter.hpp"
 #include "stock_native_destructible_backend.hpp"
 #include "stock_native_battle_world.hpp"
+#include "stock_native_detached_turret_runtime.hpp"
 #include "stock_native_world_events.hpp"
 #include "stock_native_player_contacts_python.hpp"
 #include "stock_native_player_environment_python.hpp"
@@ -269,11 +270,9 @@ struct Owner {
         runtime->humans(std::move(accepted));
     }
     void detached(Battle&battle){
-        auto rows=native_battle::world::detachedTurretRows(battle);if(rows.get()==Py_None)return;
-        if(!PyDict_Check(rows.get()))throw p::Error("Native detached turret mapping invalid");
-        Py_ssize_t cursor=0;PyObject*key=nullptr,*value=nullptr;
-        while(PyDict_Next(rows.get(),&cursor,&key,&value))try{
-            stock_native_bot_turret::Record record;require(physics::readDetachedTurretRow(value,record));
+        if(!battle.world)return;
+        for(const auto&row:battle.world->turrets.rows)try{
+            const auto record=stock_native_detached_turret::obstacleRecord(row.second);
             // Visual-only debris never enters collision or navigation in the
             // pinned runtime, including after the visual arc has landed.
             if(!record.has_body){services.turrets().remove(record.owner);continue;}
