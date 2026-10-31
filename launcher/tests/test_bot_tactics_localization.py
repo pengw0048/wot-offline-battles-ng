@@ -201,7 +201,7 @@ class MainLanguageTests(unittest.TestCase):
              mock.patch.object(core,'discover_game_folders',return_value=[]):
             app=wot_launcher.LauncherWindow(tk,ttk,filedialog)
             try:
-                app.bot_tactics_button.invoke();app.root.update()
+                self.assertTrue(app._open_pinned_bot_tactics_editor());app.root.update()
                 editor=app._bot_tactics_editors[0]
                 self.assertEqual('zh',editor.language)
                 editor.profile_name.set('未保存测试')
@@ -214,7 +214,7 @@ class MainLanguageTests(unittest.TestCase):
                 self.assertEqual('zh',editor.language);self.assertEqual('北欧峡湾',editor.map_var.get())
                 editor.root.destroy()
                 app.language_choice.set('English');app._language_selected();app.root.update()
-                app.bot_tactics_button.invoke();app.root.update()
+                self.assertTrue(app._open_pinned_bot_tactics_editor());app.root.update()
                 self.assertEqual(1,len(app._bot_tactics_editors))
                 self.assertEqual('en',app._bot_tactics_editors[0].language)
             finally:app.root.destroy()

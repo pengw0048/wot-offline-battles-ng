@@ -461,7 +461,7 @@ class EditorUITests(unittest.TestCase):
 
 @unittest.skipUnless(os.name=='nt' or os.environ.get('DISPLAY'),'requires actual Tk display')
 class LauncherEntryTests(unittest.TestCase):
-    def test_real_launcher_button_opens_real_editor(self):
+    def test_real_launcher_entry_opens_real_editor(self):
         import core,wot_launcher
         with tempfile.TemporaryDirectory() as tmp,mock.patch.dict(os.environ,{'LOCALAPPDATA':tmp}),\
              mock.patch.object(core,'load_settings',return_value={'language':'zh','free_notice_seen':True}),\
@@ -470,7 +470,7 @@ class LauncherEntryTests(unittest.TestCase):
             app=wot_launcher.LauncherWindow(tk,ttk,filedialog)
             try:
                 app.root.update()
-                app.bot_tactics_button.invoke();app.root.update()
+                self.assertTrue(app._open_pinned_bot_tactics_editor());app.root.update()
                 self.assertFalse(errors.called,errors.call_args)
                 self.assertTrue(any(isinstance(w,tk.Toplevel) and w.title()=='Bot 配置与地图战术' for w in app.root.winfo_children()))
             finally:app.root.destroy()
