@@ -49,6 +49,19 @@ def pinned_revision():
     return match.group(1)
 
 
+def _internal_link(member):
+    """A documentation alias such as AGENTS.md; the launcher never reads one."""
+    if not member.issym() or member.linkname.startswith('/') or '\\' in member.linkname:
+        return False
+    parts = PurePosixPath(member.name).parent.parts + PurePosixPath(member.linkname).parts
+    depth = 0
+    for part in parts:
+        depth += -1 if part == '..' else 0 if part == '.' else 1
+        if depth < 1:
+            return False
+    return True
+
+
 def _extract_archive(data, revision, target):
     prefix = 'wot-0.9.22-offline-battles-' + revision
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
@@ -56,9 +69,12 @@ def _extract_archive(data, revision, target):
         for member in members:
             path = PurePosixPath(member.name)
             if (path.parts[:1] != (prefix,) or '..' in path.parts or
-                    '\\' in member.name or not (member.isdir() or member.isfile())):
+                    '\\' in member.name or
+                    not (member.isdir() or member.isfile() or _internal_link(member))):
                 raise ValueError('Unexpected pinned source member: ' + member.name)
         for member in members:
+            if member.issym():
+                continue
             relative = PurePosixPath(*PurePosixPath(member.name).parts[1:])
             if not relative.parts:
                 continue
