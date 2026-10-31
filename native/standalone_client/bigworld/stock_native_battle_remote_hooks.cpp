@@ -4,6 +4,8 @@
 #include "pyscript/script.hpp"
 #endif
 #include "stock_native_battle_remote.hpp"
+#include "stock_native_battle_compat.hpp"
+#include <map>
 #include <frameobject.h>
 #include <algorithm>
 #include <cstring>
@@ -46,8 +48,38 @@ PyObject* field(PyObject* fields, const char* name) {
     return fields && fields != Py_None && PyDict_Check(fields) ? PyDict_GetItemString(fields, name) : nullptr;
 }
 bool activePose(const Overlay* row) { return row && row->pose_active; }
-bool same(PyObject* compatibility, const char* name, PyObject* expected) {
-    return attr(compatibility, name).get() == expected;
+// The native compat scope or stock code object a hook branch compares against (compat.py kept them as attributes).
+PyObject* scoped(const char* name) {
+    namespace c = native_battle::compat;
+    const auto& s = c::scopes();
+    static const std::map<std::string, c::Code> codes = {
+        {"_vehicle_start_wg_physics_code", c::Code::VehicleStartWgPhysics}, {"_vehicle_start_visual_code", c::Code::VehicleStartVisual},
+        {"_vehicle_set_gun_angles_code", c::Code::VehicleSetGunAngles}, {"_avatar_aux_physics_code", c::Code::AvatarAuxPhysics},
+        {"_avatar_vehicle_enter_code", c::Code::AvatarVehicleEnter}, {"_avatar_start_vehicle_visual_code", c::Code::AvatarStartVehicleVisual},
+        {"_gun_rotator_stabilised_code", c::Code::GunRotatorStabilised},
+        {"_gun_rotator_predict_locked_target_code", c::Code::GunRotatorPredictLockedTarget},
+        {"_camera_acceleration_update_code", c::Code::CameraAccelerationUpdate},
+        {"_arcade_oscillator_acceleration_code", c::Code::ArcadeOscillatorAcceleration},
+        {"_sniper_oscillator_acceleration_code", c::Code::SniperOscillatorAcceleration},
+        {"_custom_effect_update_code", c::Code::CustomEffectUpdate},
+        {"_crashed_track_setup_assembler_code", c::Code::CrashedTrackSetupAssembler},
+        {"_crashed_track_model_loaded_code", c::Code::CrashedTrackModelLoaded},
+        {"_projectile_segment_may_hit_code", c::Code::ProjectileSegmentMayHit},
+        {"_compound_models_refresh_code", c::Code::CompoundModelsRefresh}};
+    const auto found = codes.find(name);
+    if (found != codes.end()) return c::code(found->second);
+    const std::string key = name;
+    if (key == "_vehicle_starting_wg_physics") return s.starting_wg_physics;
+    if (key == "_vehicle_starting_visual") return s.starting_visual;
+    if (key == "_vehicle_syncing_gun_angles") return s.syncing_gun_angles;
+    if (key == "_avatar_entering_vehicle") return s.entering_vehicle;
+    if (key == "_avatar_syncing_aux_physics") return s.syncing_aux_physics;
+    if (key == "_compound_refreshing_models") return s.refreshing_models;
+    throw p::Error(std::string("unknown native compat scope: ") + name);
+}
+bool same(PyObject*, const char* name, PyObject* expected) {
+    PyObject* value = scoped(name);
+    return value ? value == expected : expected == Py_None;
 }
 bool named(const std::string& value, std::initializer_list<const char*> names) {
     for (const auto* name : names) if (value == name) return true;
@@ -212,7 +244,7 @@ p::Ref get(PyObject* compatibility, PyObject* vehicle, PyObject* key, PyObject* 
     if (name != "filter") return original(compatibility, vehicle, key);
     const bool start = same(compatibility, "_vehicle_starting_wg_physics", vehicle) && same(compatibility, "_vehicle_start_wg_physics_code", code);
     const bool gun = same(compatibility, "_vehicle_syncing_gun_angles", vehicle) && same(compatibility, "_vehicle_set_gun_angles_code", code);
-    const bool auxiliary = attr(compatibility, "_avatar_syncing_aux_physics").get() != Py_None && same(compatibility, "_avatar_aux_physics_code", code);
+    const bool auxiliary = scoped("_avatar_syncing_aux_physics") != nullptr && same(compatibility, "_avatar_aux_physics_code", code);
     const bool entering = same(compatibility, "_avatar_entering_vehicle", vehicle) &&
         (same(compatibility, "_avatar_vehicle_enter_code", code) || same(compatibility, "_avatar_start_vehicle_visual_code", code));
     auto* row = overlay(compatibility, vehicle); const bool pose = activePose(row);
@@ -278,7 +310,8 @@ PyObject* avatarGet(PyObject* compatibility, PyObject* avatar, PyObject* key) {
     }
     if (active && vehicle) {
         auto lookup = [&]() { auto runtime = attr(compatibility, "_runtime"); auto bigworld = attr(runtime.get(), "bigworld"); return attr(bigworld.get(), "entity"); };
-        auto postmortem = attr(compatibility, "_postmortem_vehicle_id");
+        native_battle::Battle* battle = native_battle::current();
+        auto postmortem = p::integer(battle && battle->compat ? battle->compat->postmortem_vehicle_id : 0);
         if (p::flag(postmortem.get())) {
             auto entity = call(lookup().get(), postmortem.get());
             // Retail changes Avatar.vehicle before it publishes onSwitchViewpoint.

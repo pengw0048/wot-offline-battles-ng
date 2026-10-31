@@ -268,7 +268,8 @@ PyObject* avatarVehicleEnter(PyObject* args, PyObject* kwargs) {
                 try {
                     if (py::callable(prepare)) py::invoke(prepare.get(), vehicle.get());
                     py::invoke(accept.get(), id.get());
-                } catch (const p::Error&) {
+                } catch (const std::exception& e) {
+                    if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what());
                     failEnter();
                     return nullptr;
                 }
