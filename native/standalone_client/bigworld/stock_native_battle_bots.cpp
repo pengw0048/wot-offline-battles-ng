@@ -33,6 +33,31 @@ OwnerRef prepare(Battle& b) {
     if (!a->owner) a->owner = owner::create(b);
     return a->owner;
 }
+// BOTDIAG: every 10 s on the worker, the owner's cumulative stage timing, publication counts and how many Bots moved.
+void diagnose(Battle& b, BotAuthority& a, stock_native_bot::Owner& o, double now) {
+    static std::uint64_t generation = 0;
+    static double next = 0.;
+    static std::map<std::string, std::array<double, 2>> previous;
+    if (generation != b.generation) { generation = b.generation; next = now + 10.; previous.clear(); owner::stageTiming(o, true); return; }
+    if (now < next) return;
+    next = now + 10.;
+    int bots = 0, moved = 0, alive = 0;
+    for (const auto& entry : b.vehicles->actors) {
+        const auto& v = *entry.second;
+        if (v.kind != "bot" || !v.has_current) continue;
+        ++bots;
+        if (!v.dead) ++alive;
+        const std::array<double, 2> at{v.current[0], v.current[2]};
+        auto found = previous.find(entry.first);
+        if (found != previous.end() && std::hypot(at[0] - found->second[0], at[1] - found->second[1]) > 1.) ++moved;
+        previous[entry.first] = at;
+    }
+    auto stats = owner::statistics(o);
+    p::Ref text(PyObject_Repr(stats.get()));
+    log("BOTDIAG bots=" + std::to_string(bots) + " alive=" + std::to_string(alive) + " moved=" + std::to_string(moved) +
+        " generated=" + std::to_string(a.generated) + " enqueued=" + std::to_string(a.enqueued) + " send_failed=" + std::to_string(a.send_failed) +
+        " fire_seen=" + std::to_string(b.projectiles ? b.projectiles->bot_fire_seen.size() : 0) + " stats=" + p::string(text.get()));
+}
 OwnerRef existing(const Battle& b) {
     const auto* a = authority(b);
     return a ? a->owner : nullptr;
@@ -329,6 +354,7 @@ void update(Battle& b, double now, double dt) {
         const bool accepted = enqueue(b, message.get());
         if (state) ++(accepted ? a->enqueued : a->send_failed);
     }
+    diagnose(b, *a, *o, now);
 }
 
 std::size_t presentPoses(Battle& b, double now) {
