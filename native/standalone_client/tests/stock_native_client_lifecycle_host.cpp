@@ -3,6 +3,7 @@
 #include "../bigworld/stock_native_client_lifecycle.cpp"
 #include "../bigworld/stock_native_client_events.cpp"
 #include "../bigworld/stock_native_client_frame.cpp"
+#include "../bigworld/stock_native_client_shots.cpp"
 PyMODINIT_FUNC initoffline_client_lifecycle_native(void) {
     Py_InitModule("offline_client_lifecycle_native", stock_native_client_lifecycle::lifecycle_methods());
 }

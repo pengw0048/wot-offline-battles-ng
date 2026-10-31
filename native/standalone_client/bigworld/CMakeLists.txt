@@ -226,6 +226,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_lifecycle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_events.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_frame.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_shots.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_turret_presentation.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_turret_presentation_python.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_client_drive_scene.cpp"

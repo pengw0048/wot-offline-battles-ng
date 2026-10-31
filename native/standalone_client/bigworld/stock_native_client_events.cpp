@@ -9,32 +9,6 @@ namespace stock_native_client_lifecycle {
 namespace {
 using namespace py;
 
-p::Ref global(PyObject* g, const char* name) {
-    PyObject* v = PyDict_GetItemString(g, name);
-    if (!v) { PyErr_Format(PyExc_NameError, "global name '%s' is not defined", name); throw p::Error(name); }
-    return p::retain(v);
-}
-bool member(PyObject* sequence, PyObject* v) {
-    const int found = PySequence_Contains(sequence, v);
-    if (found < 0) throw p::Error("Native membership test failed");
-    return found != 0;
-}
-bool textIn(PyObject* v, std::initializer_list<const char*> options) {
-    for (const char* option : options) if (equal(v, p::text(option).get())) return true;
-    return false;
-}
-// The exception a Python `except Exception as error` would bind for the current failure.
-p::Ref caught(const std::exception& e) {
-    PyObject *type, *value, *trace;
-    PyErr_Fetch(&type, &value, &trace);
-    if (!type) return p::Ref(PyObject_CallFunction(PyExc_RuntimeError, const_cast<char*>("s"), e.what()));
-    PyErr_NormalizeException(&type, &value, &trace);
-    Py_XDECREF(type); Py_XDECREF(trace);
-    return p::Ref(value);
-}
-p::Ref str(PyObject* v) { return p::Ref(PyObject_Str(v)); }
-[[noreturn]] void raise(const std::string& message) { throw p::Error(message); }
-p::Ref module(const char* name) { return p::Ref(PyImport_ImportModule(name)); }
 
 // BattleRuntime._record_is_event_ready (staticmethod)
 bool recordIsEventReady(PyObject* record) {
@@ -60,9 +34,7 @@ p::Ref combatEventSource(PyObject* event) {
         raise("ordered combat event has invalid source: " + p::string(str(source.get()).get()));
     return source;
 }
-p::Ref recordsGet(PyObject* battle, PyObject* k) { return method(attr(battle, "_records").get(), "get", k); }
 bool pendingCreate(PyObject* battle, PyObject* k) { return member(attr(battle, "_pending_bot_creates").get(), k); }
-std::string keyText(PyObject* k) { return p::string(str(k).get()); }
 
 PyObject* pendingEventReferences(PyObject*, PyObject* args) {
     PyObject *battle, *k;
@@ -713,11 +685,6 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
-// '%s:%s' % (first, second)
-p::Ref formatKey(PyObject* first, PyObject* second) {
-    p::Ref values(PyTuple_Pack(2, first, second));
-    return p::Ref(PyString_Format(p::text("%s:%s").get(), values.get()));
-}
 // BattleRuntime._feedback_entity_key (staticmethod)
 p::Ref feedbackEntityKey(PyObject* event, const char* role, const char* label) {
     auto kind = method(event, "get", p::text(std::string(role) + "_kind").get());
@@ -744,15 +711,6 @@ bool combatTargetIsSpotted(PyObject* record) {
     auto fallback = method(record, "get", p::text("spot_visible").get(), Py_True);
     return truthy(method(record, "get", p::text("spot_marker_visible").get(), fallback.get()));
 }
-// self._run_optional_feature(name, fn, args)
-p::Ref optionalFeature(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
-    auto label = p::text(name);
-    PyObject** dict = _PyObject_GetDictPtr(battle);
-    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature"))
-        return callKw(battle, "_run_optional_feature", {label.get(), fn, call_args}, {});
-    return dispatch(battle, "_run_optional_feature", "run_optional_feature", {}, {},
-                    {label.get(), fn, call_args, Py_None, Py_True, Py_None});
-}
 // The stock BATTLE_EVENT_TYPE group, or the pinned RuntimeError.
 p::Ref battleEventTypes(PyObject* battle, const char* missing) {
     auto runtime = attr(battle, "_runtime");
@@ -767,8 +725,6 @@ p::Ref battleEventsCallback(PyObject* battle) {
         raise("#1513 battle-event feedback boundary is unavailable");
     return callback;
 }
-// int(value) with Python's int/long result.
-p::Ref toInt(PyObject* value) { return p::Ref(PyNumber_Int(value)); }
 p::Ref feedbackRow(PyObject* type, PyObject* target, PyObject* details) {
     auto row = literal(4);
     put(row.get(), "eventType", p::retain(type));
@@ -967,38 +923,6 @@ PyObject* destructibleEvent(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
-// `a, b, ... = value` with Python 2's iteration and error messages.
-std::vector<p::Ref> unpack(PyObject* value, std::size_t count) {
-    p::Ref iterator(PyObject_GetIter(value));
-    std::vector<p::Ref> items;
-    while (items.size() <= count) {
-        PyObject* item = PyIter_Next(iterator.get());
-        if (!item) { if (PyErr_Occurred()) throw p::Error("unpack"); break; }
-        items.emplace_back(item);
-    }
-    if (items.size() != count) {
-        if (items.size() > count) PyErr_SetString(PyExc_ValueError, "too many values to unpack");
-        else PyErr_Format(PyExc_ValueError, "need more than %d value%s to unpack", int(items.size()), items.size() == 1 ? "" : "s");
-        throw p::Error("unpack");
-    }
-    return items;
-}
-// max(0, value): the value only when it is greater.
-p::Ref positive(p::Ref value) {
-    const int greater = PyObject_RichCompareBool(value.get(), integer(0).get(), Py_GT);
-    if (greater < 0) throw p::Error("Native comparison failed");
-    return greater ? std::move(value) : integer(0);
-}
-bool greaterThanZero(PyObject* value) {
-    const int greater = PyObject_RichCompareBool(value, integer(0).get(), Py_GT);
-    if (greater < 0) throw p::Error("Native comparison failed");
-    return greater != 0;
-}
-// int(event.get(name, 0) or 0), clamped below at zero.
-p::Ref nonNegative(PyObject* event, const char* name) {
-    auto raw = method(event, "get", p::text(name).get(), integer(0).get());
-    return positive(toInt(truthy(raw) ? raw.get() : integer(0).get()));
-}
 p::Ref eventRow(PyObject* types, const char* type, PyObject* target, p::Ref details) {
     auto row = literal(4);
     put(row.get(), "eventType", toInt(attr(types, type).get()));
@@ -1340,21 +1264,9 @@ PyObject* presentCombatHit(PyObject*, PyObject* args) {
             auto far_offset = method(direction.get(), "scale", p::number(0.4).get());
             p::Ref end(PyNumber_Add(hit_position.get(), far_offset.get()));
             auto identity = method(battle, "_impact_sound_identity", target_record, attacker_id, direction.get(), damage_factor.get());
-            // f(..., k=v, **identity): the mapping is copied, then explicit keywords join it.
-            p::Ref keywords(PyDict_New());
-            if (PyDict_Update(keywords.get(), identity.get()) < 0) throw p::Error("sound identity is not a mapping");
-            const std::pair<const char*, PyObject*> named[] = {{"dir", direction.get()}, {"start", start.get()}, {"end", end.get()},
-                {"showShockWave", local ? Py_True : Py_False}, {"showFlashBang", local ? Py_True : Py_False}};
-            for (const auto& entry : named) {
-                if (PyDict_GetItemString(keywords.get(), entry.first)) {
-                    PyErr_Format(PyExc_TypeError, "%.200s%s got multiple values for keyword argument '%.200s'",
-                                 PyEval_GetFuncName(add_effect.get()), PyEval_GetFuncDesc(add_effect.get()), entry.first);
-                    throw p::Error("duplicate keyword");
-                }
-                put(keywords.get(), entry.first, p::retain(entry.second));
-            }
             p::Ref positional(PyTuple_Pack(4, hit_position.get(), parts[1].get(), parts[0].get(), Py_None));
-            p::Ref(PyObject_Call(add_effect.get(), positional.get(), keywords.get()));
+            callWithMapping(add_effect.get(), positional.get(), {{"dir", direction.get()}, {"start", start.get()}, {"end", end.get()},
+                            {"showShockWave", local ? Py_True : Py_False}, {"showFlashBang", local ? Py_True : Py_False}}, identity.get());
         } catch (const std::exception& e) {
             if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
             auto error = caught(e);
@@ -1368,30 +1280,6 @@ PyObject* presentCombatHit(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
-// sys.stdout.write(text) through the live stream object.
-void writeStdout(PyObject* text) {
-    PyObject* stream = PySys_GetObject(const_cast<char*>("stdout"));
-    if (!stream) throw p::Error("sys.stdout is unavailable");
-    method(stream, "write", text);
-}
-// self._run_optional_feature(name, fn, args=call_args)
-void optionalFeatureArgs(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
-    PyObject** dict = _PyObject_GetDictPtr(battle);
-    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature")) {
-        callKw(battle, "_run_optional_feature", {p::text(name).get(), fn}, {{"args", call_args}});
-        return;
-    }
-    optionalFeature(battle, name, fn, call_args);
-}
-// int(value) with `except (TypeError, ValueError[, OverflowError, IndexError])` falling back.
-p::Ref intOr(PyObject* value, std::int64_t fallback) {
-    PyObject* converted = PyNumber_Int(value);
-    if (converted) return p::Ref(converted);
-    if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError) &&
-        !PyErr_ExceptionMatches(PyExc_OverflowError)) throw p::Error("int conversion failed");
-    PyErr_Clear();
-    return integer(fallback);
-}
 void boneAngles(PyObject* battle, PyObject* entity, PyObject* angles) {
     const char* pairs[][2] = {{"turretMatrix", "yaw"}, {"gunMatrix", "pitch"}};
     for (const auto& pair : pairs) {

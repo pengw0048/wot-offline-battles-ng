@@ -73,10 +73,79 @@ PORTS = (
     ('_present_combat_feedback', 'present_combat_feedback(self, event, target_record, attacker_record, reason_id)'),
     ('_present_combat_hit', 'present_combat_hit(self, event, target_record, attacker_record, attacker_id, globals())'),
     ('_show_shot', 'show_shot(self, event, update_state, globals())'),
+    ('_projectile_is_authority', 'projectile_is_authority(self, globals())'),
+    ('_owns_projectile', 'owns_projectile(self, meta, globals())'),
+    ('_projectile_estimated_server_time', 'projectile_estimated_server_time(self, now)'),
+    ('_new_projectile_meta', 'new_projectile_meta(self, normalized)'),
+    ('_projectile_source_descriptor', 'projectile_source_descriptor(self, meta)'),
+    ('_projectile_attacker_engine_id', 'projectile_attacker_engine_id(self, meta)'),
+    ('_projectile_source_entity', 'projectile_source_entity(self, meta)'),
+    ('_remember_fire_timeline', 'remember_fire_timeline(self, key, value)'),
+    ('_projectile_shot', 'projectile_shot(self, meta, globals())'),
+    ('_admit_projectile_visual', 'admit_projectile_visual(self, attacker_id, projectile_id, now)'),
+    ('_show_local_shot_without_extra', 'show_local_shot_without_extra(self, entity, burst_count, globals())'),
+    ('_shot_muzzle_drawn', 'shot_muzzle_drawn(self, record)'),
+    ('_show_replay_local_muzzle', 'show_replay_local_muzzle(self, entity, burst_count)'),
+    ('_reset_projectile_visuals', 'reset_projectile_visuals(self)'),
+    ('_report_player_shot_timing', 'report_player_shot_timing(self, meta)'),
+    ('_projectile_record_positions', 'projectile_record_positions(self, globals())'),
+    ('_projectile_vehicle_matrices', 'projectile_vehicle_matrices(self, record, vehicle, ground_matrix)'),
+    ('_projectile_descriptor_at_pose', 'projectile_descriptor_at_pose(self, target, pose)'),
+    ('_report_projectile_terminal_failure',
+     'report_projectile_terminal_failure(self, meta, state, stage, reason, error, globals())'),
+    ('_confirm_bot_projectile_launch', 'confirm_bot_projectile_launch(self, normalized, globals())'),
+    ('_projectile_visual_start', 'projectile_visual_start(self, entity, normalized, globals())'),
+    ('_set_projectile_epoch', 'set_projectile_epoch(self, value, now, globals())'),
+    ('_projectile_record_pose', 'projectile_record_pose(self, key, record, position, globals())'),
+    ('_sample_projectile_positions', 'sample_projectile_positions(self, now, poses, globals())'),
+    ('_projectile_frozen_target', 'projectile_frozen_target(self, target, pose, globals())'),
+    ('_projectile_live_critical_target', 'projectile_live_critical_target(self, record, target, globals())'),
+    ('_discard_provisional_projectile',
+     'discard_provisional_projectile(self, projectile_id, native_client_projectile, globals())'),
+    ('_observe_projectile_message',
+     'observe_projectile_message(self, message, native_client_projectile, native_bot_runtime, globals())'),
+    ('_install_projectile_meta', 'install_projectile_meta(self, normalized, globals())'),
+    ('_projectile_record_poses', 'projectile_record_poses(self, globals())'),
+    ('_projectile_explosion', 'projectile_explosion(self, projectile_id, impact, outcome, globals())'),
+    ('_present_projectile_wreck_hit', 'present_projectile_wreck_hit(self, projectile_id, event, globals())'),
+    ('_stop_projectile_visual', 'stop_projectile_visual(self, projectile_id, event, globals())'),
+    ('_ensure_projectile_visual_native_presentation',
+     'ensure_projectile_visual_native_presentation(self, normalized, now, visual_start, globals())'),
+    ('_ensure_projectile_visual',
+     'ensure_projectile_visual(self, normalized, now, visual_start, native_client_projectile, globals())'),
+    ('_flush_pending_projectile_resolutions', 'flush_pending_projectile_resolutions(self, globals())'),
+    ('_prune_projectile_position_history', 'prune_projectile_position_history(self, states, globals())'),
+    ('_advance_projectiles',
+     'advance_projectiles(self, now, force_progress, native_client_projectile, native_bot_runtime, globals())'),
+    ('_accept_projectile_event',
+     'accept_projectile_event(self, event, native_client_projectile, native_bot_runtime, globals())'),
+    ('_apply_projectile_ricochet_event', 'apply_projectile_ricochet_event(self, event, native_bot_runtime, globals())'),
+    ('_apply_projectile_terminal_event',
+     'apply_projectile_terminal_event(self, event, native_client_projectile, native_bot_runtime, globals())'),
+    ('on_fire_intent_result', 'on_fire_intent_result(self, message, globals())'),
+    ('_defer_local_projectile_presentation', 'defer_local_projectile_presentation(self, event, globals())'),
+    ('_reconcile_projectile_snapshot',
+     'reconcile_projectile_snapshot(self, message, native_client_projectile, native_bot_runtime, globals())'),
+)
+
+
+# Static methods keep their decorator; the native port takes their arguments.
+STATIC_PORTS = (
+    ('_projectile_wire_meta', 'projectile_wire_meta(raw, globals())'),
+    ('_projectile_plain_pose', 'projectile_plain_pose(position, state, globals())'),
+    ('_projectile_boundary_pose', 'projectile_boundary_pose(position, state, globals())'),
+    ('_projectile_visual_age', 'projectile_visual_age(raw, globals())'),
 )
 
 
 def battle(source):
+    for name, call in STATIC_PORTS:
+        pattern = r'(^    @staticmethod\n    def ' + re.escape(name) + r'\([^)]*\):\n)'
+        matches = list(re.finditer(pattern, source, re.M))
+        if len(matches) != 1:
+            raise ValueError('The pinned lifecycle static seam changed: ' + name)
+        index = matches[0].end()
+        source = source[:index] + '        return _offline_lifecycle_native.' + call + '\n' + source[index:]
     for name, call in PORTS:
         pattern = r'(^    def ' + re.escape(name) + r'\(\s*self[^:]*\):\n)'
         matches = list(re.finditer(pattern, source, re.M))
@@ -85,7 +154,7 @@ def battle(source):
         index = matches[0].end()
         imports = ''.join('        from . import %s\n' % module for module in (
             'native_client_query', 'native_client_environment', 'native_client_drive',
-            'native_client_replica') if module in call)
+            'native_client_replica', 'native_client_projectile', 'native_bot_runtime') if module in call)
         source = (source[:index] + imports + '        return _offline_lifecycle_native.' + call + '\n' + source[index:])
     # One module-level import; each routed method only reads the global.
     return source + '\nimport offline_client_lifecycle_native as _offline_lifecycle_native\n'

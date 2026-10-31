@@ -26,9 +26,27 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_attack_reason', '_is_blind_local_attack', '_apply_vehicle_statistics_event', '_present_direct_spot',
            '_apply_detection_event', '_apply_assist_event', '_apply_environment_critical_feedback',
            '_apply_destructible_event', '_feedback_entity_key', '_combat_record_team', '_combat_target_is_spotted',
-           '_present_damage_sticker', '_apply_battle_result', '_present_combat_feedback', '_present_combat_hit', '_show_shot')
+           '_present_damage_sticker', '_apply_battle_result', '_present_combat_feedback', '_present_combat_hit', '_show_shot',
+           '_projectile_is_authority', '_owns_projectile', '_projectile_estimated_server_time', '_new_projectile_meta',
+           '_projectile_source_descriptor', '_projectile_attacker_engine_id', '_projectile_source_entity',
+           '_remember_fire_timeline', '_projectile_shot', '_descriptor_shot', '_admit_projectile_visual',
+           '_show_local_shot_without_extra', '_shot_muzzle_drawn', '_show_replay_local_muzzle',
+           '_reset_projectile_visuals', '_report_player_shot_timing', '_projectile_wire_meta',
+           '_projectile_plain_pose', '_projectile_boundary_pose', '_projectile_visual_age', '_projectile_record_positions',
+           '_projectile_vehicle_matrices', '_projectile_descriptor_at_pose', '_report_projectile_terminal_failure',
+           '_confirm_bot_projectile_launch', '_projectile_visual_start', '_set_projectile_epoch', '_projectile_record_pose',
+           '_sample_projectile_positions', '_projectile_frozen_target', '_projectile_live_critical_target',
+           '_discard_provisional_projectile', '_observe_projectile_message', '_install_projectile_meta', '_projectile_record_poses',
+           '_projectile_explosion', '_present_projectile_wreck_hit', '_stop_projectile_visual',
+           '_ensure_projectile_visual_native_presentation', '_ensure_projectile_visual',
+           '_flush_pending_projectile_resolutions', '_prune_projectile_position_history', '_advance_projectiles',
+           '_accept_projectile_event', '_apply_projectile_ricochet_event', '_apply_projectile_terminal_event',
+           '_projectile_launch_mismatches', 'on_fire_intent_result', '_defer_local_projectile_presentation',
+           '_reconcile_projectile_snapshot')
 CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES',)
-GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS')
+GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS',
+           '_MutedShootingExtra', 'PROJECTILE_MAX_TIME_MS', '_angle_delta',
+           'PROJECTILE_SUSTAIN_SECONDS', 'PROJECTILE_CHORDS_PER_FRAME', 'PROJECTILE_MAX_CHORDS_PER_FRAME', 'PROJECTILE_PROGRESS_SECONDS')
 
 FIXTURE = r'''
 METHOD_NAMES = %r
@@ -95,6 +113,13 @@ def run(name, make, args):
                 result = ('ok', NATIVE[name](b, *values))
             except Exception as error:
                 result = ('error', type(error).__name__, str(error))
+        # A fixture may run work the method scheduled (a BigWorld callback) before the comparison.
+        drive = b.__dict__.get('_drive_deferred')
+        if drive is not None:
+            try:
+                drive()
+            except Exception as error:
+                log.append(('deferred error', type(error).__name__, str(error)))
         battle_after = tuple(repr(b.__dict__.get(name, '-')) for name in (
             '_local_siege_pending', '_targeting_signature', '_local_physics', '_local_suspension_params',
             '_local_suspension_probe_trace', '_local_suspension_disabled', '_local_suspension_pitch_velocity',
@@ -105,7 +130,16 @@ def run(name, make, args):
             '_worker_probe_bot_send_failed', '_worker_probe_bot_count', '_local_frame_stages',
             '_standard_space_visibility', '_next_space_visibility_check', '_team_chat_initialized', '_ready_sent',
             '_next_bot_manifest_retry', '_bot_manifest_retry_deadline', '_bot_manifest_retry_identity',
-            '_battle_result', '_round_finished_notified', '_battle_live'))
+            '_battle_result', '_round_finished_notified', '_battle_live', '_fire_timeline',
+            '_projectile_visual_meta', '_replay_muzzle_count', '_bot_fire_seen', '_bot_fire_confirmations',
+            '_bot_launch_payloads', '_projectile_epoch', '_projectile_visual_terminals', '_projectile_resolution_acks',
+            '_local_projectile_presented', '_local_projectile_presentations', '_projectile_terminal_data',
+            '_projectile_scene_stop_reasons', '_next_projectile_progress_time', '_projectile_position_history',
+            '_projectile_meta', '_projectile_server_time_ms', '_projectile_server_local_time', '_pose_motion_time_us',
+            '_pose_motion_local_time', '_projectile_perf', '_projectile_scan_count', '_projectile_candidate_count',
+            '_projectile_target_positions', '_projectile_previous_positions', '_projectile_current_positions',
+            '_projectile_frame_start', '_projectile_frame_end', '_projectile_advance_active', '_projectile_historic_pose_cache',
+            '_projectile_revision'))
         log.append(('after',) + battle_after)
         probe = getattr(b, '_entity_probe', None)
         entity_after = None if probe is None else tuple(repr(probe.__dict__.get(name)) for name in (
@@ -203,6 +237,61 @@ NATIVE = {
     '_present_combat_feedback': lambda b, e, t, a, reason_id=None: native.present_combat_feedback(b, e, t, a, reason_id),
     '_present_combat_hit': lambda b, e, t, a, attacker_id: native.present_combat_hit(b, e, t, a, attacker_id, globals()),
     '_show_shot': lambda b, e, update_state=True: native.show_shot(b, e, update_state, globals()),
+    '_projectile_is_authority': lambda b: native.projectile_is_authority(b, globals()),
+    '_owns_projectile': lambda b, m: native.owns_projectile(b, m, globals()),
+    '_projectile_estimated_server_time': native.projectile_estimated_server_time,
+    '_new_projectile_meta': native.new_projectile_meta,
+    '_projectile_source_descriptor': native.projectile_source_descriptor,
+    '_projectile_attacker_engine_id': native.projectile_attacker_engine_id,
+    '_projectile_source_entity': native.projectile_source_entity,
+    '_remember_fire_timeline': native.remember_fire_timeline,
+    '_projectile_shot': lambda b, m: native.projectile_shot(b, m, globals()),
+    '_admit_projectile_visual': native.admit_projectile_visual,
+    '_show_local_shot_without_extra': lambda b, e, c: native.show_local_shot_without_extra(b, e, c, globals()),
+    '_shot_muzzle_drawn': native.shot_muzzle_drawn,
+    '_show_replay_local_muzzle': native.show_replay_local_muzzle,
+    '_reset_projectile_visuals': native.reset_projectile_visuals,
+    '_report_player_shot_timing': native.report_player_shot_timing,
+    '_projectile_wire_meta': lambda b, raw: native.projectile_wire_meta(raw, globals()),
+    '_projectile_plain_pose': lambda b, position, state=None: native.projectile_plain_pose(position, state, globals()),
+    '_projectile_boundary_pose': lambda b, position, state=None: native.projectile_boundary_pose(position, state, globals()),
+    '_projectile_visual_age': lambda b, raw: native.projectile_visual_age(raw, globals()),
+    '_projectile_record_positions': lambda b: native.projectile_record_positions(b, globals()),
+    '_projectile_vehicle_matrices': lambda b, r, v, ground_matrix=None: native.projectile_vehicle_matrices(b, r, v, ground_matrix),
+    '_projectile_descriptor_at_pose': native.projectile_descriptor_at_pose,
+    '_report_projectile_terminal_failure': lambda b, m, st, stage, reason, error=None:
+        native.report_projectile_terminal_failure(b, m, st, stage, reason, error, globals()),
+    '_confirm_bot_projectile_launch': lambda b, n: native.confirm_bot_projectile_launch(b, n, globals()),
+    '_projectile_visual_start': lambda b, e, n: native.projectile_visual_start(b, e, n, globals()),
+    '_set_projectile_epoch': lambda b, value, now: native.set_projectile_epoch(b, value, now, globals()),
+    '_projectile_record_pose': lambda b, k, r, pos: native.projectile_record_pose(b, k, r, pos, globals()),
+    '_sample_projectile_positions': lambda b, now, poses: native.sample_projectile_positions(b, now, poses, globals()),
+    '_projectile_frozen_target': lambda b, t, pose: native.projectile_frozen_target(b, t, pose, globals()),
+    '_projectile_live_critical_target': lambda b, r, t: native.projectile_live_critical_target(b, r, t, globals()),
+    '_discard_provisional_projectile': lambda b, pid: native.discard_provisional_projectile(b, pid, native_client_projectile, globals()),
+    '_observe_projectile_message': lambda b, m: native.observe_projectile_message(b, m, native_client_projectile, native_bot_runtime,
+                                                                                 globals()),
+    '_install_projectile_meta': lambda b, n: native.install_projectile_meta(b, n, globals()),
+    '_projectile_record_poses': lambda b: native.projectile_record_poses(b, globals()),
+    '_projectile_explosion': lambda b, pid, impact, outcome='impact': native.projectile_explosion(b, pid, impact, outcome, globals()),
+    '_present_projectile_wreck_hit': lambda b, pid, e: native.present_projectile_wreck_hit(b, pid, e, globals()),
+    '_stop_projectile_visual': lambda b, pid, e: native.stop_projectile_visual(b, pid, e, globals()),
+    '_ensure_projectile_visual_native_presentation': lambda b, n, now, visual_start=None:
+        native.ensure_projectile_visual_native_presentation(b, n, now, visual_start, globals()),
+    '_ensure_projectile_visual': lambda b, n, now, visual_start=None:
+        native.ensure_projectile_visual(b, n, now, visual_start, native_client_projectile, globals()),
+    '_flush_pending_projectile_resolutions': lambda b: native.flush_pending_projectile_resolutions(b, globals()),
+    '_prune_projectile_position_history': lambda b, states=None: native.prune_projectile_position_history(b, states, globals()),
+    '_advance_projectiles': lambda b, now, force_progress=False: native.advance_projectiles(
+        b, now, force_progress, native_client_projectile, native_bot_runtime, globals()),
+    '_accept_projectile_event': lambda b, e: native.accept_projectile_event(b, e, native_client_projectile, native_bot_runtime, globals()),
+    '_apply_projectile_ricochet_event': lambda b, e: native.apply_projectile_ricochet_event(b, e, native_bot_runtime, globals()),
+    '_apply_projectile_terminal_event': lambda b, e: native.apply_projectile_terminal_event(
+        b, e, native_client_projectile, native_bot_runtime, globals()),
+    'on_fire_intent_result': lambda b, m: native.on_fire_intent_result(b, m, globals()),
+    '_defer_local_projectile_presentation': lambda b, e: native.defer_local_projectile_presentation(b, e, globals()),
+    '_reconcile_projectile_snapshot': lambda b, m: native.reconcile_projectile_snapshot(
+        b, m, native_client_projectile, native_bot_runtime, globals()),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -1591,6 +1680,704 @@ for impl in ('pinned', 'native'):
     left = sorted(k for k in entity.__dict__ if k != '_offlineLANShotIndex' and k.startswith('_offlineLANShot') or k.startswith('_offlineLANProjectile') or k == '_offlineLANCanonicalTracerOwned')
     assert left == [], (impl, left)
 cases += 2
+# Projectile ownership, meta and descriptor leaves.
+import collections
+class Client(object):
+    pass
+def shot_battle(log, v):
+    b = feedback_battle(log, v, worker=v % 4 == 1)
+    b._replay_mode = v % 9 == 7
+    b.client = Client()
+    if v % 7: b.client.player_id = (3, 3L, True, 0, -1, 'x', None)[v % 7]
+    if v % 5 == 1: b.client.is_bot_authority = lambda: (log.append(('client', 'is_bot_authority')), v % 3)[1]
+    elif v % 5 == 2: b.client.is_bot_authority = lambda: 1 // 0
+    elif v % 5 == 3: b.client.is_bot_authority = 'not callable'
+    b._projectile_server_time_ms = None if v % 8 == 7 else (1000, 1000L, 2.5)[v % 3]
+    b._projectile_server_local_time = None if v % 10 == 9 else (1.5, '2', 10)[v % 3]
+    b._fire_timeline = collections.OrderedDict(('k%d' % i, i) for i in range(60 + v % 8))
+    stub(b, log, '_resolve_descriptor', lambda vehicle: 1 // 0 if vehicle == 'bad' else ('descriptor', vehicle))
+    entity = Log(log, 'source', typeDescriptor=None if v % 3 == 0 else Descriptor2(v))
+    stub(b, log, '_server_entity', None if v % 6 == 5 else entity)
+    return b
+class Gun2(object):
+    def __init__(self, v): self.shots = ([{'shell': {'effectsIndex': 4, 'isTracer': True}}, {'shell': None}], None, ())[v % 3]
+class Descriptor2(object):
+    def __init__(self, v):
+        self.gun = Gun2(v)
+        if v % 2: self.activeGunShotIndex = 1
+    def __repr__(self): return '<descriptor2>'
+METAS = [
+    {'shooter_kind': 'player', 'shooter_id': 3, 'projectile_id': 'a', 'ricochet_count': 0, 'shell_index': 1,
+     'source_shot': {'shell': {'damage': 5}, 'speed': 9}},
+    {'shooter_kind': 'bot', 'shooter_id': 7, 'projectile_id': 'b', 'ricochet_count': 1, 'source_vehicle': 'v7', 'source_shot': None},
+    {'shooter_kind': 'bot', 'shooter_id': 8, 'projectile_id': 'c', 'ricochet_count': 0.0, 'source_vehicle': 'bad', 'shell_index': '7'},
+    {'shooter_kind': 'player', 'shooter_id': 4, 'source_descriptor': 'cached', 'source_shot': {'shell': None}},
+    {'shooter_kind': 'player', 'shooter_id': 3, 'projectile_id': 'e', 'ricochet_count': 0, 'source_shot': ['frozen']},
+    {'shooter_kind': 'bot', 'shooter_id': 99, 'projectile_id': 'd', 'ricochet_count': 2, 'source_vehicle': '', 'shell_index': 'x'},
+]
+for variant in range(30):
+    run('_projectile_is_authority', lambda log, v=variant: (shot_battle(log, v), ()), (variant,)); cases += 1
+    for now in (3.0, '4', 0):
+        run('_projectile_estimated_server_time', lambda log, v=variant, now=now: (shot_battle(log, v), (now,)), (variant, now)); cases += 1
+    for key in ('k1', 'new', 'k70'):
+        run('_remember_fire_timeline', lambda log, v=variant, key=key: (shot_battle(log, v), (key, 9.5)), (variant, key)); cases += 1
+    for index, meta in enumerate(METAS + [None, ['list']]):
+        make = lambda log, v=variant, m=meta: (shot_battle(log, v), (copy.deepcopy(m),))
+        run('_owns_projectile', make, (variant, index)); cases += 1
+        if isinstance(meta, dict):
+            for name in ('_new_projectile_meta', '_projectile_source_descriptor', '_projectile_attacker_engine_id',
+                         '_projectile_source_entity', '_projectile_shot'):
+                run(name, make, (variant, index)); cases += 1
+# Muzzle and visual helpers.
+class Extras(dict):
+    def __init__(self, log, frozen=False, **items):
+        dict.__init__(self, **items); self._log, self._frozen = log, frozen
+    def __setitem__(self, key, value):
+        self._log.append(('extras', 'set', key, type(value).__name__))
+        if self._frozen: raise TypeError('frozen extras')
+        dict.__setitem__(self, key, value)
+class Shooter(object):
+    def __init__(self, log, v, extras):
+        self._log, self._v = log, v
+        self.typeDescriptor = Log(log, 'descriptor', extrasDict=extras)
+    def __repr__(self): return '<shooter>'
+    def showShooting(self, count, flag):
+        self._log.append(('shooter', 'showShooting', count, flag, type(self.typeDescriptor.extrasDict.get('shoot')).__name__))
+        if self._v % 11 == 10: raise ValueError('shooting failed')
+        return 'shot'
+for variant in range(36):
+    for meta in ({'shooter_kind': 'player', 'projectile_id': 'p', 'shooter_id': 3, 'launch_server_time_ms': 1200.7},
+                 {'shooter_kind': 'bot'}, {'shooter_kind': 'player', 'launch_server_time_ms': 'x'}, {}):
+        def make(log, v=variant, m=meta):
+            sys.stdout = Recorder(log)
+            return shot_battle(log, v), (dict(m),)
+        try:
+            run('_report_player_shot_timing', make, (variant, meta)); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+    for pid in (None, 'p1'):
+        def make(log, v=variant, pid=pid):
+            b = shot_battle(log, v)
+            if v % 6 == 0: b._remote_factory = None
+            elif v % 6 == 1: b._remote_factory = Log(log, 'factory', missing=('admit_projectile_visual',))
+            else: b._remote_factory = Log(log, 'factory', {'admit_projectile_visual': (lambda a, p, n: 1 // 0) if v % 6 == 2 else (lambda a, p, n: v % 3)})
+            stub(b, log, '_warn_optional_failure')
+            return b, (7, pid, 2.5)
+        run('_admit_projectile_visual', make, (variant, pid)); cases += 1
+    for key in ('player:3', 'bot:7', 'bot:8'):
+        def make(log, v=variant, key=key):
+            b = shot_battle(log, v)
+            b._records['bot:7']['spot_visible'] = v % 3 == 0
+            b._records['player:3']['spot_visible'] = v % 3 == 1
+            return b, (b._records[key],)
+        run('_shot_muzzle_drawn', make, (variant, key)); cases += 1
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        b._remote_factory = (None, Log(log, 'factory', missing=('reset_projectile_visuals',)),
+                             Log(log, 'factory', {'reset_projectile_visuals': lambda: 1 // 0}),
+                             Log(log, 'factory', {'reset_projectile_visuals': lambda: v % 2}))[v % 4]
+        b._projectile_visual_meta = {'old': 1}
+        stub(b, log, '_warn_optional_failure')
+        return b, ()
+    run('_reset_projectile_visuals', make, (variant,)); cases += 1
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        stub(b, log, '_warn_optional_failure')
+        extra = Log(log, 'extra', {'stopFor': (lambda e: 1 // 0) if v % 7 == 6 else None})
+        extras = None if v % 9 == 8 else Extras(log, frozen=v % 5 == 4, **({} if v % 4 == 3 else {'shoot': extra}))
+        return b, (Shooter(log, v, extras), 2 + v % 3)
+    run('_show_local_shot_without_extra', make, (variant,)); cases += 1
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        if v % 3: b._replay_muzzle_count = (1, 49, 99)[v % 3]
+        fake_module('offline_replay', Log(log, 'offline_replay'))
+        sys.modules['gui.mods.offline_lan_0922'].offline_replay = sys.modules['gui.mods.offline_lan_0922.offline_replay']
+        extras = Extras(log, **({'shoot': Log(log, 'extra')} if v % 8 != 7 else {}))
+        return b, (Shooter(log, v, extras), 1 + v % 4)
+    run('_show_replay_local_muzzle', make, (variant,)); cases += 1
+# Projectile launch normalization.
+class Protocol(object):
+    def _strict_burst_group(self, shot, group, index, count):
+        if group == 'boom': raise KeyError('unexpected')
+        if count == 0: return None
+        return (int(group), int(index), int(count))
+    def _strict_projectile_source_shot(self, value):
+        if value == 'bad': raise ValueError('source shot')
+        return value
+    def _projectile_source_shot_matches_launch(self, shot, velocity, gravity, maximum, is_he, splash):
+        return shot.get('ok', True)
+lan_protocol = Protocol()
+class Rules2(Rules):
+    @staticmethod
+    def first_ricochet_penetration_multiplier(kind):
+        return {'ARMOR_PIERCING': 0.75, 'HOLLOW_CHARGE': None}.get(kind, 1.0)
+combat_rules = Rules2()
+BASE_LAUNCH = {'projectile_id': 'p1', 'source_vehicle': 'tank', 'shot_seq': 3, 'burst_group_seq': 3, 'burst_index': 0,
+               'burst_count': 1, 'shell_index': 1, 'origin': [1, 2, 3], 'velocity': (0, 0, 800), 'gravity': 9.81,
+               'max_time_ms': 5000, 'is_he': False, 'splash_radius': 0, 'penetration_factor': 1, 'launch_server_time_ms': 100,
+               'source_shot': {'shell': {'kind': 'ARMOR_PIERCING'}}, 'range_origin': (1, 2, 3), 'segment_origin': (1, 2, 3),
+               'segment_velocity': (0, 0, 800), 'segment_start_time_ms': 0, 'ricochet_count': 0,
+               'base_penetration_multiplier': 1.0, 'max_distance': 700, 'shooter_kind': 'bot', 'shooter_id': 7}
+LAUNCH_EDITS = [
+    {}, {'shooter_kind': None, 'attacker': 3, 'fire_intent_seq': 2, 'fire_input_seq': '5'}, {'shooter_kind': None, 'attacker_bot': '9'},
+    {'shooter_kind': 'player', 'shooter_id': 3}, {'shooter_kind': 'player', 'shooter_id': 3, 'fire_intent_seq': 0, 'fire_input_seq': 1},
+    {'fire_intent_seq': 1}, {'max_distance': None, 'maxDistance': '650'}, {'max_distance': None}, {'origin': (1, 2)},
+    {'velocity': 'abc'}, {'gravity': 'x'}, {'gravity': 0}, {'gravity': float('nan')}, {'max_time_ms': 10 ** 30},
+    {'projectile_id': ''}, {'source_vehicle': 'v' * 129}, {'shooter_kind': 'tank'}, {'shooter_id': -1}, {'shot_seq': 0},
+    {'burst_count': 0}, {'burst_group_seq': 'boom'}, {'shell_index': 10}, {'shell_index': '-1'}, {'is_he': 1},
+    {'segment_start_time_ms': 6000}, {'ricochet_count': 2}, {'ricochet_count': 1, 'segment_start_time_ms': 5000},
+    {'ricochet_count': 1, 'segment_start_time_ms': 40, 'base_penetration_multiplier': 0.75, 'segment_origin': (5, 5, 5),
+     'checked_through_ms': 50},
+    {'ricochet_count': 1, 'segment_start_time_ms': 40, 'base_penetration_multiplier': 0.9, 'checked_through_ms': 50},
+    {'ricochet_count': 1, 'segment_start_time_ms': 40, 'source_shot': {'shell': {'kind': 'HOLLOW_CHARGE'}}, 'checked_through_ms': 50},
+    {'ricochet_count': 1, 'segment_start_time_ms': 5000, 'base_penetration_multiplier': 0.75, 'checked_through_ms': 5000},
+    {'segment_origin': (1, 2, 4)}, {'splash_radius': -1}, {'source_shot': 'bad'}, {'source_shot': {'ok': False}},
+    {'checked_through_ms': 200, 'checked_distance': '12.5', 'piercing_loss': 3}, {'checked_through_ms': 9000},
+    {'checked_distance': 701}, {'piercing_loss': 'x'}, {'piercing_loss': float('inf')},
+    {'bot_presentation_time_us': 55}, {'bot_presentation_time_us': True}, {'bot_presentation_time_us': -3},
+    {'shooter_kind': 'player', 'shooter_id': 3, 'fire_intent_seq': 1, 'fire_input_seq': 1, 'bot_presentation_time_us': 5},
+    {'shot_seq': 10 ** 25}, {'max_time_ms': '4000', 'launch_server_time_ms': 99.9},
+]
+for index, edit in enumerate(LAUNCH_EDITS + ['raw', None]):
+    def make(log, edit=edit):
+        if not isinstance(edit, dict): return battle(log), (edit,)
+        raw = dict(BASE_LAUNCH); raw.update(edit)
+        return battle(log), (raw,)
+    run('_projectile_wire_meta', make, (index,)); cases += 1
+# Projectile poses, matrices, failure diagnostics and Bot launch acknowledgement.
+POSES = [((1, 2, 3), {'yaw': 0.5, 'aim_yaw': 1.0, 'pitch': 0.1, 'siege_state': 2}), ([0, 0, 0], None),
+         (('1', 2.5, None), {'yaw': 'x', 'turret_yaw': 0.2, 'siege_state': '1'}), ((4, 5, 6), {'gun_pitch': 0.3, 'siege_state': None}),
+         ((1, 2, 3), {'yaw': float('nan'), 'aim_yaw': 3.5}), ((7, 8, 9), {'yaw': 1, 'siege_state': 'bad'}), ((1, 2), {}), ((2, 2, 2), {'yaw': 0.7})]
+for index, (position, state) in enumerate(POSES):
+    for name in ('_projectile_plain_pose', '_projectile_boundary_pose'):
+        run(name, lambda log, position=position, state=state: (battle(log), (position, copy.deepcopy(state))), (index,)); cases += 1
+for index, raw in enumerate([{'segment_start_time_ms': 100, 'base_checked_ms': 600, 'max_time_ms': 5000},
+                             {'checked_through_ms': 99999}, {'segment_start_time_ms': 'x'}, {}, None, {'max_time_ms': 50, 'segment_start_time_ms': 80},
+                             {'segment_start_time_ms': 10, 'checked_through_ms': 5}, {'max_time_ms': 10 ** 400}]):
+    run('_projectile_visual_age', lambda log, raw=raw: (battle(log), (copy.deepcopy(raw),)), (index,)); cases += 1
+class Started(object):
+    def __init__(self, started, position=None):
+        self.isStarted = started
+        if position is not None: self.position = position
+    def __repr__(self): return '<started %s>' % self.isStarted
+for variant in range(24):
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        b._records['bot:9']['tombstone'] = v % 3 == 0
+        b._records['bot:7']['state'] = (1, 2, 3)
+        b._local_position = [9.0, 8.0, 7.0]
+        entities = {30: Started(True), 70: Started(v % 2 == 0, (5, 5, 5) if v % 4 else None), '80': None, 90: Started(True, (1, 1, 1)),
+                    40: Started(v % 6 != 5, (4, 4, 4))}
+        stub(b, log, '_server_entity', lambda engine: entities.get(engine))
+        return b, ()
+    run('_projectile_record_positions', make, (variant,)); cases += 1
+    for ground in (None, 'ground'):
+        def make(log, v=variant, ground=ground):
+            b = shot_battle(log, v)
+            record = {'native_remote': v % 3 != 0, 'engine_id': 70}
+            b._remote_factory = (None, Log(log, 'factory', missing=('projectile_collision_matrices', 'projectile_collision_matrix')),
+                                 Log(log, 'factory', {'projectile_collision_matrices': None, 'projectile_collision_matrix': 'body'}),
+                                 Log(log, 'factory', {'projectile_collision_matrices': ('b', 'c')}),
+                                 Log(log, 'factory', {'projectile_collision_matrices': None, 'projectile_collision_matrix': None}))[v % 5]
+            return b, (record, Log(log, 'vehicle', matrix='vehicle-matrix'), ground)
+        run('_projectile_vehicle_matrices', make, (variant, ground)); cases += 1
+    for pose in ({'siege_state': 2}, {'siege_state': '1'}, {}, {'siege_state': 'x'}):
+        def make(log, v=variant, pose=pose):
+            b = shot_battle(log, v)
+            descriptor = Log(log, 'descriptor', hasSiegeMode=v % 4 != 0, defaultVehicleDescr=None if v % 7 == 6 else 'default',
+                             siegeVehicleDescr='siege')
+            states = Log(log, 'states', ENABLED=1) if v % 3 == 1 else Log(log, 'states', missing=('ENABLED',))
+            b._runtime = Log(log, 'runtime', constants=Log(log, 'constants', VEHICLE_SIEGE_STATE=states))
+            target = Log(log, 'target', typeDescriptor=None if v % 5 == 4 else descriptor)
+            return b, (target, pose)
+        run('_projectile_descriptor_at_pose', make, (variant, pose)); cases += 1
+    for error in (None, 'text\nwith\rbreaks' + 'x' * 200, ValueError('bad'), u'unicode'):
+        def make(log, v=variant, error=error):
+            sys.stdout = Recorder(log)
+            b = shot_battle(log, v)
+            meta = {'projectile_id': 'p%d' % v, 'terminal_failure_boundary': 'b'}
+            if v % 3 == 0: meta['terminal_failures_reported'] = set([('stage', 'reason')])
+            return b, (meta, {'elapsed': (0.0125, -1, 'x', 2.5)[v % 4]}, 'stage', 'reason' if v % 2 else 'other', error)
+        try:
+            run('_report_projectile_terminal_failure', make, (variant, repr(error))); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+    for normalized in ({'shooter_kind': 'bot', 'shooter_id': 7, 'shot_seq': 3}, {'shooter_kind': 'bot', 'shooter_id': '7', 'shot_seq': 2},
+                       {'shooter_kind': 'bot', 'shooter_id': 7, 'shot_seq': 1}, {'shooter_kind': 'bot', 'shooter_id': 'x', 'shot_seq': 3},
+                       {'shooter_kind': 'bot', 'shot_seq': 3}, {'shooter_kind': 'player', 'shooter_id': 7, 'shot_seq': 3}, None):
+        def make(log, v=variant, n=normalized):
+            sys.stdout = Recorder(log)
+            b = shot_battle(log, v)
+            b._bots = None if v % 11 == 10 else Log(log, 'bots', {'is_authority': v % 5 != 4,
+                                                                   'ack_projectile_launch': (lambda bot, seq: seq != 3 or v % 7 != 6)},
+                                                      missing=('ack_projectile_launch',) if v % 13 == 12 else ())
+            b._bot_fire_seen = {7: 1} if v % 2 else {}
+            b._bot_fire_confirmations = {7: set([2])} if v % 3 == 1 else {}
+            b._bot_launch_payloads = {(7, 2): 'p2', (7, 3): 'p3'}
+            b._fire_timeline = {('bot_publish', 7, 3): {'wall': 4.0}} if v % 4 else {}
+            return b, (copy.deepcopy(n),)
+        try:
+            run('_confirm_bot_projectile_launch', make, (variant, normalized)); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+# Projectile visual start, epochs, poses and collision targets.
+PROJECTILE_VISUAL_START_MAX_DIFF = 2.0
+class _RecentIdSet(object):
+    def __repr__(self): return '<recent>'
+class _ProjectileCollisionAppearance(object):
+    def __init__(self, *args): self.args = args
+    def __repr__(self): return 'Appearance%r' % (self.args,)
+class _ProjectileCollisionTarget(object):
+    def __init__(self, *args): self.args = args
+    def __repr__(self): return 'Target%r' % (self.args,)
+class Mat2(object):
+    def __init__(self, source=None): self.source, self.ypr, self.translation = source, None, (1.0, 2.0, 3.0)
+    def setRotateYPR(self, ypr): self.ypr = ypr
+    def __repr__(self): return 'Mat2(%r,%r,%r)' % (self.source, self.ypr, self.translation)
+class Compound(object):
+    def __init__(self, v): self.v = v
+    def node(self, name):
+        if self.v % 7 == 6: raise KeyError(name)
+        return name
+class Projectiles(object):
+    def __init__(self, log, now, ok): self.log, self.now, self.ok = log, now, ok
+    def reset(self, at): self.log.append(('projectiles', 'reset', at)); return self.ok
+    def __repr__(self): return '<projectiles>'
+for variant in range(30):
+    for normalized in ({'ricochet_count': 0, 'segment_origin': (1.0, 2.0, 3.5)}, {'ricochet_count': 1},
+                       {'ricochet_count': 0, 'segment_origin': (9, 9, 9)}, {'ricochet_count': 0, 'base_checked_ms': 10},
+                       {'ricochet_count': 0, 'segment_origin': (1, 2)}, ['bad']):
+        def make(log, v=variant, n=normalized):
+            b = shot_battle(log, v)
+            point = (1.0, 2.0, float('nan') if v % 11 == 10 else 3.0)
+            math_module = Log(log, 'math', {'Matrix': lambda node: Log(log, 'matrix', translation=point)})
+            cameras = Log(log, 'cameras', {'isPointOnScreen': v % 5 != 4}, missing=('isPointOnScreen',) if v % 9 == 8 else ())
+            b._runtime = Log(log, 'runtime', math=math_module, cameras=cameras)
+            entity = Log(log, 'entity', isStarted=v % 6 != 5, appearance=Log(log, 'appearance', compoundModel=Compound(v)))
+            return b, (None if v % 13 == 12 else entity, copy.deepcopy(n))
+        run('_projectile_visual_start', make, (variant, repr(normalized))); cases += 1
+    for value in (3, '4', True, -1, 'x', 2):
+        def make(log, v=variant, value=value):
+            b = shot_battle(log, v)
+            b._projectile_epoch = 2 if v % 3 == 0 else 1
+            stub(b, log, '_reset_projectile_visuals')
+            b._local_projectile_presentations = {'a': 1}
+            b._projectiles = None if v % 4 == 0 else Projectiles(log, (9.0, 1, 'x')[v % 3], v % 5 != 4)
+            return b, (value, 5.5)
+        run('_set_projectile_epoch', make, (variant, value)); cases += 1
+    for key in ('player:3', 'bot:7', 'bot:9'):
+        def make(log, v=variant, key=key):
+            b = shot_battle(log, v)
+            record = b._records[key]
+            if v % 3 == 0: record['projectile_collision_pose'] = {'x': 1, 'y': 2, 'z': 3, 'yaw': 0.1, 'siege_state': 1}
+            elif v % 3 == 1: record['state'] = {'x': 4, 'y': 5, 'z': 6, 'yaw': '0.2', 'aim_yaw': 0.5}
+            b._local_position = (7.0, 8.0, 9.0)
+            b._local_yaw, b._local_pitch, b._local_roll = 0.3, 0.02, -0.01
+            entity = Log(log, 'entity', {'getAimParams': (lambda: 1 // 0) if v % 7 == 6 else (lambda: (0.4, -0.05))},
+                         missing=('getAimParams',) if v % 5 == 4 else ())
+            stub(b, log, '_server_entity', None if v % 11 == 10 else entity)
+            return b, (key, record, (0.0, 1.0, 2.0))
+        run('_projectile_record_pose', make, (variant, key)); cases += 1
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        b._projectile_position_history = [(0.0, {}), (1.0, {}), (4.9, {})][:v % 4]
+        poses = None if v % 5 == 4 else {'bot:7': {'x': 1, 'yaw': 0.1}, 'bot:8': (1, 2, 3)}
+        return b, ((5.0, 4.9 + 1e-10, 30.0)[v % 3], poses)
+    run('_sample_projectile_positions', make, (variant,)); cases += 1
+    for pose in ({'x': 1, 'y': 2, 'z': 3, 'yaw': 0.5, 'turret_yaw': 0.1, 'siege_state': 0}, {'x': 1, 'y': 2}, {'x': 0, 'y': 0, 'z': 0}):
+        def make(log, v=variant, pose=pose):
+            b = shot_battle(log, v)
+            b._vector = lambda xyz: ('vec',) + tuple(xyz)
+            b._runtime = Log(log, 'runtime', math=Log(log, 'math', Matrix=Mat2) if v % 4 else Log(log, 'math', missing=('Matrix',)))
+            stub(b, log, '_projectile_descriptor_at_pose', None if v % 5 == 4 else 'descriptor')
+            return b, (Log(log, 'target'), dict(pose))
+        run('_projectile_frozen_target', make, (variant, repr(pose))); cases += 1
+    for key in ('player:3', 'bot:7', 'bot:9'):
+        def make(log, v=variant, key=key):
+            b = shot_battle(log, v)
+            b._records['bot:7']['native_remote'] = v % 2 == 0
+            b._local_matrix = None if v % 3 == 0 else 'local-matrix'
+            stub(b, log, '_local_body_pose', 'body-pose')
+            stub(b, log, '_projectile_vehicle_matrices', ('vbody', None) if v % 4 == 1 else ('vbody', 'vchassis'))
+            b._runtime = Log(log, 'runtime', math=Log(log, 'math', Matrix=Mat2))
+            target = (Log(log, 'target', typeDescriptor='descriptor', position=(1, 2, 3), missing=('appearance',)) if v % 5 == 0 else
+                      Log(log, 'target', typeDescriptor='descriptor', position=(1, 2, 3), appearance='appearance'))
+            return b, (b._records[key], target)
+        run('_projectile_live_critical_target', make, (variant, key)); cases += 1
+# Projectile meta install, observation and target poses.
+import time as _time
+class FixedTime(object):
+    def clock(self): return 100.25
+sys.modules['time'] = time = FixedTime()
+for variant in range(30):
+    def modules(log, v):
+        global native_client_projectile, native_bot_runtime
+        native_client_projectile = Log(log, 'projectile', {'enabled': v % 4 == 0, 'observe': 'observed'})
+        native_bot_runtime = Log(log, 'bot_runtime', {'enabled': v % 4 == 1, 'projectile_observe': None if v % 8 == 1 else 'bot-observed'})
+        fake_module('native_client_projectile', native_client_projectile)
+        fake_module('native_bot_runtime', native_bot_runtime)
+    for pid in ('p1', 'missing'):
+        def make(log, v=variant, pid=pid):
+            modules(log, v)
+            b = shot_battle(log, v)
+            b._projectile_meta = {'p1': {'shooter_kind': 'player', 'shooter_id': 3, 'manager_key': 'k1' if v % 3 else None}}
+            if v % 3 == 0: del b._projectile_meta['p1']['manager_key']
+            b._projectile_terminal_data = {'p1': 1}
+            b._projectiles = None if v % 5 == 4 else Log(log, 'projectiles')
+            return b, (pid,)
+        run('_discard_provisional_projectile', make, (variant, pid)); cases += 1
+    for message in ({'server_time_ms': 500, 'motion_time_us': 7000, '_client_received_time': 99.75, 'authority_epoch': 2},
+                    {'server_time_ms': '400'}, {'server_time_ms': -1}, {'server_time_ms': 'x'}, {'motion_time_us': 10},
+                    {'_client_received_time': 'bad'}, {'_client_received_time': float('nan'), 'server_time_ms': 900},
+                    {'_client_received_time': 0.0, 'server_time_ms': 900}, {}, ['not', 'dict'], {'motion_time_us': -5}):
+        def make(log, v=variant, m=message):
+            modules(log, v)
+            b = shot_battle(log, v)
+            stub(b, log, '_clock', (5.0, 120.0, 0.1)[v % 3])
+            b._bots = None if v % 4 == 3 else Log(log, 'bots')
+            if v % 3: b.client.minimum_rtt_ms = (None, 80, 'x', 9000)[v % 4]
+            if v % 5 == 2: b.client.rtt_ms = 40
+            if v % 6 == 3: b.client.authority_epoch = 4
+            b._pose_motion_time_us = None if v % 2 else 6000
+            b._projectile_server_time_ms = None if v % 7 == 0 else 450
+            stub(b, log, '_set_projectile_epoch', True)
+            return b, (copy.deepcopy(m),)
+        run('_observe_projectile_message', make, (variant, repr(message))); cases += 1
+    for incoming in ({'ricochet_count': 0, 'base_checked_ms': 50, 'checked_distance': 10.0, 'piercing_loss': 1.0},
+                     {'ricochet_count': 1, 'base_checked_ms': 70, 'checked_distance': 20.0, 'piercing_loss': 2.0,
+                      'segment_origin': (5, 5, 5), 'segment_velocity': (1, 0, 0), 'segment_start_time_ms': 40,
+                      'base_penetration_multiplier': 0.75},
+                     {'ricochet_count': 0, 'base_checked_ms': 10, 'checked_distance': 9.0, 'piercing_loss': 0.5},
+                     {'ricochet_count': 2, 'base_checked_ms': 10, 'checked_distance': 1.0, 'piercing_loss': 0.0},
+                     {'ricochet_count': 0, 'base_checked_ms': 50, 'checked_distance': 10.0, 'piercing_loss': 1.0, 'shot_seq': 99},
+                     {'ricochet_count': 0, 'base_checked_ms': 60, 'checked_distance': 3.0, 'piercing_loss': 0.0,
+                      'segment_origin': (9, 9, 9)}):
+        def make(log, v=variant, incoming=incoming):
+            b = shot_battle(log, v)
+            launch = {'projectile_id': 'p1', 'shooter_kind': 'player', 'shooter_id': 3, 'shot_seq': 5,
+                      'segment_origin': (1, 2, 3), 'segment_velocity': (0, 0, 9), 'segment_start_time_ms': 0,
+                      'base_penetration_multiplier': 1.0}
+            normalized = dict(launch); normalized.update(incoming)
+            existing = dict(launch, ricochet_count=(0, 1, '0')[v % 3], base_checked_ms=(30, 80)[v % 2], checked_distance=(5.0, 15.0)[(v // 2) % 2],
+                            piercing_loss=None, progress_pending={'checked_through_ms': 55} if v % 4 else None,
+                            awaiting_ricochet=v % 5 == 3, pending_resolution=None if v % 6 else 'r')
+            if v % 7 == 0: existing['manager_key'] = 'kept'
+            b._projectile_meta = {} if v % 9 == 8 else {'p1': existing}
+            b._projectiles = None if v % 10 == 9 else Log(log, 'projectiles', {'contains': v % 3 == 0})
+            stub(b, log, '_new_projectile_meta', lambda n: dict(n, created=True))
+            stub(b, log, '_report_player_shot_timing')
+            stub(b, log, '_confirm_bot_projectile_launch')
+            stub(b, log, '_owns_projectile', v % 2 == 0)
+            return b, (normalized,)
+        run('_install_projectile_meta', make, (variant, repr(incoming)[:40])); cases += 1
+    def make(log, v=variant):
+        b = shot_battle(log, v)
+        stub(b, log, '_projectile_record_positions', {'player:3': (1, 2, 3), 'bot:7': (4, 5, 6), 'gone:1': (0, 0, 0)})
+        stub(b, log, '_projectile_record_pose', lambda key, record, position: None if key == 'bot:7' and v % 2 else {'key': key, 'at': position})
+        return b, ()
+    run('_projectile_record_poses', make, (variant,)); cases += 1
+sys.modules['time'] = time = _time
+# World explosions and wreck hits.
+class Vec3(Vec):
+    pass
+for variant in range(36):
+    def terminal_battle(log, v):
+        b = shot_battle(log, v)
+        b._vector = lambda xyz: (log.append(('battle', '_vector', repr(tuple(xyz)))), Vec(xyz))[1]
+        effects = {'armorHit': ('stagesH', 'effectsH', 0)} if v % 7 != 6 else {'armorHit': ('only', 'two')}
+        shot_effects = [effects, effects] if v % 9 != 8 else []
+        b._runtime = Log(log, 'runtime', vehicles=Log(log, 'vehicles', g_cache=Log(log, 'cache', shotEffects=shot_effects)))
+        b._projectile_meta = {'p1': {'shooter_kind': 'bot', 'shooter_id': 7, 'hit_vehicle': (False, None, True)[v % 3] if v % 4 else False,
+                                     'terminal_velocity': (None, (0, 0, 9), (0, 0), (0, 0, 0))[v % 4]}}
+        b._projectile_visual_meta = {'p1': {'admitted': v % 10 != 9, 'velocity': (1.0, 0.0, 0.0) if v % 5 else None}}
+        stub(b, log, '_projectile_shot', {'shell': {'effectsIndex': (1, '0', None, 'x')[(v // 4) % 4] if v % 11 else 1}})
+        stub(b, log, '_surface_effect_material', None if v % 13 == 12 else 'ground')
+        stub(b, log, '_report_effect')
+        stub(b, log, '_record_alive', v % 6 == 5)
+        stub(b, log, '_projectile_source_entity', Log(log, 'source', position=(10, 0, 10)) if v % 3 else None)
+        stub(b, log, '_optional_feature_enabled', v % 12 != 11)
+        stub(b, log, '_impact_sound_identity', {'sound': 1} if v % 8 else {'end': 1})
+        stub(b, log, '_projectile_attacker_engine_id', 70)
+        stub(b, log, '_warn_optional_failure')
+        entity = Log(log, 'wreck', isStarted=v % 14 != 13)
+        stub(b, log, '_server_entity', entity)
+        b._avatar = Log(log, 'avatar', terrainEffects=Log(log, 'terrain', missing=('addNew',) if v % 15 == 14 else ()))
+        return b
+    for outcome in ('impact', 'vehicle'):
+        for pid in ('p1', 'missing'):
+            run('_projectile_explosion', lambda log, v=variant, o=outcome, pid=pid: (terminal_battle(log, v), (pid, (1, 2, 3), o)),
+                (variant, outcome, pid)); cases += 1
+    for wreck in ({'target_kind': 'bot', 'target_id': 7}, {'target_kind': 'bot', 'target_id': '9'}, {'target_kind': 'tank', 'target_id': 7},
+                  {'target_kind': 'bot', 'target_id': 'x'}, {'target_kind': 'bot'}, {'target_kind': 'bot', 'target_id': 7, 'extra': 1},
+                  {'target_kind': 'player', 'target_id': 3}, None):
+        for impact in ((5, 0, 5), [1, 2], 'abc'):
+            def make(log, v=variant, wreck=wreck, impact=impact):
+                b = terminal_battle(log, v)
+                b._records['bot:7']['spot_visible'] = v % 3 != 2
+                return b, ('p1', {'wreck_hit': copy.deepcopy(wreck), 'impact': impact})
+            run('_present_projectile_wreck_hit', make, (variant, repr(wreck), repr(impact))); cases += 1
+# The wreck-hit direction from the shooter's position when no velocity is retained.
+def make(log):
+    b = terminal_battle(log, 2)
+    b._projectile_meta['p1']['terminal_velocity'] = None
+    b._projectile_visual_meta['p1'] = {'admitted': True}
+    stub(b, log, '_projectile_shot', {'shell': {'effectsIndex': 1}})
+    stub(b, log, '_projectile_source_entity', Log(log, 'source', position=(10, 0, 10)))
+    stub(b, log, '_record_alive', False)
+    b._records['bot:7']['spot_visible'] = True
+    return b, ('p1', {'wreck_hit': {'target_kind': 'bot', 'target_id': 7}, 'impact': (5, 0, 5)})
+run('_present_projectile_wreck_hit', make, ('source-direction',)); cases += 1
+# Projectile visual launch and retirement.
+def trajectory_position(origin, velocity, gravity, elapsed):
+    return tuple(round(o + v * elapsed + 0.5 * a * elapsed * elapsed, 6) for o, v, a in zip(origin, velocity, gravity))
+_PROFILE_CLOCK = lambda: 7.5
+VISUAL_LAUNCH = {'projectile_id': 'p1', 'shooter_kind': 'bot', 'shooter_id': 7, 'segment_origin': (1.0, 2.0, 3.0),
+                 'segment_velocity': (0.0, 10.0, 800.0), 'gravity': 9.81, 'segment_start_time_ms': 0, 'ricochet_count': 0,
+                 'max_distance': 700.0, 'checked_distance': 12.5, 'shell_index': 1, 'launch_server_time_ms': 1000,
+                 'max_time_ms': 5000, 'base_checked_ms': 0}
+VISUAL_EDITS = [{}, {'bot_presentation_time_us': 500, 'muzzle_presented': True}, {'bot_presentation_time_us': 500},
+                {'ricochet_count': 1, 'segment_start_time_ms': 300, 'base_checked_ms': 400},
+                {'bot_presentation_time_us': 500, 'muzzle_presented': True, 'ricochet_count': 1, 'segment_start_time_ms': 200},
+                {'base_checked_ms': 250}, {'max_distance': 5.0, 'checked_distance': 6.0}, {'shooter_kind': 'player', 'shooter_id': 3},
+                {'bot_presentation_time_us': 500, 'muzzle_presented': True, 'base_checked_ms': 300}, {'shooter_id': 99}]
+for variant in range(40):
+    def visual_battle(log, v):
+        global native_client_projectile
+        native_client_projectile = Log(log, 'projectile', {'enabled': v % 9 == 4, 'visual': 'native-visual'})
+        fake_module('native_client_projectile', native_client_projectile)
+        b = shot_battle(log, v)
+        sys.stdout = Recorder(log)
+        b._remote_factory = None if v % 17 == 16 else Log(log, 'factory', {
+            'play_projectile_tracer': (lambda *a, **k: 1 // 0) if v % 13 == 12 else (lambda *a, **k: v % 3 != 2),
+            'stop_projectile_tracer': (lambda *a, **k: 1 // 0) if v % 11 == 10 else (lambda *a, **k: v % 2)})
+        b._projectile_visual_terminals = set(['done'])
+        owner = {'manager_key': 'k1', 'presented_ricochet_count': v % 2, 'visual_segment_distance': 40.0}
+        if v % 5 == 1: owner['local_launch_time'] = 1.0
+        if v % 7 == 3: owner['pending_resolution'] = 'r'
+        if v % 6 == 2: owner['bot_visual_launch_time'] = 4.25
+        b._projectile_meta = {} if v % 4 == 0 else {'p1': owner}
+        b._projectile_visual_meta = ({} if v % 3 == 0 else
+                                     {'p1': {'ricochet_count': (0, 1, 2)[v % 3], 'active': v % 2 == 0, 'admitted': v % 8 != 7,
+                                             'origin': (0, 0, 0), 'velocity': (1, 1, 1), 'gravity': 9.8, 'segment_start_time_ms': 100}})
+        b._fire_timeline = {'p1': {'trigger': 5.0, 'shown': 6.0 if v % 2 else None, 'cursor_logs': v % 10}} if v % 4 else {}
+        b._start_message = {'server_time_ms': (900, 2000)[v % 2]} if v % 3 else None
+        b._records['bot:7']['presentation_time_us'] = 9500 if v % 5 else None
+        b._projectiles = None if v % 6 == 0 else Log(log, 'projectiles', {'get': ({'position': (9, 9, 9)} if v % 4 == 2 else None)})
+        stub(b, log, '_owns_projectile', v % 2 == 0)
+        stub(b, log, '_projectile_source_descriptor', None if v % 19 == 18 else 'descriptor')
+        stub(b, log, '_admit_projectile_visual', v % 10 != 9)
+        stub(b, log, '_optional_feature_enabled', v % 14 != 13)
+        stub(b, log, '_projectile_explosion', 'boom')
+        stub(b, log, '_stop_projectile_visual', True)
+        stub(b, log, '_ensure_projectile_visual_native_presentation', 'python-visual')
+        stub(b, log, '_warn_optional_failure')
+        return b
+    for edit_index, edit in enumerate(VISUAL_EDITS):
+        def make(log, v=variant, edit=edit):
+            b = visual_battle(log, v)
+            normalized = dict(VISUAL_LAUNCH); normalized.update(edit)
+            return b, (normalized, (5.0, 12.0)[v % 2], 'start' if v % 5 else None)
+        try:
+            run('_ensure_projectile_visual_native_presentation', make, (variant, edit_index)); cases += 1
+            run('_ensure_projectile_visual', make, (variant, edit_index)); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+    for event in ({'impact': (1, 2, 3), 'outcome': 'impact', 'hit_vehicle': False}, {'resolved_time_ms': 600}, {'resolved_time_ms': 'x'},
+                  {}, None, ['list'], {'resolved_time_ms': 50, 'hit_vehicle': True}):
+        def make(log, v=variant, event=event):
+            b = visual_battle(log, v)
+            del b._stop_projectile_visual
+            return b, ('p1', copy.deepcopy(event))
+        try:
+            run('_stop_projectile_visual', make, (variant, repr(event))); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+# Projectile advance, history pruning and pending resolutions.
+class Manager(object):
+    def __init__(self, log, v, states):
+        self.log, self.v, self.states, self.now = log, v, states, (4.0, 6.5, 5)[v % 3]
+    def __repr__(self): return '<manager>'
+    def __len__(self): return len(self.states) if self.v % 5 else 0
+    def snapshot(self): self.log.append(('manager', 'snapshot')); return list(self.states)
+    def sustainable_chord_budget(self, seconds): return (10, 90, 300)[self.v % 3]
+    def advance(self, now, chord, terminal, maximum_chords=None):
+        self.log.append(('manager', 'advance', now, chord.__name__, terminal.__name__, maximum_chords))
+        if self.v % 11 == 10: raise ValueError('advance failed')
+        return 'advanced'
+    def last_advance_metrics(self): return {'active': 2, 'chords': 7} if self.v % 2 else {}
+for variant in range(44):
+    def advance_battle(log, v):
+        global native_client_projectile, native_bot_runtime
+        native_client_projectile = Log(log, 'projectile', {'enabled': v % 15 == 14, 'frame': 'native-frame'})
+        native_bot_runtime = Log(log, 'bot_runtime', {'enabled': v % 13 == 12, 'projectile_advance': 'bot-advance'})
+        b = shot_battle(log, v)
+        b._bots = None if v % 2 else Log(log, 'bots')
+        states = [] if v % 7 == 0 else [{'cursor_time': 3.0}, {'cursor_time': (2.0, 3.0, 'x')[v % 3] if v % 17 else 2.0}]
+        b._projectiles = None if v % 19 == 18 else Manager(log, v, states)
+        b._projectile_meta = {'p': {'local_ricochet_admission': 1 if v % 6 == 0 else None, 'pending_resolution': 'r' if v % 4 == 1 else None,
+                                    'awaiting_resolution': v % 8 == 5, 'pending_ricochet': 'q' if v % 3 == 2 else None}}
+        b._projectile_visual_meta = {'p': {}} if v % 4 == 2 else {}
+        b._projectile_position_history = [(1.0, {}), (2.5, {}), (3.5, {})][:(v % 4) + 1]
+        b._projectile_target_positions = {'old': 1}
+        b._next_projectile_progress_time = (0.0, 5.0, 3.95, -1)[v % 4]
+        for name in ('_admit_local_projectile_ricochet', '_submit_projectile_resolution', '_submit_projectile_ricochet',
+                     '_build_projectile_spatial_bins', '_clear_projectile_spatial_index', '_publish_projectile_progress'):
+            stub(b, log, name, v % 2 == 0)
+        b._projectile_chord = lambda *a: None
+        b._projectile_terminal = lambda *a: None
+        stub(b, log, '_projectile_record_poses', {'bot:7': {'x': 1, 'y': 2, 'z': 3}})
+        stub(b, log, '_sample_projectile_positions')
+        stub(b, log, '_projectile_is_authority', v % 3 != 1)
+        return b
+    for force in (False, True):
+        run('_advance_projectiles', lambda log, v=variant, force=force: (advance_battle(log, v), ((4.0, 5.25, 9.0)[v % 3], force)),
+            (variant, force)); cases += 1
+    run('_flush_pending_projectile_resolutions', lambda log, v=variant: (advance_battle(log, v), ()), (variant,)); cases += 1
+    for states in (None, [], [{'cursor_time': 2.0}, {'cursor_time': 1.5}], [{'cursor_time': '3'}], [{'cursor_time': 2.5}]):
+        run('_prune_projectile_position_history', lambda log, v=variant, states=states: (advance_battle(log, v), (copy.deepcopy(states),)),
+            (variant, repr(states))); cases += 1
+# Projectile launch, ricochet and terminal events.
+class Manager2(object):
+    def __init__(self, log, v): self.log, self.v = log, v
+    def __repr__(self): return '<manager2>'
+    def contains(self, key): self.log.append(('manager', 'contains', key)); return self.v % 9 == 4
+    def remove(self, key): self.log.append(('manager', 'remove', key))
+for variant in range(48):
+    def event_battle2(log, v):
+        global native_client_projectile, native_bot_runtime
+        native_client_projectile = Log(log, 'projectile', {'enabled': v % 16 == 15, 'event': 'native-event'})
+        native_bot_runtime = Log(log, 'bot_runtime', {'enabled': v % 17 == 16, 'projectile_event': 'bot-event'})
+        fake_module('native_client_projectile', native_client_projectile)
+        fake_module('native_bot_runtime', native_bot_runtime)
+        b = shot_battle(log, v)
+        sys.stdout = Recorder(log)
+        b._bots = None if v % 2 else Log(log, 'bots')
+        b._projectiles = None if v % 19 == 18 else Manager2(log, v)
+        b._projectile_epoch = None if v % 5 == 0 else 2
+        b._projectile_visual_terminals = set(['done'])
+        b._projectile_resolution_acks = set(['acked'])
+        b._projectile_position_history = [] if v % 3 else [(1.0, {})]
+        meta = {'manager_key': 'k1', 'ricochet_count': (0, 1)[v % 2], 'segment_start_time_ms': 100,
+                'pending_resolution': 'r' if v % 7 == 3 else None, 'awaiting_ricochet': v % 11 == 5,
+                'local_ricochet_admission': 1 if v % 13 == 6 else None}
+        if v % 4 == 1: meta['local_launch_time'] = 1.0
+        b._projectile_meta = {} if v % 6 == 0 else {'p1': meta}
+        b._projectile_terminal_data = {'p1': 'data'}
+        b._projectile_visual_meta = {'p1': {'velocity': (0.0, 10.0, 800.0), 'gravity': 9.81}} if v % 3 else {}
+        normalized = {'projectile_id': 'p1' if v % 8 else ('done', 'acked')[v % 16 // 8], 'ricochet_count': 1 if v % 10 else 0,
+                      'checked_distance': 42.0, 'manager_key': 'k1'}
+        if v % 12 == 11: stub(b, log, '_projectile_wire_meta', None)
+        elif v % 12 != 10: stub(b, log, '_projectile_wire_meta', lambda e: dict(normalized))
+        stub(b, log, '_projectile_launch_mismatches', ('shot_seq', 'origin') if v % 4 == 1 and v % 8 == 5 else ())
+        stub(b, log, '_owns_projectile', v % 3 != 2)
+        stub(b, log, '_projectile_is_authority', v % 5 != 1)
+        stub(b, log, '_install_projectile_meta', lambda n: b._projectile_meta.setdefault(n['projectile_id'], dict(n, manager_key='k2')))
+        stub(b, log, '_report_projectile_terminal_failure')
+        # _projectile_explosion reads the terminal velocity through the stop.
+        stub(b, log, '_stop_projectile_visual',
+             lambda pid, e: log.append(('terminal_velocity', repr((b._projectile_meta.get(pid) or {}).get('terminal_velocity')))))
+        stub(b, log, '_ensure_projectile_visual', True)
+        stub(b, log, '_accept_projectile_event', True)
+        stub(b, log, '_present_projectile_wreck_hit', True)
+        stub(b, log, '_set_projectile_epoch', v % 14 != 13)
+        stub(b, log, '_reconcile_provisional_projectile', (None, False, {'manager_key': 'k3'})[v % 3] if v % 4 else None)
+        for name in ('_submit_projectile_ricochet', '_submit_projectile_resolution', '_admit_local_projectile_ricochet'):
+            stub(b, log, name)
+        stub(b, log, '_admit_projectile_manager_state', v % 10 != 7)
+        stub(b, log, '_projectile_record_poses', {'bot:7': {'x': 1, 'y': 2, 'z': 3}})
+        stub(b, log, '_sample_projectile_positions')
+        stub(b, log, '_clock', 3.5)
+        return b
+    for event in ({'projectile_id': 'p1', 'authority_epoch': (2, 3)[variant % 2], 'hit_vehicle': True, 'resolved_time_ms': 600},
+                  {'projectile_id': 7, 'hit_vehicle': False, 'resolved_time_ms': 'x', 'wreck_hit': {'target_kind': 'bot'}},
+                  {'projectile_id': 'p1', 'hit_vehicle': 1}, {}):
+        for name in ('_accept_projectile_event', '_apply_projectile_ricochet_event', '_apply_projectile_terminal_event'):
+            def make(log, v=variant, e=event):
+                b = event_battle2(log, v)
+                if name == '_accept_projectile_event': del b._accept_projectile_event
+                return b, (copy.deepcopy(e),)
+            try:
+                run(name, make, (variant, repr(event)[:30])); cases += 1
+            finally:
+                sys.stdout = sys.__stdout__
+# Rejected launches, deferred local presentation and snapshot reconciliation.
+class AckSet(object):
+    def __init__(self, log, fresh): self.log, self.fresh, self.ids = log, fresh, set(['acked'])
+    def __repr__(self): return 'AckSet(%r)' % sorted(self.ids)
+    def __contains__(self, value): return value in self.ids
+    def add(self, value):
+        self.log.append(('acks', 'add', value)); self.ids.add(value); return self.fresh
+for variant in range(48):
+    for message in ({'round_id': 4, 'accepted': False, 'projectile_id': 'p1', 'intent_seq': 5, 'reason': ''},
+                    {'round_id': 4, 'accepted': False, 'projectile_id': 'p1', 'intent_seq': '5', 'reason': 'busy'},
+                    {'round_id': 4, 'accepted': False, 'projectile_id': 'p1', 'intent_seq': 'x'},
+                    {'round_id': 4, 'accepted': 0, 'projectile_id': 'p1', 'intent_seq': 5},
+                    {'round_id': 3, 'accepted': False, 'projectile_id': 'p1', 'intent_seq': 5}, ['bad']):
+        def make(log, v=variant, m=message):
+            b = event_battle2(log, v)
+            b._start_message = {'round_id': 4} if v % 7 else None
+            b._projectile_meta = {'p1': {'fire_intent_seq': (5, '5', 6)[v % 3], 'burst_group_seq': 9}} if v % 5 else {}
+            b._local_player_burst = None if v % 4 == 0 else {'group_seq': (9, 8)[v % 2]}
+            stub(b, log, '_discard_provisional_projectile')
+            stub(b, log, '_cancel_local_player_burst')
+            return b, (copy.deepcopy(m),)
+        try:
+            run('on_fire_intent_result', make, (variant, repr(message)[:30])); cases += 1
+        finally:
+            sys.stdout = sys.__stdout__
+    def make(log, v=variant):
+        b = event_battle2(log, v)
+        sys.stdout = sys.__stdout__
+        b._generation = 3
+        b._start_message = {'round_id': 4}
+        b._local_projectile_presentations = {}
+        b.state = 'running'
+        b._server = 'server'
+        callbacks = []
+        b._runtime = Log(log, 'runtime', bigworld=Log(log, 'bigworld', {'callback': lambda delay, fn: callbacks.append(fn)}))
+        stub(b, log, '_show_shot', (lambda e: 1 // 0) if v % 7 == 6 else None)
+        stub(b, log, '_warn_optional_failure')
+        event = {'projectile_id': 'p%d' % v, 'shooter_id': (3, 4, 99)[(v // 5) % 3], 'nested': [1, 2]}
+        class Runner(object):
+            def __repr__(self): return '<runner>'
+        def drive():
+            fn = callbacks[0]
+            if v % 5 == 1: b._generation = 4
+            elif v % 5 == 2: b._start_message = {'round_id': 5}
+            elif v % 5 == 3: b._local_projectile_presentations['p%d' % v] = {'replaced': True}
+            elif v % 5 == 4: b.state = 'leaving'
+            if v % 11 == 10: b._records['player:3']['tombstone'] = True
+            fn()
+            log.append(('after', sorted(b._local_projectile_presentations)))
+        b._drive_deferred = drive
+        return b, (event,)
+    def make_and_drive(log, v=variant):
+        b, values = make(log, v)
+        return b, values
+    run('_defer_local_projectile_presentation', make_and_drive, (variant,)); cases += 1
+    for rows in ([{'projectile_id': 'p1'}, {'projectile_id': 'done'}, 'junk', {'projectile_id': 'p2'}], [], 'notalist', None,
+                 [{'projectile_id': 'p1'}, {'projectile_id': 'acked'}]):
+        def make(log, v=variant, rows=rows):
+            b = event_battle2(log, v)
+            b._projectile_revision = 3
+            b._event_journal = [{'kind': 'shot', 'projectile_id': 'old'}, {'kind': 'health'}]
+            b._projectile_meta = {'p1': {'manager_key': 'k1'}, 'old': {'awaiting_resolution': v % 2 == 0, 'pending_ricochet': 'q' if v % 3 else None,
+                                                                         'local_launch_pending': v % 7 == 1},
+                                  'p2': {'pending_resolution': 'r', 'awaiting_resolution': True}}
+            b._projectile_resolution_acks = AckSet(log, v % 4 != 3)
+            normalized = lambda raw: (None if raw.get('projectile_id') == 'p2' and v % 3 == 0 else
+                                      {'projectile_id': raw['projectile_id'], 'manager_key': 'k1'}) if isinstance(raw, dict) else None
+            stub(b, log, '_projectile_wire_meta', normalized)
+            stub(b, log, '_projectile_manager_snapshot', 'manager-snapshot')
+            stub(b, log, '_projectile_source_entity', Log(log, 'source', typeDescriptor=None if v % 4 == 0 else 'd'))
+            stub(b, log, '_projectile_source_descriptor', None if v % 8 == 0 else 'cached')
+            b._projectiles = None if v % 19 == 18 else Log(log, 'projectiles', {'contains': v % 9 == 4, 'restore': v % 10 != 7})
+            return b, ({'projectiles': copy.deepcopy(rows), 'projectile_revision': (5, 'x', 1)[v % 3]} if rows is not None else ['m'],)
+        try:
+            run('_reconcile_projectile_snapshot', make, (variant, repr(rows)[:20])); cases += 1
+
+        finally:
+            sys.stdout = sys.__stdout__
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
@@ -1610,12 +2397,13 @@ def pinned_source(fork):
     source = prepare.ADAPTERS[Path(RUNTIME)]((Path(fork) / RUNTIME).read_text())
     tree = ast.parse(source)
     lines = source.splitlines()
-    chunks = ['import json, math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):',
+    chunks = ['import json, math', '_INTEGER_TYPES = (int, long)', '_STRING_TYPES = (basestring,)',
+              'def timed(stage):\n    return lambda method: method', 'class Pinned(object):',
               "    def __repr__(self):\n        return '<battle>'"]
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) in GLOBALS for t in node.targets):
             chunks.insert(1, '\n'.join(lines[node.lineno - 1:node.end_lineno]))
-        if isinstance(node, ast.FunctionDef) and node.name in GLOBALS:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in GLOBALS:
             chunks.insert(1, '\n'.join(lines[node.lineno - 1:node.end_lineno]))
         if isinstance(node, ast.ClassDef) and node.name == 'BattleRuntime':
             for item in node.body:
@@ -1624,7 +2412,7 @@ def pinned_source(fork):
                 if isinstance(item, ast.FunctionDef) and item.name in METHODS:
                     start = min([d.lineno for d in item.decorator_list] + [item.lineno])
                     chunks.append('\n'.join(lines[start - 1:item.end_lineno]))
-    text = '\n\n'.join(chunks) + '\n'
+    text = '\n\n'.join(chunks) + '\nBattleRuntime = Pinned\n'
     # Package-relative imports resolve to the fixture's fakes.
     text = text.replace('from .destructibles_sensor import collision_preparation_scope_1513',
                         "collision_preparation_scope_1513 = sys.modules['gui.mods.offline_lan_0922.destructibles_sensor']"

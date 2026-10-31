@@ -121,6 +121,104 @@ inline p::Ref eventEntityKey(PyObject* event, bool attacker) {
 
 
 
+// Python semantics shared by the event and projectile ports.
+inline p::Ref global(PyObject* g, const char* name) {
+    PyObject* v = PyDict_GetItemString(g, name);
+    if (!v) { PyErr_Format(PyExc_NameError, "global name '%s' is not defined", name); throw p::Error(name); }
+    return p::retain(v);
+}
+inline bool member(PyObject* sequence, PyObject* v) {
+    const int found = PySequence_Contains(sequence, v);
+    if (found < 0) throw p::Error("Native membership test failed");
+    return found != 0;
+}
+inline bool textIn(PyObject* v, std::initializer_list<const char*> options) {
+    for (const char* option : options) if (equal(v, p::text(option).get())) return true;
+    return false;
+}
+inline p::Ref str(PyObject* v) { return p::Ref(PyObject_Str(v)); }
+[[noreturn]] inline void raise(const std::string& message) { throw p::Error(message); }
+inline p::Ref module(const char* name) { return p::Ref(PyImport_ImportModule(name)); }
+// The exception a Python `except Exception as error` would bind for the current failure.
+inline p::Ref caught(const std::exception& e) {
+    PyObject *type, *value, *trace;
+    PyErr_Fetch(&type, &value, &trace);
+    if (!type) return p::Ref(PyObject_CallFunction(PyExc_RuntimeError, const_cast<char*>("s"), e.what()));
+    PyErr_NormalizeException(&type, &value, &trace);
+    Py_XDECREF(type); Py_XDECREF(trace);
+    return p::Ref(value);
+}
+inline std::string keyText(PyObject* k) { return p::string(str(k).get()); }
+// '%s:%s' % (first, second)
+inline p::Ref formatKey(PyObject* first, PyObject* second) {
+    p::Ref values(PyTuple_Pack(2, first, second));
+    return p::Ref(PyString_Format(p::text("%s:%s").get(), values.get()));
+}
+// int(value) with Python's int/long result.
+inline p::Ref toInt(PyObject* value) { return p::Ref(PyNumber_Int(value)); }
+// int(value) with `except (TypeError, ValueError[, OverflowError, IndexError])` falling back.
+inline p::Ref intOr(PyObject* value, std::int64_t fallback) {
+    PyObject* converted = PyNumber_Int(value);
+    if (converted) return p::Ref(converted);
+    if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError) &&
+        !PyErr_ExceptionMatches(PyExc_OverflowError)) throw p::Error("int conversion failed");
+    PyErr_Clear();
+    return integer(fallback);
+}
+// `a, b, ... = value` with Python 2's iteration and error messages.
+inline std::vector<p::Ref> unpack(PyObject* value, std::size_t count) {
+    p::Ref iterator(PyObject_GetIter(value));
+    std::vector<p::Ref> items;
+    while (items.size() <= count) {
+        PyObject* item = PyIter_Next(iterator.get());
+        if (!item) { if (PyErr_Occurred()) throw p::Error("unpack"); break; }
+        items.emplace_back(item);
+    }
+    if (items.size() != count) {
+        if (items.size() > count) PyErr_SetString(PyExc_ValueError, "too many values to unpack");
+        else PyErr_Format(PyExc_ValueError, "need more than %d value%s to unpack", int(items.size()), items.size() == 1 ? "" : "s");
+        throw p::Error("unpack");
+    }
+    return items;
+}
+// max(0, value): the value only when it is greater.
+inline p::Ref positive(p::Ref value) {
+    const int greater = PyObject_RichCompareBool(value.get(), integer(0).get(), Py_GT);
+    if (greater < 0) throw p::Error("Native comparison failed");
+    return greater ? std::move(value) : integer(0);
+}
+inline bool greaterThanZero(PyObject* value) {
+    const int greater = PyObject_RichCompareBool(value, integer(0).get(), Py_GT);
+    if (greater < 0) throw p::Error("Native comparison failed");
+    return greater != 0;
+}
+// int(event.get(name, 0) or 0), clamped below at zero.
+inline p::Ref nonNegative(PyObject* event, const char* name) {
+    auto raw = method(event, "get", p::text(name).get(), integer(0).get());
+    return positive(toInt(truthy(raw) ? raw.get() : integer(0).get()));
+}
+// sys.stdout.write(text) through the live stream object.
+inline void writeStdout(PyObject* text) {
+    PyObject* stream = PySys_GetObject(const_cast<char*>("stdout"));
+    if (!stream) throw p::Error("sys.stdout is unavailable");
+    method(stream, "write", text);
+}
+
+// fn(*positional, k=v..., **mapping): the mapping is copied, then explicit keywords join it (CPython 2.7 ext_do_call).
+inline p::Ref callWithMapping(PyObject* fn, PyObject* positional, std::initializer_list<std::pair<const char*, PyObject*>> named,
+                              PyObject* mapping) {
+    p::Ref keywords(PyDict_New());
+    if (PyDict_Update(keywords.get(), mapping) < 0) throw p::Error("keyword mapping is not a mapping");
+    for (const auto& entry : named) {
+        if (PyDict_GetItemString(keywords.get(), entry.first)) {
+            PyErr_Format(PyExc_TypeError, "%.200s%s got multiple values for keyword argument '%.200s'",
+                         PyEval_GetFuncName(fn), PyEval_GetFuncDesc(fn), entry.first);
+            throw p::Error("duplicate keyword");
+        }
+        put(keywords.get(), entry.first, p::retain(entry.second));
+    }
+    return p::Ref(PyObject_Call(fn, positional, keywords.get()));
+}
 // The native port registered under `port` in this module.
 inline PyCFunction nativePort(const char* port) {
     for (PyMethodDef* m = lifecycle_methods(); m->ml_name; ++m)
@@ -158,6 +256,25 @@ inline p::Ref dispatch(PyObject* battle, const char* name, const char* port, std
     auto& fn = cache[port];
     if (!fn) fn = nativePort(port);
     return p::Ref(fn(nullptr, tuple.get()));
+}
+inline p::Ref recordsGet(PyObject* battle, PyObject* k) { return method(attr(battle, "_records").get(), "get", k); }
+// self._run_optional_feature(name, fn, args)
+inline p::Ref optionalFeature(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
+    auto label = p::text(name);
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature"))
+        return callKw(battle, "_run_optional_feature", {label.get(), fn, call_args}, {});
+    return dispatch(battle, "_run_optional_feature", "run_optional_feature", {}, {},
+                    {label.get(), fn, call_args, Py_None, Py_True, Py_None});
+}
+// self._run_optional_feature(name, fn, args=call_args)
+inline void optionalFeatureArgs(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature")) {
+        callKw(battle, "_run_optional_feature", {p::text(name).get(), fn}, {{"args", call_args}});
+        return;
+    }
+    optionalFeature(battle, name, fn, call_args);
 }
 }
 }
