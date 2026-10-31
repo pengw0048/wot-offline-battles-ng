@@ -5,6 +5,7 @@
 #include "stock_native_client_query.hpp"
 #include <memory>
 struct _object;
+namespace native_battle { struct Battle; }
 namespace stock_native_client_projectile {
 struct Frozen;
 class World final:public stock_native_projectile::OwnerWorld {
@@ -15,8 +16,8 @@ public:
         std::shared_ptr<stock_native_client_query::ProjectileTurrets>);
     ~World();
     bool current()const;
-    bool install(_object*battle);
-    bool ingress(_object*battle,double now);
+    bool install(native_battle::Battle&);
+    bool ingress(native_battle::Battle&,double now);
     void clock(stock_native_projectile::Owner*,double now);
     std::vector<stock_native_projectile::Record> records()override;
     bool liveGeometry(const stock_native_projectile::Record&,const stock_native_projectile::Pose&)const override;

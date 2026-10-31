@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_native_client_projectile_world.hpp"
+#include "stock_native_battle.hpp"
 #include "stock_native_client_projectile.hpp"
 #include "stock_native_client_projectile_state.hpp"
 #include "stock_native_projectile_scene.hpp"
@@ -37,7 +38,7 @@ struct World::State {
     std::shared_ptr<stock_native_client_query::ProjectileTurrets> turrets;
     shot::ShotScene scene;
     shot::Random random;
-    std::unique_ptr<p::Ref> weak_battle;
+    std::uint64_t generation=0;
     shot::Owner* owner=nullptr;
     std::map<std::string,Resources> resources;
     std::vector<std::string> order;
@@ -51,7 +52,8 @@ struct World::State {
     double now=0.;
     State(std::shared_ptr<cs::State>b,stock_native_client_drive::SceneAccess a,std::shared_ptr<stock_native_client_query::ProjectileTurrets>t):battle(std::move(b)),access(std::move(a)),turrets(std::move(t)),scene(*access.registry,*access.scene),epoch(battle->epoch){}
     bool current()const{return !battle->retired&&battle->epoch==epoch&&access.scene&&access.scene->current();}
-    PyObject* python(){if(!weak_battle)throw p::Error("Native player projectile lifecycle was not installed");auto*value=PyWeakref_GetObject(weak_battle->get());if(value==Py_None)throw p::Error("Native player projectile battle was released");return value;}
+    // The stock-facing battle shell, for drive destruction mirroring.
+    PyObject* python(){auto*b=native_battle::current();if(!b||b->generation!=generation)throw p::Error("Native player projectile battle was released");return b->engine.shell.get();}
     Resources* find(const std::string&key){const auto at=resources.find(key);return at==resources.end()?nullptr:&at->second;}
     const Resources* find(const std::string&key)const{const auto at=resources.find(key);return at==resources.end()?nullptr:&at->second;}
     std::int64_t server(double at)const{return owner?owner->serverTime(at).value_or(0):0;}
@@ -63,10 +65,10 @@ struct World::State {
 World::World(std::shared_ptr<cs::State>state,stock_native_client_drive::SceneAccess scene,std::shared_ptr<stock_native_client_query::ProjectileTurrets>turrets){if(!scene.registry||!scene.scene||!scene.pipeline)throw p::Error("Native player projectile scene is unavailable");state_=std::make_unique<State>(std::move(state),std::move(scene),std::move(turrets));}
 World::~World()=default;
 bool World::current()const{return state_->current();}
-bool World::install(PyObject*battle){try{auto&s=*state_;if(!s.current())throw p::Error("Native player projectile scene is stale");s.weak_battle=std::make_unique<p::Ref>(PyWeakref_NewRef(battle,nullptr));p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!s.random.install(instance.get()))return false;p::Ref stun(PyImport_ImportModule("items.stun"));auto config=p::value(stun.get(),"g_cfg");if(!damage::readStunConfig(config.get(),s.stun))return false;
-    auto raw=p::value(battle,"_config");const double prebattle=std::max(0.,p::numeric(raw.get(),"prebattleCountdownSeconds",10.)),duration=std::max(1.,p::numeric(raw.get(),"battleDurationSeconds",900.));s.battle_end_ms=std::int64_t(std::round((prebattle+duration)*1000.));return true;
+bool World::install(native_battle::Battle&b){try{auto&s=*state_;if(!s.current())throw p::Error("Native player projectile scene is stale");s.generation=b.generation;p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!s.random.install(instance.get()))return false;p::Ref stun(PyImport_ImportModule("items.stun"));auto config=p::value(stun.get(),"g_cfg");if(!damage::readStunConfig(config.get(),s.stun))return false;
+    const double prebattle=std::max(0.,b.config.get("prebattleCountdownSeconds").numeric(10.)),duration=std::max(1.,b.config.get("battleDurationSeconds").numeric(900.));s.battle_end_ms=std::int64_t(std::round((prebattle+duration)*1000.));return true;
 }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool World::ingress(PyObject*battle,double now){try{auto&s=*state_;if(!s.current()||s.python()!=battle)throw p::Error("Native player projectile ingress is stale");s.now=now;bool changed=false;std::set<std::string> seen;
+bool World::ingress(native_battle::Battle&b,double now){try{auto&s=*state_;if(!s.current()||s.generation!=b.generation)throw p::Error("Native player projectile ingress is stale");s.now=now;bool changed=false;std::set<std::string> seen;
     for(const auto&entry:s.battle->actors){auto actor=entry.second;if(actor->missing||actor->tombstone||!actor->ready||!actor->has_current)continue;seen.insert(entry.first);try{const auto*geometry=stock_native_client_query::geometry(*actor);auto*descriptor=stock_native_client_query::descriptor(*actor);if(!geometry||!descriptor){changed=s.resources.erase(entry.first)>0||changed;continue;}auto&cached=s.resources[entry.first];
         if(cached.actor!=actor||cached.query_owner!=actor->geometry||cached.descriptor_revision!=actor->descriptor_revision||(!(cached.effective.reference&&cached.effective.reference==actor->state.get("effective_params").reference)&&cached.effective!=actor->state.get("effective_params"))){Resources fresh;fresh.actor=actor;fresh.query_owner=actor->geometry;fresh.descriptor_revision=actor->descriptor_revision;fresh.effective=actor->state.get("effective_params");
             auto default_descriptor=p::value(descriptor,"defaultVehicleDescr"),siege_descriptor=p::value(descriptor,"siegeVehicleDescr");std::array<PyObject*,2> modes={default_descriptor.get()==Py_None?descriptor:default_descriptor.get(),siege_descriptor.get()==Py_None?descriptor:siege_descriptor.get()};
@@ -80,7 +82,8 @@ bool World::ingress(PyObject*battle,double now){try{auto&s=*state_;if(!s.current
     }
     for(auto at=s.resources.begin();at!=s.resources.end();)if(!seen.count(at->first)){changed=true;at=s.resources.erase(at);}else ++at;
     changed=changed||seen!=s.actor_keys;s.actor_keys=std::move(seen);
-    if(changed||s.order.empty()){s.order.clear();auto records=p::value(battle,"_records");if(!PyDict_Check(records.get()))throw p::Error("Native player projectile lifecycle records are unavailable");Py_ssize_t cursor=0;PyObject*key,*value;while(PyDict_Next(records.get(),&cursor,&key,&value)){const auto name=p::string(key);if(s.battle->actors.count(name))s.order.push_back(name);}}
+    // Splash victims are considered in vehicle-table order.
+    if(changed||s.order.empty()){s.order.clear();for(const auto&entry:s.battle->actors)if(entry.second)s.order.push_back(entry.first);}
     return true;
 }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 void World::clock(shot::Owner*owner,double now){state_->owner=owner;state_->now=now;if(owner){for(auto at=state_->anchors.begin();at!=state_->anchors.end();)if(!owner->flights().count(at->first)){state_->stickers.erase(at->first);at=state_->anchors.erase(at);}else ++at;}}
