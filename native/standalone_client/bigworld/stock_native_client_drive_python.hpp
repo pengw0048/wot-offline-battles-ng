@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 struct _object;
+namespace native_battle {struct Battle;}
 namespace stock_native_world {struct Registry;struct Destruction;class NativeScene;class Pipeline;class WorldEvents;}
 namespace stock_native_destructible {class NativeBackend;}
 namespace stock_native_client_drive {
@@ -16,21 +17,21 @@ struct SceneAccess {
     stock_native_destructible::NativeBackend* backend=nullptr;
     stock_native_world::WorldEvents* events=nullptr;
 };
-SceneAccess sceneAccess(_object* battle);
+SceneAccess sceneAccess(const native_battle::Battle&);
 // Call after native query resource ingress and before status consumers. The
 // native owner caches descriptor lifetimes and accepted snapshot revisions.
-void synchronizeStatus(_object* battle,double now);
+void synchronizeStatus(const native_battle::Battle&,double now);
 struct DriverAccess {
     std::shared_ptr<void> lifetime;
     PlayerDriver* driver=nullptr;
     PlayerContacts* contacts=nullptr;
     PublicationLedger* publication=nullptr;
 };
-DriverAccess driverAccess(_object* battle);
+DriverAccess driverAccess(native_battle::Battle&);
 // Cold local entity/loadout boundary. All parameter and initial compatibility
 // state reads happen here, before any native physical slice is admitted.
-void installPlayer(_object* battle,_object* entity,_object* exact_physics);
+void installPlayer(native_battle::Battle&,_object* entity,_object* exact_physics);
 // Native projectile CAS already performed geometry/effects. This boundary
 // mirrors accepted raw compatibility ledgers only and bumps their revisions.
-void mirrorDestruction(_object* battle,const stock_native_world::Destruction&);
+void mirrorDestruction(const native_battle::Battle&,const stock_native_world::Destruction&);
 }

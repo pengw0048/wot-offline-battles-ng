@@ -9,6 +9,7 @@
 #include "stock_native_client_query.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_world_adapter.hpp"
+namespace native_battle {struct Battle;}
 namespace stock_native_client_drive {
 struct BakedBoundary {int width=0,height=0;double cell_size=0.,origin_x=0.,origin_z=0.;std::vector<unsigned>hazards;bool safe(const Point&)const;};
 struct NativeWorldConfig {
@@ -21,13 +22,13 @@ struct NativeWorldConfig {
     stock_native_detached_turret::VehicleGeometry vehicle_geometry;
     stock_native_bot_turret::MovingDescriptor moving_descriptor;
 };
-NativeWorldConfig readNativeWorldConfig(_object*battle,_object*entity,const PlayerDescriptor&);
-ImpactConfig readPlayerImpactConfig(_object*battle,_object*entity);
+NativeWorldConfig readNativeWorldConfig(const native_battle::Battle&,_object*entity,const PlayerDescriptor&);
+ImpactConfig readPlayerImpactConfig(_object*entity);
 // The concrete visible player world owns no independent authority: it borrows
 // the battle's sole scene, shared presented roster, native suspension and
 // reliable publication owners. All hot queries and decisions remain native.
 class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
-    stock_native_bot_python::Ref battle_,entity_;
+    native_battle::Battle&battle_;stock_native_bot_python::Ref entity_;
     std::shared_ptr<stock_native_client_state::State>shared_;
     std::shared_ptr<stock_native_client_state::Actor>local_;
     std::uint64_t epoch_;
@@ -61,7 +62,7 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     void impactGeometry();
     void ensureRegion(const Point&,const Point&,double extra=0.);
 public:
-    NativePlayerWorld(_object*battle,_object*entity,std::shared_ptr<stock_native_client_state::State>,
+    NativePlayerWorld(native_battle::Battle&,_object*entity,std::shared_ptr<stock_native_client_state::State>,
         std::shared_ptr<stock_native_client_state::Actor>,PlayerDriver&,stock_native_world::NativeScene&,
         stock_native_world::Pipeline&,Ground&,Owner*,NativePeers&,PlayerContacts&,PublicationLedger&,
         PlayerImpact&,PlayerRam&,std::shared_ptr<stock_native_client_query::ProjectileTurrets>,NativeWorldConfig,

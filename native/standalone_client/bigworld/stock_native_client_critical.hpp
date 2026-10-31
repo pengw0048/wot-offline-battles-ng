@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+namespace native_battle {struct Battle;}
 namespace stock_native_client_critical {
 namespace shared=stock_native_client_state;
 using Critical=wot::offline_bot_step::CriticalState;
@@ -39,9 +40,11 @@ public:
     Effects advance(Critical,double dt,double now,bool eligible,double repair_factor,
         const std::set<std::string>&casualties);
 };
-// Current production owner; callbacks are only discrete stock presentation.
-void tick(_object*battle,double dt);
-_object*frame(_object*,_object*);
-_object*reconcile(_object*,_object*);
-_object*close(_object*,_object*);
+// The local owner lives on the battle's LocalVehicle; its callbacks are only discrete stock presentation.
+void tick(native_battle::Battle&,double dt);
+// One authority revision for the local vehicle; false when it is stale. `canonical` keeps the owned tracks.
+bool reconcile(native_battle::Battle&,shared::Actor& local,const shared::Value& source,shared::Value* canonical);
+void close(native_battle::Battle&);
+// The pending local damage report (Null when none).
+const shared::Value& report(const native_battle::Battle&);
 }

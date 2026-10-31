@@ -1,6 +1,7 @@
 #include "stock_native_client_drive_install.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_python.hpp"
+#include "stock_native_battle_local.hpp"
 namespace stock_native_client_drive {
 namespace {namespace p=stock_native_bot_python;}
 std::vector<unsigned> readPlayerHazards(PyObject* values){
@@ -21,7 +22,7 @@ std::vector<unsigned> readPlayerHazards(PyObject* values){
     }
     return result;
 }
-PlayerDescriptor readPlayerDescriptor(PyObject*battle,PyObject*entity,PyObject*params){
+PlayerDescriptor readPlayerDescriptor(const native_battle::Battle&b,PyObject*entity,PyObject*params){
     if(!PyDict_Check(params))throw p::Error("Native player effective physics are unavailable");
     PlayerDescriptor out;auto&d=out.motion;auto&law=d.drive;p::Ref physics(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.battle_runtime"));
     const char*names[]={"GRAVITY","GRAVITY_FACTOR","COHESION","COH_DECAY_Y","COH_DECAY_FACTOR","COH_DECAY_POW","SLOPE_COH_DECAY_Y","SLOPE_COH_DECAY","COH_DECAY_BOUND","POWER_FACTOR","BKWD_POWER_FRACTION","ENGINE_MIN_V","DRIVE_TRACTION","SLOPE_GRIP_LNG_MIN_Y","SLOPE_GRIP_LNG_FULL_Y","SLOPE_GRIP_LNG_MIN","SLOPE_GRIP_LNG_FULL","STEER_RESIST_MULT","SLIDE_HOLD_TAN","SLIDE_KINETIC","SLIP_THRESHOLD_TAN","SLIP_DRAG","COAST_BRAKE_SHARE","OVERSPEED_MAX_FACTOR","ANG_ACCELERATION_TIME","SPEED_AFFECT_ROT_DECREASE"};
@@ -38,14 +39,13 @@ PlayerDescriptor readPlayerDescriptor(PyObject*battle,PyObject*entity,PyObject*p
     auto gun=p::value(resource.get(),"gun"),limits=p::value(gun.get(),"turretYawLimits");if(limits.get()!=Py_None)out.gun_yaw_limits=p::numbers<2>(limits.get());out.hydraulic=p::truth(resource.get(),"hasSiegeMode");
     out.network_seconds=p::numeric(module.get(),"NETWORK_INPUT_SECONDS");out.gun_traverse_epsilon=p::numeric(module.get(),"GUN_TRAVERSE_LIMIT_EPSILON");
     out.slide_drag=p::numeric(physics.get(),"SLIDE_DRAG");out.slide_max=p::numeric(physics.get(),"SLIDE_MAX");out.ground_follow_base=p::numeric(physics.get(),"GROUND_FOLLOW_BASE");out.ground_follow_min=p::numeric(physics.get(),"GROUND_FOLLOW_MIN");out.ground_follow_max=p::numeric(physics.get(),"GROUND_FOLLOW_MAX");
-    auto client=p::value(battle,"client");out.team=int(p::integral(client.get(),"team"));stock_native_bot_motion::validate(d);return out;
+    out.team=int(p::integral(b.engine.client.get(),"team"));stock_native_bot_motion::validate(d);return out;
 }
-PlayerState readPlayerInitialState(PyObject*battle,const stock_native_client_state::Actor&actor){
-    auto matrix=p::value(battle,"_local_matrix");if(!actor.local||matrix.get()==Py_None)throw p::Error("Native player has no bound local physical pose");PlayerState out;auto position=p::value(battle,"_local_position");out.position=p::numbers<3>(position.get());out.yaw=p::numeric(battle,"_local_yaw");out.pitch=out.terrain_pitch=p::numeric(battle,"_local_pitch");out.roll=p::numeric(battle,"_local_roll");out.speed=p::numeric(battle,"_local_speed");
-#define NUMBER(member,name) out.member=p::numeric(battle,name)
-    NUMBER(hydraulic_pitch,"_local_siege_aim_pitch");NUMBER(support_vertical_speed,"_local_suspension_support_vertical_speed");NUMBER(vertical_speed,"_local_vertical_speed");NUMBER(turn_speed,"_local_turn_speed");NUMBER(pitch_speed,"_local_suspension_pitch_velocity");NUMBER(roll_speed,"_local_suspension_roll_velocity");NUMBER(push_x,"_local_push_x");NUMBER(push_z,"_local_push_z");NUMBER(slide_speed,"_local_slide_speed");NUMBER(last_drive_pitch,"_local_last_pitch");NUMBER(drive_turn,"_local_drive_turn");NUMBER(drive_throttle,"_local_drive_throttle");NUMBER(direction_command,"_local_direction_command");
-#undef NUMBER
-    auto lateral=p::value(battle,"_local_air_lateral");const auto carry=p::numbers<2>(lateral.get());out.air_lateral_x=carry[0];out.air_lateral_z=carry[1];out.airborne=p::truth(battle,"_local_airborne");out.grounded_once=p::truth(battle,"_local_fall_armed");out.left_flying=p::truth(battle,"_local_left_flying");out.right_flying=p::truth(battle,"_local_right_flying");out.service_brake=p::truth(battle,"_local_service_brake");out.has_presentation=true;return out;
+// The pose the local presentation published at attach time, and zero motion.
+PlayerState readPlayerInitialState(const native_battle::Battle&b,const stock_native_client_state::Actor&actor){
+    const auto&local=*b.local;if(!actor.local||!local.matrix)throw p::Error("Native player has no bound local physical pose");
+    PlayerState out;out.position=local.position;out.yaw=local.yaw;out.pitch=out.terrain_pitch=local.pitch;out.roll=local.roll;out.speed=local.speed;out.turn_speed=local.turn_speed;
+    out.hydraulic_pitch=local.siege_aim_pitch;out.air_lateral_x=local.air_lateral[0];out.air_lateral_z=local.air_lateral[2];out.airborne=local.airborne;out.service_brake=local.service_brake;out.has_presentation=true;return out;
 }
-Controls readPlayerInitialControls(PyObject*battle){Controls out;auto sender=p::value(battle,"_sender");if(sender.get()==Py_None)throw p::Error("Native player input producer is unavailable");out.forward=p::numeric(sender.get(),"forward");out.turn=p::numeric(sender.get(),"turn");out.aim_yaw=p::numeric(sender.get(),"aim_yaw");out.gun_pitch=p::numeric(sender.get(),"gun_pitch");out.aim_pitch=p::numeric(sender.get(),"aim_pitch",out.gun_pitch);out.handbrake=p::truth(sender.get(),"handbrake");auto aim=p::value(sender.get(),"aim_point");if(aim.get()!=Py_None)out.aim_point=p::numbers<3>(aim.get());return out;}
+Controls readPlayerInitialControls(const native_battle::Battle&b){const auto&c=b.local->controls;Controls out;out.forward=c.forward;out.turn=c.turn;out.aim_yaw=c.aim_yaw;out.gun_pitch=c.gun_pitch;out.aim_pitch=c.aim_pitch;out.handbrake=c.handbrake;out.aim_point=c.aim_point;return out;}
 }

@@ -9,6 +9,7 @@
 #include "stock_native_client_drive_roster.hpp"
 #include "stock_native_client_state.hpp"
 #include "stock_native_bot_python.hpp"
+#include "stock_native_battle_local.hpp"
 #include <algorithm>
 #include <map>
 namespace stock_native_client_drive {
@@ -37,9 +38,10 @@ p::Ref entityView(PyObject*entity,const Point&velocity){auto filter=p::value(ent
 struct PlayerFeedback::Impl {
     std::shared_ptr<stock_native_client_state::State>state;std::uint64_t epoch;
     p::Ref avatar,callback;std::map<std::pair<ID,ID>,double>last;
-    explicit Impl(PyObject*battle):state(stock_native_client_state::fromBattle(battle)),epoch(state->epoch),avatar(p::value(battle,"_avatar")),callback([&](){auto hook=p::value(battle,"_native_ram_contact_hook");return hook.get()==Py_None?p::retain(Py_None):p::item(hook.get(),2);}()) {ready(filterType,"offline_client_drive.FilterView",filterFields);ready(vehicleType,"offline_client_drive.VehicleView",vehicleFields);}
+    // The stock Avatar contact callback the native hook replaced receives the presented contact.
+    explicit Impl(const native_battle::Battle&b):state(b.vehicles),epoch(state->epoch),avatar(p::retain(b.engine.avatar?b.engine.avatar.get():Py_None)),callback(p::retain(b.local&&b.local->ram_contact_hook?b.local->ram_contact_hook.get():Py_None)) {ready(filterType,"offline_client_drive.FilterView",filterFields);ready(vehicleType,"offline_client_drive.VehicleView",vehicleFields);}
 };
-PlayerFeedback::PlayerFeedback(PyObject*battle):impl_(new Impl(battle)){}
+PlayerFeedback::PlayerFeedback(const native_battle::Battle&b):impl_(new Impl(b)){}
 PlayerFeedback::~PlayerFeedback()=default;
 void PlayerFeedback::observed(ID first,ID second,const Point&a,const Point&b,double now){auto&o=*impl_;if(o.state->retired||o.state->epoch!=o.epoch)return;const float x=float(a[0])-float(b[0]),y=float(a[1])-float(b[1]),z=float(a[2])-float(b[2]);const float length=std::sqrt(float(float(x*x+y*y)+z*z));if(length<=0.f)return;o.last[{std::min(first,second),std::max(first,second)}]=now;}
 void PlayerFeedback::present(PyObject*local,const offline_contact::Body&own,const ContactPeer&peer,double now){auto&o=*impl_;if(o.state->retired||o.state->epoch!=o.epoch||o.avatar.get()==Py_None||!PyCallable_Check(o.callback.get()))return;auto other=feedbackEntity(peer.engine_id);if(other.get()==Py_None||!p::truth(local,"isStarted")||!p::truth(other.get(),"isStarted"))return;
