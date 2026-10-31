@@ -1036,6 +1036,11 @@ Value playerCollisionManifest(Battle& b, const Value& players) {
 }
 
 // One Bot's round-start record: descriptor pair, rating, director agent, pose, combat and ledgers.
+// One named step of a Bot's installation, so a descriptor failure says which read raised.
+template<class Body> auto labeled(const char* name, const Body& body) {
+    try { return body(); }
+    catch (const std::exception& e) { const std::string why = describe(e); PyErr_Clear(); throw p::Error(std::string(name) + ": " + why); }
+}
 BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bot_id, const std::string& vehicle_name, std::pair<Object, Object> pair,
                    double rating, std::uint32_t battle_seed, std::int64_t server_time_ms) {
     BotSeed bot;
@@ -1058,7 +1063,7 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
         profile = at(raw, "profile").resolved();
         profile.object["roles"] = at(profile, "roles").resolved().kind == Kind::Object ? at(profile, "roles") : object();
         profile.object["shells"] = at(profile, "shells").resolved().kind == Kind::Array ? at(profile, "shells") : array();
-    } else profile = vehicleProfile(descriptor);
+    } else profile = labeled("vehicle profile", [&] { return vehicleProfile(descriptor); });
     const auto agent_seed = stableSeed(std::to_string(battle_seed) + "|" + std::to_string(bot_id) + "|" + pyStr(name) + "|" + pyStr(at(profile, "vehicle_name")));
     Value agent = object();
     agent.object["id"] = integer(bot_id);
@@ -1071,14 +1076,14 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
     agent.object["health_fraction"] = number(1.);
     seed.agents[bot_id] = std::move(agent);
     // BotRuntime.states row.
-    const auto spawn = startup::formationPose(b, team, slot);
+    const auto spawn = labeled("formation pose", [&] { return startup::formationPose(b, team, slot); });
     bot.spawn = spawn.first;
     auto max_health_value = attribute(descriptor, "maxHealth");
     const std::int64_t max_health = std::max<std::int64_t>(1, max_health_value.get() != Py_None ? std::int64_t(p::scalar(max_health_value.get()))
                                                                                                  : std::int64_t(pyNumber(at(raw, "max_health"), 1000.)));
     const std::int64_t health = std::max<std::int64_t>(0, std::min<std::int64_t>(std::int64_t(pyNumber(at(raw, "health"), double(max_health))), max_health));
-    const auto shape = stock_native_bot_descriptor::chassisShape(descriptor);
-    p::Ref drive(stock_native_bot::readUnmodifiedDrive(descriptor));
+    const auto shape = labeled("chassis shape", [&] { return stock_native_bot_descriptor::chassisShape(descriptor); });
+    p::Ref drive(labeled("drive", [&] { return stock_native_bot::readUnmodifiedDrive(descriptor); }));
     auto misc = attribute(descriptor, "miscAttrs");
     auto spall_raw = attribute(misc.get(), "antifragmentationLiningFactor");
     const double spall = spall_raw.get() == Py_None ? 1. : plannerNumber(spall_raw.get(), NAN);
@@ -1173,7 +1178,7 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
     o["equipment_states"] = std::move(wire_states);
     // The fresh gun, ammunition and combat ledger exactly as the cold installation will read them.
     step::CombatSnapshot combat;
-    if (!step::load_combat_snapshot(bot, descriptor, combat)) throw p::Error("Bot " + std::to_string(bot_id) + " combat installation failed");
+    if (!labeled("combat", [&] { return step::load_combat_snapshot(bot, descriptor, combat); })) throw p::Error("Bot " + std::to_string(bot_id) + " combat installation failed");
     const auto& gun = *combat.gun;
     o["shell_index"] = integer(combat.ammo.loaded);
     o["next_shell_index"] = integer(combat.ammo.next);
