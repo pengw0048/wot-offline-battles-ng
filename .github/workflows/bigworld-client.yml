@@ -60,9 +60,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $tar)) {
               throw "Git tar is required to extract the Wwise SDK."
           }
+          # A drive-letter path contains a colon. Without --force-local, this tar
+          # treats "D:" as a remote host and waits on that connection.
           $dest = Join-Path $PWD "wwise-sdk"
           New-Item -ItemType Directory -Path $dest | Out-Null
-          & $tar -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
+          & $tar --force-local -xJf (Join-Path $PWD "wwise-private\wwise-sdk.tar.xz") -C $dest
           if ($LASTEXITCODE -ne 0) { throw "The licensed Wwise SDK archive could not be extracted." }
       - name: Select the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
