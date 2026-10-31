@@ -8,7 +8,6 @@ namespace stock_native_bot_parking {
 namespace p=stock_native_bot_python;
 namespace {
 using Bounds=std::array<double,4>;
-Py_ssize_t size(PyObject*value){return value==Py_None?0:p::size(value);}
 Bounds cellBounds(const std::string& cell,const Bounds& bounds){
     const std::string rows="ABCDEFGHJK",columns="1234567890";
     if(cell.size()!=2||rows.find(cell[0])==std::string::npos||columns.find(cell[1])==std::string::npos||
@@ -17,37 +16,42 @@ Bounds cellBounds(const std::string& cell,const Bounds& bounds){
     const double dx=(bounds[2]-bounds[0])/10.,dz=(bounds[3]-bounds[1])/10.;
     return {bounds[0]+column*dx,bounds[3]-(row+1)*dz,bounds[0]+(column+1)*dx,bounds[3]-row*dz};
 }
-double coordinate(PyObject*value){
-    if(PyString_Check(value)||PyUnicode_Check(value)){p::Ref number(PyFloat_FromString(value,nullptr));return p::scalar(number.get());}
-    if(PyBool_Check(value))throw p::Error("Native parking coordinate is a boolean");
-    return p::scalar(value);
+using Value=stock_native_client_state::Value;
+using Kind=Value::Kind;
+const Value& at(const Value&v,const char*name){return v.resolved().get(name);}
+const std::vector<Value>& rows(const Value&v){static const std::vector<Value> none;return v.resolved().kind==Kind::Array?v.resolved().array:none;}
+double coordinate(const Value&value){
+    const auto&v=value.resolved();
+    if(v.kind==Kind::Text){std::size_t end=0;const double n=std::stod(v.text,&end);if(end!=v.text.size()||!std::isfinite(n))throw p::Error("Native parking coordinate is invalid");return n;}
+    if(v.kind!=Kind::Integer&&v.kind!=Kind::Number)throw p::Error("Native parking coordinate is invalid");
+    const double n=v.numeric(NAN);if(!std::isfinite(n))throw p::Error("Native parking coordinate is invalid");return n;
 }
-std::string sideFor(int team,PyObject*bases){
-    if((team!=1&&team!=2)||size(bases)!=2)return {};
-    auto own=p::item(bases,team-1),enemy=p::item(bases,2-team);
-    auto ox=p::item(own.get(),0),oz=p::item(own.get(),1),ex=p::item(enemy.get(),0),ez=p::item(enemy.get(),1);
-    const double dx=coordinate(ox.get())-coordinate(ex.get()),dz=coordinate(oz.get())-coordinate(ez.get());
+std::string sideFor(int team,const Value&bases){
+    if((team!=1&&team!=2)||rows(bases).size()!=2)return {};
+    const auto&own=rows(rows(bases)[std::size_t(team-1)]),&enemy=rows(rows(bases)[std::size_t(2-team)]);
+    if(own.size()<2||enemy.size()<2)return {};
+    const double dx=coordinate(own[0])-coordinate(enemy[0]),dz=coordinate(own[1])-coordinate(enemy[1]);
     if(std::abs(dx)+std::abs(dz)<1.)return {};
     return std::abs(dz)>=std::abs(dx)?(dz>0.?"north":"south"):(dx>0.?"east":"west");
 }
-bool support(PyObject*zone,int team,PyObject*states,const Bounds&bounds){
-    auto rule=p::value(zone,"requires_support");if(rule.get()==Py_None||!PyDict_Size(rule.get()))return true;
-    auto columns=p::value(rule.get(),"columns");std::vector<Bounds> regions;
-    for(Py_ssize_t i=0;i<size(columns.get());++i){auto column=p::item(columns.get(),i);regions.push_back(cellBounds("A"+p::string(column.get()),bounds));}
-    int count=0;Py_ssize_t cursor=0;PyObject*key=nullptr,*state=nullptr;
-    while(PyDict_Next(states,&cursor,&key,&state)){
-        if(p::integral(state,"team")!=team)continue;
-        auto profile=p::value(state,"profile"),tag=p::value(profile.get(),"class_tag");
-        if(tag.get()!=Py_None&&p::string(tag.get())=="SPG")continue;
-        auto route=p::value(state,"route"),points=p::value(route.get(),"waypoints");bool matched=false;
-        for(Py_ssize_t i=1;i<size(points.get())&&!matched;++i){
-            try{auto row=p::item(points.get(),i);auto x=PyDict_Check(row.get())?p::value(row.get(),"x"):p::item(row.get(),0);const auto value=coordinate(x.get());
+bool support(const Value&zone,int team,const stock_native_bot::RoundSeed&seed,const Bounds&bounds){
+    const auto&rule=at(zone,"requires_support");if(rule.resolved().kind!=Kind::Object||rule.resolved().object.empty())return true;
+    std::vector<Bounds> regions;
+    for(const auto&column:rows(at(rule,"columns")))regions.push_back(cellBounds("A"+column.resolved().text,bounds));
+    int count=0;
+    for(const auto&bot:seed.bots){
+        const auto&state=bot.second.state;
+        if(at(state,"team").integer!=team)continue;
+        if(at(at(state,"profile"),"class_tag").resolved().text=="SPG")continue;
+        const auto&points=rows(at(at(state,"route"),"waypoints"));bool matched=false;
+        for(std::size_t i=1;i<points.size()&&!matched;++i){
+            try{const auto&row=points[i].resolved();const double value=coordinate(row.kind==Kind::Object?row.get("x"):rows(row).at(0));
                 for(const auto&region:regions)if(value>=region[0]&&value<=region[2]){matched=true;break;}}
-            catch(const std::exception&){PyErr_Clear();}
+            catch(const std::exception&){}
         }
         count+=matched;
     }
-    return count>=p::integral(rule.get(),"minimum");
+    return count>=at(rule,"minimum").numeric();
 }
 std::array<int,4> span(const offline_navigation::MapInput&map,const Bounds&bounds){
     return {std::max(0,int(std::ceil((bounds[0]-map.origin_x)/map.cell_size))),
@@ -67,57 +71,48 @@ std::vector<std::pair<double,int>> candidates(const offline_navigation::MapInput
     }
     std::sort(out.begin(),out.end());return out;
 }
-Plan basePlan(PyObject*state,const std::string&name,double clearance){
-    Plan out;out.map=name;auto vehicle=p::value(state,"vehicle");out.vehicle=p::string(vehicle.get());out.clearance=clearance;return out;
+Plan basePlan(const Value&state,const std::string&name,double clearance){
+    Plan out;out.map=name;out.vehicle=at(state,"vehicle").resolved().text;out.clearance=clearance;return out;
 }
 }
-bool readCatalog(PyObject*runtime,const offline_navigation::MapInput&input,
+bool readCatalog(const stock_native_bot::RoundSeed&seed,const offline_navigation::MapInput&input,
     const std::array<std::array<int,2>,8>&directions,std::map<std::int64_t,Catalog>&output){try{
-    auto graph=p::value(runtime,"baked_graph"),map_name=p::value(graph.get(),"map"),profile=p::value(runtime,"_bot_tactics"),states=p::value(runtime,"states");
-    const auto name=p::string(map_name.get());auto maps=p::value(profile.get(),"maps"),settings=p::value(maps.get(),name.c_str()),deleted_rows=p::value(settings.get(),"deleted_positions");
-    std::set<std::string> deleted;for(Py_ssize_t i=0;i<size(deleted_rows.get());++i){auto row=p::item(deleted_rows.get(),i);deleted.insert(p::string(row.get()));}
-    p::Ref config(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_tactics")),data_module(PyImport_ImportModule("gui.mods.offline_lan_0922.spg_position_data"));
-    auto data=p::value(data_module.get(),"CATALOG"),entries=p::value(data.get(),"maps"),entry=p::value(entries.get(),name.c_str());
-    auto config_maps=p::value(config.get(),"MAPS"),config_entry=p::value(config_maps.get(),name.c_str()),bases=p::value(graph.get(),"bases");
-    std::map<std::int64_t,Catalog> result;Py_ssize_t cursor=0;PyObject*key=nullptr,*state=nullptr;
-    while(PyDict_Next(states.get(),&cursor,&key,&state)){
-        auto initial=p::value(state,"_spg_initial");if(initial.get()==Py_None)continue;
-        auto source=p::value(initial.get(),"source");const bool manual=p::string(source.get())=="launcher_manual_v1";const auto team=int(p::integral(state,"team"));
-        auto shape=p::value(state,"collision_shape"),width=p::item(shape.get(),0),length=p::item(shape.get(),1);
-        const double clearance=std::hypot(p::scalar(width.get()),p::scalar(length.get()))+(manual?2.:2.5);
-        auto bounds_value=p::value(manual?config_entry.get():entry.get(),"bounds");const auto bounds=p::numbers<4>(bounds_value.get());
-        auto map=input;map.has_bounds=true;map.bounds=bounds;Parking parking(map,directions);Catalog catalog;catalog.manual=manual;
-        if(!manual){auto graph_bounds=p::value(graph.get(),"bounds");if(p::numbers<4>(graph_bounds.get())!=bounds)throw p::Error("Native parking catalog and graph bounds differ");}
-        auto zones=p::value(manual?settings.get():entry.get(),manual?"positions":"zones");
-        const auto side=manual?"team"+std::to_string(team):sideFor(team,bases.get());
-        bool side_valid=true;if(!manual){auto sides=p::value(entry.get(),"spawn_sides"),published=p::value(sides.get(),std::to_string(team).c_str());side_valid=!side.empty()&&published.get()!=Py_None&&p::string(published.get())==side;}
-        for(Py_ssize_t z=0;z<size(zones.get());++z){auto zone=p::item(zones.get(),z),id=p::value(zone.get(),"id");const auto zone_name=p::string(id.get());
-            if(manual){
-                if(deleted.count(zone_name)||p::integral(zone.get(),"team")!=team)continue;
-                auto point_value=p::value(zone.get(),"point");const auto centre=p::numbers<2>(point_value.get());const double radius=p::numeric(zone.get(),"radius");
-                catalog.areas[zone_name]={true,{centre[0],centre[1],0.,0.},radius};
-                const auto rows=candidates(map,parking,{centre[0]-radius+2.,centre[1]-radius+2.,centre[0]+radius-2.,centre[1]+radius-2.},centre,true,radius-2.,clearance);
-                const double angle=p::numeric(zone.get(),"heading")*(3.14159265358979323846/180.);
-                for(const auto&row:rows){Candidate candidate;candidate.index=row.second;candidate.priority=int(p::integral(zone.get(),"priority"));candidate.centre_distance=row.first;
-                    auto&plan=candidate.plan;plan=basePlan(state,name,clearance);auto identity=p::value(initial.get(),"catalog");plan.catalog=p::string(identity.get());plan.zone=zone_name;plan.cell="manual";plan.source="launcher_manual_v1";plan.side=side;plan.point=parking.point(row.second);
-                    plan.face={std::clamp(plan.point[0]+std::sin(angle)*100.,bounds[0],bounds[2]),plan.point[1],std::clamp(plan.point[2]+std::cos(angle)*100.,bounds[1],bounds[3])};catalog.candidates.push_back(std::move(candidate));}
-            }else{
-                auto cells=p::value(zone.get(),"cells"),zone_side=p::value(zone.get(),"side");
-                for(Py_ssize_t c=0;c<size(cells.get());++c){auto cell_value=p::item(cells.get(),c);const auto cell=p::string(cell_value.get());const auto box=cellBounds(cell,bounds);catalog.areas[cell]={false,box,0.};
-                    if(!side_valid||p::string(zone_side.get())!=side||deleted.count("spg_"+std::to_string(team)+"_"+zone_name)||!support(zone.get(),team,states.get(),bounds))continue;
-                    const auto rows=candidates(map,parking,{box[0]+clearance,box[1]+clearance,box[2]-clearance,box[3]-clearance},{(box[0]+box[2])*.5,(box[1]+box[3])*.5},false,0.,clearance);
-                    std::vector<Point> selected;
-                    for(const auto&row:rows){const auto point=parking.point(row.second);if(std::any_of(selected.begin(),selected.end(),[&](const Point&old){return std::hypot(point[0]-old[0],point[2]-old[2])<clearance*2.+6.;})||!parking.clear(row.second,clearance))continue;
-                        selected.push_back(point);Candidate candidate;candidate.index=row.second;candidate.priority=int(p::integral(zone.get(),"priority"));auto&plan=candidate.plan;plan=basePlan(state,name,clearance);
-                        auto revision=p::value(data.get(),"revision"),origin=p::value(zone.get(),"source"),face_cell=p::value(zone.get(),"face_cell");plan.catalog=p::string(revision.get());plan.zone=zone_name;plan.cell=cell;plan.source=p::string(origin.get());plan.side=side;plan.point=point;
-                        auto enemy=p::item(bases.get(),2-team);const auto enemy_point=p::numbers<2>(enemy.get());plan.face={enemy_point[0],point[1],enemy_point[1]};
-                        if(face_cell.get()!=Py_None&&!p::string(face_cell.get()).empty()){const auto face=cellBounds(p::string(face_cell.get()),bounds);plan.face={(face[0]+face[2])*.5,point[1],(face[1]+face[3])*.5};}
-                        catalog.candidates.push_back(std::move(candidate));if(selected.size()>=8)break;
-                    }
+    PyObject*graph=seed.graph.get();const Value bases=stock_native_client_state::read(p::value(graph,"bases").get());
+    const Value graph_bounds=stock_native_client_state::read(p::value(graph,"bounds").get());
+    p::Ref data_module(PyImport_ImportModule("gui.mods.offline_lan_0922.spg_position_data"));
+    const Value data=stock_native_client_state::read(p::value(data_module.get(),"CATALOG").get());const Value&entry=at(at(data,"maps"),seed.map.c_str());
+    std::map<std::int64_t,Catalog> result;
+    for(const auto&bot:seed.bots){
+        const auto&state=bot.second.state;const auto&initial=at(state,"_spg_initial");if(initial.resolved().kind==Kind::Null)continue;
+        // The native round start publishes catalog plans only; launcher manual plans need a tactics profile.
+        if(at(initial,"source").resolved().text=="launcher_manual_v1")throw p::Error("Native parking manual plans need a Bot tactics profile");
+        const auto team=int(at(state,"team").integer);
+        const auto&shape=rows(at(state,"collision_shape"));if(shape.size()<2)throw p::Error("Native parking collision shape is invalid");
+        const double clearance=std::hypot(shape[0].numeric(),shape[1].numeric())+2.5;
+        const auto&raw_bounds=rows(at(entry,"bounds"));if(raw_bounds.size()!=4)throw p::Error("Native parking catalog bounds are invalid");
+        const Bounds bounds{raw_bounds[0].numeric(),raw_bounds[1].numeric(),raw_bounds[2].numeric(),raw_bounds[3].numeric()};
+        auto map=input;map.has_bounds=true;map.bounds=bounds;Parking parking(map,directions);Catalog catalog;catalog.manual=false;
+        const auto&published_bounds=rows(graph_bounds);
+        if(published_bounds.size()!=4||Bounds{published_bounds[0].numeric(),published_bounds[1].numeric(),published_bounds[2].numeric(),published_bounds[3].numeric()}!=bounds)
+            throw p::Error("Native parking catalog and graph bounds differ");
+        const auto side=sideFor(team,bases);
+        const auto&published=at(at(entry,"spawn_sides"),std::to_string(team).c_str());
+        const bool side_valid=!side.empty()&&published.resolved().kind==Kind::Text&&published.resolved().text==side;
+        for(const auto&zone:rows(at(entry,"zones"))){const auto zone_name=at(zone,"id").resolved().text;
+            for(const auto&cell_value:rows(at(zone,"cells"))){const auto cell=cell_value.resolved().text;const auto box=cellBounds(cell,bounds);catalog.areas[cell]={false,box,0.};
+                if(!side_valid||at(zone,"side").resolved().text!=side||!support(zone,team,seed,bounds))continue;
+                const auto candidates_=candidates(map,parking,{box[0]+clearance,box[1]+clearance,box[2]-clearance,box[3]-clearance},{(box[0]+box[2])*.5,(box[1]+box[3])*.5},false,0.,clearance);
+                std::vector<Point> selected;
+                for(const auto&row:candidates_){const auto point=parking.point(row.second);if(std::any_of(selected.begin(),selected.end(),[&](const Point&old){return std::hypot(point[0]-old[0],point[2]-old[2])<clearance*2.+6.;})||!parking.clear(row.second,clearance))continue;
+                    selected.push_back(point);Candidate candidate;candidate.index=row.second;candidate.priority=int(at(zone,"priority").numeric());auto&plan=candidate.plan;plan=basePlan(state,seed.map,clearance);
+                    plan.catalog=at(data,"revision").resolved().text;plan.zone=zone_name;plan.cell=cell;plan.source=at(zone,"source").resolved().text;plan.side=side;plan.point=point;
+                    const auto&enemy=rows(rows(bases).at(std::size_t(2-team)));plan.face={coordinate(enemy.at(0)),point[1],coordinate(enemy.at(1))};
+                    const auto&face_cell=at(zone,"face_cell");if(face_cell.resolved().kind==Kind::Text&&!face_cell.resolved().text.empty()){const auto face=cellBounds(face_cell.resolved().text,bounds);plan.face={(face[0]+face[2])*.5,point[1],(face[1]+face[3])*.5};}
+                    catalog.candidates.push_back(std::move(candidate));if(selected.size()>=8)break;
                 }
             }
         }
-        result.emplace(p::integral(state,"id"),std::move(catalog));
+        result.emplace(bot.first,std::move(catalog));
     }
     output=std::move(result);return true;
 }catch(const std::exception&error){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return false;}}

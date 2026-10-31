@@ -54,19 +54,26 @@ Ref pytext(const char* s){
     return Ref(required(PyString_FromString(s),"text allocation"));
 #endif
 }
-Ref frommap(PyObject* runtime,const char* map_name,PyObject* id){auto map=attr(runtime,map_name);if(!PyDict_Check(map.get()))throw Error("actor map is not a dictionary");
-    auto found=PyDict_GetItem(map.get(),id);if(!found){Py_INCREF(Py_None);return Ref(Py_None);}Py_INCREF(found);return Ref(found);}
 std::vector<std::string> strings(PyObject* p){std::vector<std::string> result;if(!p || p==Py_None)return result;
     for(Py_ssize_t i=0;i<size(p);++i){auto v=item(p,i);result.push_back(text(v.get()));}return result;}
+// The round seed's state row (the pinned BotRuntime.states row) is an owned Value.
+using SeedValue=stock_native_client_state::Value;
+using SeedKind=SeedValue::Kind;
+bool has(const SeedValue& v,const char* key){return v.resolved().kind==SeedKind::Object&&v.resolved().object.count(key)>0;}
+double vscalar(const SeedValue& v){const auto& r=v.resolved();if(r.kind==SeedKind::Integer)return double(r.integer);
+    if(r.kind!=SeedKind::Number||!std::isfinite(r.number))throw Error("invalid numeric field");return r.number;}
+double vnum(const SeedValue& d,const char* key,double fallback=0.){const auto& v=d.resolved().get(key);return v.kind==SeedKind::Null?fallback:vscalar(v);}
+bool vflag(const SeedValue& d,const char* key,bool fallback=false){return has(d,key)?d.resolved().get(key).truth(false):fallback;}
+std::string vtext(const SeedValue& v){if(v.resolved().kind!=SeedKind::Text)throw Error("missing text");return v.resolved().text;}
+std::vector<std::string> vstrings(const SeedValue& v){std::vector<std::string> out;const auto& r=v.resolved();if(r.kind==SeedKind::Null)return out;
+    if(r.kind!=SeedKind::Array)throw Error("expected sequence");for(const auto& item:r.array)out.push_back(vtext(item));return out;}
 void setdict(PyObject* d,const char* key,PyObject* value){if(PyDict_SetItemString(d,key,required(value,key))<0)throw Error("dictionary write failed");}
 void setnum(PyObject* d,const char* key,double value){auto v=number(value);setdict(d,key,v.get());}
 void setbool(PyObject* d,const char* key,bool value){setdict(d,key,value?Py_True:Py_False);}
 void settext(PyObject* d,const char* key,const std::string& v){auto x=pytext(v.c_str());setdict(d,key,x.get());}
 void setint(PyObject* d,const char* key,std::int64_t n){Ref x(PyLong_FromLongLong(n));setdict(d,key,x.get());}
 double numeric(PyObject* p,const char* key,double fallback=0.){auto v=value(p,key);if(v.get()==Py_None)return fallback;try{return scalar(v.get());}catch(const std::exception&){PyErr_Clear();return fallback;}}
-double rating_value(PyObject* runtime,PyObject* id){auto raw=frommap(runtime,"_bot_ratings",id);return raw.get()==Py_None?.34:std::max(0.,std::min(1.,scalar(raw.get())));}
 double anchor(double rating,const std::array<double,4>& points){const double anchors[]={0.,.34,.67,1.};for(int i=0;i<3;++i)if(rating<=anchors[i+1]){const double f=(rating-anchors[i])/(anchors[i+1]-anchors[i]);return f<=0?points[i]:f>=1?points[i+1]:points[i]+(points[i+1]-points[i])*f;}return points[3];}
-int crew_level(PyObject* runtime,PyObject* id){return stock_native_bot_descriptor::botCrewLevel(runtime,id);}
 void fresh_gun(PyObject* descriptor,std::optional<int> level,CombatSnapshot& s){
     Ref factors(required(stock_native_bot_descriptor::defaultCrewFactors(descriptor,level),"stock crew factors"));
     auto gun=value(descriptor,"gun"),chassis=value(descriptor,"chassis"),misc=value(descriptor,"miscAttrs"),bloom=value(gun.get(),"shotDispersionFactors");
@@ -81,19 +88,19 @@ void fresh_gun(PyObject* descriptor,std::optional<int> level,CombatSnapshot& s){
     try{auto clip=value(gun.get(),"clip");if(size(clip.get())==2){auto a=item(clip.get(),0),b=item(clip.get(),1);g.clip_size=std::max(1,int(scalar(a.get())));g.reload_intra=std::max(.01,scalar(b.get()));}}catch(const std::exception&){PyErr_Clear();}
     auto shots=value(gun.get(),"shots");g.shell_count=shots.get()==Py_None?1:std::max(1,int(size(shots.get())));g.validate();
 }
-void fresh_ammo(PyObject* descriptor,PyObject* profile,PyObject* state,CombatSnapshot& s){
-    const int count=s.gun_config.shell_count;auto& ammo=s.ammo;ammo.categories.assign(count,0);ammo.remaining.assign(count,0);std::map<int,PyObject*> by_index;
-    auto rows=field(profile,"shells");if(rows&&rows!=Py_None)for(Py_ssize_t i=0;i<size(rows);++i){auto row=item(rows,i);if(!PyDict_Check(row.get()))continue;const int n=int(numeric(row.get(),"index",-1));if(n>=0&&n<count)by_index[n]=PySequence_Fast_GET_ITEM(rows,i);}
-    int first=-1;double baseline=0.;for(int i=0;i<count;++i){auto it=by_index.find(i);std::string kind;if(it!=by_index.end()){auto raw=value(it->second,"kind");if(raw.get()!=Py_None)kind=text(raw.get());}std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return char(std::tolower(c));});
-        if(kind.find("high_explosive")!=std::string::npos||(kind.find("explosive")!=std::string::npos&&kind.find("armor_piercing")==std::string::npos))ammo.categories[i]=2;else if(first<0){first=i;baseline=it==by_index.end()?0.:std::max(0.,numeric(it->second,"penetration"));}}
-    for(int i=0;i<count;++i)if(ammo.categories[i]!=2&&i!=first&&baseline>0.){auto it=by_index.find(i);if(it!=by_index.end()&&std::max(0.,numeric(it->second,"penetration"))>=baseline*1.03)ammo.categories[i]=1;}
+void fresh_ammo(PyObject* descriptor,const SeedValue& profile,const SeedValue& state,CombatSnapshot& s){
+    const int count=s.gun_config.shell_count;auto& ammo=s.ammo;ammo.categories.assign(count,0);ammo.remaining.assign(count,0);std::map<int,const SeedValue*> by_index;
+    const auto& rows=profile.resolved().get("shells").resolved();if(rows.kind==SeedKind::Array)for(const auto& row:rows.array){if(row.resolved().kind!=SeedKind::Object)continue;const int n=int(row.resolved().get("index").numeric(-1));if(n>=0&&n<count)by_index[n]=&row;}
+    int first=-1;double baseline=0.;for(int i=0;i<count;++i){auto it=by_index.find(i);std::string kind;if(it!=by_index.end()){const auto& raw=it->second->resolved().get("kind");if(raw.resolved().kind!=SeedKind::Null)kind=vtext(raw);}std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(kind.find("high_explosive")!=std::string::npos||(kind.find("explosive")!=std::string::npos&&kind.find("armor_piercing")==std::string::npos))ammo.categories[i]=2;else if(first<0){first=i;baseline=it==by_index.end()?0.:std::max(0.,it->second->resolved().get("penetration").numeric(0.));}}
+    for(int i=0;i<count;++i)if(ammo.categories[i]!=2&&i!=first&&baseline>0.){auto it=by_index.find(i);if(it!=by_index.end()&&std::max(0.,it->second->resolved().get("penetration").numeric(0.))>=baseline*1.03)ammo.categories[i]=1;}
     auto gun=value(descriptor,"gun"),turret=value(descriptor,"turret"),capacity=value(descriptor,"maxAmmo");if(capacity.get()==Py_None)capacity=value(gun.get(),"maxAmmo");if(capacity.get()==Py_None)capacity=value(turret.get(),"maxAmmo");int maximum=45;try{if(capacity.get()!=Py_None)maximum=int(scalar(capacity.get()));}catch(const std::exception&){PyErr_Clear();}maximum=std::max(0,std::min(1000,maximum));
-    auto cls=value(profile,"class_tag");const bool spg=cls.get()!=Py_None&&text(cls.get())=="SPG";const std::array<double,3> weights=spg?std::array<double,3>{1.,1.,4.}:std::array<double,3>{3.,2.,1.};std::vector<int> active;for(int category:{2,1,0})if(std::find(ammo.categories.begin(),ammo.categories.end(),category)!=ammo.categories.end())active.push_back(category);double total=0.;for(int c:active)total+=weights[c];std::map<int,int> quantities;int assigned=0;for(int c:active)assigned+=(quantities[c]=int(maximum*weights[c]/total));
+    const auto& cls=profile.resolved().get("class_tag");const bool spg=cls.resolved().kind==SeedKind::Text&&cls.resolved().text=="SPG";const std::array<double,3> weights=spg?std::array<double,3>{1.,1.,4.}:std::array<double,3>{3.,2.,1.};std::vector<int> active;for(int category:{2,1,0})if(std::find(ammo.categories.begin(),ammo.categories.end(),category)!=ammo.categories.end())active.push_back(category);double total=0.;for(int c:active)total+=weights[c];std::map<int,int> quantities;int assigned=0;for(int c:active)assigned+=(quantities[c]=int(maximum*weights[c]/total));
     auto remainders=active;std::stable_sort(remainders.begin(),remainders.end(),[&](int a,int b){return maximum*weights[a]/total-quantities[a]>maximum*weights[b]/total-quantities[b];});for(int i=0;i<maximum-assigned;++i)++quantities[remainders[std::size_t(i)%remainders.size()]];
     for(int c:active){std::vector<int> indices;for(int i=0;i<count;++i)if(ammo.categories[i]==c)indices.push_back(i);for(int i=0;i<quantities[c];++i)++ammo.remaining[indices[std::size_t(i)%indices.size()]];}
     ammo.loaded=ammo.fallback();ammo.next=ammo.loaded;
-    if(field(state,"ammo_remaining")||field(state,"next_shell_index")||field(state,"ammo_reload_pending")){
-        for(const char* key:{"ammo_remaining","shell_index","next_shell_index","ammo_reload_pending"})if(!field(state,key))throw Error("incomplete ammunition snapshot");auto remaining=field(state,"ammo_remaining");if(size(remaining)!=count)throw Error("ammunition shape mismatch");ammo.remaining.clear();for(int i=0;i<count;++i){auto v=item(remaining,i);const auto n=integer(v.get());if(n<0||n>1000)throw Error("ammunition quantity invalid");ammo.remaining.push_back(int(n));}ammo.loaded=int(getnum(state,"shell_index"));ammo.next=int(getnum(state,"next_shell_index"));if(!PyBool_Check(field(state,"ammo_reload_pending")))throw Error("ammunition reload flag invalid");ammo.reload_pending=getflag(state,"ammo_reload_pending");ammo.plan_pending=false;
+    if(has(state,"ammo_remaining")||has(state,"next_shell_index")||has(state,"ammo_reload_pending")){
+        for(const char* key:{"ammo_remaining","shell_index","next_shell_index","ammo_reload_pending"})if(!has(state,key))throw Error("incomplete ammunition snapshot");const auto& remaining=state.resolved().get("ammo_remaining").resolved();if(remaining.kind!=SeedKind::Array||int(remaining.array.size())!=count)throw Error("ammunition shape mismatch");ammo.remaining.clear();for(int i=0;i<count;++i){const auto& v=remaining.array[std::size_t(i)].resolved();if(v.kind!=SeedKind::Integer||v.integer<0||v.integer>1000)throw Error("ammunition quantity invalid");ammo.remaining.push_back(int(v.integer));}ammo.loaded=int(vnum(state,"shell_index"));ammo.next=int(vnum(state,"next_shell_index"));if(state.resolved().get("ammo_reload_pending").resolved().kind!=SeedKind::Boolean)throw Error("ammunition reload flag invalid");ammo.reload_pending=vflag(state,"ammo_reload_pending");ammo.plan_pending=false;
         const int sum=std::accumulate(ammo.remaining.begin(),ammo.remaining.end(),0);if(ammo.loaded<0||ammo.loaded>=count||ammo.next<0||ammo.next>=count||(sum>0&&(ammo.remaining[ammo.next]<=0||(!ammo.reload_pending&&ammo.remaining[ammo.loaded]<=0))))throw Error("ammunition selection invalid");}
     ammo.validate(count);
 }
@@ -140,78 +147,47 @@ std::vector<CombatReplayStep> replay_from_wire(PyObject* rows) {
 }
 }
 
-static bool load_snapshot(PyObject* runtime,PyObject* state,PyObject* descriptor,PyObject* profile,
-                          CombatSnapshot& output,bool mode_only){
+// One Bot's combat, weapons and ledgers at the round start: the seed row is the BotRuntime state and
+// the gun, ammunition and burst clocks are the fresh ones battle_start installs from the descriptor.
+static bool load_snapshot(const stock_native_bot::BotSeed& bot,PyObject* descriptor,CombatSnapshot& output,bool mode_only){
  try {
-    if(!PyDict_Check(state) || !descriptor || !runtime)throw Error("missing combat bootstrap input");
-    if(!profile || profile==Py_None){profile=PyDict_New();if(!profile)throw Error("profile allocation");}else Py_INCREF(profile);
-    Ref profile_owner(profile);
-    CombatSnapshot s;s.fire_sequence=static_cast<std::int64_t>(getnum(state,"fire_seq"));auto& c=s.state;
-    c.health=static_cast<int>(getnum(state,"health"));c.maximum_health=std::max(1,static_cast<int>(getnum(state,"max_health",c.health?c.health:1)));
-    c.display_health=static_cast<int>(getnum(state,"display_health",c.health));c.alive=getflag(state,"alive",true);
-    c.death_reason=static_cast<int>(getnum(state,"death_reason"));
-    c.position={getnum(state,"x"),getnum(state,"y"),getnum(state,"z")};c.pitch=getnum(state,"pitch");c.roll=getnum(state,"roll");
-    c.speed=getnum(state,"speed");c.movement_direction=static_cast<int>(getnum(state,"movement_dir"));c.rotation_direction=static_cast<int>(getnum(state,"rotation_dir"));
-    c.drown_check=getnum(state,"_drown_check");c.drown_time=getnum(state,"_drown_time");c.water_depth=getnum(state,"_water_depth",-1.);
-    c.drowning=getflag(state,"_drowning");c.drowned=getflag(state,"_drowned");c.overturn_check=getnum(state,"_overturn_check");c.overturn_time=getnum(state,"_overturn_time");
-    c.overturn_level=static_cast<int>(getnum(state,"_overturn_level"));c.overturned=getflag(state,"_overturned");
-    c.critical.fire_elapsed=getnum(state,"combat_fire_elapsed");c.critical.fire_timer=getnum(state,"combat_fire_timer");
-    c.stun_end_server_time_ms=static_cast<std::int64_t>(getnum(state,"stun_end_server_time_ms"));c.stun_until_equipment_time=getnum(state,"_stun_until_equipment_time");
-    c.has_target=field(state,"target_id") && field(state,"target_id")!=Py_None;
-    PyObject* critical=field(state,"critical");
-    if(critical && critical!=Py_None){
-        if(!PyDict_Check(critical))throw Error("critical payload is not a dictionary");
-        c.has_critical_payload=PyDict_Size(critical)>0;
-        c.critical.fire=getflag(critical,"fire");c.critical.ammo_rack_death=getflag(critical,"ammo_rack_death");
-        for(const auto& n:strings(field(critical,"crew_ko")))c.critical.crew_ko.insert(n);
-        for(const auto& n:strings(field(critical,"crew_roster")))c.critical.crew_roster.insert(n);
-        for(const auto& n:strings(field(critical,"destroyed")))c.critical.devices[n].destroyed=true;
-        auto rows=field(critical,"devices");
-        if(rows && rows!=Py_None)for(Py_ssize_t i=0;i<size(rows);++i){auto row=item(rows,i);const auto name=text(required(field(row.get(),"name"),"device name"));
-            auto& d=c.critical.devices[name];d.hp=scalar(required(field(row.get(),"hp"),"device hp"));
-            auto maximum=field(row.get(),"max_hp");if(maximum && maximum!=Py_None)d.wire_maximum=scalar(maximum);
-            auto p=field(row.get(),"state");if(p && p!=Py_None){const auto status=text(p);d.destroyed=status=="destroyed" || d.destroyed;d.critical=status=="critical";}}
+    const SeedValue& state=bot.state;
+    if(state.resolved().kind!=SeedKind::Object || !descriptor)throw Error("missing combat bootstrap input");
+    const SeedValue& profile=state.resolved().get("profile");
+    CombatSnapshot s;s.fire_sequence=static_cast<std::int64_t>(vnum(state,"fire_seq"));auto& c=s.state;
+    c.health=static_cast<int>(vnum(state,"health"));c.maximum_health=std::max(1,static_cast<int>(vnum(state,"max_health",c.health?c.health:1)));
+    c.display_health=static_cast<int>(vnum(state,"display_health",c.health));c.alive=vflag(state,"alive",true);
+    c.death_reason=static_cast<int>(vnum(state,"death_reason"));
+    c.position={vnum(state,"x"),vnum(state,"y"),vnum(state,"z")};c.pitch=vnum(state,"pitch");c.roll=vnum(state,"roll");
+    c.speed=vnum(state,"speed");c.movement_direction=static_cast<int>(vnum(state,"movement_dir"));c.rotation_direction=static_cast<int>(vnum(state,"rotation_dir"));
+    c.drown_check=vnum(state,"_drown_check");c.drown_time=vnum(state,"_drown_time");c.water_depth=vnum(state,"_water_depth",-1.);
+    c.drowning=vflag(state,"_drowning");c.drowned=vflag(state,"_drowned");c.overturn_check=vnum(state,"_overturn_check");c.overturn_time=vnum(state,"_overturn_time");
+    c.overturn_level=static_cast<int>(vnum(state,"_overturn_level"));c.overturned=vflag(state,"_overturned");
+    c.critical.fire_elapsed=vnum(state,"combat_fire_elapsed");c.critical.fire_timer=vnum(state,"combat_fire_timer");
+    c.stun_end_server_time_ms=static_cast<std::int64_t>(vnum(state,"stun_end_server_time_ms"));c.stun_until_equipment_time=vnum(state,"_stun_until_equipment_time");
+    c.has_target=state.resolved().get("target_id").resolved().kind!=SeedKind::Null;
+    const SeedValue& critical=state.resolved().get("critical");
+    if(critical.resolved().kind!=SeedKind::Null){
+        if(critical.resolved().kind!=SeedKind::Object)throw Error("critical payload is not a dictionary");
+        c.has_critical_payload=!critical.resolved().object.empty();
+        c.critical.fire=vflag(critical,"fire");c.critical.ammo_rack_death=vflag(critical,"ammo_rack_death");
+        for(const auto& n:vstrings(critical.resolved().get("crew_ko")))c.critical.crew_ko.insert(n);
+        for(const auto& n:vstrings(critical.resolved().get("crew_roster")))c.critical.crew_roster.insert(n);
+        for(const auto& n:vstrings(critical.resolved().get("destroyed")))c.critical.devices[n].destroyed=true;
+        const auto& rows=critical.resolved().get("devices").resolved();
+        if(rows.kind!=SeedKind::Null){if(rows.kind!=SeedKind::Array)throw Error("expected sequence");for(const auto& row:rows.array){const auto name=vtext(row.resolved().get("name"));
+            auto& d=c.critical.devices[name];d.hp=vscalar(row.resolved().get("hp"));
+            const auto& maximum=row.resolved().get("max_hp");if(maximum.resolved().kind!=SeedKind::Null)d.wire_maximum=vscalar(maximum);
+            const auto& p=row.resolved().get("state");if(p.resolved().kind!=SeedKind::Null){const auto status=vtext(p);d.destroyed=status=="destroyed" || d.destroyed;d.critical=status=="critical";}}}
     }
     for(const char* name:{"engineHealth","ammoBayHealth","fuelTankHealth","radioHealth","gunHealth","turretRotatorHealth","surveyingDeviceHealth","leftTrackHealth","rightTrackHealth"}){const auto pool=stock_native_bot_descriptor::devicePool(descriptor,name);auto& d=c.critical.devices[name];d.maximum=pool.maximum;d.regeneration=pool.regeneration;}
     for(const auto& n:stock_native_bot_descriptor::crewRoster(descriptor))c.descriptor_crew_roster.insert(n);
-    auto id=required(field(state,"id"),"actor id");auto gun=frommap(runtime,"_gun_states",id),ammo=frommap(runtime,"_ammo_states",id),burst=frommap(runtime,"_burst_states",id);
-    std::optional<int> installed_crew_level;if(mode_only&&gun.get()!=Py_None){auto level=value(gun.get(),"crew_level");if(level.get()!=Py_None)installed_crew_level=int(integer(level.get()));}
-    if(mode_only){Py_INCREF(Py_None);gun=Ref(Py_None);}
-    const auto get_attr_num=[&](PyObject* p,const char* name){auto v=attr(p,name);return scalar(v.get());};
     auto& g=s.gun_config;
-    if(gun.get()==Py_None)fresh_gun(descriptor,installed_crew_level,s);
-    else {
-    g.fully_aimed_dispersion=get_attr_num(gun.get(),"fully_aimed_dispersion");g.after_shot=get_attr_num(gun.get(),"after_shot");g.after_shot_in_burst=get_attr_num(gun.get(),"after_shot_in_burst");
-    g.turret_dispersion_factor=get_attr_num(gun.get(),"turret_dispersion_factor");g.aiming_time=get_attr_num(gun.get(),"aiming_time");
-    g.movement_dispersion_factor=get_attr_num(gun.get(),"movement_dispersion_factor");g.rotation_dispersion_factor=get_attr_num(gun.get(),"rotation_dispersion_factor");
-    g.reload_full=get_attr_num(gun.get(),"reload_full");g.reload_intra=get_attr_num(gun.get(),"reload_intra");
-    g.clip_size=static_cast<int>(get_attr_num(gun.get(),"clip_size"));g.shell_count=static_cast<int>(get_attr_num(gun.get(),"shell_count"));
-    g.burst_count=static_cast<int>(get_attr_num(gun.get(),"burst_count"));g.burst_interval=get_attr_num(gun.get(),"burst_interval");g.validate();
-    }
-    if(ammo.get()==Py_None)fresh_ammo(descriptor,profile,state,s);else {
-    auto categories=attr(ammo.get(),"categories"),remaining=attr(ammo.get(),"remaining");
-    if(size(remaining.get())!=g.shell_count)throw Error("ammunition count mismatch");
-    for(int i=0;i<g.shell_count;++i){Ref key(PyLong_FromLong(i));Ref cat(required(PyObject_GetItem(categories.get(),key.get()),"ammo category"));const auto kind=text(cat.get());
-        s.ammo.categories.push_back(kind=="standard"?0:kind=="premium"?1:kind=="he"?2:-1);auto quantity=item(remaining.get(),i);s.ammo.remaining.push_back(static_cast<int>(integer(quantity.get())));}
-    s.ammo.loaded=static_cast<int>(get_attr_num(ammo.get(),"loaded"));s.ammo.next=static_cast<int>(get_attr_num(ammo.get(),"next"));
-    {auto v=attr(ammo.get(),"reload_pending");s.ammo.reload_pending=flag(v.get());}{auto v=attr(ammo.get(),"plan_pending");s.ammo.plan_pending=flag(v.get());}s.ammo.validate(g.shell_count);
-    }
-    s.gun.emplace(g);auto& gs=*s.gun;if(gun.get()==Py_None)gs.restore(mode_only?0:s.fire_sequence,mode_only?1.:critical_factor(c.critical,CriticalStat::dispersion),false,0.,0.,1.,false,0,0);else {
-gs.clip=static_cast<int>(get_attr_num(gun.get(),"clip"));gs.elapsed=get_attr_num(gun.get(),"elapsed");
-    gs.reload_duration=get_attr_num(gun.get(),"reload_duration");{auto v=attr(gun.get(),"reload_kind");gs.intra=text(v.get())=="intra";}
-    gs.reload_factor=get_attr_num(gun.get(),"reload_factor");gs.burst_remaining=static_cast<int>(get_attr_num(gun.get(),"_burst_remaining"));
-    gs.current_dispersion_factor=get_attr_num(gun.get(),"current_dispersion_factor");gs.aiming_start_factor=get_attr_num(gun.get(),"aiming_start_factor");
-    gs.aiming_elapsed=get_attr_num(gun.get(),"aiming_elapsed");gs.dispersion=get_attr_num(gun.get(),"dispersion");gs.motion_dispersion_squared=get_attr_num(gun.get(),"motion_dispersion_squared");
-    {auto loadout=attr(gun.get(),"loadout");s.crew_factor=getnum(loadout.get(),"crew_factor",1.);
-        s.gun_rotation_factor=getnum(loadout.get(),"gun_rotation_factor",1.);}
-    }
-    if(burst.get()!=Py_None){
-    {auto v=attr(burst.get(),"active");s.burst.active=flag(v.get());}s.burst.group_seq=static_cast<std::int64_t>(get_attr_num(burst.get(),"group_seq"));
-    s.burst.count=static_cast<int>(get_attr_num(burst.get(),"count"));s.burst.next_index=static_cast<int>(get_attr_num(burst.get(),"next_index"));
-    s.burst.interval=get_attr_num(burst.get(),"interval");s.burst.time_left=get_attr_num(burst.get(),"time_left");s.burst.shell=static_cast<int>(get_attr_num(burst.get(),"shell_index"));
-    }
-    s.burst.validate(static_cast<std::int64_t>(getnum(state,"fire_seq")));
-    s.aim.turret_yaw=getnum(state,"turret_yaw");s.aim.gun_pitch=getnum(state,"gun_pitch");s.aim.desired_gun_pitch=getnum(state,"desired_gun_pitch");s.aim.aligned=getflag(state,"gun_aligned");
+    fresh_gun(descriptor,bot.crew_level,s);
+    fresh_ammo(descriptor,profile,state,s);
+    s.gun.emplace(g);s.gun->restore(mode_only?0:s.fire_sequence,mode_only?1.:critical_factor(c.critical,CriticalStat::dispersion),false,0.,0.,1.,false,0,0);
+    s.burst.validate(static_cast<std::int64_t>(vnum(state,"fire_seq")));
+    s.aim.turret_yaw=vnum(state,"turret_yaw");s.aim.gun_pitch=vnum(state,"gun_pitch");s.aim.desired_gun_pitch=vnum(state,"desired_gun_pitch");s.aim.aligned=vflag(state,"gun_aligned");
     auto gun_desc=value(descriptor,"gun"),turret_desc=value(descriptor,"turret"),chassis_desc=value(descriptor,"chassis"),hull_desc=value(descriptor,"hull");auto limits=value(gun_desc.get(),"pitchLimits");
     try {
         if(PyDict_Check(limits.get())&&field(limits.get(),"minPitch")&&field(limits.get(),"maxPitch")){
@@ -232,7 +208,8 @@ gs.clip=static_cast<int>(get_attr_num(gun.get(),"clip"));gs.elapsed=get_attr_num
     try{auto hp=value(chassis_desc.get(),"hullPosition"),positions=value(hull_desc.get(),"turretPositions"),tp=item(positions.get(),0),carry=value(chassis_desc.get(),"topRightCarryingPoint");if(PySequence_Size(carry.get())!=2)throw Error("water carrying point width");for(int i=0;i<2;++i){auto v=item(carry.get(),i);scalar(v.get());}auto h=point(hp.get()),t=point(tp.get());for(int i=0;i<3;++i)h[i]+=t[i];s.water_sensor=h;}catch(const std::exception&){PyErr_Clear();}
     auto type=value(descriptor,"type"),hydraulics=value(type.get(),"hullAimingParams");if(hydraulics.get()==Py_None)hydraulics=value(descriptor,"hullAimingParams");
     try{auto pitch=value(hydraulics.get(),"pitch"),angles=value(pitch.get(),"wheelsCorrectionAngles");if(angles.get()!=Py_None){auto low=value(angles.get(),"pitchMin"),high=value(angles.get(),"pitchMax"),speed=value(pitch.get(),"wheelsCorrectionSpeed");s.hydraulic.minimum=scalar(low.get());s.hydraulic.maximum=scalar(high.get());s.hydraulic.speed=scalar(speed.get());auto center=value(pitch.get(),"wheelCorrectionCenterZ");if(center.get()!=Py_None)scalar(center.get());if(s.hydraulic.minimum>s.hydraulic.maximum||s.hydraulic.speed<0.)throw Error("invalid hydraulic descriptor");s.hydraulic.available=flag(value(pitch.get(),"isAvailable").get());s.hydraulic.enabled=flag(value(pitch.get(),"isEnabled").get());s.hydraulic.present=true;}}catch(const std::exception&){PyErr_Clear();s.hydraulic={};}
-    const double rating=rating_value(runtime,id);auto behavior=frommap(runtime,"_bot_behavior",id);const auto override_number=[&](const char* key,double fallback){return behavior.get()==Py_None?fallback:getnum(behavior.get(),key,fallback);};
+    // The round start installs no tactics overrides: the gunner bundle is the rating's anchors.
+    const double rating=std::max(0.,std::min(1.,bot.rating));const auto override_number=[](const char*,double fallback){return fallback;};
     s.gunner.reaction_seconds=override_number("reaction_seconds",anchor(rating,{1.2,.75,.45,.25}));s.gunner.patience_seconds=override_number("patience_seconds",anchor(rating,{.6,1.1,1.7,2.4}));
     s.gunner.converged_factor=override_number("converged_factor",anchor(rating,{2.6,1.8,1.35,1.12}));s.gunner.aim_bias_factor=override_number("aim_bias_factor",anchor(rating,{1.8,.85,.35,.1}));s.gunner.lead_error=override_number("lead_error",anchor(rating,{.45,.22,.09,.02}));
     auto shots=value(gun_desc.get(),"shots");
@@ -243,48 +220,29 @@ gs.clip=static_cast<int>(get_attr_num(gun.get(),"clip"));gs.elapsed=get_attr_num
     for(const auto entry:{std::pair<const char*,CriticalStat>{"dispersion",CriticalStat::dispersion},{"aim_time",CriticalStat::aim_time},{"reload",CriticalStat::reload},{"turret_speed",CriticalStat::turret_speed},{"mobility",CriticalStat::mobility},{"vision",CriticalStat::vision}})s.initial_critical_factors[entry.first]=critical_factor(c.critical,entry.second);
     s.initial_critical_factors["traverse"]=1.;s.initial_critical_factors["engine_power"]=1.;
     auto misc=value(descriptor,"miscAttrs"),repair_speed=value(misc.get(),"repairSpeedFactor");if(repair_speed.get()!=Py_None)s.repair_speed_factor=scalar(repair_speed.get());
-    s.siege.mode=static_cast<int>(getnum(state,"siege_state"));s.siege.remaining=getnum(state,"_siege_time_left");s.siege.total=getnum(state,"_siege_transition_total");s.siege.intent_elapsed=getnum(state,"_siege_intent_elapsed");
-    auto intent=field(state,"_siege_intent");if(intent&&intent!=Py_None)s.siege.intent=flag(intent);
+    s.siege.mode=static_cast<int>(vnum(state,"siege_state"));s.siege.remaining=vnum(state,"_siege_time_left");s.siege.total=vnum(state,"_siege_transition_total");s.siege.intent_elapsed=vnum(state,"_siege_intent_elapsed");
+    const auto& intent=state.resolved().get("_siege_intent");if(intent.resolved().kind!=SeedKind::Null)s.siege.intent=intent.truth(false);
     auto name=value(type.get(),"name");if(name.get()!=Py_None){const auto n=text(name.get());if(n=="sweden:S10_Strv_103_0_Series"||n=="sweden:S11_Strv_103B"||n=="sweden:S22_Strv_S1")s.siege_config={true,2.,1.3,2.};else if(n=="sweden:S21_UDES_03")s.siege_config={true,2.,2.,2.};}
-    auto equips=frommap(runtime,"_equipment_states",id);
-    if(equips.get()!=Py_None)for(Py_ssize_t i=0;i<size(equips.get());++i){auto eq=item(equips.get(),i),contract=attr(eq.get(),"contract"),kind=value(contract.get(),"kind");
-        EquipmentState e;e.contract_revision=static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(contract.get()));
-        const auto name=text(kind.get());e.kind=name=="extinguisher"?EquipmentKind::extinguisher:name=="repairkit"?EquipmentKind::repairkit:name=="medkit"?EquipmentKind::medkit:
+    std::uint64_t contract=0;
+    for(const auto& row:bot.equipment){EquipmentState e;e.contract_revision=++contract;
+        const auto& name=row.kind;e.kind=name=="extinguisher"?EquipmentKind::extinguisher:name=="repairkit"?EquipmentKind::repairkit:name=="medkit"?EquipmentKind::medkit:
             name=="fuel"?EquipmentKind::fuel:name=="rpm_limiter"?EquipmentKind::rpm_limiter:name=="stimulator"?EquipmentKind::stimulator:EquipmentKind::other;
-        e.uses_left=static_cast<int>(get_attr_num(eq.get(),"uses_left"));e.ready_at=get_attr_num(eq.get(),"ready_at");
-        e.cooldown_seconds=getnum(contract.get(),"cooldownSeconds");e.reaction_seconds=getnum(contract.get(),"autoReactionSeconds");e.autoactivate=getflag(contract.get(),"autoactivate");e.repair_all=getflag(contract.get(),"repairAll");
-        e.bonus_value=getnum(contract.get(),"bonusValue");e.crew_level_increase=getnum(contract.get(),"crewLevelIncrease");
-        e.fire_starting_chance_factor=getnum(contract.get(),"fireStartingChanceFactor",1.);e.engine_power_factor=getnum(contract.get(),"enginePowerFactor",1.);
-        e.turret_rotation_speed_factor=getnum(contract.get(),"turretRotationSpeedFactor",1.);e.engine_hp_loss_per_second=getnum(contract.get(),"engineHpLossPerSecond");
-        {auto active=attr(eq.get(),"active");e.active=flag(active.get());}
-        {auto pending=attr(eq.get(),"_auto_pending_since");if(pending.get()!=Py_None)e.auto_pending_since=scalar(pending.get());}
-        {auto pending=attr(eq.get(),"_ai_pending_since");if(pending.get()!=Py_None)e.ai_pending_since=scalar(pending.get());}
-        s.equipment.push_back(e);}
+        e.uses_left=static_cast<int>(row.uses_left);e.ready_at=row.ready_at;
+        e.cooldown_seconds=row.cooldown_seconds;e.reaction_seconds=row.auto_reaction_seconds;e.autoactivate=row.autoactivate;e.repair_all=row.repair_all;
+        e.bonus_value=row.bonus_value;e.crew_level_increase=row.crew_level_increase;
+        e.fire_starting_chance_factor=row.fire_starting_chance_factor;e.engine_power_factor=row.engine_power_factor;
+        e.turret_rotation_speed_factor=row.turret_rotation_speed_factor;e.engine_hp_loss_per_second=row.engine_hp_loss_per_second;
+        e.active=row.active;s.equipment.push_back(e);}
     const double repair_bonus=1.+std::max(0.,equipment_passives(s.equipment).repair_bonus);
-    auto cached_repair=frommap(runtime,"_repair_factors",id);
-    if(!mode_only&&cached_repair.get()!=Py_None){s.initial_repair_factor=scalar(cached_repair.get());s.base_repair_factor=s.initial_repair_factor/repair_bonus;}
-    else {Ref factors(required(stock_native_bot_descriptor::defaultCrewFactors(descriptor,crew_level(runtime,id)),"repair crew factors"));s.base_repair_factor=numeric(factors.get(),"repairSpeed",1.);s.initial_repair_factor=s.base_repair_factor*repair_bonus;}
-    auto sync=frommap(runtime,"_combat_sync",id);
-    if(sync.get()==Py_None) s.ledger.initialize(c,static_cast<std::int64_t>(getnum(state,"combat_revision")),
-        static_cast<std::int64_t>(getnum(state,"combat_base_revision")),static_cast<std::int64_t>(getnum(state,"combat_ack_seq")));
-    else {
-        auto& ledger=s.ledger;
-        ledger.server_combat=record_from_wire(required(field(sync.get(),"server_combat"),"server combat"),c.critical);
-        ledger.next_sequence=static_cast<std::int64_t>(getnum(sync.get(),"next_seq"));ledger.acknowledged_sequence=static_cast<std::int64_t>(getnum(sync.get(),"acked_seq"));
-        ledger.revision=static_cast<std::int64_t>(getnum(sync.get(),"combat_revision"));ledger.base_revision=static_cast<std::int64_t>(getnum(sync.get(),"base_revision"));
-        ledger.server_tick=static_cast<std::int64_t>(getnum(sync.get(),"server_tick",-1));ledger.authority_handoff_pending=getflag(sync.get(),"authority_handoff_pending");
-        ledger.unpublished_steps=replay_from_wire(field(sync.get(),"unpublished_steps"));
-        auto pending=field(sync.get(),"pending");if(pending && pending!=Py_None)for(Py_ssize_t i=0;i<size(pending);++i){auto row=item(pending,i);CombatPublication publication;
-            publication.sequence=static_cast<std::int64_t>(getnum(row.get(),"seq"));publication.combat=record_from_wire(required(field(row.get(),"combat"),"pending combat"),c.critical);
-            publication.steps=replay_from_wire(field(row.get(),"steps"));ledger.pending.push_back(std::move(publication));}
-        ledger.published_combat=ledger.pending.empty()?ledger.server_combat:ledger.pending.back().combat;
-    }
+    {Ref factors(required(stock_native_bot_descriptor::defaultCrewFactors(descriptor,bot.crew_level),"repair crew factors"));s.base_repair_factor=numeric(factors.get(),"repairSpeed",1.);s.initial_repair_factor=s.base_repair_factor*repair_bonus;}
+    s.ledger.initialize(c,static_cast<std::int64_t>(vnum(state,"combat_revision")),
+        static_cast<std::int64_t>(vnum(state,"combat_base_revision")),static_cast<std::int64_t>(vnum(state,"combat_ack_seq")));
     output=std::move(s);return true;
  } catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
 }
 
-bool load_combat_snapshot(PyObject* runtime,PyObject* state,PyObject* descriptor,PyObject* profile,CombatSnapshot& output){
-    return load_snapshot(runtime,state,descriptor,profile,output,false);
+bool load_combat_snapshot(const stock_native_bot::BotSeed& bot,PyObject* descriptor,CombatSnapshot& output){
+    return load_snapshot(bot,descriptor,output,false);
 }
 bool load_aim_samples(PyObject* descriptor,std::vector<AimSample>& output){return stock_native_bot_descriptor::aimSamples(descriptor,output);}
 bool readServerCombat(PyObject* raw,PyObject* server_tick,const CriticalState& metadata,ServerCombat& output){
@@ -301,9 +259,9 @@ bool readServerCombat(PyObject* raw,PyObject* server_tick,const CriticalState& m
         output=std::move(result);return true;
     }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
 }
-bool load_combat_mode(PyObject* runtime,PyObject* state,PyObject* descriptor,PyObject* profile,CombatModeSnapshot& output){
+bool load_combat_mode(const stock_native_bot::BotSeed& bot,PyObject* descriptor,CombatModeSnapshot& output){
     try {
-        CombatSnapshot snapshot;if(!load_snapshot(runtime,state,descriptor,profile,snapshot,true))return false;
+        CombatSnapshot snapshot;if(!load_snapshot(bot,descriptor,snapshot,true))return false;
         CombatModeSnapshot mode;mode.gun_config=snapshot.gun_config;mode.aim_config=std::move(snapshot.aim_config);
         mode.valid_pitch=snapshot.valid_pitch;mode.gun_mount=snapshot.gun_mount;mode.water_sensor=snapshot.water_sensor;
         mode.limited_yaw=snapshot.limited_yaw;mode.minimum_yaw=snapshot.minimum_yaw;mode.maximum_yaw=snapshot.maximum_yaw;mode.static_yaw=snapshot.static_yaw;

@@ -14,43 +14,38 @@ stock_native_bot_turret::MovingDescriptor envelope(PyObject*d){
     for(int i=0;i<2;++i){auto part=p::value(d,names[i]),tester=p::value(part.get(),"hitTester"),bbox=p::value(tester.get(),"bbox");auto lo=p::item(bbox.get(),0),hi=p::item(bbox.get(),1);targets[i]->bounds={point(lo.get()),point(hi.get())};}
     auto chassis=p::value(d,"chassis"),offset=p::value(chassis.get(),"hullPosition");result.hull.offset=point(offset.get());return result;
 }
-void mode(PyObject*runtime,PyObject*battle,PyObject*state,PyObject*descriptor,PyObject*profile,Mode&value){
-    if(!readMotionMode(runtime,state,descriptor,value.motion)||
-       !step::load_combat_mode(runtime,state,descriptor,profile,value.combat)||
-       !physics::readPhysicsSnapshot(battle,state,descriptor,envelope(descriptor),value.motion.detailed_suspension,value.physics)||
-       !planning::readNavigationMode(runtime,state,descriptor,value.navigation)||
-       !planning::readPerceptionMode(runtime,state,descriptor,value.perception))throw p::Error("Native Bot mode installation failed");
+void mode(const BotSeed&bot,PyObject*descriptor,Mode&value){
+    if(!readMotionMode(bot,descriptor,value.motion)||
+       !step::load_combat_mode(bot,descriptor,value.combat)||
+       !physics::readPhysicsSnapshot(bot.state,descriptor,bot.siege?bot.travel.get():nullptr,envelope(descriptor),value.motion.detailed_suspension,value.physics)||
+       !planning::readNavigationMode(bot.state,descriptor,value.navigation)||
+       !planning::readPerceptionMode(bot,descriptor,value.perception))throw p::Error("Native Bot mode installation failed");
     value.spawn_drive_cap=stock_native_bot_descriptor::driveCap(descriptor,value.motion.descriptor.drive.forward,value.motion.descriptor.drive.reverse,0.);
 
 }
 }
-bool readNativeSnapshot(PyObject*runtime,PyObject*battle,Snapshot&output){try{
-    Snapshot next;if(!planning::readPlanningSnapshot(runtime,next.planning))return false;
-    next.identity.round=p::integral(runtime,"round_id");next.identity.generation=p::integral(runtime,"_native_generation");
-    next.clock.period=p::numeric(runtime,"_control_seconds");next.clock.bank=p::numeric(runtime,"_accumulator");
-    next.clock.refresh_bank=p::numeric(runtime,"_control_refresh_accumulator");next.clock.sample_us=p::integral(runtime,"_sample_time_us");
-    next.clock.next_publication=p::numeric(runtime,"_next_publication");next.equipment_time=p::numeric(runtime,"_equipment_now");next.slope_cursor=std::size_t(p::integral(runtime,"_slope_pose_cursor"));
-    if(!p::truth(runtime,"_fixed_control")||next.clock.period<=0.)throw p::Error("Native Bot owner requires the installed fixed control clock");
-    auto camera=p::value(runtime,"_camera_position");if(camera.get()!=Py_None)next.camera=point(camera.get());
-    auto states=p::value(runtime,"states"),descriptors=p::value(runtime,"_descriptors"),pairs=p::value(runtime,"_descriptor_pairs");
-    if(!PyDict_Check(states.get())||!PyDict_Check(descriptors.get())||!PyDict_Check(pairs.get()))throw p::Error("Native Bot actor installation maps are invalid");
-    Py_ssize_t cursor=0;PyObject*id=nullptr,*state=nullptr;
-    while(PyDict_Next(states.get(),&cursor,&id,&state)){
-        const auto actor_id=p::wide(id);auto*d=PyDict_GetItem(descriptors.get(),id);if(!d)throw p::Error("Native Bot actor lacks its descriptor");auto profile=p::value(state,"profile");
-        ActorSnapshot actor;if(!readMotionSnapshot(runtime,state,d,actor.motion)||!step::load_combat_snapshot(runtime,state,d,profile.get(),actor.combat))return false;
-        auto*pair=PyDict_GetItem(pairs.get(),id);PyObject*mode0=d,*mode1=d;
-        if(pair&&pair!=Py_None){if(p::size(pair)!=2)throw p::Error("Native Bot descriptor mode width mismatch");auto a=p::item(pair,0),b=p::item(pair,1);mode0=a.get();if(b.get()!=Py_None){mode1=b.get();actor.has_siege=true;}else mode1=mode0;
-            mode(runtime,battle,state,mode0,profile.get(),actor.modes[0]);if(actor.has_siege)mode(runtime,battle,state,mode1,profile.get(),actor.modes[1]);else actor.modes[1]=actor.modes[0];
-        }else{mode(runtime,battle,state,d,profile.get(),actor.modes[0]);actor.modes[1]=actor.modes[0];}
-        actor.weapon.aim_yaw=p::numeric(state,"aim_yaw",actor.motion.state.yaw);actor.weapon.round_id=next.identity.round;actor.weapon.team=actor.motion.team;actor.weapon.gunner=actor.combat.gunner;
-        actor.weapon.hull_aiming=p::truth(state,"hull_aiming");actor.weapon.descriptor_revision=1;
-        actor.weapon.rating=stock_native_bot_descriptor::botRating(runtime,id);
+bool readNativeSnapshot(const RoundSeed&seed,const ServerOrders&orders,double refresh_bank,Snapshot&output){try{
+    Snapshot next;if(!planning::readPlanningSnapshot(seed,orders,next.planning))return false;
+    // The round start's fixed control clock: nothing has advanced before the cold installation.
+    next.identity.round=seed.round;next.identity.generation=seed.generation;
+    next.clock.period=seed.control_seconds;next.clock.bank=0.;next.clock.refresh_bank=refresh_bank;next.clock.sample_us=0;
+    next.clock.next_publication=0.;next.equipment_time=0.;next.slope_cursor=0;
+    if(next.clock.period<=0.)throw p::Error("Native Bot owner requires the installed fixed control clock");
+    for(const auto&row:seed.bots){
+        const auto actor_id=row.first;const auto&bot=row.second;const auto&state=bot.state;PyObject*d=activeDescriptor(bot);
+        ActorSnapshot actor;if(!readMotionSnapshot(bot,d,actor.motion)||!step::load_combat_snapshot(bot,d,actor.combat))return false;
+        mode(bot,bot.travel.get(),actor.modes[0]);
+        if(bot.siege){actor.has_siege=true;mode(bot,bot.siege.get(),actor.modes[1]);}else actor.modes[1]=actor.modes[0];
+        const auto&aim=state.get("aim_yaw");actor.weapon.aim_yaw=aim.kind==stock_native_client_state::Value::Kind::Null?actor.motion.state.yaw:aim.numeric();
+        actor.weapon.round_id=next.identity.round;actor.weapon.team=actor.motion.team;actor.weapon.gunner=actor.combat.gunner;
+        actor.weapon.hull_aiming=state.get("hull_aiming").truth();actor.weapon.descriptor_revision=1;
+        actor.weapon.rating=bot.rating;
         const auto strategy=next.planning.director.agents.find(actor_id);if(strategy==next.planning.director.agents.end())throw p::Error("Native Bot actor lacks strategy metadata");
         actor.weapon.class_tag=strategy->second.profile.class_tag;
         auto&t=actor.metadata;t.id=actor_id;t.identity={"bot",actor_id};t.team=actor.motion.team;t.position=actor.motion.state.position;t.health=actor.combat.state.health;t.max_health=actor.combat.state.maximum_health;t.armor=strategy->second.profile.armor;t.class_tag=actor.weapon.class_tag;t.alive=actor.motion.state.alive;t.speed=actor.motion.state.speed;
-        auto yaw=p::value(state,"shot_yaw"),pitch=p::value(state,"shot_pitch");if(yaw.get()!=Py_None&&pitch.get()!=Py_None)actor.shot_angles={{p::scalar(yaw.get()),p::scalar(pitch.get())}};
-        actor.world_pose=p::truth(state,"world_pose",true);next.actors.push_back(std::move(actor));
-        next.actors.back().spawn_anchor=stock_native_bot_descriptor::spawnAnchor(battle,next.actors.back().motion.team,next.actors.back().motion.slot);
+        const auto&yaw=state.get("shot_yaw"),&pitch=state.get("shot_pitch");if(yaw.kind!=stock_native_client_state::Value::Kind::Null&&pitch.kind!=stock_native_client_state::Value::Kind::Null)actor.shot_angles={{yaw.numeric(),pitch.numeric()}};
+        actor.world_pose=state.object.count("world_pose")?state.get("world_pose").truth():true;next.actors.push_back(std::move(actor));
+        next.actors.back().spawn_anchor=bot.spawn;
     }
     output=std::move(next);return true;
 }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}

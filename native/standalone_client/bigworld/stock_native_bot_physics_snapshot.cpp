@@ -53,9 +53,12 @@ void pivot(PyObject*chassis,PyObject*physics,stock_native_bot_turret::MovingDesc
     }catch(const std::exception&){PyErr_Clear();}
 }
 }
-bool readPhysicsSnapshot(PyObject*battle,PyObject*raw,PyObject*descriptor,
+bool readPhysicsSnapshot(const stock_native_client_state::Value&state,PyObject*descriptor,PyObject*siege_travel,
     stock_native_bot_turret::MovingDescriptor geometry,bool detailed,PhysicsSnapshot&output) {
     try {
+        using Kind=stock_native_client_state::Value::Kind;
+        auto optional=[&](const char*key,double fallback){const auto&v=state.get(key);if(v.kind==Kind::Null)return fallback;
+            if(v.kind==Kind::Integer)return double(v.integer);if(v.kind!=Kind::Number||!std::isfinite(v.number))throw std::invalid_argument("Native physics number is nonfinite");return v.number;};
         PhysicsSnapshot result;bounds(geometry.chassis);bounds(geometry.hull);
         result.geometry.turret=std::move(geometry);result.geometry.detailed_suspension=detailed;result.config.detailed_suspension=detailed;
         Ref aiming(value(descriptor,"isPitchHullAimingAvailable"));result.geometry.pitch_hull_aiming=aiming.p!=Py_None&&truth(aiming.p);
@@ -63,21 +66,8 @@ bool readPhysicsSnapshot(PyObject*battle,PyObject*raw,PyObject*descriptor,
         // exactly track_pivot_descriptor_params' None result.
         Ref chassis(value(descriptor,"chassis")),physics(value(descriptor,"physics"));
         if(chassis.p!=Py_None&&physics.p!=Py_None)pivot(chassis.p,physics.p,result.geometry.turret);
-        PyObject * mounted=nullptr;
-        Ref bots(value(battle,"_bots"));
-        if(bots.p!=Py_None) {
-            Ref pairs(value(bots.p,"_descriptor_pairs")),id(value(raw,"id"));
-            if(pairs.p!=Py_None) {
-                if(!PyDict_Check(pairs.p))throw std::invalid_argument("Native physics descriptor pairs are invalid");
-                auto pair=PyDict_GetItem(pairs.p,id.p);
-                if(pair&&pair!=Py_None) {
-                    if(size(pair)!=2)throw std::invalid_argument("Native physics descriptor pair width is invalid");
-                    Ref siege(PySequence_GetItem(pair,1));if(siege.p!=Py_None)mounted=PySequence_GetItem(pair,0);
-                }
-            }
-        }
-        if(mounted==Py_None){Py_DECREF(mounted);mounted=nullptr;}
-        if(!mounted)mounted=value(descriptor,"defaultVehicleDescr");Ref travel(mounted);
+        // A Siege vehicle's travel limits come from its travel descriptor, else from the composite's default.
+        PyObject*mounted=siege_travel?(Py_INCREF(siege_travel),siege_travel):value(descriptor,"defaultVehicleDescr");Ref travel(mounted);
         if(travel.p!=Py_None) {
             Ref p(value(travel.p,"physics")),limits(value(p.p,"speedLimits"));
             if(size(limits.p)!=2)throw std::invalid_argument("Native physics travel limits are invalid");
@@ -85,12 +75,12 @@ bool readPhysicsSnapshot(PyObject*battle,PyObject*raw,PyObject*descriptor,
             if(forward<0.||reverse<0.)throw std::invalid_argument("Native physics travel limits are negative");
             result.config.travel_forward=forward;result.config.travel_reverse=reverse;
         }
-        Ref marker(value(raw,"pose_sample"));if(marker.p!=Py_None)result.memory.pose_sample=point(marker.p);
-        result.memory.last_world_impact_time=scalar(raw,"_last_world_impact_time",-1.e30);
-        const double attempts=scalar(raw,"_slope_pose_attempt",0.);
+        const auto&marker=state.get("pose_sample");if(marker.kind!=Kind::Null){if(marker.kind!=Kind::Array||marker.array.size()!=3)throw std::invalid_argument("Native physics vector width is invalid");result.memory.pose_sample={{marker.array[0].numeric(),marker.array[1].numeric(),marker.array[2].numeric()}};}
+        result.memory.last_world_impact_time=optional("_last_world_impact_time",-1.e30);
+        const double attempts=optional("_slope_pose_attempt",0.);
         if(attempts<0.||attempts>9007199254740991.||std::floor(attempts)!=attempts)throw std::invalid_argument("Native slope attempt counter is invalid");
         result.memory.slope_attempt=std::uint64_t(attempts);
-        result.config.turret_yaw=scalar(raw,"turret_yaw",0.);output=std::move(result);return true;
+        result.config.turret_yaw=optional("turret_yaw",0.);output=std::move(result);return true;
     }catch(const std::exception&error){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return false;}
 }
 bool readDetachedTurretRow(PyObject*row,stock_native_bot_turret::Record&output) {

@@ -220,6 +220,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_bots.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_bots_assignments.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_bots_round.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_bots_worker.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_compat.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_compat_hooks.cpp"

@@ -7,15 +7,9 @@
 namespace native_battle {
 namespace world {
 }
-namespace startup {
-// The pinned BattleRuntime's BotRuntime(...) construction with its resolver bundle (descriptor,
-// player descriptor, vehicle selector, formation spawn, baked graph, bounds, arena bounds, Bot
-// equipment, WORKER_CONTROL_SECONDS on the worker). The bundle reads startup state.
-p::Ref createBotRuntime(Battle& b);
-}
 namespace vehicles {
-// _queue_bot_create({'type': 'create', 'entity': 'bot:<id>', 'kind': 'bot', 'id': id, 'state': state}).
-void queueBotCreate(Battle& b, const Value& state);
+// _queue_bot_create(event) with event {'type': 'create', 'entity': 'bot:<id>', 'kind': 'bot', 'id': id, 'state': state}.
+bool queueBotCreate(Battle& b, const Value& event);
 }
 namespace local {
 // vehicle_physics.track_scroll(derive_params(descriptor), speed, turn, airborne, direction): the

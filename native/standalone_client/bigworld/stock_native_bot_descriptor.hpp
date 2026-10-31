@@ -12,9 +12,8 @@ Bounds bodyBounds(_object* descriptor);
 std::array<double,4> chassisShape(_object* descriptor);
 std::optional<std::array<Point,6>> checkpoints(_object* descriptor);
 struct DevicePool {std::optional<double> maximum,regeneration;};
-double botRating(_object* runtime,_object* id);
-int botCrewLevel(_object* runtime,_object* id);
-wot::offline_bot_step::Point spawnAnchor(_object* battle,int team,int slot);
+// bot_gunnery.rating_crew_level: the proven #1513 crew level one competence rating trains.
+int crewLevelForRating(double rating);
 double driveCap(_object* descriptor,double forward,double reverse,double speed,
                 _object* travel_descriptor=nullptr);
 DevicePool devicePool(_object* descriptor,const std::string& name);

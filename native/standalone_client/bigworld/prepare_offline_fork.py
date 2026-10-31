@@ -30,10 +30,6 @@ _spec = importlib.util.spec_from_file_location(
 worker_runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker_runtime)
 _spec = importlib.util.spec_from_file_location(
-    'stock_native_bot_bindings', Path(__file__).with_name('stock_native_bot_bindings.py'))
-bot_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bot_bindings)
-_spec = importlib.util.spec_from_file_location(
     'stock_snapshot_bindings', Path(__file__).with_name('stock_snapshot_bindings.py'))
 snapshot_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(snapshot_bindings)
@@ -280,14 +276,21 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('offline_replay.py')] = (
     lambda source: client_lifecycle_bindings.offline_replay(wire_bindings.offline_replay(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('replay_transport.py')] = wire_bindings.replay_transport
 ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
-# The native battle world owns the destructible space, catalog and detached turrets; these pinned battle-only
-# modules and their battle-only importers are not shipped.
+# The native battle world owns the destructible space, catalog and detached turrets, and the native
+# Bot authority owns the round start; these pinned battle-only modules and their battle-only
+# importers are not shipped.
 RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
     'destructibles_sensor.py', 'destructibles_authority.py', 'destructibles_compat.py',
     'prebaked_destructibles.py', 'native_destructibles.py', 'destructible_layout.py',
     'entities/detached_turret.py', 'entities/turret_obstacles.py', 'rigid_turret.py',
     'world_collision.py', 'native_world.py', 'native_engine_query.py', 'native_motion_core.py',
-    'native_navigation_query.py'))
+    'native_navigation_query.py',
+    'bot_runtime.py', 'native_simulation.py', 'native_control_core.py', 'native_weapons.py',
+    'native_navigation.py', 'native_visibility.py', 'ai/adapter.py', 'ai/driver.py', 'ai/navigation.py',
+    'ai/planner.py', 'ai/traffic.py', 'bot_tactics_runtime.py', 'initial_allocation.py', 'spg_positions.py',
+    'ballistics.py', 'battle_visibility.py', 'collision_flags.py', 'critical_statistics.py',
+    'environment_push.py', 'gun_pitch_limits.py', 'hull_aiming.py', 'radio.py', 'artillery_controller.py',
+    'native_navigation_core.py'))
 
 
 def retired_imports(path, source):
