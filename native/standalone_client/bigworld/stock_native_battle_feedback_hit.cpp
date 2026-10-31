@@ -181,6 +181,8 @@ bool hitImpulse(Battle& b, const Value& event, Actor& target, PyObject* effects,
     return false;
 }
 
+}
+
 // BattleRuntime._impact_sound_identity: the stock impact sound's keyword arguments.
 p::Ref impactSoundIdentity(Battle& b, const Actor& target, std::int64_t attacker, PyObject* direction, double damage_factor) {
     auto id = py::optional(b.engine.avatar.get(), "playerVehicleID");
@@ -195,6 +197,8 @@ p::Ref impactSoundIdentity(Battle& b, const Actor& target, std::int64_t attacker
     p::set(out.get(), "hitdir", p::retain(direction));
     return out;
 }
+
+namespace {
 
 // _MutedShootingExtra: keeps stock shot bookkeeping while suppressing the cosmetic shoot extra.
 struct MutedExtra {

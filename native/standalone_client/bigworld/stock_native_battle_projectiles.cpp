@@ -586,7 +586,8 @@ bool RecentIds::add(const std::string& id) {
     return true;
 }
 Projectiles::Projectiles() = default;
-Projectiles::~Projectiles() = default;
+// The damage reader borrows this round's HE tuning; never leave it pointing at a destroyed round.
+Projectiles::~Projectiles() { stock_native_projectile_damage::releaseHeTuning(&he_tuning); }
 
 // ---- The live mechanical reload sound ------------------------------------------------------------------------------
 // Owns this Avatar's AmmoController reload effect: one bounded cue schedule on the battle clock, no extra callbacks.
@@ -1230,6 +1231,7 @@ void prebattleSample(Battle& b, double now) {
 void retire(Battle& b) {
     if (!b.projectiles) return;
     auto& s = *b.projectiles;
+    stock_native_projectile_damage::releaseHeTuning(&s.he_tuning);
     if (s.player) { s.player->close(); s.player.reset(); }
     // The stock mover unregisters its camera handler and deletes its models while the Avatar still exists.
     try { tracers::destroy(b); } catch (const std::exception& e) { b.warn("projectile visual teardown", describe(e), false); }

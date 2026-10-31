@@ -11,8 +11,6 @@
 #include <vector>
 
 namespace native_battle {
-struct Params {};
-
 namespace params {
 // A rejected wire value or descriptor (the Python ValueError of these modules).
 struct Invalid : std::runtime_error { using std::runtime_error::runtime_error; };
@@ -189,5 +187,32 @@ struct SkillSummary {
 SkillSummary skillSummary(const Value& crew, const Value& crew_ko = Value());
 // The accepted battle booster's override for one skill timing, else the fallback.
 double boosterSkillValue(const Value& snapshot, const std::string& name, double fallback);
+
+// ---- the battle's own law inputs (BattleRuntime caches and the local equipment ledger) -----------------------
+// effective_params.canonical(raw): the canonical local snapshot, or Null when unusable.
+Value canonical(Battle& b, const Value& raw);
+// Conscious carriers of one skill; `crew_critical` is the local critical object or {'crew_ko': [...]}.
+std::int64_t livingSkillCount(Battle& b, const Value& snapshot, const char* skill, PyObject* crew_critical);
+// BattleRuntime._spotting_profile: the player's own garage crew and devices, a replay's accepted profile, or a
+// remote descriptor's default crew.
+p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local);
+// BattleRuntime._local_factors: the player's #1513 attribute factors (a dict), or None; computed once per round.
+p::Ref localFactors(Battle& b, PyObject* descriptor);
+// BattleRuntime._accepted_local_effective_params: the server-accepted snapshot, Null on the worker.
+Value acceptedLocalEffectiveParams(Battle& b);
+// The cold equipment restore: contract, quantity and activation-result changes, repair-kit acknowledgement.
+bool restoreEquipmentCold(Battle& b, const Value& snapshot, bool present);
 }
+
+struct Params {
+    // The player's attribute factors and spotting inputs, resolved once per round.
+    bool local_factors_resolved = false;
+    std::optional<params::Factors> local_factors;
+    std::optional<Value> local_spotting;
+    std::map<std::pair<std::string, std::vector<std::string>>, Value> remote_spotting;
+    // The cold-restored local equipment ledger and its last stock presentation.
+    std::optional<std::vector<params::EquipmentState>> equipment;
+    std::vector<std::pair<std::int64_t, std::array<int, 3>>> equipment_signature;
+    std::int64_t equipment_result_logged_seq = 0;
+};
 }

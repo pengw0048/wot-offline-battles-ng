@@ -107,6 +107,15 @@ TrackParams trackParams(PyObject* descriptor);
 void setDrawVisibility(Battle& b, PyObject* vehicle, bool visible);
 bool setEngineAudible(PyObject* entity, bool audible);
 bool closePresentationExtras(PyObject* appearance, bool visible);
+// The ground decal, dust/exhaust and bound-effect gates closePresentationExtras combines; the decal state of a
+// retired compound is forgotten with clearGroundDecalVisibilityState.
+bool setGroundDecalVisibility(PyObject* appearance, bool visible);
+bool stopGroundEffects(PyObject* appearance);
+bool stopBoundVisualEffects(PyObject* appearance);
+void clearGroundDecalVisibilityState(PyObject* appearance);
+// #1513 precise descriptor collision at a supplied body matrix (remote_vehicle.collide_vehicle_at_matrix): the
+// sorted SegmentCollisionResultExt rows of every attached component.
+p::Ref collideAtMatrix(Battle& b, PyObject* vehicle, PyObject* vehicle_matrix, PyObject* start, PyObject* end);
 
 // The pose overlay stock Vehicle hooks read.
 Overlay* overlay(PyObject* vehicle, bool create = false);

@@ -6,6 +6,7 @@
 namespace stock_native_projectile_damage {
 namespace p=stock_native_bot_python;
 namespace {
+const HeTuning* installed_he_tuning=nullptr;
 const char* devices[]={"engineHealth","ammoBayHealth","fuelTankHealth","radioHealth","gunHealth","turretRotatorHealth","surveyingDeviceHealth","leftTrackHealth","rightTrackHealth"};
 const char* stun_factors[]={"stunFactorEnginePower","stunFactorVehicleRotationSpeed","stunFactorTurretTraverse","stunFactorViewDistance","stunFactorMaxSpeed","stunFactorReloadTime","stunFactorAimingTime","stunFactorVehicleMovementShotDispersion","stunFactorVehicleRotationShotDispersion","stunFactorTurretRotationShotDispersion","stunFactorMinShotDispersion"};
 p::Ref call1(PyObject* callable,PyObject* arg){return p::Ref(PyObject_CallFunctionObjArgs(callable,arg,nullptr));}
@@ -91,8 +92,9 @@ bool readShotDescriptor(PyObject* source,ShotDescriptor& output){try{
  out.shot.shell.explosion_damage_factor=heFactor(shell.get(),"explosionDamageFactor",.5);
  out.shot.shell.explosion_absorption_factor=heFactor(shell.get(),"explosionDamageAbsorptionFactor",1.3);
  out.shot.edge_damage_factor=heFactor(shell.get(),"explosionEdgeDamageFactor",.15,1.);
- p::Ref rules(PyImport_ImportModule("gui.mods.offline_lan_0922.combat_rules"));auto overrides=p::value(rules.get(),"_OFFH_HE_TUNING_OVERRIDES");
- if(PyDict_Check(overrides.get())){auto f=p::value(overrides.get(),"splash_fraction"),a=p::value(overrides.get(),"armor_factor");if(f.get()!=Py_None)out.shot.shell.explosion_damage_factor=p::scalar(f.get());if(a.get()!=Py_None)out.shot.shell.explosion_absorption_factor=p::scalar(a.get());}
+ if(installed_he_tuning){if(installed_he_tuning->splash_fraction)out.shot.shell.explosion_damage_factor=*installed_he_tuning->splash_fraction;if(installed_he_tuning->armor_factor)out.shot.shell.explosion_absorption_factor=*installed_he_tuning->armor_factor;}
+ else{p::Ref rules(PyImport_ImportModule("gui.mods.offline_lan_0922.combat_rules"));auto overrides=p::value(rules.get(),"_OFFH_HE_TUNING_OVERRIDES");
+ if(PyDict_Check(overrides.get())){auto f=p::value(overrides.get(),"splash_fraction"),a=p::value(overrides.get(),"armor_factor");if(f.get()!=Py_None)out.shot.shell.explosion_damage_factor=p::scalar(f.get());if(a.get()!=Py_None)out.shot.shell.explosion_absorption_factor=p::scalar(a.get());}}
  double radius=0.;try{auto v=p::value(shell.get(),"explosionRadius");if(v.get()!=Py_None)radius=relaxedNumber(v.get());}catch(const std::exception&){PyErr_Clear();}
  if(radius<=0.){double caliber=0.;try{auto v=p::value(shell.get(),"caliber");if(v.get()!=Py_None)caliber=relaxedNumber(v.get());}catch(const std::exception&){PyErr_Clear();}radius=caliber>0.?caliber*caliber/5555.:0.;}out.shot.explosion_radius=radius;
  auto stun=p::value(shell.get(),"stun");if(stun.get()!=Py_None){auto v=readStun(stun.get());out.stun=v;out.shot.stun=v;}
@@ -145,4 +147,6 @@ bool readProjectileTargetState(PyObject* battle,PyObject* record,PyObject* entit
  }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readStunConfig(PyObject* config,StunConfig& output){try{StunConfig out;out.minimum_duration=p::numeric(config,"minStunDuration");for(std::size_t i=0;i<out.factors.size();++i)out.factors[i]=p::numeric(config,stun_factors[i]);output=out;return true;
  }catch(const std::exception& e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+void installHeTuning(const HeTuning* tuning){installed_he_tuning=tuning;}
+void releaseHeTuning(const HeTuning* tuning){if(installed_he_tuning==tuning)installed_he_tuning=nullptr;}
 }

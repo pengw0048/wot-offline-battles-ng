@@ -1,6 +1,7 @@
 #pragma once
 // Projectiles and the local gun: in-flight shells, launches and terminals, reload, ammunition, fire intents.
 #include "stock_native_battle.hpp"
+#include "stock_native_projectile_damage_python.hpp"
 #include <array>
 #include <deque>
 #include <set>
@@ -71,6 +72,7 @@ struct ProjectileMeta {
     bool local_launch = false;          // own shot frozen by the native player owner
     bool pending_resolution = false;    // the owner queued its terminal; the tracer stops on the echo
     Object source_descriptor;           // the shooter's frozen descriptor when its entity is gone
+    std::optional<Point> muzzle_visual_start;   // HP_gunFire sampled before a deferred muzzle presentation
 };
 struct ProjectileVisual {
     Point origin{}, velocity{};
@@ -116,6 +118,14 @@ struct Projectiles {
     std::size_t active = 0, chords = 0, terminals = 0, scans = 0, candidates = 0;
     double debt = 0., advance_seconds = 0.;
     std::unique_ptr<PlayerProjectiles> player;          // the visible player's native shot owner
+    // Projectile ids of admitted shot events: delayed damage may outlive its shooter.
+    std::set<std::string> lineage;
+    // config.json he_tuning overrides of the descriptor HE factors.
+    stock_native_projectile_damage::HeTuning he_tuning;
+    std::size_t effect_reports = 0;
+    // Worker Bot launches the canonical ledger confirmed: last acknowledged and pending sequences per Bot.
+    std::map<std::int64_t, std::int64_t> bot_fire_seen;
+    std::map<std::int64_t, std::set<std::int64_t>> bot_fire_confirmations;
 };
 
 // One stock HUD edge the native gun decided; the publisher shows it on the Avatar.
@@ -174,6 +184,14 @@ struct LocalGun {
     bool replay_publishing = false;
     bool client_ready = false;                         // the Avatar entered and the HUD accepts edges
     int equipment_revision = -1;
+    // Replay: the latest validated local row and the recorded reload cycles it presents (replay_presentation.ReloadEdges).
+    Value replay_local;
+    struct ReplayReload {
+        std::optional<Value> previous;
+        bool live = false, positive = false;
+        std::optional<double> deadline;
+        std::int64_t notifications = 0, completions = 0, starts = 0;
+    } replay_reload;
 };
 
 namespace projectiles {
@@ -211,6 +229,11 @@ p::Ref showLocalShotWithoutExtra(Battle& b, PyObject* entity, PyObject* burst_co
 // Server time estimated from the last anchor, for stun, environment and targeting clocks.
 std::optional<std::int64_t> estimatedServerTime(const Battle& b, double now);
 bool isAuthority(const Battle& b);
+// The latest server time anchor: (server ms, local clock it was received at).
+std::optional<std::pair<double, double>> serverClockAnchor(const Battle& b);
+// The LAN input `shoot` control at the current aim; cancels #1513's shot wait after a rejected trigger.
+bool shoot(Battle& b, double aim_yaw, double gun_pitch);
+bool cancelNativeShotWait(Battle& b);
 // Ends the round's projectile owners.
 void retire(Battle& b);
 }
@@ -258,6 +281,10 @@ double reloadFactor(Battle& b);
 bool publishKind(Battle& b, const std::string& kind, double now, bool force = false, double remaining = 0., double duration = 0.);
 // The live mechanical reload sound bound to the stock AmmoController.
 void retireSound(Battle& b);
+// Replay: one recorded local row owns the presented gun state, ammunition and reload edges.
+bool applyReplayAmmo(Battle& b, const Value& sample);
+// Shell, partial-clip and equipment vehicle settings (BattleRuntime.change_vehicle_setting without Siege).
+bool changeSetting(Battle& b, int code, PyObject* value);
 }
 
 // The live reload sound's cue schedule, for the weapon runtime's audio pump.
@@ -290,9 +317,4 @@ void sendCurrentInput(Battle& b);
 void botConfirmLaunch(Battle& b, const Value& normalized);
 }
 
-// Owned by nb-params (stock_native_battle_params.hpp); declared here until integration reconciles the header.
-namespace params {
-// The cold equipment restore: contract, quantity and activation-result changes, repair-kit acknowledgement.
-bool restoreEquipmentCold(Battle& b, const Value& snapshot, bool present);
-}
 }

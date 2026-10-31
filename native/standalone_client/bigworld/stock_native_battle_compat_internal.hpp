@@ -84,9 +84,9 @@ std::optional<PoseOverlay> poseOverlay(const Battle& b, PyObject* vehicle);
 p::Ref visibleCollisions(Battle& b, PyObject* vehicle, PyObject* start, PyObject* end);
 void closeStockPresentationExtras(Battle& b, PyObject* appearance, bool visible);
 void clearGroundDecalVisibilityState(PyObject* appearance);
-void setGroundDecalVisibility(PyObject* appearance, bool visible);
-void stopGroundEffects(PyObject* appearance);
-void stopBoundVisualEffects(PyObject* appearance);
+bool setGroundDecalVisibility(PyObject* appearance, bool visible);
+bool stopGroundEffects(PyObject* appearance);
+bool stopBoundVisualEffects(PyObject* appearance);
 }
 namespace visibility {
 // The native query owner's stock-collision answers; None when no owner exists.

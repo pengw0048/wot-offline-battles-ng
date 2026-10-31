@@ -8,6 +8,7 @@
 #include "stock_native_client_drive_runtime.hpp"
 #include "stock_native_client_drive_status.hpp"
 #include "stock_native_battle_projectiles.hpp"
+#include "stock_native_battle_params.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "pyscript/script.hpp"

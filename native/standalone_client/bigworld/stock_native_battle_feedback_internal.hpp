@@ -59,6 +59,8 @@ std::int64_t team(const Actor& v);
 bool isHe(PyObject* shot);
 std::int64_t shellNominalDamage(PyObject* shot);
 p::Ref vector(Battle& b, double x, double y, double z);
+// BattleRuntime._impact_sound_identity: the stock impact sound's keyword arguments.
+p::Ref impactSoundIdentity(Battle& b, const Actor& target, std::int64_t attacker, PyObject* direction, double damage_factor);
 }
 
 // Calls feedback needs from other subsystems (declared here until their owners publish them).

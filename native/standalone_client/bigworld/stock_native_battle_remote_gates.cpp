@@ -3,6 +3,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_remote_internal.hpp"
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <structmember.h>
@@ -137,6 +138,9 @@ bool setModelAttachmentVisibility(PyObject* model, bool visible) {
     return false;
 }
 
+}
+
+// Stock ground and trace gates of one appearance (also the compat hooks for an undrawn LAN remote).
 bool stopGroundEffects(PyObject* appearance) {
     auto manager = py::optional(appearance, "customEffectManager");
     if (manager.get() == Py_None) return false;
@@ -328,6 +332,9 @@ bool stopBoundVisualEffects(PyObject* appearance) {
 }
 
 void clearDecalGate(PyObject* appearance) { decal_gates.erase(appearance); }
+void clearGroundDecalVisibilityState(PyObject* appearance) { clearDecalGate(appearance); }
+
+namespace {
 
 // ---- engine audio relay -----------------------------------------------------------------------------------
 struct Relay;
@@ -801,6 +808,114 @@ void uninstallEngineAudio() {
     if (py::attr(assembler.get(), "subscribeEngineAuditionToEngineState").get() == installed_subscribe.get())
         py::set(assembler.get(), "subscribeEngineAuditionToEngineState", original_subscribe.get());
     installed_assemble = installed_subscribe = original_assemble = original_subscribe = Object();
+}
+
+// ---- descriptor collision at the drawn pose -------------------------------------------------------------------
+namespace {
+// _component_value: a dict entry or an attribute, else None.
+p::Ref componentValue(PyObject* component, const char* name) {
+    if (!component || component == Py_None) return p::retain(Py_None);
+    if (PyDict_Check(component)) return p::value(component, name);
+    return py::optional(component, name);
+}
+p::Ref matrix(PyObject* math, PyObject* source = nullptr) {
+    return source ? py::call(math, "Matrix", source) : py::call(math, "Matrix");
+}
+p::Ref zero(PyObject* math) {
+    auto v = p::number(0.);
+    return py::call(math, "Vector3", v.get(), v.get(), v.get());
+}
+struct PoseComponent { p::Ref component, matrix; bool attached; };
+// remote_vehicle._pose_components: exact #1513 (compDescr, compMatrix, isAttached) triples below the body pose.
+std::vector<PoseComponent> poseComponents(PyObject* vehicle, PyObject* math) {
+    auto descriptor = py::attr(vehicle, "typeDescriptor");
+    const bool turret_attached = !p::flag(py::optional(vehicle, "isTurretDetached").get());
+    std::vector<PoseComponent> out;
+    auto chassis = py::attr(descriptor.get(), "chassis"), hull_descr = py::attr(descriptor.get(), "hull");
+    auto turret_descr = py::attr(descriptor.get(), "turret"), gun_descr = py::attr(descriptor.get(), "gun");
+    auto identity = matrix(math);
+    py::call(identity.get(), "setIdentity");
+    out.push_back({p::retain(chassis.get()), std::move(identity), true});
+    auto hull_offset = componentValue(chassis.get(), "hullPosition");
+    if (hull_offset.get() == Py_None) replace(hull_offset, zero(math));
+    p::Ref negative_hull(PyNumber_Negative(hull_offset.get()));
+    auto hull = matrix(math);
+    py::call(hull.get(), "setTranslate", negative_hull.get());
+    out.push_back({p::retain(hull_descr.get()), std::move(hull), true});
+    auto positions = componentValue(hull_descr.get(), "turretPositions");
+    p::Ref turret_offset(p::flag(positions.get()) ? p::item(positions.get(), 0) : zero(math));
+    p::Ref turret_translation(PyNumber_Subtract(negative_hull.get(), turret_offset.get()));
+    auto turret = matrix(math);
+    py::call(turret.get(), "setTranslate", turret_translation.get());
+    auto appearance = py::attr(vehicle, "appearance");
+    const double turret_yaw = p::scalar(py::attr(matrix(math, py::attr(appearance.get(), "turretMatrix").get()).get(), "yaw").get());
+    auto yaw_rotation = matrix(math);
+    py::call(yaw_rotation.get(), "setRotateY", p::number(-turret_yaw).get());
+    py::call(turret.get(), "postMultiply", yaw_rotation.get());
+    auto gun_offset = componentValue(turret_descr.get(), "gunPosition");
+    if (gun_offset.get() == Py_None) replace(gun_offset, zero(math));
+    p::Ref negative_gun(PyNumber_Negative(gun_offset.get()));
+    auto gun = matrix(math);
+    py::call(gun.get(), "setTranslate", negative_gun.get());
+    const double gun_pitch = p::scalar(py::attr(matrix(math, py::attr(appearance.get(), "gunMatrix").get()).get(), "pitch").get());
+    auto pitch_rotation = matrix(math);
+    py::call(pitch_rotation.get(), "setRotateX", p::number(-gun_pitch).get());
+    py::call(gun.get(), "postMultiply", pitch_rotation.get());
+    py::call(gun.get(), "preMultiply", turret.get());
+    out.push_back({p::retain(turret_descr.get()), std::move(turret), turret_attached});
+    out.push_back({p::retain(gun_descr.get()), std::move(gun), turret_attached});
+    return out;
+}
+}
+
+p::Ref collideAtMatrix(Battle& b, PyObject* vehicle, PyObject* vehicle_matrix, PyObject* start, PyObject* end) {
+    PyObject* math = b.engine.math.get();
+    p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.entities.remote_vehicle"));
+    auto result_type = py::attr(module.get(), "_SegmentCollisionResultExt");
+    auto world_to_vehicle = matrix(math, vehicle_matrix);
+    py::call(world_to_vehicle.get(), "invert");
+    auto body_start = py::call(world_to_vehicle.get(), "applyPoint", start);
+    auto body_end = py::call(world_to_vehicle.get(), "applyPoint", end);
+    std::vector<std::pair<double, Object>> hits;
+    for (auto& entry : poseComponents(vehicle, math)) {
+        // Exact #1513 Vehicle.__collideSegment skips an unattached component before its hit tester.
+        if (!entry.attached) continue;
+        auto tester = componentValue(entry.component.get(), "hitTester");
+        auto local_hit_test = py::optional(tester.get(), "localHitTest");
+        if (!py::callable(local_hit_test)) continue;
+        auto component_start = py::call(entry.matrix.get(), "applyPoint", body_start.get());
+        auto component_end = py::call(entry.matrix.get(), "applyPoint", body_end.get());
+        auto collisions = py::invoke(local_hit_test.get(), component_start.get(), component_end.get());
+        if (!p::flag(collisions.get())) continue;
+        p::Ref rows(PySequence_List(collisions.get()));
+        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(rows.get()); ++i) {
+            PyObject* collision = PyList_GET_ITEM(rows.get(), i);
+            // dist, local_normal, angle_cos, material_kind = collision
+            PyObject* fields = PySequence_Fast(collision, "collision");
+            if (!fields) {
+                if (!PyErr_ExceptionMatches(PyExc_TypeError)) throw p::Error("collision row");
+                PyErr_Clear();
+                continue;
+            }
+            p::Ref held(fields);
+            if (PySequence_Fast_GET_SIZE(fields) != 4) continue;
+            PyObject* dist = PySequence_Fast_GET_ITEM(fields, 0);
+            PyObject* angle_cos = PySequence_Fast_GET_ITEM(fields, 2);
+            PyObject* material_kind = PySequence_Fast_GET_ITEM(fields, 3);
+            auto materials = componentValue(entry.component.get(), "materials");
+            p::Ref material(p::retain(Py_None));
+            if (p::flag(materials.get())) replace(material, py::call(materials.get(), "get", material_kind));
+            auto name = componentValue(entry.component.get(), "itemTypeName");
+            if (!PyString_Check(name.get()) && !PyUnicode_Check(name.get())) throw p::Error("#1513 collision component has no itemTypeName");
+            const double distance = p::scalar(dist);
+            auto row = py::invoke(result_type.get(), p::number(distance).get(), p::number(p::scalar(angle_cos)).get(), material.get(), name.get());
+            hits.emplace_back(distance, own(std::move(row)));
+        }
+    }
+    std::stable_sort(hits.begin(), hits.end(), [](const auto& a, const auto& c) { return a.first < c.first; });
+    p::Ref out(PyList_New(0));
+    for (const auto& hit : hits) p::append(out.get(), p::retain(hit.second.get()));
+    return out;
 }
 }
 }
