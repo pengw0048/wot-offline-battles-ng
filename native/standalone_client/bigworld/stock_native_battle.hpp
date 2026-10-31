@@ -122,6 +122,14 @@ struct Battle {
     Actor* localVehicle() const;
     // A stock entity by engine id: the remote factory's, else BigWorld's.
     p::Ref entity(std::int64_t engine_id) const;
+    // The LAN message a native Value was read from, while that message is being applied: Python-bound consumers
+    // reuse it instead of writing the whole tree back.
+    PyObject* source_message = nullptr;
+    const Value* source_value = nullptr;
+    p::Ref pythonOf(const Value& value) const {
+        if (&value == source_value && source_message) return p::retain(source_message);
+        return p::Ref(cs::write(value));
+    }
     // An optional presentation feature: false once it failed this round; a failure disables it and is logged once.
     bool featureEnabled(const std::string& name) const { return !disabled_features.count(name); }
     template<class Body> bool feature(const std::string& name, Body body, bool disable = true);

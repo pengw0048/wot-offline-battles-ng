@@ -612,7 +612,7 @@ void frameStarted(Battle& b, double, double) {
     if (b.bots) ++b.bots->frame_callbacks;
 }
 void applySnapshot(Battle& b, const Value& value) {
-    p::Ref message(cs::write(value));
+    auto message = b.pythonOf(value);
     snapshot(b, message.get());
 }
 void reconcileAuthority(Battle& b, const Value& player_id) {

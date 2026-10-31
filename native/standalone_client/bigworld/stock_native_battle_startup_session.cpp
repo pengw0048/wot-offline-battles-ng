@@ -69,10 +69,15 @@ void ignoreLivePayload(Battle& b, const char* kind, const std::string& error, Py
 void snapshot(Battle& b, PyObject* message) {
     if (stopped(b)) return;
     auto& s = *b.startup;
-    Value previous = s.last_snapshot;
+    Value previous = std::move(s.last_snapshot);
+    struct Source {
+        Battle& b;
+        ~Source() { b.source_message = nullptr; b.source_value = nullptr; }
+    } source{b};
     try {
         s.last_snapshot = fromPython(PyDict_Check(message) ? message : p::dict().get());
         const Value& last = s.last_snapshot;
+        if (PyDict_Check(message)) { b.source_message = message; b.source_value = &last; }
         if (!b.worker) gun::restoreEquipment(b, last, true);
         if (b.local) {
             local::acknowledgeContacts(b, last, false);
