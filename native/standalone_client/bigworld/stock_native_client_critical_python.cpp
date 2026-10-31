@@ -18,12 +18,13 @@
 namespace stock_native_client_weapon_runtime {
 // Provided by the projectiles/gun subsystem: the active repair-kit bonus and one equipment HUD publication.
 double activeRepairBonus(native_battle::Battle&);
-void publishEquipment(native_battle::Battle&,double now);
 }
-namespace native_battle {namespace events {
-// Provided by the events subsystem: the stock damage-info panel lifetime check and one damage-info row.
+namespace native_battle {
+namespace gun {void publishEquipment(Battle&,double now);}
+// The vehicle edges: the stock damage-info panel lifetime check and one damage-info row.
+namespace vehicles {
 bool damageInfoServiceable(Battle&);
-bool showDamageInfo(Battle&,std::int64_t vehicle,int code,int extra,std::int64_t attacker);
+bool showDamageInfo(Battle&,std::int64_t engine_id,std::int64_t damage_index,std::int64_t extra_index,std::int64_t attacker);
 }}
 namespace stock_native_client_critical {
 namespace {
@@ -68,7 +69,7 @@ bool present(Native&o,PyObject*row){
  if(kind=="crash"){auto appearance=field(o.entity.get(),"appearance"),callback=field(appearance.get(),"delCrashedTrack");if(PyCallable_Check(callback.get())){auto left=field(row,"left");p::Ref done(PyObject_CallFunctionObjArgs(callback.get(),left.get(),nullptr));}return true;}
  auto id=field(o.entity.get(),"id");
  if(kind=="progress"){auto status=field(row,"status"),code=field(row,"code"),seconds=field(row,"seconds");p::Ref period(PyTuple_Pack(1,seconds.get()));auto callback=field(o.battle->engine.avatar.get(),"updateVehicleMiscStatus");p::Ref done(PyObject_CallFunctionObjArgs(callback.get(),id.get(),status.get(),code.get(),period.get(),nullptr));return true;}
- if(kind=="repaired"){if(native_battle::events::damageInfoServiceable(*o.battle))native_battle::events::showDamageInfo(*o.battle,p::wide(id.get()),int(p::integral(row,"index")),int(p::integral(row,"extra")),p::wide(id.get()));return true;}
+ if(kind=="repaired"){if(native_battle::vehicles::damageInfoServiceable(*o.battle))native_battle::vehicles::showDamageInfo(*o.battle,p::wide(id.get()),int(p::integral(row,"index")),int(p::integral(row,"extra")),p::wide(id.get()));return true;}
  return true;
 }
 void emit(Native&o){if(o.order.empty()||!active(o))return;std::set<std::string>done;for(const auto&key:o.order){if(!active(o))break;const auto at=o.pending.find(key);if(at==o.pending.end())continue;try{if(present(o,at->second->get()))done.insert(key);}catch(const std::exception&error){o.battle->warn("native track repair presentation",native_battle::describe(error),false);}}
@@ -85,7 +86,7 @@ PyObject*fail(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc
 struct Guard{Native&owner;explicit Guard(Native&o):owner(o){owner.busy=true;}~Guard(){owner.busy=false;}};
 }
 void tick(Battle&b,double dt){if(dt<=0.)return;auto owner=ensure(b);auto&o=*owner;if(o.busy)return;Guard guard(o);const double time=now(o);drive::synchronizeStatus(b,time);if(!active(o))throw p::Error("Native critical owner retired during status ingress");metadata(o);const auto&state=o.actor->state;const auto&fields=state.resolved().object;const bool eligible=fields.count("alive")?state.get("alive").truth()&&std::int64_t(fields.count("health")?state.get("health").numeric():1.)>0:o.actor->alive;if(!eligible)return;const auto&repair=state.get("effective_params").get("loadout").get("repair_factor").resolved();if(repair.kind==Value::Kind::Null)throw p::Error("Native local repair factor is unavailable");const double factor=std::max(0.,repair.numeric(1.))*(1.+stock_native_client_weapon_runtime::activeRepairBonus(b));const auto effects=o.core->advance(o.status->critical(),dt,time,true,factor,o.status->casualties());o.status->localTracks(o.core->tracks());mirror(o);payload(o,effects);visuals(o,effects);emit(o);if(!active(o))return;
- stock_native_client_weapon_runtime::publishEquipment(b,time);
+ native_battle::gun::publishEquipment(b,time);
 }
 bool reconcile(Battle&b,shared::Actor&local,const Value&source,Value*canonical){auto owner=ensure(b);auto&o=*owner;for(const char*key:{"critical_revision","critical_base_revision","critical_ack_seq"})if(source.resolved().kind!=Value::Kind::Object||!source.resolved().object.count(key))throw p::Error("Native player critical state has no revision contract");if(&local!=o.actor.get())return false;drive::synchronizeStatus(b,now(o));metadata(o);const auto revision=std::int64_t(source.get("critical_revision").numeric()),base=std::int64_t(source.get("critical_base_revision").numeric()),ack=std::int64_t(source.get("critical_ack_seq").numeric()),previous=local.presented.critical_revision;if(revision<previous)return false;auto decoded=!canonical?o.status->critical():drive::decodeCritical(*canonical,o.status->metadata());o.core->accept(revision,base,ack,decoded);o.status->localTracks(decoded);mirror(o);local.presented.critical_revision=revision;local.presented.critical_base_revision=base;local.presented.critical_ack_seq=ack;
  if(canonical&&o.core->state().owned){const Value raw=canonical->resolved();Value rows;rows.kind=Value::Kind::Array;for(const auto&row:raw.get("devices").resolved().array)if(row.get("name").resolved().text!="leftTrackHealth"&&row.get("name").resolved().text!="rightTrackHealth")rows.array.push_back(row);std::set<std::string>destroyed;for(const auto&name:raw.get("destroyed").resolved().array)if(name.resolved().text!="leftTrackHealth"&&name.resolved().text!="rightTrackHealth")destroyed.insert(name.resolved().text);
