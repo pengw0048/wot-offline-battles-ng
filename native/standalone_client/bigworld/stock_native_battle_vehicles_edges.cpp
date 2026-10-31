@@ -186,12 +186,12 @@ bool setSpotVisibility(Battle& b, Actor& v, bool visible, std::optional<bool> ma
             d.track_pending = true;
             d.track_signature.reset();
             if (!draw) {
-                auto stop = py::optional(vehicle.get(), "update_tracks");
-                if (py::callable(stop)) {
-                    auto mode = py::optional(vehicle.get(), "engineMode");
-                    if (mode.get() == Py_None) replace(mode, p::Ref(Py_BuildValue("(ii)", 0, 0)));
-                    d.track_pending = !b.feature("remote track animation", [&] { py::invoke(stop.get(), p::number(0.).get(), p::number(0.).get(), mode.get()); });
-                }
+                // A hidden model stops its belts but keeps its engine mode.
+                std::array<int, 2> mode{0, 0};
+                auto current = py::optional(vehicle.get(), "engineMode");
+                if (current.get() != Py_None && PySequence_Check(current.get()) && PySequence_Size(current.get()) == 2)
+                    mode = {int(p::wide(p::item(current.get(), 0).get())), int(p::wide(p::item(current.get(), 1).get()))};
+                d.track_pending = !b.feature("remote track animation", [&] { remote::updateTracks(b, v.engine_id, 0., 0., mode); });
             }
         } else {
             py::call(py::attr(vehicle.get(), "appearance").get(), "changeVisibility", boolean(draw));

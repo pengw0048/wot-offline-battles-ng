@@ -4,6 +4,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_bots.hpp"
+#include "stock_native_battle_remote.hpp"
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_bots_needs.hpp"
 #include "stock_native_bot_clock.hpp"
@@ -438,9 +439,7 @@ bool feedTracks(Battle& b, Actor& vehicle, PyObject* entity, double turn, double
     const auto scroll = local::trackScroll(b, vehicle, descriptor.get(), speed, turn, state.get("airborne").truth(),
                                            state.get("movement_dir").numeric());
     auto clamp = [](double value) { return std::max(TRACK_SCROLL_MIN, std::min(TRACK_SCROLL_MAX, value)); };
-    auto left = p::number(clamp(scroll[0])), right = p::number(clamp(scroll[1]));
-    p::Ref mode(Py_BuildValue("(LL)", static_cast<long long>(power), static_cast<long long>(flags)));
-    return p::flag(py::call(entity, "update_tracks", left.get(), right.get(), mode.get()).get());
+    return remote::updateTracks(b, vehicle.engine_id, clamp(scroll[0]), clamp(scroll[1]), {int(power), int(flags)});
 }
 }
 
