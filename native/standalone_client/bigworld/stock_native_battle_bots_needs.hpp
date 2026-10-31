@@ -8,12 +8,6 @@ namespace native_battle {
 namespace world {
 // battle._detached_turret_rows: the canonical detached turret rows keyed by owner, or None.
 p::Ref detachedTurretRows(Battle& b);
-// stock_native_world_snapshot.build(battle._destructibles): the native world snapshot DTO.
-p::Ref destructibleSnapshot(Battle& b);
-// destructibles_sensor.collision_preparation_scope_1513(): brackets every native world query of one
-// Bot step. end() runs on every exit path, including an exception.
-void beginCollisionPreparation(Battle& b);
-void endCollisionPreparation(Battle& b);
 }
 namespace startup {
 // The pinned BattleRuntime's BotRuntime(...) construction with its resolver bundle (descriptor,

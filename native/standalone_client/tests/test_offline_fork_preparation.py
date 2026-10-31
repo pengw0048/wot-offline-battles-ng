@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 from prepare_offline_fork import (
     ACCOUNT_ATTEMPT, ADAPTERS, BOOTSTRAP_PATH, COMPAT_PATH, ENTRY_PATH, ENTRY_SOURCE,
     INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT, PINNED_RESOURCES,
-    REPLAY_PACKAGE_INPUT, ROTATION_PATH, ROTATION_SOURCE, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
+    NATIVE_MODULE_ROOT, REPLAY_PACKAGE_INPUT, RETIRED, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
     prepare)
 
 PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
@@ -126,29 +126,20 @@ class OfflineForkPreparationTests(unittest.TestCase):
         pinned = {p.relative_to(resources) for p in resources.rglob('*') if p.is_file()}
         shipped = {p.relative_to(runtime) for p in runtime.rglob('*') if p.is_file()}
         native_modules = {
-            'native_bot_runtime.py': 'stock_native_bot_consumer.py',
-            'stock_native_world_snapshot.py': 'stock_native_world_snapshot.py',
-            'stock_native_destructible_present.py': 'stock_native_destructible_present.py',
             'stock_snapshot_static.py': 'stock_snapshot_static.py',
             'stock_replay_codec.py': 'stock_replay_codec.py',
             'native_replay.py': 'stock_native_replay.py',
             'native_client_query.py': 'stock_native_client_query.py',
-                'native_client_environment.py': 'stock_native_client_environment.py',
-                'native_client_weapon_runtime.py': 'stock_native_client_weapon_runtime.py',
-                'native_client_projectile.py': 'stock_native_client_projectile.py',
-                'native_client_critical.py': 'stock_native_client_critical.py',
-                'native_client_turret_presentation.py': 'stock_native_client_turret_presentation.py',
-            'native_client_replica.py': 'stock_native_client_replica.py',
-            'native_client_drive.py': 'stock_native_client_drive_facade.py',
         }
-        self.assertEqual(shipped, pinned | {ENTRY_PATH, SERVICES_PATH, ROTATION_PATH} |
-                         {ROTATION_PATH.with_name(name) for name in native_modules})
+        retired = {path.relative_to(PINNED_RESOURCES) for path in RETIRED}
+        self.assertEqual(shipped, (pinned - retired) | {ENTRY_PATH, SERVICES_PATH} |
+                         {NATIVE_MODULE_ROOT / name for name in native_modules})
         for name, source_name in native_modules.items():
-            self.assertEqual((runtime / ROTATION_PATH.with_name(name)).read_bytes(),
+            self.assertEqual((runtime / NATIVE_MODULE_ROOT / name).read_bytes(),
                              (ROOT / 'bigworld' / source_name).read_bytes())
         self.assertFalse([p for p in shipped if p.suffix in ('.pyc', '.pyo', '.pyd', '.dll')])
         adapted = {relative.relative_to(PINNED_RESOURCES) for relative in ADAPTERS}
-        for relative in pinned:
+        for relative in pinned - retired:
             original = (resources / relative).read_bytes()
             output = (runtime / relative).read_bytes()
             if relative in adapted:
@@ -159,7 +150,6 @@ class OfflineForkPreparationTests(unittest.TestCase):
                 self.assertEqual(output, original, relative)
         self.assertEqual((runtime / ENTRY_PATH).read_bytes(), ENTRY_SOURCE.read_bytes())
         self.assertEqual((runtime / SERVICES_PATH).read_bytes(), SERVICES_SOURCE.read_bytes())
-        self.assertEqual((runtime / ROTATION_PATH).read_bytes(), ROTATION_SOURCE.read_bytes())
         manifest = json.loads((self.output / 'offline-res.json').read_text())
         self.assertEqual(manifest['revision'], PINNED_COMMIT)
         self.assertEqual(manifest['files'], len(shipped))

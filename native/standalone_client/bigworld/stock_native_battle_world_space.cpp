@@ -47,7 +47,7 @@ constexpr double forward_probe_metres = 6.;
 [[noreturn]] void invalid(const std::string& what) { throw p::Error(what); }
 // A descriptor value outside the installer's material domain fails the whole world, as the DTO installer did.
 struct DomainError : p::Error { using p::Error::Error; };
-WorldSpace* current(Battle& b) {
+WorldSpace* current(const Battle& b) {
     if (!b.world || !b.world->space || !b.world->space->scene.current()) return nullptr;
     return b.world->space.get();
 }
@@ -190,7 +190,7 @@ void install(Battle& b, WorldSpace& owner, const Catalog* catalog) {
     auto& registry = owner.registry;
     if (!registry.instances.empty() || !registry.baked_instances.empty()) invalid("Native world installation requires a fresh space owner");
     auto area = py::attr(b.engine.modules.get(), "area_destructibles");
-    auto cache_module = py::attr(b.engine.modules.get(), "destructibles_cache");
+    p::Ref cache_module(PyImport_ImportModule("DestructiblesCache"));
     auto cache = py::optional(area.get(), "g_cache");
     if (cache.get() == Py_None) invalid("Native world installation requires the #1513 resource cache");
     const double unit = p::scalar(py::attr(cache.get(), "unitVehicleMass").get());
@@ -279,7 +279,8 @@ void openSpace(Battle& b) {
     if (!space || space->cleared()) invalid("Native battle space is unavailable");
     auto owner = std::make_shared<WorldSpace>(space, std::uint32_t(id));
     install(b, *owner, w.destructibles_disabled ? nullptr : w.catalog.get());
-    if (!owner->backend.installPresenter()) {
+    const auto presenter = presentationCallables();
+    if (!owner->backend.installPresenter(presenter[0].get(), presenter[1].get(), presenter[2].get())) {
         PyErr_Clear();
         invalid("Native destructible presentation could not be installed");
     }
@@ -298,7 +299,7 @@ void closeSpace(Battle& b) {
     b.world->space.reset();
 }
 
-SceneAccess sceneAccess(Battle& b) {
+SceneAccess sceneAccess(const Battle& b) {
     SceneAccess out;
     auto* owner = current(b);
     if (!owner) return out;

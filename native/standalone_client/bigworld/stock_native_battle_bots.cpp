@@ -314,12 +314,6 @@ void recordControl(Battle& b, const stock_native_bot::Clock& clock, std::int64_t
         if (debt + 1.0e-9 >= period && period > 0.) ++a->debt_callbacks;
     }
 }
-// The #1513 collision preparation scope brackets every native world query of one Bot step.
-struct CollisionPreparation {
-    Battle& b;
-    explicit CollisionPreparation(Battle& battle) : b(battle) { world::beginCollisionPreparation(b); }
-    ~CollisionPreparation() { world::endCollisionPreparation(b); }
-};
 }
 
 void install(Battle& b, PyObject* runtime) {
@@ -359,10 +353,7 @@ void update(Battle& b, double now, double dt) {
     if (flushWorld(b)) sendContactResults(b, *o, results.get(), now);
     const std::int64_t sample_before = owner::clock(*o).sample_us;
     Object outgoing;
-    {
-        CollisionPreparation scope(b);
-        outgoing = own(owner::update(*o, b, raw, dt, now, players.get()));
-    }
+    outgoing = own(owner::update(*o, b, raw, dt, now, players.get()));
     flushWorld(b);
     recordControl(b, owner::clock(*o), sample_before);
     for (Py_ssize_t i = 0; i < PySequence_Size(outgoing.get()); ++i) {

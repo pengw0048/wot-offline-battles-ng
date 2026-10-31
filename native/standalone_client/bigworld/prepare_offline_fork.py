@@ -5,6 +5,7 @@ offline-res with only the reviewed independent-client seams adapted.
 """
 import argparse
 import ast
+import re
 import hashlib
 import importlib.util
 import json
@@ -29,22 +30,6 @@ _spec = importlib.util.spec_from_file_location(
 worker_runtime = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker_runtime)
 _spec = importlib.util.spec_from_file_location(
-    'stock_offline_query_bindings', Path(__file__).with_name('stock_offline_query_bindings.py'))
-query_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(query_bindings)
-_spec = importlib.util.spec_from_file_location(
-    'stock_tree_registration_bindings', Path(__file__).with_name('stock_tree_registration_bindings.py'))
-tree_registration = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(tree_registration)
-_spec = importlib.util.spec_from_file_location(
-    'stock_catalog_stream_bindings', Path(__file__).with_name('stock_catalog_stream_bindings.py'))
-catalog_stream = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(catalog_stream)
-_spec = importlib.util.spec_from_file_location(
-    'stock_motion_rotation_bindings', Path(__file__).with_name('stock_motion_rotation_bindings.py'))
-rotation_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(rotation_bindings)
-_spec = importlib.util.spec_from_file_location(
     'stock_native_bot_bindings', Path(__file__).with_name('stock_native_bot_bindings.py'))
 bot_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bot_bindings)
@@ -60,10 +45,6 @@ _spec = importlib.util.spec_from_file_location(
     'stock_native_client_replica_bindings', Path(__file__).with_name('stock_native_client_replica_bindings.py'))
 replica_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(replica_bindings)
-_spec = importlib.util.spec_from_file_location(
-    'stock_native_client_drive_bindings', Path(__file__).with_name('stock_native_client_drive_bindings.py'))
-drive_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(drive_bindings)
 _spec = importlib.util.spec_from_file_location(
     'stock_native_client_query_bindings', Path(__file__).with_name('stock_native_client_query_bindings.py'))
 client_query_bindings = importlib.util.module_from_spec(_spec)
@@ -104,10 +85,6 @@ _spec = importlib.util.spec_from_file_location(
     'stock_native_client_lifecycle_bindings', Path(__file__).with_name('stock_native_client_lifecycle_bindings.py'))
 client_lifecycle_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(client_lifecycle_bindings)
-_spec = importlib.util.spec_from_file_location(
-    'stock_native_client_turret_presentation_bindings', Path(__file__).with_name('stock_native_client_turret_presentation_bindings.py'))
-client_turret_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(client_turret_bindings)
 
 _spec = importlib.util.spec_from_file_location(
     'stock_native_battle_shell', Path(__file__).with_name('stock_native_battle_shell.py'))
@@ -129,8 +106,7 @@ ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.p
 ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
 SERVICES_SOURCE = ENTRY_SOURCE.with_name('OfflineOptionalServices.py')
 SERVICES_PATH = ENTRY_PATH.with_name(SERVICES_SOURCE.name)
-ROTATION_SOURCE = Path(__file__).with_name('stock_motion_rotation_consumer.py')
-ROTATION_PATH = Path('scripts/client/gui/mods/offline_lan_0922/native_rotation_world.py')
+NATIVE_MODULE_ROOT = Path('scripts/client/gui/mods/offline_lan_0922')
 ACCOUNT_ATTEMPT = (Path(__file__).with_name('offline_entry') /
                    'compat_account_attempt.txt')
 OLD_LOADER = '''    path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
@@ -291,15 +267,6 @@ ADAPTERS = {
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
-ADAPTERS.update((NATIVE_MATH_PATH.with_name(name), query_bindings.ADAPTERS[name])
-                for name in ('native_engine_query.py', 'destructibles_sensor.py',
-                             'destructibles_authority.py', 'world_collision.py'))
-ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
-    lambda source: drive_bindings.sensor(catalog_stream.sensor(
-        tree_registration.sensor(query_bindings.sensor(source)))))
-ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
-    lambda source: drive_bindings.authority(
-        query_bindings.ADAPTERS['destructibles_authority.py'](source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = battle_shell.battle
 ADAPTERS[NATIVE_MATH_PATH.with_name('authority_worker.py')] = battle_shell.worker
 ADAPTERS[NATIVE_MATH_PATH.with_name('engine_audio.py')] = battle_shell.engine_audio
@@ -313,8 +280,23 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('offline_replay.py')] = (
     lambda source: client_lifecycle_bindings.offline_replay(wire_bindings.offline_replay(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('replay_transport.py')] = wire_bindings.replay_transport
 ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
-ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/turret_obstacles.py'] = client_query_bindings.turrets
-ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/detached_turret.py'] = client_turret_bindings.presenter
+# The native battle world owns the destructible space, catalog and detached turrets; these pinned battle-only
+# modules and their battle-only importers are not shipped.
+RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
+    'destructibles_sensor.py', 'destructibles_authority.py', 'destructibles_compat.py',
+    'prebaked_destructibles.py', 'native_destructibles.py', 'destructible_layout.py',
+    'entities/detached_turret.py', 'entities/turret_obstacles.py', 'rigid_turret.py',
+    'world_collision.py', 'native_world.py', 'native_engine_query.py', 'native_motion_core.py',
+    'native_navigation_query.py'))
+
+
+def retired_imports(path, source):
+    """Module-level imports of a retired module in one shipped (Python 2.7) file."""
+    names = set(retired.stem for retired in RETIRED)
+    found = []
+    for statement in re.findall(r'^(?:import|from) [^\n(]*(?:\([^)]*\))?', source, re.M):
+        found.extend(name for name in re.findall(r'\w+', statement) if name in names)
+    return found
 
 
 def stage_runtime(source, staged):
@@ -323,10 +305,15 @@ def stage_runtime(source, staged):
     runtime = staged / RUNTIME_ROOT
     files = sorted(path for path in resources.rglob('*') if path.is_file())
     adapted = []
+    missing = [path for path in RETIRED if not (source / path).is_file()]
+    if missing:
+        raise ValueError('A retired pinned module is missing: ' + str(missing[0]))
     for path in files:
         if path.suffix.lower() in ('.pyc', '.pyo', '.pyd', '.dll'):
             raise ValueError('The pinned payload contains a binary module: ' + str(path))
         relative = path.relative_to(source)
+        if relative in RETIRED:
+            continue
         output = runtime / path.relative_to(resources)
         output.parent.mkdir(parents=True, exist_ok=True)
         if relative in ADAPTERS:
@@ -338,22 +325,22 @@ def stage_runtime(source, staged):
             shutil.copyfile(path, output)
     if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
         raise ValueError('The pinned payload is missing an adapted consumer')
-    for source_path, path in ((ENTRY_SOURCE, ENTRY_PATH), (SERVICES_SOURCE, SERVICES_PATH),
-                              (ROTATION_SOURCE, ROTATION_PATH)):
+    for path in sorted(runtime.rglob('*.py')):
+        imported = retired_imports(path, path.read_text(encoding='utf-8'))
+        if imported:
+            raise ValueError('A shipped module imports a retired one: %s -> %s' % (path, imported[0]))
+    for source_path, path in ((ENTRY_SOURCE, ENTRY_PATH), (SERVICES_SOURCE, SERVICES_PATH)):
         if (runtime / path).exists():
             raise ValueError('The pinned payload already owns the independent entry')
         shutil.copyfile(source_path, runtime / path)
     native_modules = (
-        ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
         ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
         ('stock_replay_codec.py', 'stock_replay_codec.py'),
         ('stock_native_replay.py', 'native_replay.py'),
         ('stock_native_client_query.py', 'native_client_query.py'),
-        ('stock_native_client_turret_presentation.py', 'native_client_turret_presentation.py'),
-        ('stock_native_destructible_present.py', 'stock_native_destructible_present.py'),
     )
     for source_name, module_name in native_modules:
-        output = runtime / ROTATION_PATH.with_name(module_name)
+        output = runtime / NATIVE_MODULE_ROOT / module_name
         if output.exists():
             raise ValueError('The pinned payload already owns the native Bot entry')
         shutil.copyfile(Path(__file__).with_name(source_name), output)
@@ -363,8 +350,7 @@ def stage_runtime(source, staged):
         'adapted': sorted(adapted),
         'entry': ENTRY_PATH.as_posix(),
         'services': SERVICES_PATH.as_posix(),
-        'rotation': ROTATION_PATH.as_posix(),
-        'files': len(files) + 3 + len(native_modules),
+        'files': len(files) - len(RETIRED) + 2 + len(native_modules),
     }, indent=2, sort_keys=True) + '\n')
 
 

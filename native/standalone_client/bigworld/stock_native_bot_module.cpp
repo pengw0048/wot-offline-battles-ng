@@ -15,14 +15,15 @@
 #include "stock_native_bot_foliage_snapshot.hpp"
 #include "stock_native_bot_publication_python.hpp"
 #include "stock_native_bot_presentation.hpp"
-#include "stock_native_world_snapshot.hpp"
+#include "stock_native_bot_world_adapter.hpp"
+#include "stock_native_destructible_backend.hpp"
+#include "stock_native_battle_world.hpp"
 #include "stock_native_world_events.hpp"
 #include "stock_native_player_contacts_python.hpp"
 #include "stock_native_player_environment_python.hpp"
 #include "stock_native_human_ram.hpp"
 #include "stock_native_detached_turret_python.hpp"
 #include "stock_native_projectile_python.hpp"
-#include "space/space_manager.hpp"
 #include <algorithm>
 #include <chrono>
 #include <memory>
@@ -88,11 +89,12 @@ struct PlayerEnvironmentWorld final:player_environment::World {
 };
 }
 struct Owner {
-    BW::ClientSpacePtr space;
-    world::Registry registry;
-    stock_native_destructible::NativeBackend backend;
-    world::NativeScene scene;
-    world::WorldEvents events;
+    // The battle space's shared native world (world::sceneAccess).
+    stock_native_client_drive::SceneAccess world_access;
+    world::Registry& registry;
+    stock_native_destructible::NativeBackend& backend;
+    world::NativeScene& scene;
+    world::WorldEvents& events;
     PlayerTrees player_trees;
     player_contacts::PipelineWorld player_world;
     player_contacts::Owner player_contacts;
@@ -113,15 +115,18 @@ struct Owner {
     std::uint64_t snapshot_read_ns=0,snapshot_mirror_ns=0,snapshot_full_mirrors=0,snapshot_receipt_mirrors=0;
     ID server_tick=-1;
     double server_time_ms=0.;
-    std::optional<double> last_tree_time;
     bool retired=false;
-    void retire(){retired=true;scene.retire();backend.retire();}
-    explicit Owner(BW::ClientSpacePtr s):space(s),backend(s,registry,[this](const world::TurretSweep&q){
-        if(!runtime)return true;
+    // The shared scene/backend belong to the world space; this owner only stops using them.
+    void retire(){retired=true;}
+    explicit Owner(stock_native_client_drive::SceneAccess access):world_access(std::move(access)),registry(*world_access.registry),
+        backend(*world_access.backend),scene(*world_access.scene),events(*world_access.events),player_trees(events),
+        player_world(registry,scene,player_trees),environment_world(scene,vehicles),services(registry,scene,vehicles){}
+    // The detached-turret veto the world backend applies to native destruction sweeps.
+    bool turretSweepAllowed(const world::TurretSweep&q){
+        if(retired||!runtime)return true;
         const auto a=runtime->actors().find(ID(q.actor));if(a==runtime->actors().end())return true;
         return !services.turrets().blocks(q,a->second.modes[a->second.mode].physics.geometry.turret,server_time_ms);
-    }),scene(s,registry,backend),events(registry,backend,scene,s->id()),player_trees(events),
-    player_world(registry,scene,player_trees),environment_world(scene,vehicles),services(registry,scene,vehicles){}
+    }
     // Cold installation inputs frozen at creation: the BotRuntime (for player descriptor resolution),
     // its descriptor maps and each Bot's static ram profile. No frame reads the BotRuntime.
     cs::Handle bot_runtime,descriptors,pairs,profiles;
@@ -277,10 +282,8 @@ struct Owner {
         }catch(const std::exception&e){local(e);}
     }
     void frame(double now,bool force=false){
+        // Stream remapping and body updates run once per frame in world::foliage (spaceFrame).
         if(!std::isfinite(now))throw p::Error("Native world frame time invalid");
-        const double elapsed=last_tree_time?std::max(0.,now-*last_tree_time):0.;last_tree_time=now;
-        require(events.mappingChanged(now));
-        backend.runtime().update(elapsed,now);
         if(!trees)return;
         for(const auto&event:registry.journal)if(event.destruction.kind==world::Kind::Tree)trees->activate(event.destruction.key);
         for(const auto&key:events.takeActivatedTrees())trees->activate(key);
@@ -298,19 +301,16 @@ p::Ref snapshotPlayers(const Battle&b){return p::value(lastSnapshot(b),"players"
 
 namespace owner {
 std::shared_ptr<Owner> create(Battle&b,PyObject*raw){
-    const auto id=p::integral(b.engine.avatar.get(),"spaceID");
-    if(id<=0||id>2147483647)throw p::Error("Native Bot space identity invalid");
-    auto space=BW::SpaceManager::instance().space(BW::SpaceID(id));
-    if(!space||space->cleared())throw p::Error("Native Bot space is unavailable");
+    auto access=native_battle::world::sceneAccess(b);
+    if(!access.registry)throw p::Error("Native Bot space is unavailable");
     PyObject*shell=b.engine.shell.get();
-    auto handle=std::make_shared<Owner>(space);auto&o=*handle;
-    require(o.events.install(shell));
+    auto handle=std::make_shared<Owner>(std::move(access));auto&o=*handle;
+    std::weak_ptr<Owner> weak=handle;
+    native_battle::world::setTurretSweep(b,[weak](const world::TurretSweep&q){auto owner=weak.lock();return !owner||owner->turretSweepAllowed(q);});
     o.environment=player_environment::Owner(b.bots->player_environment_check,b.bots->player_environment_seq);
     Snapshot snapshot;require(readNativeSnapshot(raw,shell,snapshot));
     require(foliage::readFoliageSnapshot(shell,snapshot.foliage));
     foliage::TreeState trees;require(foliage::readFoliageTreeState(shell,trees));o.trees.reset(new foliage::Trees(std::move(trees)));
-    auto dto=native_battle::world::destructibleSnapshot(b);
-    require(o.backend.installPresenter());require(world::installWorldSnapshot(dto.get(),o.registry,o.scene,o.backend));
     o.runtime.reset(new Runtime(std::move(snapshot),o.registry,o.scene,o.services));
     o.services.bind(*o.runtime);o.server_tick=p::integral(raw,"_server_tick",-1);
     o.bot_runtime=native_battle::borrow(raw);

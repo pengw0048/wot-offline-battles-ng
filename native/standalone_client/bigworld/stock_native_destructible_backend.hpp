@@ -37,8 +37,9 @@ public:
     ~NativeBackend();
     NativeBackend(const NativeBackend &)=delete;
     NativeBackend &operator=(const NativeBackend &)=delete;
-    // Install at the lifecycle/resource boundary, after exact identity proof.
-    bool installPresenter();
+    // Install at the lifecycle/resource boundary, after exact identity proof:
+    // emit, stop_lifetime and remove_light_sound (world::presentationCallables).
+    bool installPresenter(_object * emit,_object * stop,_object * remove);
     void bind(const stock_native_world::Key &,const BW::StockDestructibleBinding &);
     void installTree(const stock_native_world::Key &,const Parameters &,
         _object * fracture_variants,_object * touchdown_variants);

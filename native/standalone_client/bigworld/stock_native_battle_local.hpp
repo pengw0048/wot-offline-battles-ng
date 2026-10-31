@@ -105,8 +105,6 @@ bool installRamContactHook(Battle& b);
 void restoreRamContactHook(Battle& b);
 // Seeds the stock Siege indicator cache once the client is ready.
 bool seedSiegeHud(Battle& b, Actor& local);
-// Advances the visible world owner's scene and destruction ledger (the foliage/frame chain).
-void worldFrame(Battle& b, double now);
 // The exact suspension parameters for the mounted descriptor, or null when detailed suspension is excluded/inactive.
 const wot::offline_bot_step::SuspensionDescriptor* ensureSuspensionParams(Battle& b, PyObject* descriptor);
 // Releases the persistent Siege hint wrappers (also done by retire).

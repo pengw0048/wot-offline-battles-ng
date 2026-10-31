@@ -38,11 +38,10 @@ bool NativeBackend::callPresentation(PyObject * function,PyObject * arguments,Pr
     if(!result){++presentation_counters_.failed_calls;if(PyErr_Occurred())PyErr_Print();return false;}
     Py_DECREF(result);return current();
 }
-bool NativeBackend::installPresenter() {
+bool NativeBackend::installPresenter(PyObject * emit,PyObject * stop,PyObject * remove) {
     if(retired_||!Py_IsInitialized())return false;
-    PyObject * module=PyImport_ImportModule("gui.mods.offline_lan_0922.stock_native_destructible_present");if(!module)return false;
-    PyObject * emit=PyObject_GetAttrString(module,"emit"),*stop=PyObject_GetAttrString(module,"stop_lifetime"),*remove=PyObject_GetAttrString(module,"remove_light_sound");Py_DECREF(module);
-    if(!emit||!stop||!remove||!PyCallable_Check(emit)||!PyCallable_Check(stop)||!PyCallable_Check(remove)){Py_XDECREF(emit);Py_XDECREF(stop);Py_XDECREF(remove);return false;}
+    if(!emit||!stop||!remove||!PyCallable_Check(emit)||!PyCallable_Check(stop)||!PyCallable_Check(remove))return false;
+    Py_INCREF(emit);Py_INCREF(stop);Py_INCREF(remove);
     Py_XDECREF(emit_);Py_XDECREF(stop_);Py_XDECREF(remove_sound_);emit_=emit;stop_=stop;remove_sound_=remove;return true;
 }
 void NativeBackend::bind(const stock_native_world::Key & key,const BW::StockDestructibleBinding & binding){
