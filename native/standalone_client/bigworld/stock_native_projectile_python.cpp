@@ -7,6 +7,8 @@
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_world_events.hpp"
 #include "stock_native_bot_python.hpp"
+#include "stock_native_battle_projectiles.hpp"
+#include "stock_native_battle_startup.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -28,8 +30,8 @@ BW::Vector3 vector(const Point&p){return BW::Vector3(float(p[0]),float(p[1]),flo
 Point point(const BW::Vector3&p){return {p.x,p.y,p.z};}
 Point xyz(PyObject*raw){if(PyList_Check(raw)||PyTuple_Check(raw))return p::numbers<3>(raw);return {p::numeric(raw,"x"),p::numeric(raw,"y"),p::numeric(raw,"z")};}
 geo::Pose geometryPose(const Pose&p,bool frozen){geo::Pose out;out.position=p.position;out.yaw=p.yaw;out.pitch=p.pitch;out.roll=p.roll;out.turret_yaw=p.turret_yaw;out.gun_pitch=p.gun_pitch;out.siege=p.siege;out.native_components=!frozen;out.native_hydraulics=!frozen;return out;}
-Pose plainPose(PyObject*state,const Point&position){Pose out;out.position=position;
-    if(PyDict_Check(state)){if(p::field(state,"x")&&p::field(state,"y")&&p::field(state,"z"))out.position={p::numeric(state,"x"),p::numeric(state,"y"),p::numeric(state,"z")};out.yaw=p::numeric(state,"yaw");out.pitch=p::numeric(state,"pitch");out.roll=p::numeric(state,"roll");out.turret_yaw=p::numeric(state,"turret_yaw",angle_delta(out.yaw,p::numeric(state,"aim_yaw",out.yaw)));out.gun_pitch=p::numeric(state,"gun_pitch");out.siege=int(p::integral(state,"siege_state"));}
+Pose plainPose(const stock_native_client_state::Value&state,const Point&position){Pose out;out.position=position;const auto&s=state.resolved();
+    if(s.kind==stock_native_client_state::Value::Kind::Object){if(s.object.count("x")&&s.object.count("y")&&s.object.count("z"))out.position={s.get("x").numeric(),s.get("y").numeric(),s.get("z").numeric()};out.yaw=s.get("yaw").numeric();out.pitch=s.get("pitch").numeric();out.roll=s.get("roll").numeric();out.turret_yaw=s.get("turret_yaw").numeric(angle_delta(out.yaw,s.get("aim_yaw").numeric(out.yaw)));out.gun_pitch=s.get("gun_pitch").numeric();out.siege=int(s.get("siege_state").numeric());}
     return out;
 }
 p::Ref shotWire(const damage::LaunchDescriptor&d){
@@ -41,7 +43,7 @@ p::Ref shotWire(const damage::LaunchDescriptor&d){
 std::optional<std::int64_t> optionalInteger(PyObject*raw,const char*key){auto value=p::value(raw,key);if(value.get()==Py_None)return {};return p::wide(value.get());}
 }
 struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::DetachedHits {
-    struct CachedRecord {Record record;std::unique_ptr<p::Ref> raw,entity;};
+    struct CachedRecord {Record record;std::shared_ptr<const stock_native_client_state::Actor> actor;std::unique_ptr<p::Ref> entity;};
     struct FrozenLaunch {LaunchRecord source;damage::LaunchDescriptor descriptor;Point velocity{};double factor=1.;std::optional<std::int64_t> epoch;std::array<std::optional<unsigned>,2> stickers;};
     world::Registry& registry;
     world::Scene& scene;
@@ -53,7 +55,10 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     world::Pipeline passive_scene;
     Random random;
     Owner owner;
-    std::unique_ptr<p::Ref> battle,battle_dict,client,process_clock;
+    // The round this owner serves; refresh and launch read its actor table and projectile clock.
+    native_battle::Battle* battle=nullptr;
+    std::uint64_t generation=0;
+    std::unique_ptr<p::Ref> client,process_clock;
     std::uint64_t registry_epoch=0,rejected=0,record_failures=0,effect_failures=0;
     std::string round;
     damage::StunConfig stun;
@@ -72,23 +77,22 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     std::optional<std::pair<std::int64_t,std::int64_t>> sending;
     std::size_t launch_cursor=0;
     State(world::Registry&r,world::Scene&s,geo::Vehicles&v,world::WorldEvents&e,bots::Runtime&b,bots::NativeServices&svc):registry(r),scene(s),vehicles(v),events(e),runtime(b),services(svc),shot_scene(r,s),passive_scene(r,s,128),owner(*this){}
-    void current(PyObject*value=nullptr){if(!battle||(value&&battle->get()!=value)||registry_epoch!=registry.epoch)throw p::Error("Native projectile owner is stale");}
+    void current(const native_battle::Battle*value=nullptr){if(!battle||(value&&battle!=value)||native_battle::current()!=battle||battle->generation!=generation||registry_epoch!=registry.epoch)throw p::Error("Native projectile owner is stale");}
     void error(const char*boundary,const std::exception&e){++rejected;PyErr_Clear();PySys_WriteStdout("[Offline LAN 0.9.22] Native projectile %s: %s\n",boundary,e.what());}
-    p::Ref nativeField(PyObject*entity,const char*name){return p::Ref(bots::readNativeEntityField(battle->get(),entity,name));}
+    p::Ref nativeField(PyObject*entity,const char*name){return p::Ref(bots::readNativeEntityField(nullptr,entity,name));}
     const bots::ServiceEntity* service(const Record&r){return services.find(actor(r));}
     void refresh(){
-        current();record_cache.clear();record_order.clear();auto rows=p::value(battle_dict->get(),"_records");if(!PyDict_Check(rows.get()))throw p::Error("Projectile record table unavailable");
-        Py_ssize_t cursor=0;PyObject*key=nullptr,*raw=nullptr;
-        while(PyDict_Next(rows.get(),&cursor,&key,&raw))try{
-            if(!PyDict_Check(raw))continue;Record r;r.key=p::string(key);r.local=p::truth(raw,"local");r.tombstone=p::truth(raw,"tombstone");r.ready=p::truth(raw,"ready");if(r.local||r.tombstone)continue;
-            auto kind=p::value(raw,"kind");const auto type=p::string(kind.get());if(type!="bot"&&type!="player")continue;r.human=type=="player";r.id=p::integral(raw,"network_id");r.engine_id=p::integral(raw,"engine_id");if(r.id<=0||r.engine_id<=0)continue;
-            p::Ref entity(bots::readNativeEntity(battle->get(),r.engine_id));if(entity.get()==Py_None)continue;r.started=p::flag(nativeField(entity.get(),"isStarted").get());if(!r.started)continue;
-            auto state=p::value(raw,"state"),collision=p::value(raw,"projectile_collision_pose"),position=nativeField(entity.get(),"position");r.current=plainPose(PyDict_Check(collision.get())?collision.get():state.get(),xyz(position.get()));
+        current();record_cache.clear();record_order.clear();
+        for(const auto&entry:battle->vehicles->actors)try{
+            if(!entry.second)continue;const auto&a=*entry.second;Record r;r.key=entry.first;r.local=a.local;r.tombstone=a.tombstone;r.ready=a.ready;if(r.local||r.tombstone)continue;
+            if(a.kind!="bot"&&a.kind!="player")continue;r.human=a.kind=="player";r.id=a.id;r.engine_id=a.engine_id;if(r.id<=0||r.engine_id<=0)continue;
+            p::Ref entity(bots::readNativeEntity(nullptr,r.engine_id));if(entity.get()==Py_None)continue;r.started=p::flag(nativeField(entity.get(),"isStarted").get());if(!r.started)continue;
+            const auto&state=a.state.resolved();auto position=nativeField(entity.get(),"position");r.current=plainPose(state,xyz(position.get()));
             // Native Runtime owns the worker Bot transform and aim. Its frozen
             // state is the unblended authority frame presented by the factory.
             if(!r.human){const auto bot=runtime.actors().find(r.id);if(bot!=runtime.actors().end()){const auto&a=bot->second;r.current.position=a.motion.position;r.current.yaw=a.motion.yaw;r.current.pitch=a.motion.pitch;r.current.roll=a.motion.roll;r.current.siege=a.siege.mode;r.current.turret_yaw=runtime.weapons().at(actor(r)).aim.turret_yaw;r.current.gun_pitch=runtime.weapons().at(actor(r)).aim.gun_pitch;}}
-            r.detached=p::flag(nativeField(entity.get(),"isTurretDetached").get());auto health=nativeField(entity.get(),"health");r.alive=p::field(state.get(),"alive")?(p::truth(state.get(),"alive")&&p::integral(state.get(),"health",1)>0):p::wide(health.get())>0;
-            const auto*s=service(r);r.pitch_hull_aiming=s&&s->pitch_hull_aiming[r.current.siege==2?1:0];CachedRecord row;row.record=r;row.raw=std::make_unique<p::Ref>(p::retain(raw));row.entity=std::make_unique<p::Ref>(std::move(entity));record_cache.emplace(r.key,std::move(row));record_order.push_back(r);
+            r.detached=p::flag(nativeField(entity.get(),"isTurretDetached").get());auto health=nativeField(entity.get(),"health");r.alive=state.kind==stock_native_client_state::Value::Kind::Object&&state.object.count("alive")?(state.get("alive").truth()&&state.get("health").numeric(1.)>0.):p::wide(health.get())>0;
+            const auto*s=service(r);r.pitch_hull_aiming=s&&s->pitch_hull_aiming[r.current.siege==2?1:0];CachedRecord row;row.record=r;row.actor=entry.second;row.entity=std::make_unique<p::Ref>(std::move(entity));record_cache.emplace(r.key,std::move(row));record_order.push_back(r);
         }catch(const std::exception&e){++record_failures;error("record",e);}
     }
     std::vector<Record> records()override{return record_order;}
@@ -115,7 +119,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         world::Hit hit;const auto status=passive_scene.horizontal(a,b,hit);if(status==world::QueryStatus::Failed)throw p::Error("Projectile blast visibility query failed");return status!=world::QueryStatus::Found||double((vector(hit.point)-vector(a)).length())+.001>=distance;
     }
     damage::Target target(const CachedRecord&r,const bots::ServiceEntity&s,const Pose&pose){
-        const auto&descriptor=s.projectile[pose.siege==2?1:0];if(!descriptor)throw p::Error("Projectile target descriptor unavailable");damage::Target out;if(!damage::readProjectileTargetState(battle->get(),r.raw->get(),r.entity->get(),*descriptor,out))throw p::Error("Projectile target state unavailable");out.position=pose.position;out.stun_config.minimum_duration=stun.minimum_duration;out.stun_config.factors=stun.factors;return out;
+        const auto&descriptor=s.projectile[pose.siege==2?1:0];if(!descriptor)throw p::Error("Projectile target descriptor unavailable");auto raw=p::dict();p::set(raw.get(),"kind",p::text(r.record.human?"player":"bot"));p::set(raw.get(),"network_id",p::integer(r.record.id));p::set(raw.get(),"state",p::Ref(stock_native_client_state::write(r.actor->state)));damage::Target out;if(!damage::readProjectileTargetState(nullptr,raw.get(),r.entity->get(),*descriptor,out))throw p::Error("Projectile target state unavailable");out.position=pose.position;out.stun_config.minimum_duration=stun.minimum_duration;out.stun_config.factors=stun.factors;return out;
     }
     damage::GeometryWorld geometry(const Record&r,const bots::ServiceEntity&s,const Pose&pose,bool historical,const Flight&flight,double at){
         std::array<std::optional<unsigned>,2> values{};const auto frozen=source_stickers.find(flight.canonical.id);if(frozen!=source_stickers.end())values=frozen->second;
@@ -146,26 +150,23 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         auto&last=confirmed_sequences[launch.shooter];if(launch.sequence<=last)return;auto&pending=confirmations[launch.shooter];pending.insert(launch.sequence);
         while(pending.count(last+1)){const auto next=last+1;if(!runtime.acknowledgeLaunch(launch.shooter,next))throw p::Error("Canonical native Bot launch acknowledgement is out of order");pending.erase(next);launch_payloads.erase({launch.shooter,next});last=next;}
         if(pending.empty())confirmations.erase(launch.shooter);
-        auto seen=p::value(battle_dict->get(),"_bot_fire_seen");if(PyDict_Check(seen.get())){auto key=p::integer(launch.shooter),value=p::integer(last);if(PyDict_SetItem(seen.get(),key.get(),value.get())<0)throw p::Error("Native Bot launch confirmation mirror failed");}
+        battle->projectiles->bot_fire_seen[launch.shooter]=last;
     }
     static double builtinClock(PyObject* fn){if(!fn||!PyCFunction_Check(fn))throw p::Error("Native clock unavailable");const int flags=PyCFunction_GET_FLAGS(fn);PyObject*result=nullptr;if((flags&METH_NOARGS)!=0)result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),nullptr);else if((flags&METH_VARARGS)!=0){p::Ref args(PyTuple_New(0));result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),args.get());}else throw p::Error("Native clock signature invalid");p::Ref value(result);return p::scalar(value.get());}
     double processTime(){return builtinClock(process_clock?process_clock->get():nullptr);}
-    double battleTime(){auto runtime_value=p::value(battle_dict->get(),"_runtime"),bigworld=p::value(runtime_value.get(),"bigworld"),clock=p::value(bigworld.get(),"time");try{if(clock.get()!=Py_None)return builtinClock(clock.get());}catch(const std::exception&){PyErr_Clear();}p::Ref time(PyImport_ImportModule("time"));auto wall=p::value(time.get(),"time");return builtinClock(wall.get());}
 
     bool observe(PyObject*message,double at){
         current();now=at;if(!PyDict_Check(message)||!std::isfinite(at))return false;auto epoch=optionalInteger(message,"authority_epoch");if(!epoch)epoch=optionalInteger(client->get(),"authority_epoch");const auto server=optionalInteger(message,"server_time_ms");double anchor=at;auto received=p::value(message,"_client_received_time");if(received.get()!=Py_None)anchor=std::max(0.,at-std::max(0.,std::min(60.,processTime()-p::scalar(received.get()))));
         auto rtt=p::value(client->get(),"minimum_rtt_ms");double one_way=0;try{if(rtt.get()!=Py_None)one_way=std::max(0.,std::min(.25,p::scalar(rtt.get())/2000.));else{auto fallback=p::value(client->get(),"rtt_ms");if(fallback.get()!=Py_None)one_way=std::max(0.,std::min(.25,p::scalar(fallback.get())/2000.));}}catch(...){PyErr_Clear();}
         anchor=std::max(0.,anchor-one_way);if(!owner.observe(epoch,server,anchor,at))return false;
-        if(server){auto old=optionalInteger(battle_dict->get(),"_projectile_server_time_ms");if(!old||*server>=*old){p::set(battle_dict->get(),"_projectile_server_time_ms",p::integer(*server));p::set(battle_dict->get(),"_projectile_server_local_time",p::number(anchor));}}
-        if(epoch)p::set(battle_dict->get(),"_projectile_epoch",p::integer(*epoch));const auto motion=optionalInteger(message,"motion_time_us");if(motion&&*motion>=0){auto old=optionalInteger(battle_dict->get(),"_pose_motion_time_us");if(!old||*motion>=*old){p::set(battle_dict->get(),"_pose_motion_time_us",p::integer(*motion));p::set(battle_dict->get(),"_pose_motion_local_time",p::number(anchor));}}
         return true;
     }
-    bool install(PyObject*raw){
-        if(battle)throw p::Error("Native projectile owner already installed");auto legacy=p::value(raw,"_projectile_meta");if(PyDict_Check(legacy.get())&&PyDict_Size(legacy.get())>0)throw p::Error("Install native projectile owner before legacy flights");battle=std::make_unique<p::Ref>(p::retain(raw));battle_dict=std::make_unique<p::Ref>(PyDict_Check(raw)?p::retain(raw):p::value(raw,"__dict__"));client=std::make_unique<p::Ref>(p::value(battle_dict->get(),"client"));registry_epoch=registry.epoch;
+    bool install(native_battle::Battle&b){
+        if(battle)throw p::Error("Native projectile owner already installed");if(!b.projectiles||!b.startup||!b.engine.client)throw p::Error("Native projectile battle state is unavailable");battle=&b;generation=b.generation;client=std::make_unique<p::Ref>(p::retain(b.engine.client.get()));registry_epoch=registry.epoch;
         p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!random.install(instance.get()))throw p::Error("Native projectile RNG installation failed");p::Ref timing(PyImport_ImportModule("time"));auto clock=p::value(timing.get(),"monotonic");process_clock=std::make_unique<p::Ref>(clock.get()!=Py_None?p::retain(clock.get()):p::value(timing.get(),"clock"));
-        p::Ref stun_module(PyImport_ImportModule("items.stun"));auto cfg=p::value(stun_module.get(),"g_cfg");if(!damage::readStunConfig(cfg.get(),stun))throw p::Error("Native projectile stun config unavailable");auto config=p::value(battle_dict->get(),"_config");const auto seconds=[&](const char* key,double fallback){try{return p::numeric(config.get(),key,fallback);}catch(const std::exception&){PyErr_Clear();return fallback;}};battle_end_ms=std::int64_t(std::round((std::max(0.,seconds("prebattleCountdownSeconds",10.))+std::max(1.,seconds("battleDurationSeconds",900.)))*1000.));
-        auto start=p::value(battle_dict->get(),"_start_message"),round_value=p::value(start.get(),"round_id");p::Ref round_string(PyObject_Str(round_value.get()));round=p::string(round_string.get());auto seen=p::value(battle_dict->get(),"_bot_fire_seen");if(PyDict_Check(seen.get())){Py_ssize_t i=0;PyObject*k=nullptr,*v=nullptr;while(PyDict_Next(seen.get(),&i,&k,&v))confirmed_sequences[p::wide(k)]=p::wide(v);}
-        auto epoch=optionalInteger(battle_dict->get(),"_projectile_epoch"),server=optionalInteger(battle_dict->get(),"_projectile_server_time_ms");if(!epoch)epoch=optionalInteger(client->get(),"authority_epoch");const double anchor=p::numeric(battle_dict->get(),"_projectile_server_local_time");const double install_now=battleTime();owner.observe(epoch,server,anchor,install_now);for(const auto&actor:runtime.actors()){const auto sequence=runtime.weapons().at({ActorKind::Bot,actor.first}).fire_seq;confirmed_sequences[actor.first]=std::max(confirmed_sequences[actor.first],sequence);}refresh();auto snapshot=p::value(battle_dict->get(),"_last_snapshot");if(PyDict_Check(snapshot.get()))ingress(snapshot.get(),install_now);return true;
+        p::Ref stun_module(PyImport_ImportModule("items.stun"));auto cfg=p::value(stun_module.get(),"g_cfg");if(!damage::readStunConfig(cfg.get(),stun))throw p::Error("Native projectile stun config unavailable");battle_end_ms=std::int64_t(std::round((native_battle::startup::prebattleSeconds(b)+native_battle::startup::battleSeconds(b))*1000.));
+        p::Ref round_value(stock_native_client_state::write(b.start.get("round_id")));p::Ref round_string(PyObject_Str(round_value.get()));round=p::string(round_string.get());for(const auto&seen:b.projectiles->bot_fire_seen)confirmed_sequences[seen.first]=seen.second;
+        const auto&server=*b.projectiles;auto epoch=server.epoch;if(!epoch)epoch=optionalInteger(client->get(),"authority_epoch");const double install_now=b.clock();owner.observe(epoch,server.server_time_ms,server.server_local_time,install_now);for(const auto&actor:runtime.actors()){const auto sequence=runtime.weapons().at({ActorKind::Bot,actor.first}).fire_seq;confirmed_sequences[actor.first]=std::max(confirmed_sequences[actor.first],sequence);}refresh();const auto&snapshot=b.startup->last_snapshot.resolved();if(snapshot.kind==stock_native_client_state::Value::Kind::Object){p::Ref raw(stock_native_client_state::write(snapshot));ingress(raw.get(),install_now);}return true;
     }
     bool matchingRound(PyObject*message){auto raw=p::value(message,"round_id");if(raw.get()==Py_None)return true;p::Ref text(PyObject_Str(raw.get()));return p::string(text.get())==round;}
     bool ingress(PyObject*message,double at){
@@ -199,32 +200,31 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         return out.release();
     }
     bool launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){const auto key=std::make_pair(bot,sequence);if(!sending||*sending!=key)return false;sending.reset();if(accepted)next_sequences[bot]=sequence+1;else blocked_bots.insert(bot);return true;}
-    PyObject* advance(PyObject*raw,double at,bool force){
-        current(raw);now=at;refresh();
+    PyObject* advance(native_battle::Battle&b,double at,bool force){
+        current(&b);now=at;refresh();
         const auto start=std::chrono::steady_clock::now();owner.advance(at,force);
         for(auto at=source_stickers.begin();at!=source_stickers.end();)if(!owner.flights().count(at->first))at=source_stickers.erase(at);else ++at;
         const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
-        const auto& metrics=owner.lastAdvanceMetrics();auto perf=p::dict();
-        p::set(perf.get(),"active",p::integer(metrics.cursor.active));
-        p::set(perf.get(),"chords",p::integer(metrics.cursor.chords));
-        p::set(perf.get(),"debt",p::number(metrics.cursor.debt_after));
-        p::set(perf.get(),"advance",p::number(std::max(0.,elapsed)));
-        p::set(perf.get(),"terminals",p::integer(metrics.cursor.terminals));
-        p::set(perf.get(),"scans",p::integer(metrics.chord.scans));
-        p::set(perf.get(),"candidates",p::integer(metrics.chord.candidates));
-        p::set(battle_dict->get(),"_projectile_perf",perf);
+        const auto& metrics=owner.lastAdvanceMetrics();auto&perf=*b.projectiles;
+        perf.active=std::size_t(metrics.cursor.active);
+        perf.chords=std::size_t(metrics.cursor.chords);
+        perf.debt=metrics.cursor.debt_after;
+        perf.advance_seconds=std::max(0.,elapsed);
+        perf.terminals=std::size_t(metrics.cursor.terminals);
+        perf.scans=std::size_t(metrics.chord.scans);
+        perf.candidates=std::size_t(metrics.chord.candidates);
         return packDispatches(owner.dispatches());
     }
 };
 NativeProjectiles::NativeProjectiles(world::Registry&r,world::Scene&s,geo::Vehicles&v,world::WorldEvents&e,bots::Runtime&b,bots::NativeServices&svc):state_(std::make_unique<State>(r,s,v,e,b,svc)){}
 NativeProjectiles::~NativeProjectiles()=default;
-bool NativeProjectiles::install(PyObject*battle){try{return state_->install(battle);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool NativeProjectiles::install(native_battle::Battle&battle){try{return state_->install(battle);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool NativeProjectiles::observe(PyObject*message,double now){try{return state_->observe(message,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool NativeProjectiles::ingress(PyObject*message,double now){try{return state_->ingress(message,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool NativeProjectiles::event(PyObject*event,double now){try{return state_->event(event,now);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 PyObject* NativeProjectiles::launches(PyObject*message){try{return state_->launches(message);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 bool NativeProjectiles::launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){return state_->launchResult(bot,sequence,accepted);}
-PyObject* NativeProjectiles::advance(PyObject*battle,double now,bool force){try{return state_->advance(battle,now,force);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
+PyObject* NativeProjectiles::advance(native_battle::Battle&battle,double now,bool force){try{return state_->advance(battle,now,force);}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 bool NativeProjectiles::acknowledge(std::uint64_t serial,bool sent){return state_->owner.acknowledge(serial,sent);}
 PyObject* NativeProjectiles::statistics()const{try{p::Ref out(packMetrics(state_->owner.metrics()));p::set(out.get(),"ingress_rejected",p::integer(state_->rejected));p::set(out.get(),"record_failures",p::integer(state_->record_failures));p::set(out.get(),"effect_failures",p::integer(state_->effect_failures));return out.release();}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 }

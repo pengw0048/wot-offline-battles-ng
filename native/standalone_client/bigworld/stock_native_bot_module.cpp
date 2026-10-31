@@ -255,7 +255,7 @@ struct Owner {
     }
     void humanInput(Battle&battle,PyObject*players,bool is_prepared=false){
         std::vector<Human> accepted;std::set<ID> present;
-        p::Ref prepared=is_prepared?(players&&players!=Py_None?p::retain(players):p::list()):p::Ref(prepareHumanInput(players,battle.engine.shell.get(),profiles.get()));
+        p::Ref prepared=is_prepared?(players&&players!=Py_None?p::retain(players):p::list()):p::Ref(prepareHumanInput(players,battle,profiles.get()));
         for(Py_ssize_t i=0;i<p::size(prepared.get());++i){auto row=p::item(prepared.get(),i);if(!PyDict_Check(row.get()))continue;
             try{
                 const ID id=p::integral(row.get(),"id");if(id<=0||!p::truth(row.get(),"world_pose"))continue;
@@ -303,15 +303,19 @@ std::shared_ptr<Owner> create(Battle&b){
     if(!b.bots||!b.bots->seed)throw p::Error("Native Bot round seed is unavailable");
     auto access=native_battle::world::sceneAccess(b);
     if(!access.registry)throw p::Error("Native Bot space is unavailable");
-    PyObject*shell=b.engine.shell.get();
     auto handle=std::make_shared<Owner>(std::move(access));auto&o=*handle;
     std::weak_ptr<Owner> weak=handle;
     native_battle::world::setTurretSweep(b,[weak](const world::TurretSweep&q){auto owner=weak.lock();return !owner||owner->turretSweepAllowed(q);});
     o.environment=player_environment::Owner(b.bots->player_environment_check,b.bots->player_environment_seq);
     o.seed=b.bots->seed;
     Snapshot snapshot;require(readNativeSnapshot(*o.seed,b.bots->orders,b.bots->refresh_bank,snapshot));
-    require(foliage::readFoliageSnapshot(shell,snapshot.foliage));
-    foliage::TreeState trees;require(foliage::readFoliageTreeState(shell,trees));o.trees.reset(new foliage::Trees(std::move(trees)));
+    // The world space owns this map's foliage; the worker Bot world refreshes its own copy (world::refreshFallenFoliage is visible-only).
+    // No map foliage or a disabled "foliage camouflage" feature leaves both copies disabled.
+    const auto*trees=native_battle::world::trees(b);
+    foliage::TreeState tree_state=trees?*trees:foliage::TreeState{};
+    if(!trees)tree_state.foliage.enabled=false;
+    snapshot.foliage=tree_state.foliage;
+    o.trees.reset(new foliage::Trees(std::move(tree_state)));
     o.runtime.reset(new Runtime(std::move(snapshot),o.registry,o.scene,o.services));
     // The round start has accepted no server snapshot tick yet.
     o.services.bind(*o.runtime);o.server_tick=-1;
@@ -326,14 +330,14 @@ std::shared_ptr<Owner> create(Battle&b){
     o.detached_runtime->install(b);
     o.projectiles.reset(new stock_native_projectile::NativeProjectiles(o.registry,o.scene,
         o.vehicles,o.events,*o.runtime,o.services));
-    require(o.projectiles->install(shell));
+    require(o.projectiles->install(b));
     return handle;
 }
 void close(Owner&o){o.retire();}
 bool current(const Owner&o){return o.current();}
 const Clock& clock(const Owner&o){return o.runtime->clock();}
 
-p::Ref players(Owner&o,Battle&b){auto rows=snapshotPlayers(b);return p::Ref(prepareHumanInput(rows.get(),b.engine.shell.get(),o.profiles.get()));}
+p::Ref players(Owner&o,Battle&b){auto rows=snapshotPlayers(b);return p::Ref(prepareHumanInput(rows.get(),b,o.profiles.get()));}
 
 p::Ref update(Owner&o,Battle&b,double elapsed,double now,PyObject*players){
     if(!live(o))return p::list();
@@ -458,7 +462,7 @@ bool projectileEvent(Owner&o,PyObject*event,double now){
 }
 p::Ref projectileAdvance(Owner&o,Battle&b,double now,bool force){
     if(!live(o))return p::list();
-    p::Ref result(o.projectiles->advance(b.engine.shell.get(),now,force));
+    p::Ref result(o.projectiles->advance(b,now,force));
     return live(o)?std::move(result):p::list();
 }
 bool projectileAcknowledge(Owner&o,std::uint64_t serial,bool sent){return o.projectiles->acknowledge(serial,sent);}

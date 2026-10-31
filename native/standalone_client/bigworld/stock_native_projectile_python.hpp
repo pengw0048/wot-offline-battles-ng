@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 struct _object;
+namespace native_battle {struct Battle;}
 namespace stock_native_world {struct Registry;class Scene;class WorldEvents;}
 namespace stock_native_bot_geometry {class Vehicles;}
 namespace stock_native_bot {class Runtime;class NativeServices;}
@@ -16,7 +17,8 @@ public:
     ~NativeProjectiles();
     NativeProjectiles(const NativeProjectiles&)=delete;
     NativeProjectiles&operator=(const NativeProjectiles&)=delete;
-    bool install(_object* battle);
+    // Binds the round: actor table, projectile clock and fire ledger come from the native battle.
+    bool install(native_battle::Battle&);
     bool observe(_object* message,double now);
     bool ingress(_object* message,double now);
     bool event(_object* event,double now);
@@ -24,7 +26,7 @@ public:
     bool launchResult(std::int64_t bot,std::int64_t sequence,bool accepted);
     // Returns (serial, kind, plain wire) rows. Only the external transport sends
     // these; acceptance is reported through acknowledge before the next frame.
-    _object* advance(_object* battle,double now,bool force_progress=false);
+    _object* advance(native_battle::Battle&,double now,bool force_progress=false);
     bool acknowledge(std::uint64_t serial,bool sent);
     _object* statistics()const;
 };
