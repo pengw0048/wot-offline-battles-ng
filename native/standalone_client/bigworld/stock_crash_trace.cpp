@@ -1,13 +1,16 @@
 // First-chance access violations log EIP and the EBP-chain return addresses before the crash handler runs.
 #include "pch.hpp"
 #include <windows.h>
+#include <Python.h>
 
 namespace {
 LONG CALLBACK traceAccessViolation(EXCEPTION_POINTERS* info) {
     static volatile LONG reported = 0, thrown = 0;
     const DWORD code = info->ExceptionRecord->ExceptionCode;
-    // 0xE06D7363 is an MSVC C++ throw: the first ones locate native battle failures that carry no source position.
-    if (code == 0xE06D7363) { if (InterlockedIncrement(&thrown) > 400) return EXCEPTION_CONTINUE_SEARCH; }
+    // Only throws that carry a pending Python OverflowError: the failure being located, not routine contained errors.
+    if (code == 0xE06D7363) {
+        if (!PyThreadState_GET() || !PyErr_Occurred() || !PyErr_ExceptionMatches(PyExc_OverflowError) || InterlockedIncrement(&thrown) > 20) return EXCEPTION_CONTINUE_SEARCH;
+    }
     else if (code != EXCEPTION_ACCESS_VIOLATION || InterlockedIncrement(&reported) > 3) return EXCEPTION_CONTINUE_SEARCH;
     const CONTEXT* c = info->ContextRecord;
     const DWORD image = DWORD(GetModuleHandle(nullptr));
