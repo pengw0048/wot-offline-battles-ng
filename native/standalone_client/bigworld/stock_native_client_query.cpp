@@ -9,6 +9,7 @@
 #endif
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_client_query.hpp"
+#include "stock_native_battle.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_turret_obstacles.hpp"
 #include "stock_native_detached_turret_snapshot.hpp"
@@ -401,4 +402,45 @@ PyObject* close(PyObject*,PyObject*args){PyObject*c;if(!PyArg_ParseTuple(args,"O
     for(auto&entry:o.entries)if(entry.second->actor->geometry.get()==entry.second->geometry.get())entry.second->actor->geometry.reset();
     o.entries.clear();o.objects.clear();o.turrets.clear();o.projectile_turrets.clear();o.physical_turrets.clear();o.turret_geometry.clear();o.selection_order.clear();o.candidate_order.clear();return p::retain(Py_None).release();
 }catch(const std::exception&e){return fail(e);}}
+
+// Battle-owned query ingress: vehicle readiness, tombstones and engine ids come from the native vehicle table.
+PyObject* createFor(native_battle::Battle& b){
+    p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.entities.remote_vehicle"));
+    auto collision_type=field(module.get(),"_SegmentCollisionResultExt");
+    auto o=std::make_unique<Owner>(b.vehicles,collision_type.get());p::Ref capsule(PyCapsule_New(o.get(),capsule_name,destroy));o.release();return capsule.release();
+}
+std::vector<OutlineFailure> ingestFor(PyObject*c,native_battle::Battle& b){
+    auto&o=owner(c);std::vector<OutlineFailure> errors;if(o.closed||o.state->retired)return errors;
+    if(o.state!=b.vehicles)throw p::Error("Native client query state identity changed");
+    if(o.epoch!=o.state->epoch){o.entries.clear();o.objects.clear();o.turrets.clear();o.projectile_turrets.clear();o.physical_turrets.clear();o.turret_geometry.clear();o.selection_order.clear();o.candidate_order.clear();o.epoch=o.state->epoch;}
+    std::set<std::int64_t> seen;
+    for(const auto&item:o.state->actors){auto a=item.second;
+        if(a->missing||a->tombstone||!a->ready||a->engine_id<=0)continue;
+        const auto id=a->engine_id;seen.insert(id);try{
+            auto entity=b.entity(id);
+            if(entity.get()==Py_None||!engineOwns(id,entity.get())){o.entries.erase(id);a->geometry.reset();continue;}
+            auto d=field(entity.get(),"typeDescriptor"),ap=field(entity.get(),"appearance");
+            auto resource_stamp=resourceStamp(b.engine.shell.get(),entity.get(),d.get());
+            auto found=o.entries.find(id);
+            if(found!=o.entries.end()&&found->second->actor==a&&found->second->entity.get()==entity.get()&&
+                found->second->descriptor.get()==d.get()&&found->second->appearance.get()==ap.get()&&found->second->resource_stamp==resource_stamp&&found->second->descriptor_revision==a->descriptor_revision&&found->second->geometry)continue;
+            o.entries.erase(id);a->geometry.reset();
+            auto entry=std::make_unique<Entry>(a,entity.get(),ap.get(),d.get(),Py_None);entry->descriptor_revision=a->descriptor_revision;entry->resource_stamp=std::move(resource_stamp);
+            auto cached=std::make_shared<CachedGeometry>(d.get());cached->revision=a->descriptor_revision;
+            try{cached->vehicle=readGeometry(d.get(),entity.get(),a->local,a->descriptor_revision);
+                for(const char*name:{"chassis","hull","turret","gun"}){auto component=field(d.get(),name);cached->material_maps.push_back(field(component.get(),"materials"));}
+            }catch(const std::exception&error){PyErr_Clear();cached.reset();errors.push_back({a->key,error.what()});}
+            if(!active(o))break;
+            entry->geometry=cached;a->geometry=cached;o.entries[id]=std::move(entry);if(cached)++o.cold_installs;
+        }catch(const std::exception&e){PyErr_Clear();o.entries.erase(id);a->geometry.reset();errors.push_back({a->key,e.what()});}
+    }
+    for(auto i=o.entries.begin();i!=o.entries.end();)if(!seen.count(i->first))i=o.entries.erase(i);else ++i;
+    o.objects.clear();for(const auto&item:o.entries)o.objects[item.second->entity.get()]=item.first;
+    o.selection_order.clear();for(const auto&item:o.state->actors)if(o.entries.count(item.second->engine_id))o.selection_order.push_back(item.second->engine_id);
+    auto arena=field(b.engine.avatar.get(),"arena"),roster=field(arena.get(),"vehicles");
+    o.candidate_order.clear();Py_ssize_t cursor=0;PyObject*key,*value;
+    if(PyDict_Check(roster.get()))while(PyDict_Next(roster.get(),&cursor,&key,&value)){const auto id=p::wide(key);if(o.entries.count(id))o.candidate_order.push_back(id);}
+    else o.candidate_order=o.selection_order;
+    return errors;
+}
 }
