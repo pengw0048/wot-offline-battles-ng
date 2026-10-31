@@ -303,9 +303,11 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
     lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
-    lambda source: wire_bindings.client(transport_bindings.client(snapshot_bindings.client(source))))
+    lambda source: client_lifecycle_bindings.lan_client(
+        wire_bindings.client(transport_bindings.client(snapshot_bindings.client(source)))))
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snapshot
-ADAPTERS[NATIVE_MATH_PATH.with_name('offline_replay.py')] = wire_bindings.offline_replay
+ADAPTERS[NATIVE_MATH_PATH.with_name('offline_replay.py')] = (
+    lambda source: client_lifecycle_bindings.offline_replay(wire_bindings.offline_replay(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('replay_transport.py')] = wire_bindings.replay_transport
 ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
 ADAPTERS[NATIVE_MATH_PATH.parent / 'entities/turret_obstacles.py'] = client_query_bindings.turrets

@@ -173,3 +173,31 @@ def battle(source):
         raise ValueError('The pinned lifecycle import seam changed')
     return future + 'import offline_client_lifecycle_native as _offline_lifecycle_native\n' + source[len(future):]
 
+
+RECORDING_PORTS = ('poll_process_status(client)', 'ensure_recording(runtime)', 'local_state(runtime)', 'record_local(runtime)')
+
+
+def offline_replay(source):
+    """Route the per-frame offline replay recording functions to their native ports."""
+    for call in RECORDING_PORTS:
+        definition = 'def %s:\n' % call
+        if source.count(definition) != 1:
+            raise ValueError('The pinned replay recording seam changed: ' + call)
+        source = source.replace(definition, definition + '    return _offline_lifecycle_native.%s, globals())\n' % call[:-1])
+    future = 'from __future__ import print_function\n'
+    if source.count(future) != 1:
+        raise ValueError('The pinned replay recording import seam changed')
+    return source.replace(future, future + '\nimport offline_client_lifecycle_native as _offline_lifecycle_native\n')
+
+
+def lan_client(source):
+    """Construct the transport timing as the native TransportPerformance."""
+    seam = '\n\ntry:\n    string_types = (basestring,)\n'
+    if source.count(seam) != 1 or source.count('class _TransportPerformance(object):') != 1:
+        raise ValueError('The pinned transport performance seam changed')
+    source = source.replace(seam, '\n\ndef _TransportPerformance(generation):\n'
+                                  '    return _offline_lifecycle_native.TransportPerformance(globals(), generation)\n' + seam)
+    future = 'from __future__ import print_function\n'
+    if not source.startswith(future):
+        raise ValueError('The pinned transport performance import seam changed')
+    return future + 'import offline_client_lifecycle_native as _offline_lifecycle_native\n' + source[len(future):]
