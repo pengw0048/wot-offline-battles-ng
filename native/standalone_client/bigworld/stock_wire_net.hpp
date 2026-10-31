@@ -16,7 +16,7 @@ PyMethodDef* methods();
 struct Native;
 // One received message, its age in seconds, or the decode failure reason when `message` is empty.
 struct Frame {
-    std::shared_ptr<const stock_native_client_state::Value> message;
+    std::shared_ptr<stock_native_client_state::Value> message;
     double age;
     std::string error;
 };

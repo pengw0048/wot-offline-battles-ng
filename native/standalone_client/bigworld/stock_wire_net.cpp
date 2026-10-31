@@ -58,7 +58,7 @@ struct Received {
     std::shared_ptr<const stock_native_client_state::Value> snapshot;
     std::string resync;
     // A native-owned connection decodes every frame here; a decode failure leaves `resync` as its reason.
-    std::shared_ptr<const stock_native_client_state::Value> message;
+    std::shared_ptr<stock_native_client_state::Value> message;
 };
 // One queued frame; a coalesced one may be replaced in place until the sender takes it.
 struct Outgoing {

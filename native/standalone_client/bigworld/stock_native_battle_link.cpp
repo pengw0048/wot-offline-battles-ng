@@ -140,7 +140,6 @@ std::optional<Value> outfits(const Value& raw) {
 // ---- the link ------------------------------------------------------------------------------
 struct Static { Value source, canonical; };
 struct Staged {
-    Value rows = array();
     std::map<std::int64_t, Static> outfits, params;
     bool outfits_valid = true, params_valid = true;
 };
@@ -190,11 +189,11 @@ bool sendWire(const Value& wire, const std::optional<std::string>& key = std::nu
            stock_wire_net::Queued::refused;
 }
 
-// Stage canonical static inputs for each row, restoring a lean row's cached outfits and effective parameters.
-Staged prepare(const Value& players, bool allow_lean) {
+// Stage canonical static inputs for each row in place, restoring a lean row's cached outfits and effective parameters.
+Staged prepare(Value& players, bool allow_lean) {
     Staged out;
-    for (const auto& raw : players.resolved().array) {
-        Value entry = raw.resolved();
+    for (auto& raw : writable(players).array) {
+        Value& entry = writable(raw);
         const auto id = exact(at(entry, "id"));
         for (int kind = 0; kind < 2; ++kind) {
             const char* name = kind ? "effective_params" : "outfits";
@@ -225,7 +224,6 @@ Staged prepare(const Value& players, bool allow_lean) {
                 if (kind && !allow_lean) valid = false;
             } else if (kind) valid = false;
         }
-        out.rows.array.push_back(std::move(entry));
     }
     return out;
 }
@@ -370,7 +368,7 @@ Value canonicalRow(Value row) {
     return row;
 }
 // Canonical rows; an invalid row keeps its previous same-round version (counted as retained).
-std::pair<Value, long> canonicalRows(const Value& incoming, const char* field, const Value* message) {
+std::pair<Value, long> canonicalRows(Value incoming, const char* field, const Value* message) {
     const Value* previous = link->last_snapshot.get();
     const bool same_round = previous && (!message || at(*previous, "round_id") == at(*message, "round_id"));
     const bool same_scope = same_round && (!message || at(*previous, "authority_epoch") == at(*message, "authority_epoch"));
@@ -381,11 +379,11 @@ std::pair<Value, long> canonicalRows(const Value& incoming, const char* field, c
     Value out = array();
     long retained = 0;
     const Value& contracts = message ? at(*message, "bot_equipment_contracts") : Value();
-    for (const auto& raw : incoming.resolved().array) {
+    for (auto& raw : writable(incoming).array) {
         const auto id = exact(at(raw, "id"));
         const auto prior = id ? indexed.find(*id) : indexed.end();
         try {
-            Value row = raw.resolved();
+            Value row = raw.reference ? *raw.reference : std::move(raw);
             if (std::string(field) == "bots") restoreEquipment(row, contracts, same_scope && prior != indexed.end() ? prior->second : nullptr);
             out.array.push_back(canonicalRow(std::move(row)));
         } catch (const std::exception&) {
@@ -526,7 +524,7 @@ bool loadTiming(const Value& message) {
 }
 
 // Detached turret rows accumulate per round; a newer motion_seq replaces an actor's row.
-Value adoptTurrets(const Value& message) {
+void adoptTurrets(Value& message) {
     const auto round = exact(at(message, "round_id"));
     if (link->turret_round != round) { link->turret_round = round; link->turrets.clear(); }
     const Value& incoming = at(message, "detached_turrets").resolved();
@@ -542,12 +540,10 @@ Value adoptTurrets(const Value& message) {
                 (previous != link->turrets.end() && exact(at(row, "motion_seq")).value_or(0) > exact(at(previous->second, "motion_seq")).value_or(0)))
                 link->turrets[key] = row;
         }
-    if (!has(message, "detached_turrets") && link->turrets.empty()) return message;
-    Value out = message;
+    if (!has(message, "detached_turrets") && link->turrets.empty()) return;
     Value list = array();
     for (const auto& entry : link->turrets) list.array.push_back(entry.second);
-    out.object["detached_turrets"] = std::move(list);
-    return out;
+    message.object["detached_turrets"] = std::move(list);
 }
 
 // ---- dispatch ------------------------------------------------------------------------------
@@ -595,14 +591,15 @@ bool roster(const Value& m) {
     const auto server_time = ranged(at(m, "server_time_ms"), 0, MAX_ID);
     const std::string phase = safeText(at(m, "phase"), 16), map = safeText(at(m, "map"));
     const bool listed = rows(at(m, "players"), 64);
-    Staged staged = listed ? prepare(at(m, "players"), false) : Staged();
+    Value players = listed ? at(m, "players").resolved() : array();
+    Staged staged = listed ? prepare(players, false) : Staged();
     std::set<std::int64_t> ids;
     bool compacts = true;
-    for (const auto& row : staged.rows.array) {
+    for (const auto& row : players.array) {
         if (const auto id = exact(at(row, "id"))) ids.insert(*id);
         compacts = compacts && compactDescriptor(at(row, "vehicle_compact_descr"));
     }
-    const bool any = !staged.rows.array.empty();
+    const bool any = !players.array.empty();
     if (!protocol || *protocol <= 0 || !round || *round < 0 || !revision || *revision < 0 ||
         (phase != "waiting" && phase != "loading" && phase != "battle") || map.empty() || !listed || !staged.outfits_valid || !compacts ||
         !staged.params_valid || (any && (!host || !ids.count(*host))) || (!any && host) || exact(at(m, "bot_authority_id")) != AUTHORITY_ID ||
@@ -631,7 +628,7 @@ bool roster(const Value& m) {
     link->s.phase = phase;
     link->map = map;
     commit(staged);
-    link->roster = staged.rows;
+    link->roster = std::move(players);
     link->host_player_id = host;
     link->s.bot_authority_id = AUTHORITY_ID;
     link->s.authority_epoch = epoch;
@@ -647,20 +644,19 @@ bool roster(const Value& m) {
 }
 
 // Real players (static inputs restored), then the worker's own carrier row.
-std::optional<std::pair<Value, Staged>> projectPlayers(const Value& m, bool lean) {
+std::optional<Staged> projectPlayers(Value& m, bool lean) {
     if (!rows(at(m, "players"), 63)) return std::nullopt;
-    Staged staged = prepare(at(m, "players"), lean);
+    Value& players = m.object["players"];
+    Staged staged = prepare(players, lean);
     if (!staged.params_valid) return std::nullopt;
-    for (const auto& row : staged.rows.array) if (!compactDescriptor(at(row, "vehicle_compact_descr"))) return std::nullopt;
-    Value players = staged.rows;
-    return std::make_pair(std::move(players), std::move(staged));
+    for (const auto& row : players.array) if (!compactDescriptor(at(row, "vehicle_compact_descr"))) return std::nullopt;
+    return staged;
 }
 
 void battleStart(Value m) {
     if (exact(at(m, "bot_authority_id")) != AUTHORITY_ID) { fail("worker authority identity changed"); return; }
     auto projected = projectPlayers(m, false);
     if (!projected) { fail("worker player descriptor is unavailable"); return; }
-    m.object["players"] = projected->first;
     const auto round = exact(at(m, "round_id")), revision = exact(at(m, "state_revision"));
     if (!round || !revision || *revision < 0) { fail("invalid battle_start message"); return; }
     if (link->s.round_id && *round < *link->s.round_id) return;
@@ -707,14 +703,17 @@ void battleStart(Value m) {
     link->map = map;
     link->s.round_id = round;
     link->state_revision = *revision;
-    commit(projected->second);
-    link->roster = projected->first;
+    commit(*projected);
+    // The roster keeps the real players; the carrier row is the last one.
+    link->roster = at(m, "players").resolved();
+    link->roster.array.pop_back();
     link->host_player_id = host;
     link->start_round = round;
     link->s.bot_authority_id = AUTHORITY_ID;
     link->s.authority_epoch = epoch;
     if (start_time) link->server_time_ms = start_time;
-    notify("battle_start", adoptTurrets(m));
+    adoptTurrets(m);
+    notify("battle_start", std::move(m));
 }
 
 void battleLive(Value m) {
@@ -768,7 +767,8 @@ void events(Value m) {
     for (const auto& update : updates) { link->s.bot_authority_id = update.first; link->s.authority_epoch = update.second; }
     link->s.authority_epoch = epoch;
     link->server_time_ms = server_time;
-    notify("events", adoptTurrets(m));
+    adoptTurrets(m);
+    notify("events", std::move(m));
 }
 
 // Snapshot admission: identity, ordering and the actor rows the worker's battle reads.
@@ -810,22 +810,21 @@ void snapshot(Value m) {
     const bool lean = !has(m, "bot_manifest") && link->s.server_capabilities.count("lean_snapshot_manifest_v1") &&
                       retained_manifest.resolved().kind == K::Array;
     // The worker's carrier row joins the real players before the actor rows are admitted.
-    const auto dummy = dummyPlayer(projected->first);
+    const auto dummy = dummyPlayer(at(m, "players"));
     if (!dummy) { fail("worker runtime projection is unavailable"); return; }
-    Value players = projected->first;
-    players.array.push_back(*dummy);
+    writable(m.object["players"]).array.push_back(*dummy);
     std::vector<std::string> reasons;
     long retained = 0;
     Value player_rows, bot_rows;
     if (!rows(at(m, "bots"), 30)) reasons.push_back("bots");
-    else { auto canonical = canonicalRows(at(m, "bots"), "bots", &m); bot_rows = std::move(canonical.first); retained += canonical.second; }
-    { auto canonical = canonicalRows(players, "players", nullptr); player_rows = std::move(canonical.first); retained += canonical.second; }
+    else { auto canonical = canonicalRows(std::move(m.object["bots"]), "bots", &m); bot_rows = std::move(canonical.first); retained += canonical.second; }
+    { auto canonical = canonicalRows(std::move(m.object["players"]), "players", nullptr); player_rows = std::move(canonical.first); retained += canonical.second; }
     if (!tick || *tick < 0) reasons.push_back("server_tick");
     if (!bot_revision) reasons.push_back("bot_state_revision");
     else if (previous_revision && *bot_revision < *previous_revision) reasons.push_back("bot_state_revision_regressed");
     if (!motion_valid) reasons.push_back("motion_timing");
     if (!valid_projectiles) reasons.push_back("projectiles");
-    if (!projected->second.outfits_valid) reasons.push_back("player_outfits");
+    if (!projected->outfits_valid) reasons.push_back("player_outfits");
     if (has(m, "bot_manifest") && !rows(at(m, "bot_manifest"), 30)) reasons.push_back("bot_manifest");
     if (!has(m, "bot_manifest") && !lean) reasons.push_back("bot_manifest_missing");
     if (has(m, "bot_orders") && (!rows(at(m, "bot_orders"), 30) || !exact(at(m, "bot_order_revision")) || *exact(at(m, "bot_order_revision")) < 0))
@@ -841,7 +840,7 @@ void snapshot(Value m) {
         return;
     }
     if (has(m, "timing") && !loadTiming(m)) { fail("invalid battle timing"); return; }
-    commit(projected->second);
+    commit(*projected);
     // Each actor row is one shared version for the battle's readers.
     for (Value* list : {&player_rows, &bot_rows})
         for (auto& row : list->array) if (!row.reference) row = shared(std::make_shared<const Value>(std::move(row)));
@@ -856,7 +855,8 @@ void snapshot(Value m) {
     }
     if (retained) log("degraded snapshot round=" + std::to_string(*round) + " tick=" + std::to_string(tick.value_or(-1)) +
                       " retained=" + std::to_string(retained));
-    auto accepted = std::make_shared<const Value>(adoptTurrets(m));
+    adoptTurrets(m);
+    auto accepted = std::make_shared<const Value>(std::move(m));
     link->last_snapshot = accepted;
     if (server_time) link->server_time_ms = server_time;
     link->s.bot_authority_id = AUTHORITY_ID;
@@ -1018,7 +1018,7 @@ void drainReceived() {
     batch.reserve(frames.size());
     for (auto& frame : frames) {
         if (!frame.message) { fail("invalid battle frame: " + frame.error); break; }
-        Value message = *frame.message;
+        Value message = std::move(*frame.message);
         message.object["_client_received_time"] = number(now - frame.age);
         batch.push_back(std::move(message));
     }
