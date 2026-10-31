@@ -1,6 +1,7 @@
 #pragma once
 // The worker's native Bot simulation owner, driven directly by the native battle's Bot authority.
-// `runtime` is the round's Python BotRuntime: cold installation still reads its per-Bot rows.
+// `runtime` is the round's Python BotRuntime: only create() reads it (cold installation); the other
+// entry points keep the argument for the coming native manifest builder and ignore it.
 #include "stock_native_battle.hpp"
 #include <cstdint>
 #include <memory>
@@ -18,12 +19,12 @@ namespace p = stock_native_bot_python;
 std::shared_ptr<Owner> create(Battle& b, PyObject* runtime);
 // Retires the owner idempotently; a retired owner ignores every later call.
 void close(Owner& o);
-// The owner still belongs to the runtime's round and native generation.
-bool current(const Owner& o, PyObject* runtime);
+// The owner is installed and its space is current.
+bool current(const Owner& o);
 const Clock& clock(const Owner& o);
 
 // Prepared human input from the latest accepted snapshot.
-p::Ref players(Battle& b, PyObject* runtime);
+p::Ref players(Owner& o, Battle& b);
 // One Bot update: the outgoing authority messages (bot_state, bot_ram, bot_observation) as Python
 // rows for the LAN client senders.
 p::Ref update(Owner& o, Battle& b, PyObject* runtime, double dt, double now, PyObject* players);

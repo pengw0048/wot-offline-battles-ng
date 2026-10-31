@@ -36,10 +36,8 @@ PyObject* runtime(const Battle& b) { return b.bots->runtime.get(); }
 OwnerRef prepare(Battle& b) {
     auto* a = authority(b);
     if (!a || !a->runtime) return nullptr;
-    PyObject* raw = a->runtime.get();
-    if (!isAuthority(b) || py::attr(raw, "adapter").get() == Py_None || p::flag(py::attr(raw, "finished").get()))
-        return nullptr;
-    if (!a->owner) a->owner = owner::create(b, raw);
+    if (!isAuthority(b) || !a->adapter || a->finished) return nullptr;
+    if (!a->owner) a->owner = owner::create(b, a->runtime.get());
     return a->owner;
 }
 OwnerRef existing(const Battle& b) {
@@ -79,14 +77,62 @@ std::array<Value, 4> manifestIdentity(const Battle& b) {
     Value generation;
     generation.kind = Value::Kind::Integer;
     generation.integer = std::int64_t(b.generation);
-    return {generation, b.start.get("round_id"),
-            cs::read(py::optional(a->runtime.get(), "authority_id").get()), cs::read(epoch.get())};
+    Value owner_id;
+    if (a->authority_id) { owner_id.kind = Value::Kind::Integer; owner_id.integer = *a->authority_id; }
+    return {generation, b.start.get("round_id"), owner_id, cs::read(epoch.get())};
 }
 void discardManifest(Battle& b) {
     auto* a = authority(b);
-    if (a->runtime) py::call(a->runtime.get(), "discard_pending_manifest");
+    if (a->pending_manifest && a->runtime) py::call(a->runtime.get(), "discard_pending_manifest");
+    a->pending_manifest = Object();
     a->next_manifest_retry = a->manifest_retry_deadline = 0.;
     a->manifest_retry_identity.reset();
+}
+// Reads the BotRuntime facts the frame needs once, after battle_start changed them. A new native
+// generation (round or authority change) retires the native owner.
+void adopt(Battle& b) {
+    auto* a = authority(b);
+    PyObject* raw = a->runtime.get();
+    auto id = py::optional(raw, "authority_id");
+    a->authority_id = id.get() == Py_None ? std::optional<std::int64_t>() : std::optional<std::int64_t>(p::wide(id.get()));
+    a->finished = p::flag(py::attr(raw, "finished").get());
+    a->adapter = py::attr(raw, "adapter").get() != Py_None;
+    a->runtime_round = cs::read(py::optional(raw, "round_id").get());
+    const auto generation = p::wide(py::attr(raw, "_native_generation").get());
+    if (generation != a->native_generation && a->owner) {
+        OwnerRef o = std::move(a->owner);
+        owner::close(*o);
+    }
+    a->native_generation = generation;
+    auto pending = py::call(raw, "pending_manifest");
+    a->pending_manifest = pending.get() == Py_None ? Object() : own(std::move(pending));
+    auto states = py::attr(raw, "states");
+    Py_ssize_t cursor = 0;
+    PyObject *key = nullptr, *state = nullptr;
+    if (PyDict_Check(states.get()))
+        while (PyDict_Next(states.get(), &cursor, &key, &state)) {
+            if (!PyDict_Check(state)) continue;
+            Value row;
+            row.kind = Value::Kind::Object;
+            for (const char* name : {"mass", "collision_shape", "ram_profile", "vehicle", "team"})
+                if (PyObject* v = PyDict_GetItemString(state, name)) row.object[name] = cs::read(v);
+            a->profiles[p::wide(key)] = std::move(row);
+        }
+}
+// Sends each player destructible contact verdict; an accepted send is acknowledged.
+std::size_t sendContactResults(Battle& b, stock_native_bot::Owner& o, PyObject* results, double now) {
+    std::size_t sent = 0;
+    for (Py_ssize_t i = 0; i < PySequence_Size(results); ++i) {
+        auto row = p::item(results, i);
+        auto player = p::value(row.get(), "player_id"), seq = p::value(row.get(), "seq");
+        auto accepted = p::value(row.get(), "accepted"), token = p::value(row.get(), "token");
+        if (p::flag(py::call(client(b).get(), "send_player_destructible_contact_result", player.get(), seq.get(), accepted.get(),
+                             token.get()).get())) {
+            owner::acknowledgePlayerContact(o, std::uint64_t(p::wide(p::value(row.get(), "serial").get())), now);
+            ++sent;
+        }
+    }
+    return sent;
 }
 
 // The outgoing authority message through its LAN client sender.
@@ -196,9 +242,8 @@ bool enqueue(Battle& b, PyObject* message) {
 // Commits one frozen manifest only after the transport accepted it.
 bool enqueueManifest(Battle& b, PyObject* message, double now) {
     auto* a = authority(b);
-    if (!messageIs(message, "bot_manifest") || !a->runtime) return false;
-    auto pending = py::call(a->runtime.get(), "pending_manifest");
-    if (pending.get() == Py_None || PyObject_RichCompareBool(pending.get(), message, Py_NE) == 1) return false;
+    if (!messageIs(message, "bot_manifest") || !a->runtime || !a->pending_manifest) return false;
+    if (PyObject_RichCompareBool(a->pending_manifest.get(), message, Py_NE) == 1) return false;
     const auto identity = manifestIdentity(b);
     const bool same = a->manifest_retry_identity && *a->manifest_retry_identity == identity;
     if (same && a->manifest_retry_deadline > 0. && now + 1.0e-9 >= a->manifest_retry_deadline) {
@@ -214,6 +259,7 @@ bool enqueueManifest(Battle& b, PyObject* message, double now) {
     }
     if (!p::flag(py::call(a->runtime.get(), "mark_manifest_enqueued", message).get()))
         throw p::Error("enqueued bot manifest does not match the pending payload");
+    a->pending_manifest = Object();
     a->next_manifest_retry = a->manifest_retry_deadline = 0.;
     a->manifest_retry_identity.reset();
     return true;
@@ -221,6 +267,7 @@ bool enqueueManifest(Battle& b, PyObject* message, double now) {
 
 // Sends what BotRuntime.battle_start returned: the manifest through its retry tenure, the rest directly.
 void dispatchOutgoing(Battle& b, PyObject* outgoing) {
+    adopt(b);
     for (Py_ssize_t i = 0; i < PySequence_Size(outgoing); ++i) {
         auto message = p::item(outgoing, i);
         if (messageIs(message.get(), "bot_manifest")) enqueueManifest(b, message.get(), b.clock());
@@ -277,7 +324,7 @@ bool enabled(const Battle& b) { return b.worker && authority(b) && authority(b)-
 
 bool isAuthority(const Battle& b) {
     const auto* a = authority(b);
-    return a && a->runtime && p::flag(py::call(a->runtime.get(), "is_authority").get());
+    return a && a->runtime && a->authority_id && *a->authority_id == b.local_player;
 }
 
 void update(Battle& b, double now, double dt) {
@@ -289,18 +336,9 @@ void update(Battle& b, double now, double dt) {
     PyObject* raw = a->runtime.get();
     OwnerRef o = prepare(b);
     if (!o) return;
-    auto players = owner::players(b, raw);
+    auto players = owner::players(*o, b);
     auto results = owner::playerContacts(*o, b, raw, players.get(), now);
-    if (flushWorld(b)) {
-        for (Py_ssize_t i = 0; i < PySequence_Size(results.get()); ++i) {
-            auto row = p::item(results.get(), i);
-            auto player = p::value(row.get(), "player_id"), seq = p::value(row.get(), "seq");
-            auto accepted = p::value(row.get(), "accepted"), token = p::value(row.get(), "token");
-            if (p::flag(py::call(client(b).get(), "send_player_destructible_contact_result", player.get(), seq.get(), accepted.get(),
-                                 token.get()).get()))
-                owner::acknowledgePlayerContact(*o, std::uint64_t(p::wide(p::value(row.get(), "serial").get())), now);
-        }
-    }
+    if (flushWorld(b)) sendContactResults(b, *o, results.get(), now);
     const std::int64_t sample_before = owner::clock(*o).sample_us;
     Object outgoing;
     {
@@ -342,17 +380,15 @@ bool drainWorkerTransport(Battle& b) {
 void retryManifest(Battle& b, double now) {
     auto* a = authority(b);
     if (!b.worker || !b.running() || !a || !a->runtime) return;
-    PyObject* runtime = a->runtime.get();
-    if (b.result.kind != Value::Kind::Null || p::flag(py::optional(runtime, "finished").get())) { discardManifest(b); return; }
+    if (b.result.kind != Value::Kind::Null || a->finished) { discardManifest(b); return; }
     const auto identity = manifestIdentity(b);
     if (a->manifest_retry_identity && *a->manifest_retry_identity != identity) { discardManifest(b); return; }
-    if (cs::read(py::optional(runtime, "round_id").get()) != b.start.get("round_id")) { discardManifest(b); return; }
+    if (a->runtime_round != b.start.get("round_id")) { discardManifest(b); return; }
     auto client_round = py::optional(client(b).get(), "round_id");
     if (client_round.get() != Py_None && cs::read(client_round.get()) != b.start.get("round_id")) { discardManifest(b); return; }
     auto check = py::optional(client(b).get(), "is_bot_authority");
     if (py::callable(check) && !p::flag(py::invoke(check.get()).get())) { discardManifest(b); return; }
-    auto pending = py::call(runtime, "pending_manifest");
-    if (pending.get() == Py_None) {
+    if (!a->pending_manifest || !isAuthority(b)) {
         a->next_manifest_retry = a->manifest_retry_deadline = 0.;
         a->manifest_retry_identity.reset();
         return;
@@ -362,6 +398,7 @@ void retryManifest(Battle& b, double now) {
         throw p::Error("worker bot manifest enqueue timed out");
     }
     if (a->next_manifest_retry > 0. && now + 1.0e-9 < a->next_manifest_retry) return;
+    Object pending = a->pending_manifest;
     enqueueManifest(b, pending.get(), now);
 }
 
@@ -437,7 +474,7 @@ bool reconcileAuthority(Battle& b, PyObject* player_id) {
     auto* a = authority(b);
     if (!a || !a->runtime) return false;
     PyObject* runtime = a->runtime.get();
-    if (PyObject_RichCompareBool(py::optional(runtime, "authority_id").get(), player_id, Py_EQ) == 1) return false;
+    if (player_id != Py_None && a->authority_id && *a->authority_id == p::wide(player_id)) return false;
     Object start = own(p::Ref(cs::write(b.start)));
     if (!PyDict_Check(start.get())) start = own(p::dict());
     p::set(start.get(), "bot_authority_id", p::retain(player_id));
@@ -453,6 +490,7 @@ bool reconcileAuthority(Battle& b, PyObject* player_id) {
     if (!b.worker) {
         // A visible client tracks the authority lineage only and never builds a takeover manifest.
         if (p::flag(py::call(runtime, "battle_start", start.get()).get())) throw p::Error("visible client attempted to become bot authority");
+        adopt(b);
         return true;
     }
     Object snapshot = a->last_snapshot && PyDict_Check(a->last_snapshot.get()) ? a->last_snapshot : own(p::dict());
@@ -508,8 +546,10 @@ void snapshot(Battle& b, PyObject* message) {
     OwnerRef o = existing(b);
     if (!o) return;
     owner::snapshot(*o, runtime(b), message);
-    if (PyDict_Check(message) && PyDict_GetItemString(message, "battle_result") && PyDict_GetItemString(message, "battle_result") != Py_None)
+    if (PyDict_Check(message) && PyDict_GetItemString(message, "battle_result") && PyDict_GetItemString(message, "battle_result") != Py_None) {
         py::set(runtime(b), "finished", Py_True);
+        b.bots->finished = true;
+    }
 }
 
 bool projectileIngress(Battle& b, PyObject* message, double now) {
@@ -631,6 +671,54 @@ p::Ref diagnosticTotals(const Battle& b) {
         p::set(result.get(), name, p::Ref(PyNumber_Int(value)));
     }
     return result;
+}
+
+void frameStarted(Battle& b, double, double) {
+    if (b.bots) ++b.bots->frame_callbacks;
+}
+void applySnapshot(Battle& b, const Value& value) {
+    p::Ref message(cs::write(value));
+    snapshot(b, message.get());
+}
+void reconcileAuthority(Battle& b, const Value& player_id) {
+    p::Ref id(cs::write(player_id));
+    reconcileAuthority(b, id.get());
+}
+bool worldIngress(Battle& b, const Value& event) {
+    p::Ref message(cs::write(event));
+    return worldIngress(b, message.get(), b.clock());
+}
+std::optional<bool> detachedIngress(Battle& b, const Value& message) {
+    OwnerRef o = existing(b);
+    if (!o) return std::nullopt;
+    p::Ref raw(cs::write(message));
+    return owner::detachedIngress(*o, runtime(b), raw.get(), b.clock());
+}
+bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* state) {
+    p::Ref raw(state ? p::Ref(cs::write(*state)) : p::retain(Py_None));
+    return detachedQueue(b, vehicle, entity, raw.get(), b.clock());
+}
+std::size_t detachedAdvance(Battle& b, double now) {
+    OwnerRef o = existing(b);
+    if (!o) return 0;
+    auto rows = owner::detachedAdvance(*o, b, runtime(b), now);
+    if (rows.get() == Py_None || !PySequence_Check(rows.get())) return 0;
+    const Py_ssize_t count = PySequence_Size(rows.get());
+    return count > 0 ? std::size_t(count) : 0;
+}
+void prewarmBots(Battle& b, double now) { prewarm(b, now); }
+std::size_t playerContacts(Battle& b, const Value& players, double now) {
+    OwnerRef o = prepare(b);
+    if (!o) return 0;
+    p::Ref rows(cs::write(players));
+    auto results = owner::playerContacts(*o, b, runtime(b), rows.get(), now);
+    return flushWorld(b) ? sendContactResults(b, *o, results.get(), now) : 0;
+}
+const Value* currentState(const Battle& b, std::int64_t bot_id) {
+    const auto* a = authority(b);
+    if (!a) return nullptr;
+    const auto found = a->profiles.find(bot_id);
+    return found == a->profiles.end() ? nullptr : &found->second;
 }
 }
 }

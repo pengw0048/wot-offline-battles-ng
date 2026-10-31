@@ -122,9 +122,11 @@ struct Owner {
         return !services.turrets().blocks(q,a->second.modes[a->second.mode].physics.geometry.turret,server_time_ms);
     }),scene(s,registry,backend),events(registry,backend,scene,s->id()),player_trees(events),
     player_world(registry,scene,player_trees),environment_world(scene,vehicles),services(registry,scene,vehicles){}
-    bool current(PyObject*raw)const{return !retired&&runtime&&scene.current()&&
-        p::integral(raw,"round_id")==runtime->identity().round&&
-        p::integral(raw,"_native_generation")==runtime->identity().generation;}
+    // Cold installation inputs frozen at creation: the BotRuntime (for player descriptor resolution),
+    // its descriptor maps and each Bot's static ram profile. No frame reads the BotRuntime.
+    cs::Handle bot_runtime,descriptors,pairs,profiles;
+    // The Bot authority closes the owner when the round or native generation changes.
+    bool current()const{return !retired&&runtime&&scene.current();}
     // A malformed ingress or unavailable resource is local to that row: count it without failing the round.
     void local(const std::exception&error){
         std::string detail(error.what());
@@ -160,8 +162,8 @@ struct Owner {
     void installBot(PyObject*raw,Battle&battle,Key key,const VehicleRecord&record,PyObject*descriptor){
         const auto a=runtime->actors().find(key.id);if(a==runtime->actors().end())return;
         auto e=battle.entity(record.engine_id);if(e.get()==Py_None||!p::truth(e.get(),"isStarted"))return;
-        auto pairs=p::value(raw,"_descriptor_pairs"),id=p::integer(key.id);
-        auto*pair=PyDict_Check(pairs.get())?PyDict_GetItem(pairs.get(),id.get()):nullptr;
+        auto id=p::integer(key.id);
+        auto*pair=PyDict_GetItem(pairs.get(),id.get());
         auto d0=pair&&pair!=Py_None?p::item(pair,0):p::retain(descriptor);
         auto d1=pair&&pair!=Py_None?p::item(pair,1):p::retain(Py_None);
         ServiceEntity row;row.key=key;row.team=a->second.team;row.mode=a->second.mode;row.record_ready=record.ready;
@@ -185,8 +187,6 @@ struct Owner {
         services.install(std::move(row));++cold_installs;
     }
     void records(PyObject*raw,Battle&battle){
-        auto descriptors=p::value(raw,"_descriptors"),pairs=p::value(raw,"_descriptor_pairs");
-        if(!PyDict_Check(descriptors.get())||!PyDict_Check(pairs.get()))throw p::Error("Native Bot lifecycle descriptors invalid");
         std::set<Key> present;
         for(const auto&entry:battle.vehicles->actors){const auto&record=*entry.second;
             try{
@@ -215,9 +215,9 @@ struct Owner {
         for(auto i=installed.begin();i!=installed.end();){if(!present.count(i->first)){services.remove(i->first);if(i->first.kind==offline_simulation::ActorKind::Human){humans.erase(i->first.id);human_descriptors.erase(i->first.id);}i=installed.erase(i);}else ++i;}
     }
     void installHuman(PyObject*raw,Battle&battle,PyObject*input,ID id){
-        p::Ref args(PyTuple_Pack(1,input));auto descriptor=p::call(raw,"player_descriptor_resolver",args.get());
+        p::Ref args(PyTuple_Pack(1,input));auto descriptor=p::call(bot_runtime.get(),"player_descriptor_resolver",args.get());
         if(descriptor.get()==Py_None)throw p::Error("Native human descriptor is unavailable");
-        HumanDescriptor frozen;require(readHumanDescriptor(raw,input,descriptor.get(),frozen));
+        HumanDescriptor frozen;require(readHumanDescriptor(bot_runtime.get(),input,descriptor.get(),frozen));
         frozen.spawn_anchor=stock_native_bot_descriptor::spawnAnchor(
             battle.engine.shell.get(),int(p::integral(input,"team",1)),int(p::integral(input,"slot")));
         const Key key=humanKey(id);
@@ -249,7 +249,7 @@ struct Owner {
     }
     void humanInput(PyObject*raw,Battle&battle,PyObject*players,bool is_prepared=false){
         std::vector<Human> accepted;std::set<ID> present;
-        p::Ref prepared=is_prepared?(players&&players!=Py_None?p::retain(players):p::list()):p::Ref(prepareHumanInput(players,battle.engine.shell.get(),raw));
+        p::Ref prepared=is_prepared?(players&&players!=Py_None?p::retain(players):p::list()):p::Ref(prepareHumanInput(players,battle.engine.shell.get(),profiles.get()));
         for(Py_ssize_t i=0;i<p::size(prepared.get());++i){auto row=p::item(prepared.get(),i);if(!PyDict_Check(row.get()))continue;
             try{
                 const ID id=p::integral(row.get(),"id");if(id<=0||!p::truth(row.get(),"world_pose"))continue;
@@ -291,7 +291,7 @@ struct Owner {
 namespace {
 using Time=std::chrono::steady_clock;
 std::uint64_t nanos(Time::time_point start){return std::chrono::duration_cast<std::chrono::nanoseconds>(Time::now()-start).count();}
-bool live(const Owner&o,PyObject*runtime){return owner::current(o,runtime);}
+bool live(const Owner&o,PyObject*){return o.current();}
 PyObject* lastSnapshot(const Battle&b){return b.bots&&b.bots->last_snapshot?b.bots->last_snapshot.get():Py_None;}
 p::Ref snapshotPlayers(const Battle&b){return p::value(lastSnapshot(b),"players");}
 }
@@ -313,6 +313,16 @@ std::shared_ptr<Owner> create(Battle&b,PyObject*raw){
     require(o.backend.installPresenter());require(world::installWorldSnapshot(dto.get(),o.registry,o.scene,o.backend));
     o.runtime.reset(new Runtime(std::move(snapshot),o.registry,o.scene,o.services));
     o.services.bind(*o.runtime);o.server_tick=p::integral(raw,"_server_tick",-1);
+    o.bot_runtime=native_battle::borrow(raw);
+    auto descriptors=p::value(raw,"_descriptors"),pairs=p::value(raw,"_descriptor_pairs"),states=p::value(raw,"states");
+    if(!PyDict_Check(descriptors.get())||!PyDict_Check(pairs.get())||!PyDict_Check(states.get()))throw p::Error("Native Bot installation maps are invalid");
+    o.descriptors=native_battle::own(p::Ref(PyDict_Copy(descriptors.get())));o.pairs=native_battle::own(p::Ref(PyDict_Copy(pairs.get())));
+    // A player's ram receipt pins the Bot's static collision profile.
+    auto profiles=p::dict();Py_ssize_t cursor=0;PyObject*key=nullptr,*state=nullptr;
+    while(PyDict_Next(states.get(),&cursor,&key,&state)){if(!PyDict_Check(state))continue;auto row=p::dict();
+        for(const char*name:{"mass","collision_shape","ram_profile","vehicle","team"})if(PyObject*v=PyDict_GetItemString(state,name))p::set(row.get(),name,p::retain(v));
+        if(PyDict_SetItem(profiles.get(),key,row.get())<0)throw p::Error("Native Bot ram profile allocation failed");}
+    o.profiles=native_battle::own(std::move(profiles));
     o.records(raw,b);
     o.detached_runtime.reset(new stock_native_detached_turret::PythonOwner(*o.runtime,o.registry,
         o.scene,o.vehicles,o.services,VEHICLE_SKIP_FLAGS));
@@ -323,15 +333,16 @@ std::shared_ptr<Owner> create(Battle&b,PyObject*raw){
     return handle;
 }
 void close(Owner&o){o.retire();}
-bool current(const Owner&o,PyObject*raw){return o.current(raw);}
+bool current(const Owner&o){return o.current();}
 const Clock& clock(const Owner&o){return o.runtime->clock();}
 
-p::Ref players(Battle&b,PyObject*raw){auto rows=snapshotPlayers(b);return p::Ref(prepareHumanInput(rows.get(),b.engine.shell.get(),raw));}
+p::Ref players(Owner&o,Battle&b){auto rows=snapshotPlayers(b);return p::Ref(prepareHumanInput(rows.get(),b.engine.shell.get(),o.profiles.get()));}
 
 p::Ref update(Owner&o,Battle&b,PyObject*raw,double elapsed,double now,PyObject*players){
     if(!live(o,raw))return p::list();
     auto start=Time::now();o.records(raw,b);o.humanInput(raw,b,players,true);o.detached(b);
-    auto camera=p::value(raw,"_camera_position");o.runtime->camera(camera.get()==Py_None?std::optional<Point>{}:p::numbers<3>(camera.get()));
+    // The hidden worker has no viewpoint: every Bot keeps full presentation detail.
+    o.runtime->camera(std::nullopt);
     o.server_time_ms=p::numeric(lastSnapshot(b),"server_time_ms");
     o.ingress_ns+=nanos(start);start=Time::now();
     // Original artillery jobs advance once per frame, before the Bot slices.
