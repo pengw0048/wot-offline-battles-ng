@@ -41,6 +41,7 @@ struct World {
     World();
     ~World();
     bool destructibles_disabled = false;
+    Value applied_destructible_revision;          // the snapshot destructible_revision last applied
     std::string destructibles_disabled_reason;
     // This map's baked destructible catalog; null when the map has none or interactions are disabled.
     std::unique_ptr<DestructibleCatalog> catalog;

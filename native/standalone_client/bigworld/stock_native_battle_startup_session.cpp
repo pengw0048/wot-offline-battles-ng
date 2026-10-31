@@ -66,6 +66,24 @@ void ignoreLivePayload(Battle& b, const char* kind, const std::string& error, Py
 }
 
 // One authority snapshot: each consumer ingests it; a bad frame is contained, not fatal.
+// The snapshot fields native consumers read. The worker's Bot owner takes players, the manifest and (once it exists)
+// projectiles from the original Python message, so the worker does not convert those large arrays.
+Value snapshotValue(Battle& b, PyObject* message) {
+    if (!PyDict_Check(message)) return fromPython(p::dict().get());
+    if (!b.worker) return fromPython(message);
+    const bool owner = b.bots && b.bots->owner;
+    Value out;
+    out.kind = Value::Kind::Object;
+    Py_ssize_t cursor = 0;
+    PyObject *key, *value;
+    while (PyDict_Next(message, &cursor, &key, &value)) {
+        const std::string name = p::string(key);
+        if (name == "players" || name == "bot_manifest" || (owner && name == "projectiles")) continue;
+        out.object.emplace(name, fromPython(value));
+    }
+    return out;
+}
+
 void snapshot(Battle& b, PyObject* message) {
     if (stopped(b)) return;
     auto& s = *b.startup;
@@ -75,7 +93,7 @@ void snapshot(Battle& b, PyObject* message) {
         ~Source() { b.source_message = nullptr; b.source_value = nullptr; }
     } source{b};
     try {
-        s.last_snapshot = fromPython(PyDict_Check(message) ? message : p::dict().get());
+        s.last_snapshot = snapshotValue(b, message);
         const Value& last = s.last_snapshot;
         if (PyDict_Check(message)) { b.source_message = message; b.source_value = &last; }
         if (!b.worker) gun::restoreEquipment(b, last, true);
@@ -89,7 +107,14 @@ void snapshot(Battle& b, PyObject* message) {
         world::reconcileDetachedTurrets(b, last);
         if (has(last, "rules")) events::applyRules(b, field(last, "rules"));
         if (field(last, "battle_result").resolved().kind != Value::Kind::Null) events::applyBattleResult(b, field(last, "battle_result"));
-        if (has(last, "destructibles")) world::applyDestructibleState(b, field(last, "destructibles"));
+        // The destructible list only grows; re-apply it only when the server changed its revision.
+        if (has(last, "destructibles")) {
+            const Value& revision = field(last, "destructible_revision");
+            if (revision.resolved().kind == Value::Kind::Null || !b.world || b.world->applied_destructible_revision != revision) {
+                world::applyDestructibleState(b, field(last, "destructibles"));
+                if (b.world) b.world->applied_destructible_revision = revision;
+            }
+        }
         if (b.bots) {
             if (has(last, "bot_authority_id")) bots::reconcileAuthority(b, field(last, "bot_authority_id"));
             bots::applySnapshot(b, last);
