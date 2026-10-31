@@ -383,8 +383,8 @@ void prepareSpawnAssignments(Battle& b) {
             std::vector<std::int64_t> rear(15);
             for (std::size_t i = 0; i < 15; ++i) rear[i] = std::int64_t(i);
             std::stable_sort(rear.begin(), rear.end(), [&](std::int64_t a, std::int64_t c) {
-                const double da = (f[team - 1][a][0] - own_centre[0]) * dx + (f[team - 1][a][2] - own_centre[1]) * dz;
-                const double dc = (f[team - 1][c][0] - own_centre[0]) * dx + (f[team - 1][c][2] - own_centre[1]) * dz;
+                const double da = (f[team - 1][std::size_t(a)][0] - own_centre[0]) * dx + (f[team - 1][std::size_t(a)][2] - own_centre[1]) * dz;
+                const double dc = (f[team - 1][std::size_t(c)][0] - own_centre[0]) * dx + (f[team - 1][std::size_t(c)][2] - own_centre[1]) * dz;
                 return da < dc || (da == dc && a < c);
             });
             std::set<std::int64_t> reserved(rear.begin(), rear.begin() + std::ptrdiff_t(spg.size()));
@@ -408,7 +408,7 @@ std::pair<Point, double> formationPose(Battle& b, std::int64_t team, std::int64_
     const std::int64_t index = physical == s.spawn_slots.end() ? slot : physical->second;
     if (team != 1 && team != 2) throw p::Error("map " + s.spawn->map + " has no spawn team " + std::to_string(team));
     if (index < 0 || index >= 15) throw p::Error("map " + s.spawn->map + " team " + std::to_string(team) + " has no spawn slot " + std::to_string(index));
-    const auto& point = s.spawn->formations[team - 1][index];
+    const auto& point = s.spawn->formations[std::size_t(team - 1)][std::size_t(index)];
     const std::pair<Point, double> result{{point[0], point[1], point[2]}, point[3]};
     s.spawn_cache[key] = result;
     return result;
