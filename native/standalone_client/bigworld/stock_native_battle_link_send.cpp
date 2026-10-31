@@ -689,15 +689,70 @@ Value botManifest(const SenderState& s, const Value& m) {
     return w;
 }
 
-// AuthorityWorkerLANClient.send_projected_bot_state with its coalesce key.
-void botState(const SenderState& s, const Value& m, Outgoing& out) {
-    const Value& rows = required(m, "rows");
-    need(botAuthority(s));
-    const Value &edge_time = get(m, "edge_sample_time_us"), &edge_revision = get(m, "edge_revision");
-    const Int edge_us = exactInt(edge_time), revision = exactInt(edge_revision);
-    need(!negative(edge_us) && (revision.big || revision.v >= 1));
+// ram_tracks.names: sorted unique track device names.
+Value trackNames(const Value& v) {
+    const auto& all = items(v);
+    need(all.size() <= 2);
+    Names names;
+    for (const auto& name : all) {
+        need(oneOf(name, {"leftTrackHealth", "rightTrackHealth"}));
+        names.insert(name.resolved().text);
+    }
+    Value out = listV();
+    for (const auto& name : names) out.array.push_back(textV(name));
+    return out;
+}
+// _project_human_ram_armors
+Value humanRamArmors(const Value& raw) {
+    const auto& rows = items(raw);
+    need(rows.size() <= 64);
+    Value out = listV();
+    std::set<std::int64_t> seen;
+    for (const auto& row : rows) {
+        need(isDict(row));
+        const Value& available = get(row, "available");
+        Names allowed{"seq", "first_id", "second_id", "available"};
+        if (isTrue(available)) allowed.insert({"armor_first", "armor_second"});
+        Names have = keys(row);
+        have.erase("tracks_first");
+        have.erase("tracks_second");
+        need(have == allowed && isBool(available));
+        const Int seq = exactInt(get(row, "seq")), first = exactInt(get(row, "first_id")), second = exactInt(get(row, "second_id"));
+        need(!seq.big && seq.v > 0 && seq.v <= MAX_ID && seen.insert(seq.v).second);
+        need(!first.big && !second.big && first.v > 0 && first.v < second.v && second.v <= MAX_ID);
+        Value result = dictV();
+        auto& o = result.object;
+        o["seq"] = intV(seq.v);
+        o["first_id"] = intV(first.v);
+        o["second_id"] = intV(second.v);
+        o["available"] = boolV(isTrue(available));
+        if (isTrue(available)) {
+            o["armor_first"] = numV(floatIn(get(row, "armor_first"), 0.000001, 5000.));
+            o["armor_second"] = numV(floatIn(get(row, "armor_second"), 0.000001, 5000.));
+            for (const char* name : {"tracks_first", "tracks_second"})
+                if (field(row, name)) o[name] = trackNames(get(row, name));
+        }
+        out.array.push_back(std::move(result));
+    }
+    return out;
+}
+
+// dict(value): a mapping, or a list of [text key, value] pairs.
+Value mapping(const Value& v) {
+    if (isDict(v)) return v;
+    Value out = dictV();
+    for (const auto& pair : items(v)) {
+        const auto& parts = items(pair);
+        need(parts.size() == 2 && parts[0].resolved().kind == Kind::Text);
+        out.object[parts[0].resolved().text] = parts[1];
+    }
+    return out;
+}
+
+// The bot_state body both senders share; the base sender projects human ram armours, the worker's trusts them.
+Value botStateWire(const SenderState& s, const Value& m, Value rows, bool project_armors) {
     Value w = message("bot_state", s);
-    w.object["rows"] = rows;
+    w.object["rows"] = std::move(rows);
     const Value &sample = get(m, "sample_time_us"), &horizon = get(m, "source_batch_horizon_us");
     if (!isNone(sample)) {
         const Int t = exactInt(sample);
@@ -710,11 +765,8 @@ void botState(const SenderState& s, const Value& m, Outgoing& out) {
         need(isNone(horizon));
     }
     const Value &armors = get(m, "human_ram_armors"), &push = get(m, "push_contacts"), &turrets = get(m, "detached_turrets");
-    if (!isNone(armors)) w.object["human_ram_armors"] = armors;
-    if (!isNone(push)) {
-        need(isDict(push));
-        w.object["push_contacts"] = push;
-    }
+    if (!isNone(armors)) w.object["human_ram_armors"] = project_armors ? humanRamArmors(armors) : armors;
+    if (!isNone(push)) w.object["push_contacts"] = mapping(push);
     if (!isNone(turrets)) {
         Value proposals = listV();
         if (isList(turrets)) {
@@ -725,6 +777,27 @@ void botState(const SenderState& s, const Value& m, Outgoing& out) {
         w.object["detached_turrets"] = std::move(proposals);
         w.object["authority_epoch"] = optV(s.authority_epoch);
     }
+    return w;
+}
+
+// LANClient.send_bot_state: an edgeless publication (the detached-turret tail); never coalesced.
+Value baseBotState(const SenderState& s, const Value& m) {
+    const Value rows = prefix(required(m, "rows"), 30);
+    need(botAuthority(s));
+    for (const auto& row : rows.array) need(isList(row));
+    return botStateWire(s, m, rows, true);
+}
+
+// AuthorityWorkerLANClient.send_projected_bot_state with its coalesce key.
+void botState(const SenderState& s, const Value& m, Outgoing& out) {
+    const Value& rows = required(m, "rows");
+    need(botAuthority(s));
+    const Value &edge_time = get(m, "edge_sample_time_us"), &edge_revision = get(m, "edge_revision");
+    const Int edge_us = exactInt(edge_time), revision = exactInt(edge_revision);
+    need(!negative(edge_us) && (revision.big || revision.v >= 1));
+    const Value &armors = get(m, "human_ram_armors"), &push = get(m, "push_contacts");
+    need(isNone(push) || isDict(push));
+    Value w = botStateWire(s, m, rows, false);
     // (round_id, authority_epoch, edge_sample_time_us, edge_revision, human ram edge, detached_turrets, push edge)
     Value key = listV({optV(s.round_id), optV(s.authority_epoch), intV(edge_us), intV(revision)});
     if (isNone(armors)) key.array.emplace_back();
@@ -770,21 +843,6 @@ Value botObservation(const SenderState& s, const Value& m) {
     return w;
 }
 
-// ram_tracks.names: sorted unique track device names.
-Value trackNames(const Value& v) {
-    Names names;
-    if (v.truth()) {
-        const auto& all = items(v);
-        need(all.size() <= 2);
-        for (const auto& name : all) {
-            need(oneOf(name, {"leftTrackHealth", "rightTrackHealth"}));
-            names.insert(name.resolved().text);
-        }
-    }
-    Value out = listV();
-    for (const auto& name : names) out.array.push_back(textV(name));
-    return out;
-}
 Value botRam(const SenderState& s, const Value& m) {
     const Value &bot_id = required(m, "bot_id"), &target_kind = required(m, "target_kind"), &target_id = required(m, "target_id");
     const Value &ram_seq = required(m, "ram_seq"), &to_bot = required(m, "damage_to_bot"), &to_target = required(m, "damage_to_target");
@@ -809,8 +867,8 @@ Value botRam(const SenderState& s, const Value& m) {
     if (!isNone(positions)) o["contact_positions"] = listV(elements(positions));
     const Value& impact_speed = get(m, "track_impact_speed");
     if (!isNone(impact_speed)) {
-        o["track_contacts_bot"] = trackNames(get(m, "track_contacts_bot"));
-        o["track_contacts_target"] = trackNames(get(m, "track_contacts_target"));
+        for (const char* name : {"track_contacts_bot", "track_contacts_target"})
+            o[name] = get(m, name).truth() ? trackNames(get(m, name)) : listV();
         const Value& speed = impact_speed.resolved();
         need(speed.kind == Kind::Boolean || real(speed).has_value());
         o["track_impact_speed"] = numV(speed.kind == Kind::Boolean ? (speed.boolean ? 1. : 0.) : *real(speed));
@@ -1157,7 +1215,9 @@ std::optional<Outgoing> build(SenderState& s, const Value& message) {
         if (type_value.kind != Kind::Text) return std::nullopt;
         const std::string& type = type_value.text;
         Outgoing out;
-        if (type == "bot_state") botState(s, message, out);
+        if (type == "bot_state" && isNone(get(message, "edge_sample_time_us")) && isNone(get(message, "edge_revision")))
+            out.wire = baseBotState(s, message);
+        else if (type == "bot_state") botState(s, message, out);
         else if (type == "hello") out.wire = hello();
         else if (type == "battle_ready") out.wire = battleReady(s, message);
         else if (type == "bot_manifest") out.wire = botManifest(s, message);
