@@ -94,6 +94,56 @@ public:
     std::size_t upperBound(double time,std::int64_t revision)const{return bound(time,revision,true);}
 };
 struct Bounds {Point minimum{},maximum{};};
+// An owned reference to a stock Python object (arena properties, track parameters) kept in battle state.
+class Handle {
+    _object* object_=nullptr;
+public:
+    Handle()noexcept=default;
+    explicit Handle(_object* owned)noexcept:object_(owned){}
+    Handle(const Handle&);
+    Handle& operator=(const Handle&);
+    Handle(Handle&&v)noexcept:object_(std::exchange(v.object_,nullptr)){}
+    Handle& operator=(Handle&&v)noexcept{if(this!=&v){Handle old(std::move(*this));object_=std::exchange(v.object_,nullptr);}return *this;}
+    ~Handle();
+    _object* get()const noexcept{return object_;}
+    explicit operator bool()const noexcept{return object_!=nullptr;}
+};
+// What the battle has presented to #1513 for one vehicle, beside its accepted authority state.
+struct Presentation {
+    std::int64_t network_id=0;
+    bool remote=false;              // created by the remote factory, not a server-entered stock Vehicle
+    bool initialized=false,simulation_entity=false,arena_added=false,destroy_requested=false;
+    double ready_deadline=0.;
+    Handle properties;              // stock arena properties for arena_vehicle_added
+    Value state;                    // presented state: accepted state plus local death and critical edges
+    std::optional<Pose> pending_pose,presented_pose;
+    std::optional<std::int64_t> presented_time_us;
+    // Spotting gates and HUD components.
+    bool spot_visible=true,spot_marker_visible=true,world_marker_visible=false,direct_spot_visible=false;
+    bool world_marker_started=false,minimap_started=false,dead_marker_known=false,minimap_rebound=false,deferred_health=false;
+    double spot_until=0.,radio_spot_until=0.,spot_next=0.,shot_penalty_until=0.;
+    std::optional<double> still_since;
+    std::optional<std::array<bool,4>> spot_signature;
+    // Authority edges already shown through stock callbacks.
+    std::optional<std::int64_t> frags,siege_state;
+    bool team_killer=false;
+    std::optional<std::string> stun_signature;
+    std::optional<std::array<std::int64_t,4>> health;   // health, display health, crew active, death reason
+    Value critical;
+    std::int64_t critical_revision=-1,critical_base_revision=0,critical_ack_seq=0;
+    bool critical_layout_prewarmed=false;
+    std::string ammo_death_cause;
+    // Pose, aim, settle and track writes already made, so unchanged samples cost no engine call.
+    std::optional<std::array<double,8>> pose_signature,settled_signature;
+    std::optional<std::array<double,5>> aim_signature;
+    std::uint64_t pose_generation=0;
+    bool track_pending=false;
+    double track_next_update=0.;
+    std::optional<std::array<double,3>> track_signature;
+    std::optional<std::array<double,2>> track_turn_sample;   // time, yaw
+    Handle track_params;
+    Value collision_pose;           // the projectile collision pose of the latest presented sample
+};
 struct Actor {
     std::string key,kind;std::int64_t id=0,engine_id=0;
     std::uint64_t revision=0,descriptor_revision=0;
@@ -117,6 +167,7 @@ struct Actor {
     std::shared_ptr<const void> geometry;
     std::uint64_t probe_frames=0,probe_held=0,probe_moving_held=0;
     double probe_max_gap_ms=0.;
+    Presentation presented;
 };
 struct Event {Value payload;};
 static_assert(std::is_nothrow_move_constructible<Value>::value,"Value relocation must not copy nested data");

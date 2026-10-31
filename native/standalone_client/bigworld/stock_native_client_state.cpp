@@ -124,6 +124,9 @@ void upsert(State&s,const std::string&kind,const Value&state,double now,std::vec
 constexpr const char* capsule_name="offline.client.state";
 void destroy(PyObject*object){auto*value=static_cast<std::shared_ptr<State>*>(PyCapsule_GetPointer(object,capsule_name));if(value)delete value;else PyErr_Clear();}
 }
+Handle::Handle(const Handle&v):object_(v.object_){Py_XINCREF(object_);}
+Handle& Handle::operator=(const Handle&v){if(this!=&v){Py_XINCREF(v.object_);Handle old(std::move(*this));object_=v.object_;}return *this;}
+Handle::~Handle(){Py_XDECREF(object_);}
 bool Value::operator==(const Value&v)const{if(reference&&reference==v.reference)return true;if(reference||v.reference)return resolved()==v.resolved();if(kind!=v.kind){if((kind==Kind::Integer||kind==Kind::Number)&&(v.kind==Kind::Integer||v.kind==Kind::Number))return numeric()==v.numeric();return false;}switch(kind){case Kind::Null:return true;case Kind::Boolean:return boolean==v.boolean;case Kind::Integer:return integer==v.integer;case Kind::Number:return number==v.number;case Kind::Text:return text==v.text;case Kind::Array:return array==v.array;case Kind::Object:return object==v.object;case Kind::Shared:return false;}return false;}
 const Value& Value::get(const std::string&key)const{if(reference)return reference->get(key);auto i=object.find(key);return i==object.end()?null:i->second;}
 double Value::numeric(double fallback)const{if(reference)return reference->numeric(fallback);if(kind==Kind::Integer)return double(integer);if(kind==Kind::Number)return std::isfinite(number)?number:fallback;if(kind==Kind::Boolean)return boolean?1.:0.;if(kind==Kind::Text)try{std::size_t end=0;const double n=std::stod(text,&end);return end==text.size()&&std::isfinite(n)?n:fallback;}catch(...){return fallback;}return fallback;}
