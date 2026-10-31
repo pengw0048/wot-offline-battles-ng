@@ -23,6 +23,11 @@ bool readStockObstacleItem(const CollisionObstacle & obstacle, uint32 & chunkID,
 bool readStockObstacleIdentity(const CollisionObstacle & obstacle, StockObstacleIdentity & output) {
     return readStockObstacleItem(obstacle, output.chunkID, output.itemIndex);
 }
+bool readStockObstacleFilename(const CollisionObstacle & obstacle, BW::string & output) {
+    // The original empty compiled-static filename; the fixture names no chunk model.
+    output.clear();
+    return true;
+}
 }
 
 using namespace wot::stock_ballistics;

@@ -3,10 +3,24 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_SOURCE = 'lib/pyscript/script.cpp'
+
+
+def public_script_source():
+    """Read the public engine's script.cpp from a checkout or the pinned archive."""
+    if os.environ.get('WOT_PUBLIC_BIGWORLD'):
+        return (Path(os.environ['WOT_PUBLIC_BIGWORLD'])/SCRIPT_SOURCE).read_text()
+    archive=Path(os.environ.get('WOT_PUBLIC_BIGWORLD_ARCHIVE','/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+    if not archive.is_file():
+        raise unittest.SkipTest('Pinned public BigWorld SDK archive unavailable: '+str(archive))
+    with tarfile.open(archive) as original:
+        prefix=original.getmembers()[0].name.split('/')[0]+'/programming/bigworld/'
+        return original.extractfile(prefix+SCRIPT_SOURCE).read().decode()
 
 HOST = r'''
 #include <Python.h>
@@ -132,11 +146,10 @@ class AntialiasingAPITests(unittest.TestCase):
     def test_production_exports_and_exact_python2_consumers(self):
         python=Path(os.environ.get('WOT_PY27',str(Path.home()/'.pyenv/versions/2.7.18/bin/python2.7')))
         client=Path(os.environ.get('WOT_0922_CLIENT','/Users/peng/Downloads/World_of_Tanks_0.09.22.00.01_CH_1513_HD'))
-        public=Path(os.environ.get('WOT_PUBLIC_BIGWORLD','/tmp/wot-bigworld-engine-14.4.1/programming/bigworld'))
         if sys.platform!='darwin' or not python.exists() or not(client/'WorldOfTanks.exe').exists():
             self.skipTest('Pinned Python 2.7, exact client and Darwin extension linker required')
         from test_stock_antialiasing_patch import function
-        converter=function((public/'lib/pyscript/script.cpp').read_text(),'int Script::setData( PyObject * pObject, uint & rUint,')
+        converter=function(public_script_source(),'int Script::setData( PyObject * pObject, uint & rUint,')
         production=(ROOT/'bigworld/stock_antialiasing_runtime.cpp').read_text()
         names=('getSupportedMultisamplingTypes','getSupportedCustomAAModes','getMultisamplingType','getCustomAAMode','setMultisamplingType','setCustomAAMode')
         wrappers='\n'.join('static PyObject*wrap_'+n+'(PyObject*,PyObject*a){return py_'+n+'(a);}'for n in names)

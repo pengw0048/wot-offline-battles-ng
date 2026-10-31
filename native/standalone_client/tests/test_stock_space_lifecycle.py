@@ -537,7 +537,7 @@ class SpaceLifecycleTests(unittest.TestCase):
                          'lib/compiled_space/compiled_space.cpp', 'lib/compiled_space/compiled_space.hpp',
                          'lib/compiled_space/loader.cpp', 'lib/compiled_space/loader.hpp',
                          'lib/pyscript/script.cpp', 'lib/pyscript/script.hpp', 'lib/pyscript/script.ipp',
-                         'client/script_player.cpp', 'client/py_entity.cpp', 'client/entity.cpp', 'client/entity_manager.cpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
+                         'client/script_player.cpp', 'client/py_entity.cpp', 'client/entity.hpp', 'client/entity.cpp', 'client/entity_manager.cpp', 'client/script_app.cpp', 'lib/space/client_space.cpp', 'lib/compiled_space/particle_system_loader.hpp', 'lib/compiled_space/particle_system_loader.cpp'):
                 member = next(m for m in archive.getmembers() if m.name.endswith('/programming/bigworld/' + name))
                 cls.pristine[name] = archive.extractfile(member).read()
         cls.engine = cls.directory / 'engine'

@@ -193,7 +193,11 @@ def tree_bytes(root):
 
 
 class Engine(object):
-    """Pinned public engine through the build chain, with and without the flock seam."""
+    """Pinned public engine before and after the flock seam, and through the whole chain.
+
+    Later patchers (the scene profiler) wrap the flock call, so the seam is
+    compared where it is applied and the complete chain is checked separately.
+    """
     directory = None
 
     @classmethod
@@ -212,13 +216,13 @@ class Engine(object):
         cls.after_traces = work / 'after-traces'
         (work / prefix / 'programming/bigworld').rename(cls.after_traces)
         run_patchers(names[:position], cls.after_traces)
+        cls.reference = cls.after_traces
         cls.integrated = work / 'integrated'
         shutil.copytree(cls.after_traces, cls.integrated)
         run_patchers([PATCHER], cls.integrated)
-        run_patchers(names[position:], cls.integrated)
-        cls.reference = work / 'reference'
-        shutil.copytree(cls.after_traces, cls.reference)
-        run_patchers(names[position:], cls.reference)
+        cls.complete = work / 'complete'
+        shutil.copytree(cls.integrated, cls.complete)
+        run_patchers(names[position:], cls.complete)
         cls.directory = work
         return cls
 
@@ -236,7 +240,7 @@ class StockFlockPatchTest(unittest.TestCase):
     def text(self, tree, relative):
         return (tree / relative).read_text(encoding='utf-8')
 
-    def test_seam_is_the_only_difference_at_the_end_of_the_chain(self):
+    def test_seam_is_the_only_difference_it_makes(self):
         reference = tree_bytes(self.engine.reference)
         integrated = tree_bytes(self.engine.integrated)
         self.assertEqual(sorted(reference), sorted(integrated))
@@ -251,11 +255,13 @@ class StockFlockPatchTest(unittest.TestCase):
             self.assertEqual(self.text(self.engine.integrated, name), expected, name)
 
     def test_world_tick_runs_flock_sweeps_once_in_the_scene_tick_scope(self):
-        world = self.text(self.engine.integrated, 'client/world_app.cpp')
+        world = self.text(self.engine.complete, 'client/world_app.cpp')
         tick = world[world.index('void WorldApp::tick('):world.index('void WorldApp::inactiveTick(')]
         self.assertEqual(world.count('tickStockFlockManagers();'), 1)
         self.assertLess(tick.index('ScopedDogWatch sdw( sceneTick );'), tick.index('tickStockFlockManagers();'))
         self.assertLess(tick.index('tickStockVehicleTraces();'), tick.index('tickStockFlockManagers();'))
+        self.assertLess(tick.index('PROFILER_SCOPED( WorldScene_Flocks );'),
+                        tick.index('tickStockFlockManagers();'))
         # inactiveTick reuses tick, so the hidden worker services the queue too.
         inactive = world[world.index('void WorldApp::inactiveTick('):]
         self.assertIn('this->tick( dGameTime, dRenderTime );', inactive[:inactive.index('\n}\n')])

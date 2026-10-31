@@ -21,7 +21,8 @@
 #define BW_GUARD
 #define PROFILER_SCOPED(name)
 namespace BW {
-using uint32=std::uint32_t;using int64=std::int64_t;using string=std::string;
+using uint32=std::uint32_t;using int64=std::int64_t;using uint64=std::uint64_t;
+using SpaceID=std::int32_t;using string=std::string;
 template<class T>using vector=std::vector<T>;
 template<class T> class SmartPointer:public std::shared_ptr<T> {
 public:using std::shared_ptr<T>::shared_ptr;SmartPointer(){}SmartPointer(T* p):std::shared_ptr<T>(p){}

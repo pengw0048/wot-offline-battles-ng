@@ -13,6 +13,9 @@
 #define BW_BEGIN_NAMESPACE namespace BW {
 namespace wot { inline bool stockSimulationWorker() { return false; } }
 #define BW_END_NAMESPACE }
+// This host registers no Python wrapper; the capability identity needs one symbol.
+namespace BW { namespace { PyObject * pyCollideSegment(PyObject *, PyObject *) { return NULL; } } }
+#define _py_wg_collideSegment pyCollideSegment
 #define PY_AUTO_MODULE_FUNCTION(...)
 
 namespace BW {

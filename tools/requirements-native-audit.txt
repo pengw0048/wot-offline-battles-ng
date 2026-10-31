@@ -1,3 +1,4 @@
 # Optional local audits require the exact #1513 client and are not run in CI.
 capstone==5.0.9
 unicorn==2.1.4
+pefile==2024.8.26
