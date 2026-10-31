@@ -12,8 +12,66 @@ import offline_native_battle as _native
 
 
 def _load_runtime():
-    from gui.mods.offline_lan_0922 import compat
-    return compat.load_battle_runtime_modules()
+    import AccountCommands
+    import AreaDestructibles
+    import ArenaType
+    import AvatarInputHandler
+    import BattleFeedbackCommon
+    import BigWorld
+    import DataLinks
+    import Math
+    import constants
+    import game
+    import material_kinds
+    import nations
+    from Avatar import ClientVisibilityFlags
+    from OfflineMapCreator import g_offlineMapCreator
+    from AvatarInputHandler import aih_constants, cameras, gun_marker_ctrl
+    from helpers import EffectMaterialCalculation
+    from gun_rotation_shared import encodeGunAngles
+    from gui.app_loader import g_appLoader
+    from gui.app_loader.settings import GUI_GLOBAL_SPACE_ID
+    from gui.battle_control.battle_constants import FEEDBACK_EVENT_ID, VEHICLE_VIEW_STATE
+    from gui.mods.offline_lan_0922 import native_mapping_mask
+    from gui.mods.offline_lan_0922.compat import g_compatibility
+    from gui.shared.utils import HangarSpace
+    from items import vehicles
+    from vehicle_systems.tankStructure import TankPartNames
+
+    class Runtime(object):
+        pass
+
+    runtime = Runtime()
+    runtime.account_commands = AccountCommands
+    runtime.aih_constants = aih_constants
+    runtime.app_loader = g_appLoader
+    runtime.area_destructibles = AreaDestructibles
+    runtime.arena_cache = ArenaType.g_cache
+    runtime.arena_visibility_mask = ArenaType.getVisibilityMask
+    runtime.avatar_input_handler = AvatarInputHandler
+    runtime.battle_feedback_common = BattleFeedbackCommon
+    runtime.bigworld = BigWorld
+    runtime.call_with_standard_gameplay_mask = native_mapping_mask.call_with_standard_gameplay_mask
+    runtime.cameras = cameras
+    runtime.client_visibility_flags = ClientVisibilityFlags
+    runtime.compatibility = g_compatibility
+    runtime.constants = constants
+    runtime.data_links = DataLinks
+    runtime.effect_material_calculation = EffectMaterialCalculation
+    runtime.encode_gun_angles = encodeGunAngles
+    runtime.feedback_event_id = FEEDBACK_EVENT_ID
+    runtime.game = game
+    runtime.gui_global_space_id = GUI_GLOBAL_SPACE_ID
+    runtime.gun_marker_ctrl = gun_marker_ctrl
+    runtime.hangar_space = HangarSpace
+    runtime.material_kinds = material_kinds
+    runtime.math = Math
+    runtime.nations = nations
+    runtime.offline_map_creator = g_offlineMapCreator
+    runtime.tank_part_names = TankPartNames
+    runtime.vehicle_view_state = VEHICLE_VIEW_STATE
+    runtime.vehicles = vehicles
+    return runtime
 
 
 class BattleRuntime(object):

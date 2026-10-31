@@ -1,19 +1,8 @@
-// Host Python 2.7 module for the lifecycle differential tests.
+// Host Python 2.7 module for the LAN poll and replay recording ports.
 #define WOT_CLIENT_LIFECYCLE_HOST_BUILD
 #include "../bigworld/stock_native_client_lifecycle.cpp"
-#include "../bigworld/stock_native_client_events.cpp"
-#include "../bigworld/stock_native_client_frame.cpp"
-#include "../bigworld/stock_native_client_shots.cpp"
-#include "../bigworld/stock_native_client_diagnostics.cpp"
 #include "../bigworld/stock_native_client_recording.cpp"
 #include "../bigworld/stock_native_client_lan_poll.cpp"
-#include "../bigworld/stock_native_client_feedback.cpp"
-#include "../bigworld/stock_native_client_snapshot.cpp"
-#include "../bigworld/stock_native_client_worker.cpp"
-#include "../bigworld/stock_native_client_presentation.cpp"
-#include "../bigworld/stock_native_client_observation.cpp"
-#include "../bigworld/stock_native_client_authority.cpp"
-#include "../bigworld/stock_native_client_helpers.cpp"
 PyMODINIT_FUNC initoffline_client_lifecycle_native(void) {
     Py_InitModule("offline_client_lifecycle_native", stock_native_client_lifecycle::lifecycle_methods());
 }

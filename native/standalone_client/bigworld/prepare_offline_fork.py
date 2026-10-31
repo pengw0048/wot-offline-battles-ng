@@ -109,6 +109,11 @@ _spec = importlib.util.spec_from_file_location(
 client_turret_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(client_turret_bindings)
 
+_spec = importlib.util.spec_from_file_location(
+    'stock_native_battle_shell', Path(__file__).with_name('stock_native_battle_shell.py'))
+battle_shell = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(battle_shell)
+
 NATIVE_MATH_PATH = Path('src/res/scripts/client/gui/mods/offline_lan_0922/native_math.py')
 INSTANCE_GUARD_PATH = NATIVE_MATH_PATH.with_name('instance_guard.py')
 BOOTSTRAP_PATH = NATIVE_MATH_PATH.with_name('bootstrap.py')
@@ -295,11 +300,7 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_sensor.py')] = (
 ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
     lambda source: drive_bindings.authority(
         query_bindings.ADAPTERS['destructibles_authority.py'](source)))
-ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = (
-    lambda source: client_lifecycle_bindings.battle(client_query_bindings.targeting_cleanup(client_turret_bindings.battle(client_critical_bindings.battle(client_projectile_bindings.battle(client_input_bindings.battle(client_weapon_bindings.battle(
-        client_environment_bindings.battle(replica_bindings.battle(drive_bindings.battle(
-            client_query_bindings.battle(bot_bindings.battle(rotation_bindings.runtime(source))))))))))))))
-ADAPTERS[NATIVE_MATH_PATH.with_name('bot_runtime.py')] = bot_bindings.bots
+ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = battle_shell.battle
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
     lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
@@ -341,19 +342,12 @@ def stage_runtime(source, staged):
             raise ValueError('The pinned payload already owns the independent entry')
         shutil.copyfile(source_path, runtime / path)
     native_modules = (
-        ('stock_native_bot_consumer.py', 'native_bot_runtime.py'),
         ('stock_native_world_snapshot.py', 'stock_native_world_snapshot.py'),
         ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
         ('stock_replay_codec.py', 'stock_replay_codec.py'),
         ('stock_native_replay.py', 'native_replay.py'),
-        ('stock_native_client_replica.py', 'native_client_replica.py'),
         ('stock_native_client_query.py', 'native_client_query.py'),
-        ('stock_native_client_environment.py', 'native_client_environment.py'),
-        ('stock_native_client_weapon_runtime.py', 'native_client_weapon_runtime.py'),
-        ('stock_native_client_projectile.py', 'native_client_projectile.py'),
-        ('stock_native_client_critical.py', 'native_client_critical.py'),
         ('stock_native_client_turret_presentation.py', 'native_client_turret_presentation.py'),
-        ('stock_native_client_drive_facade.py', 'native_client_drive.py'),
         ('stock_native_destructible_present.py', 'stock_native_destructible_present.py'),
     )
     for source_name, module_name in native_modules:
