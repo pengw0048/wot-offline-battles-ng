@@ -113,6 +113,8 @@ struct Owner {
     std::unique_ptr<stock_native_projectile::NativeProjectiles> projectiles;
     std::unique_ptr<foliage::Trees> trees;
     std::map<Key,RecordVersion> installed;
+    // The frame and actor lifecycle signature the installed records were last read for.
+    double records_frame=-1.;std::size_t records_signature=0;
     std::map<ID,HumanDescriptor> humans;
     std::map<ID,std::unique_ptr<p::Ref>> human_descriptors;
     std::uint64_t record_serial=0,cold_installs=0,ingress_ns=0,step_ns=0,publication_ns=0,contact_rejected=0,ingress_errors=0;
@@ -196,6 +198,12 @@ struct Owner {
         services.install(std::move(row));++cold_installs;
     }
     void records(Battle&battle){
+        // Entity resources change between frames; one read per frame and lifecycle state serves every caller.
+        std::size_t signature=battle.vehicles->actors.size();
+        for(const auto&entry:battle.vehicles->actors){const auto&r=*entry.second;
+            signature=signature*1000003u^std::hash<std::string>()(r.kind)^std::size_t(r.id)*31u^std::size_t(r.engine_id)*131u^(r.ready?7u:0u)^(r.tombstone?11u:0u);}
+        if(battle.last_frame>=0.&&battle.last_frame==records_frame&&signature==records_signature)return;
+        records_frame=battle.last_frame;records_signature=signature;
         std::set<Key> present;
         for(const auto&entry:battle.vehicles->actors){const auto&record=*entry.second;
             try{

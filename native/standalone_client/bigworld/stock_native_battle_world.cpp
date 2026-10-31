@@ -147,16 +147,14 @@ bool rememberRamBotSnapshot(Battle& b, const Value& snapshot) {
             if (row.kind != Kind::Object || row.get("id").resolved().kind == Kind::Null) continue;
             const auto id = integer(row.get("id"));
             if (!id) continue;
-            // Pose fields come from this wire revision; descriptor-derived fields may come from the newer local state.
-            Value body;
-            body.kind = Kind::Object;
-            if (const Value* current = bots::currentState(b, *id)) {
-                const auto& now = current->resolved();
-                for (const char* name : {"mass", "collision_shape", "ram_profile", "vehicle", "team"})
-                    if (now.object.count(name)) body.object[name] = now.get(name);
+            // The accepted row version is shared; descriptor fields join it only when a receipt reads it.
+            if (raw.reference) bots[*id] = raw;
+            else {
+                Value body;
+                body.kind = Kind::Shared;
+                body.reference = std::make_shared<const Value>(row);
+                bots[*id] = std::move(body);
             }
-            for (const auto& field : row.object) body.object[field.first] = field.second;
-            bots[*id] = std::move(body);
         }
     }
     auto& ram = state(b).ram;
@@ -214,6 +212,12 @@ std::optional<Value> ramBotState(const Battle& b, std::int64_t bot_id, std::int6
     const auto& left = l.state->resolved();
     const auto& right = r.state->resolved();
     Value out = owned(left);
+    // Pose fields come from the wire revision; descriptor-derived fields may come from the newer local state.
+    if (const Value* current = bots::currentState(b, bot_id)) {
+        const auto& now = current->resolved();
+        for (const char* name : {"mass", "collision_shape", "ram_profile", "vehicle", "team"})
+            if (!out.object.count(name) && now.object.count(name)) out.object[name] = now.get(name);
+    }
     double span = double(r.time - l.time);
     if (span > 0.) {
         const double progress = std::max(0., std::min(1., double(time_us - l.time) / span));
