@@ -238,6 +238,7 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_startup.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_world.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_crash_trace.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_critical.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_gun.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_battle_glue_local.cpp"
