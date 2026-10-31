@@ -64,8 +64,11 @@ try {
         Write-Host "Downloading the licensed Wwise SDK input"
         @'
 import os, sys, time, urllib.request
+# A GitHub release-asset API URL returns JSON metadata unless the binary is
+# requested explicitly.
 request = urllib.request.Request(os.environ['WOT_WWISE_SDK_URL'], headers={
-    'Authorization': 'Bearer ' + os.environ['WOT_WWISE_SDK_TOKEN']})
+    'Authorization': 'Bearer ' + os.environ['WOT_WWISE_SDK_TOKEN'],
+    'Accept': 'application/octet-stream'})
 try:
     started = time.monotonic()
     received = 0
