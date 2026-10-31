@@ -88,8 +88,7 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
             Value presentation = critical.resolved();
             writable(presentation).object["devices"] = field(canonical, "devices");
             presentation.object["destroyed"] = field(canonical, "destroyed");
-            const auto& local_critical = vehicles::localCritical(b);
-            if (target->local && local_critical.owned && d.critical_base_revision == local_critical.base_revision) {
+            if (target->local && b.critical && b.critical->owned && d.critical_base_revision == b.critical->base_revision) {
                 // The owning client already presented its own track transitions.
                 Value filtered; filtered.kind = Value::Kind::Array;
                 for (const auto& item : field(critical, "events").resolved().array) {
@@ -102,17 +101,10 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
             if (edge) gun::descriptorChanged(b, entity.get());
             writable(state).object["critical"] = canonical;
             d.critical = canonical;
-            p::Ref rows(PySequence_List(events.get()));
-            for (Py_ssize_t i = 0; i < PyList_GET_SIZE(rows.get()); ++i) {
-                PyObject* row = PyList_GET_ITEM(rows.get(), i);
-                PyObject* kind = PyDict_GetItemString(row, "kind");
-                PyObject* stage = PyDict_GetItemString(row, "state");
-                if (kind && stage && p::string(kind) == "ammo_rack" && p::string(stage) == "destroyed") {
-                    PyObject* cause = PyDict_GetItemString(row, "cause");
-                    d.ammo_death_cause = cause && cause != Py_None ? p::string(cause) : std::string();
-                }
-            }
-            vehicles::presentCritical(b, *target, events.get(), attacker_engine);
+            for (const auto& row : events.resolved().array)
+                if (field(row, "kind").resolved().text == "ammo_rack" && field(row, "state").resolved().text == "destroyed")
+                    d.ammo_death_cause = field(row, "cause").resolved().text;
+            vehicles::presentCritical(b, *target, events, attacker_engine);
         }
     }
     if (has(event, "display_health"))

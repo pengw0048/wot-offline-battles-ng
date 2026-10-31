@@ -38,87 +38,9 @@ std::optional<Value> canonicalOf(const Value& payload) {
 std::string text(PyObject* v) { return v && v != Py_None ? p::string(p::Ref(PyObject_Str(v)).get()) : std::string(); }
 }
 
-// acknowledge_local_damage_report: retire only a checkpoint the server canonically acknowledged.
-bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::int64_t ack_seq, std::int64_t server_revision) {
-    auto& c = localCritical(b);
-    base_revision = std::max<std::int64_t>(0, base_revision);
-    ack_seq = std::max<std::int64_t>(0, ack_seq);
-    server_revision = std::max<std::int64_t>(0, server_revision);
-    if (server_revision < c.server_revision) return false;
-    c.server_revision = server_revision;
-    if (base_revision != c.base_revision) {
-        c.base_revision = base_revision;
-        c.next_seq = 0;
-        c.owned = false;
-        c.report.reset();
-        return false;
-    }
-    if (c.report && ack_seq >= integer(field(*c.report, "critical_seq"))) {
-        const auto& tracks = field(*c.report, "tracks").resolved();
-        bool repair_complete = tracks.kind == Value::Kind::Array && !tracks.array.empty();
-        for (const auto& row : tracks.array) repair_complete = repair_complete && field(row, "state").resolved().text == "critical";
-        c.report.reset();
-        c.owned = !repair_complete;
-        return true;
-    }
-    return false;
-}
-
-// BattleRuntime._reconcile_critical_authority(record, source, canonical=None)
+// BattleRuntime._reconcile_critical_authority: the player's revision contract (native local owner or canonical fallback).
 bool reconcileCriticalAuthority(Battle& b, Actor& v, const Value& source, Value* canonical) {
-    if (auto native = critical::reconcile(b, v, source, canonical)) return *native;
-    if (v.kind != "player") return true;
-    for (const char* name : {"critical_revision", "critical_base_revision", "critical_ack_seq"})
-        if (!has(source, name)) throw p::Error("#1513 player critical state has no revision contract");
-    const std::int64_t revision = std::max<std::int64_t>(0, integer(field(source, "critical_revision")));
-    const std::int64_t base_revision = std::max<std::int64_t>(0, integer(field(source, "critical_base_revision")));
-    const std::int64_t ack_seq = std::max<std::int64_t>(0, integer(field(source, "critical_ack_seq")));
-    auto& d = v.presented;
-    const std::int64_t previous = d.critical_revision;
-    if (revision < previous) return false;
-    d.critical_revision = revision;
-    d.critical_base_revision = base_revision;
-    d.critical_ack_seq = ack_seq;
-    if (v.local) {
-        auto& c = localCritical(b);
-        const std::optional<Value> pending = c.report;
-        const bool acknowledged = acknowledgeLocalDamageReport(b, base_revision, ack_seq, revision);
-        if (acknowledged && c.owned && pending && canonical && canonical->resolved().kind == Value::Kind::Object) {
-            std::set<std::string> pending_tracks;
-            for (const auto& row : field(*pending, "tracks").resolved().array)
-                if (row.resolved().kind == Value::Kind::Object) pending_tracks.insert(field(row, "name").resolved().text);
-            std::map<std::string, std::string> states;
-            for (const auto& row : field(*canonical, "devices").resolved().array)
-                if (row.resolved().kind == Value::Kind::Object) states[field(row, "name").resolved().text] = field(row, "state").resolved().text;
-            std::set<std::string> destroyed;
-            for (const auto& name : field(*canonical, "destroyed").resolved().array) destroyed.insert(name.resolved().text);
-            bool repaired = !pending_tracks.empty();
-            for (const auto& name : pending_tracks) {
-                const auto found = states.find(name);
-                repaired = repaired && found != states.end() && (found->second == "normal" || found->second == "critical") && !destroyed.count(name);
-            }
-            if (repaired) c.owned = false;
-        }
-        if (c.owned && base_revision == c.base_revision && canonical && canonical->resolved().kind == Value::Kind::Object) {
-            // The owning client advances only tracks; server-owned gun, engine, fire and crew stay canonical.
-            const std::set<std::string> names{"leftTrackHealth", "rightTrackHealth"};
-            const Value local_state = d.critical.resolved().kind == Value::Kind::Object ? d.critical : Value();
-            Value devices; devices.kind = Value::Kind::Array;
-            for (const auto& row : field(*canonical, "devices").resolved().array)
-                if (!names.count(field(row, "name").resolved().text)) devices.array.push_back(row.resolved());
-            for (const auto& row : field(local_state, "devices").resolved().array)
-                if (names.count(field(row, "name").resolved().text)) devices.array.push_back(row.resolved());
-            std::set<std::string> kept;
-            for (const auto& name : field(*canonical, "destroyed").resolved().array) if (!names.count(name.resolved().text)) kept.insert(name.resolved().text);
-            for (const auto& name : field(local_state, "destroyed").resolved().array) if (names.count(name.resolved().text)) kept.insert(name.resolved().text);
-            Value sorted; sorted.kind = Value::Kind::Array;
-            for (const auto& name : kept) { Value t; t.kind = Value::Kind::Text; t.text = name; sorted.array.push_back(std::move(t)); }
-            auto& out = writable(*canonical);
-            out.object["devices"] = std::move(devices);
-            out.object["destroyed"] = std::move(sorted);
-        }
-    }
-    return revision > previous;
+    return critical::reconcileAuthority(b, v, source, canonical);
 }
 
 // BattleRuntime._apply_critical_state(record, payload, authority=None)
@@ -139,23 +61,21 @@ bool applyCritical(Battle& b, Actor& v, const Value& payload, const Value* autho
     if (edge) gun::descriptorChanged(b, entity.get());
     d.critical = *canonical;
     writable(d.state).object["critical"] = *canonical;
-    if (!b.worker) presentCritical(b, v, events.get(), 0);
+    if (!b.worker) presentCritical(b, v, events, 0);
     return true;
 }
 
 // BattleRuntime._present_critical: critical transitions through the stock #1513 UI callbacks.
-bool presentCritical(Battle& b, Actor& v, PyObject* events, std::int64_t attacker) {
+bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t attacker) {
     if (b.worker || (!v.local && !v.presented.spot_visible)) return false;
     auto entity = b.entity(v.engine_id);
     if (entity.get() == Py_None || py::attr(entity.get(), "typeDescriptor").get() == Py_None) return false;
     syncFireEffect(b, entity.get());
-    if (!p::flag(events)) return false;
+    const auto& rows = events.resolved().array;
+    if (rows.empty()) return false;
     bool shown = false;
-    p::Ref rows(PySequence_List(events));
-    const Py_ssize_t count = PyList_GET_SIZE(rows.get());
-    auto get = [](PyObject* row, const char* name) { return text(PyDict_GetItemString(row, name)); };
-    for (Py_ssize_t i = 0; i < count; ++i) {
-        PyObject* row = PyList_GET_ITEM(rows.get(), i);
+    auto get = [](const Value& row, const char* name) { return field(row, name).resolved().text; };
+    for (const auto& row : rows) {
         if (get(row, "kind") != "ammo_rack" || get(row, "state") != "destroyed") continue;
         auto callback = py::optional(entity.get(), "showAmmoBayEffect");
         if (!py::callable(callback)) throw p::Error("#1513 ammo-bay effect boundary is unavailable");
@@ -174,8 +94,7 @@ bool presentCritical(Battle& b, Actor& v, PyObject* events, std::int64_t attacke
         return "_AT_SHOT";
     };
     auto descriptor = py::attr(entity.get(), "typeDescriptor");
-    for (Py_ssize_t i = 0; i < count; ++i) {
-        PyObject* row = PyList_GET_ITEM(rows.get(), i);
+    for (const auto& row : rows) {
         const std::string kind = get(row, "kind"), state = get(row, "state"), old = get(row, "old_state");
         std::string cause = get(row, "cause");
         if (cause.empty()) cause = "shot";
@@ -197,7 +116,7 @@ bool presentCritical(Battle& b, Actor& v, PyObject* events, std::int64_t attacke
             else if (cause == "fire") code = "TANKMAN_HIT";
             else code = "TANKMAN_HIT_AT_SHOT";
         } else if (kind == "fire") {
-            const bool burning = p::flag(PyDict_GetItemString(row, "state"));
+            const bool burning = field(row, "state").truth();
             code = burning ? (cause == "ramming" ? "DEVICE_STARTED_FIRE_AT_RAMMING" : "DEVICE_STARTED_FIRE_AT_SHOT") : "FIRE_STOPPED";
         } else continue;
         PyObject* index = indices.get() != Py_None ? PyObject_GetItem(indices.get(), p::text(code).get()) : nullptr;

@@ -156,12 +156,13 @@ void create(Battle& b, Actor& v, const Value& event) {
     const std::int64_t health = has(initial, "health") ? integer(field(initial, "health")) : cap;
     put(properties.get(), "health", p::integer(std::max<std::int64_t>(0, std::min(health, cap))));
     const auto placed = worldPose(b, state);
-    auto engine = remote::create(b, descriptor.get(), properties.get(), placed.first, placed.second);
-    if (engine.get() == Py_None) throw p::Error("remote presentation returned no vehicle id");
-    remote::setInterpolateMotion(b, p::wide(engine.get()), bot && botAuthorityIsLocal(b, field(b.start, "bot_authority_id")));
-    const bool native_entities = remote::nativeEntities(b);
+    const std::int64_t engine = remote::create(b, descriptor.get(), properties.get(), placed.first, placed.second);
+    if (!engine) throw p::Error("remote presentation returned no vehicle id");
+    remote::setInterpolateMotion(b, engine, bot && botAuthorityIsLocal(b, field(b.start, "bot_authority_id")));
+    // The live remote factory always creates native #1513 Vehicle entities.
+    const bool native_entities = true;
     auto& d = v.presented;
-    v.engine_id = p::wide(engine.get());
+    v.engine_id = engine;
     d.state = state;
     d.network_id = integer(field(event, "id"));
     d.remote = true;

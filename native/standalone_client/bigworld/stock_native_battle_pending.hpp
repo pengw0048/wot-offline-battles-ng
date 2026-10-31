@@ -11,8 +11,7 @@ struct FrameTiming {
     std::size_t bot_count = 0;
     std::vector<std::pair<const char*, double>> stages;
 };
-void tick(Battle& b);
-void scheduleFrame(Battle& b);
+
 namespace local {
 void fallbackPostmortemViewpoint(Battle& b, std::int64_t excluded_engine_id);
 void siegeAcknowledged(Battle& b, std::int64_t siege, std::int64_t left_ms, const Value& input_seq, bool switching);
@@ -39,14 +38,10 @@ void terminal(Battle& b, const Value& event);
 }
 namespace startup {
 double serverClock(Battle& b);
-void ensureRecording(Battle& b);
-void presentReplayLocal(Battle& b, double dt);
-void frameDiagnostics(Battle& b, const FrameTiming& timing);
 }
-namespace remote {
-void siegePose(Battle& b, std::int64_t engine_id);
-void setInterpolateMotion(Battle& b, std::int64_t engine_id, bool interpolate);
-bool nativeEntities(const Battle& b);
+namespace local {
+// The replay's recorded local presentation for this frame (the pinned _present_replay_local).
+void presentReplay(Battle& b, double dt);
 }
 namespace world {
 void refreshDetachedWreck(Battle& b, PyObject* entity);
@@ -55,13 +50,8 @@ bool destructibleEvent(Battle& b, const Value& event);
 void observeDisabled(Battle& b, const Value& message);
 }
 namespace visibility {
-void maintainSpace(Battle& b, double now);
 void vehicleChanged(Battle& b, Actor& vehicle);
 double shotCamouflageSeconds();
-}
-namespace critical {
-void prewarmLayout(Battle& b);
-std::optional<bool> reconcile(Battle& b, Actor& vehicle, const Value& source, Value* canonical);
 }
 namespace bots {
 double rememberTrackTurn(Actor& vehicle, double yaw, double now);

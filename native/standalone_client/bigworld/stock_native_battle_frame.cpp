@@ -12,8 +12,39 @@ namespace {
 double wall() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 }
 
+namespace {
+// BattleRuntime._prewarm_critical_layout: on the worker before the battle goes live, one vehicle layout per frame.
+void prewarmCriticalLayout(Battle& b) {
+    if (!b.worker || b.live || b.prebattle_deadline < 0.) return;
+    for (auto& entry : b.vehicles->actors) {
+        Actor& v = *entry.second;
+        if (!v.engine_id || !v.ready || v.tombstone || v.local || v.presented.critical_layout_prewarmed) continue;
+        auto entity = b.entity(v.engine_id);
+        if (entity.get() == Py_None || !p::flag(py::optional(entity.get(), "isStarted").get())) continue;
+        auto descriptor = py::optional(entity.get(), "typeDescriptor");
+        if (descriptor.get() == Py_None) continue;
+        bool completed = true;
+        try { completed = critical::prewarmLayout(descriptor.get()); }
+        catch (const std::exception& e) { b.warn("critical layout prewarm for " + entry.first, describe(e)); }
+        if (completed) { v.presented.critical_layout_prewarmed = true; return; }
+    }
+}
+}
+
+// BattleRuntime._server_clock: BigWorld.serverTime(), else the battle clock.
+double startup::serverClock(Battle& b) {
+    PyObject* raw = PyObject_CallMethod(b.engine.bigworld.get(), const_cast<char*>("serverTime"), nullptr);
+    if (raw) {
+        const double value = PyFloat_AsDouble(raw);
+        Py_DECREF(raw);
+        if (!PyErr_Occurred()) return value;
+    }
+    PyErr_Clear();
+    return b.clock();
+}
+
 // One render callback of a running battle.
-void tick(Battle& b) {
+void startup::frame(Battle& b) {
     if (!b.running()) return;
     FrameTiming timing;
     timing.start = wall();
@@ -33,7 +64,7 @@ void tick(Battle& b) {
     };
     const bool worker = b.worker, replay = b.replay;
     try {
-        b.feature("map visibility filtering", [&] { visibility::maintainSpace(b, now); });
+        b.feature("map visibility filtering", [&] { visibility::maintainSpaceVisibility(b, now); });
         vehicles::flushPendingBotCreate(b, now);
         vehicles::flushPendingEntities(b, now);
         startup::startTeamChatWhenRosterReady(b);
@@ -57,7 +88,7 @@ void tick(Battle& b) {
         stage("drown");
         if (!b.live && b.prebattle_deadline >= 0.) bots::prewarm(b, now);
         try { world::prewarm(b, now); } catch (const std::exception& e) { b.warn("destructible prewarm", describe(e), false); }
-        try { critical::prewarmLayout(b); } catch (const std::exception& e) { b.warn("critical layout prewarm", describe(e), false); }
+        try { prewarmCriticalLayout(b); } catch (const std::exception& e) { b.warn("critical layout prewarm", describe(e), false); }
         stage("prewarm");
         if (!b.live) projectiles::prebattleSample(b, now);
         if (!b.live && startup::prebattleTransitionReady(b, now)) {
@@ -92,21 +123,18 @@ void tick(Battle& b) {
         }
         stage("spot");
         if (b.live && !worker && !replay) b.feature("target lock validation", [&] { visibility::validateTargetLock(b); }, false);
-        if (replay) startup::presentReplayLocal(b, dt);
-        else startup::recordFrame(b);
+        if (replay) local::presentReplay(b, dt);
+        else startup::recordLocal(b);
         stage("lock");
     } catch (const std::exception& e) {
         b.fail(describe(e));
         return;
     }
-    scheduleFrame(b);
+    // FRAME_SECONDS is zero: the next callback runs on the next rendered frame.
+    startup::scheduleFrame(b, 0.);
     stage("schedule");
-    timing.dt = dt;
-    startup::frameDiagnostics(b, timing);
-}
-
-// The next render callback (FRAME_SECONDS is zero: every rendered frame).
-void scheduleFrame(Battle& b) {
-    b.startup->frame_callback = own(schedule(b, 0., [](Battle& battle) { tick(battle); }));
+    std::map<std::string, double> stages;
+    for (const auto& item : timing.stages) stages[item.first] += item.second;
+    startup::diagnosticsFrame(b, timing.start, wall() - timing.start, stages);
 }
 }

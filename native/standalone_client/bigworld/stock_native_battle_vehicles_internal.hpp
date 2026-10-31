@@ -19,8 +19,6 @@ p::Ref vector(Battle& b, const Point& at);
 p::Ref rotation(double yaw, double pitch, double roll);
 std::int64_t attackReason(Battle& b, const char* member, std::int64_t fallback);
 
-inline LocalCriticalReport& localCritical(Battle& b) { return b.roster->local_critical; }
-bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::int64_t ack_seq, std::int64_t server_revision);
 
 // Lifecycle.
 void apply(Battle& b, const Value& event);
@@ -38,7 +36,7 @@ bool applySiege(Battle& b, Actor& v, const Value& state);
 bool applyStatistics(Battle& b, Actor& v, const Value& state);
 bool applyStun(Battle& b, Actor& v, const Value& state);
 bool reconcileCriticalAuthority(Battle& b, Actor& v, const Value& source, Value* canonical);
-bool presentCritical(Battle& b, Actor& v, PyObject* events, std::int64_t attacker);
+bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t attacker);
 std::int64_t criticalExtraIndex(PyObject* descriptor, const std::string& name);
 bool damageInfoServiceable(Battle& b);
 bool showDamageInfo(Battle& b, std::int64_t engine_id, std::int64_t damage_index, std::int64_t extra_index, std::int64_t attacker);

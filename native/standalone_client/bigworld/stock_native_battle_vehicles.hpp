@@ -3,13 +3,6 @@
 #include "stock_native_battle.hpp"
 
 namespace native_battle {
-// The local damage report a server acknowledgement retires.
-struct LocalCriticalReport {
-    std::int64_t server_revision = 0, base_revision = 0, next_seq = 0;
-    bool owned = false;
-    std::optional<Value> report;
-};
-
 struct Vehicles {
     // Bots wait here until their own createEntity callback; humans are created on arrival.
     std::map<std::string, Value> pending_bot_creates;
@@ -18,7 +11,6 @@ struct Vehicles {
     bool bots_ready_reported = false;
     std::optional<double> bot_create_started, bot_create_finished;
     std::uint64_t revision = 0;     // bumped on every create/remove; consumers cache against it
-    LocalCriticalReport local_critical;
 };
 
 namespace vehicles {

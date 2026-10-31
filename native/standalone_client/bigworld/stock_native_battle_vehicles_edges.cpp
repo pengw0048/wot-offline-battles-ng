@@ -298,7 +298,7 @@ bool applySiege(Battle& b, Actor& v, const Value& state) {
     if (v.local) gun::edge(b);
     py::call(b.engine.binding.get(), "update_vehicle_siege_state", id(v).get(), p::integer(siege).get(), p::number(double(left) / 1000.).get());
     d.siege_state = siege;
-    if (b.worker && v.native_remote) remote::siegePose(b, v.engine_id);
+    if (b.worker && v.native_remote) remote::updateSiegePose(b, v.engine_id);
     if (v.local) {
         local::siegeChanged(b, entity.get(), siege == enabled || siege == off);
         gun::descriptorChanged(b, entity.get());
@@ -365,9 +365,9 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
         auto is = [&](const char* name, std::int64_t fallback) { return attackReason(b, name, fallback) == reason; };
         const char* cause = is("FIRE", 1) ? "fire" : is("RAM", 2) ? "ramming" : is("WORLD_COLLISION", 3) ? "world_collision"
                           : is("DROWNING", 5) ? "drowning" : is("OVERTURN", 7) ? "overturn" : "shot";
-        auto payload = critical::applyDeath(b, entity.get(), cause);
-        if (payload.get() != Py_None) {
-            Value canonical = cs::read(payload.get());
+        const Value payload = critical::applyDeath(b, entity.get(), cause);
+        if (payload.resolved().kind != Value::Kind::Null) {
+            Value canonical = payload.resolved();
             writable(canonical).object["events"].kind = Value::Kind::Array;
             writable(state).object["critical"] = canonical;
             d.critical = canonical;
