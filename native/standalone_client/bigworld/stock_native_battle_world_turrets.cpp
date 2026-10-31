@@ -1,5 +1,5 @@
-// The visible client's detached-turret presentation over the native world's accepted rows. The stock entity
-// manager (DetachedTurretPresentation) still creates the turret entities; this owner drives their matrices.
+// The visible client's detached-turret presentation over the native world's accepted rows: the client-created
+// stock DetachedTurret entities, their frozen-arc or body-buffer matrices, landing effects and obstacle geometry.
 #if !defined(WOT_NATIVE_BATTLE_HOST_BUILD)
 #include "pch.hpp"
 #include "pyscript/script_math.hpp"
@@ -7,20 +7,60 @@
 #include "stock_native_battle_world_parts.hpp"
 #include "stock_native_battle_world_imports.hpp"
 #include "stock_native_client_turret_presentation.hpp"
-#include "stock_native_detached_turret_snapshot.hpp"
 #include "stock_native_client_query.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace native_battle {
-namespace world {
-namespace {
 namespace present = stock_native_client_turret_presentation;
 namespace detached = stock_native_detached_turret;
-using present::Row;
-using present::Frame;
-using present::Tuning;
-const char* capsule_name = "wot.native.battle.turret.presentation";
+namespace turret = stock_native_bot_turret;
+
+struct TurretPresentation {
+    // One detached turret owns a turret plus gun compound for the rest of the round; the 32-bit client bounds how
+    // many are resident. The server applies the same accepted-record cap to the whole room.
+    static constexpr std::size_t max_active = 12;
+    static constexpr double create_retry_seconds = 1., model_timeout_seconds = 30., visual_retry_seconds = .25;
+    struct Entry {
+        std::int64_t id = 0, vehicle = 0, motion_sequence = 0, presented_impact = 0;
+        std::string key;               // accepted actor key, e.g. "bot:7"
+        detached::Row row;
+        present::Buffer buffer;
+        Object entity, matrix;
+        double started = 0., created = 0.;
+        bool settled = false, impacted = false, failed = false;
+        explicit Entry(present::Tuning t) : buffer(t) {}
+    };
+    struct Retiring {
+        std::int64_t id = 0, vehicle = 0;
+        std::string key;
+        Object entity;
+    };
+    struct Attempt {
+        detached::Row row;
+        double next_retry = 0.;
+    };
+    struct Accepted {
+        detached::Row row;
+        bool geometry = false, failed = false;
+        std::shared_ptr<const void> attempted_geometry;
+        std::int64_t visual_revision = 0;
+    };
+    // turret_detachment.GRAVITY / FLIGHT_STEP_SECONDS and the snapshot interpolation delay law.
+    present::Tuning tuning{9.81, .04, .06, .09, .005};
+    std::vector<std::shared_ptr<Entry>> entries;
+    std::vector<Retiring> retiring;
+    std::map<std::string, Attempt> attempts;
+    std::map<std::string, Accepted> accepted;
+    std::vector<std::string> accepted_order;
+    std::uint64_t generation = 0;
+    bool closed = false, spg = false;
+    std::string strategic, arty;
+};
+
+namespace world {
+namespace {
+using Entry = TurretPresentation::Entry;
 
 p::Ref field(PyObject* o, const char* n) {
     if (!o || o == Py_None) return p::retain(Py_None);
@@ -30,559 +70,461 @@ p::Ref field(PyObject* o, const char* n) {
     if (!v && PyErr_ExceptionMatches(PyExc_AttributeError)) { PyErr_Clear(); return p::retain(Py_None); }
     return p::Ref(v);
 }
-void put(PyObject* o, const char* n, const p::Ref& v) {
-    if (PyDict_Check(o)) { p::set(o, n, v); return; }
+void put(PyObject* o, const char* n, PyObject* v) {
     auto name = p::text(n);
-    if (PyObject_GenericSetAttr(o, name.get(), v.get()) < 0) throw p::Error("native turret presentation mirror failed");
+    if (PyObject_SetAttr(o, name.get(), v) < 0) throw p::Error(std::string("detached turret attribute ") + n + " is not writable");
 }
 p::Ref builtin(PyObject* o, const char* n, PyObject* args) {
     auto method = field(o, n);
     if (!PyCFunction_Check(method.get())) throw p::Error("native turret presentation requires the reviewed builtin");
     return p::Ref(PyObject_CallObject(method.get(), args));
 }
-p::Ref call(PyObject* object, const char* method, PyObject* args) { return p::call(object, method, args); }
-void removeIdentity(PyObject* list, PyObject* value) {
-    if (!PyList_Check(list)) throw p::Error("native turret presentation list is invalid");
-    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(list); ++i)
-        if (PyList_GET_ITEM(list, i) == value) {
-            if (PySequence_DelItem(list, i) < 0) throw p::Error("native turret presentation retirement failed");
-            return;
-        }
-}
-Point point(PyObject* v) {
+Point xyz(PyObject* v) {
     if (PyList_Check(v) || PyTuple_Check(v)) return p::numbers<3>(v);
     return {p::numeric(v, "x"), p::numeric(v, "y"), p::numeric(v, "z")};
 }
-Point optionalPoint(PyObject* o, const char* n) {
-    auto value = field(o, n);
-    return value.get() == Py_None ? Point{} : point(value.get());
+p::Ref vector(Battle& b, const Point& v) {
+    auto args = p::tupleNumbers(v);
+    return builtin(b.engine.math.get(), "Vector3", args.get());
 }
-Frame frame(PyObject* raw) {
-    Frame out;
-    out.position = point(field(raw, "position").get());
-    out.attitude = point(field(raw, "attitude").get());
-    out.centre = optionalPoint(raw, "centre");
-    out.velocity = optionalPoint(raw, "velocity");
-    out.angular_velocity = optionalPoint(raw, "angular_velocity");
-    out.grounded = p::truth(raw, "grounded");
-    out.sleeping = p::truth(raw, "sleeping");
-    out.impact_serial = p::integral(raw, "impact_serial");
-    auto impact = field(raw, "impact");
-    if (impact.get() != Py_None) {
-        detached::Impact value;
-        value.point = point(field(impact.get(), "point").get());
-        value.normal = point(field(impact.get(), "normal").get());
-        value.velocity = point(field(impact.get(), "velocity").get());
-        value.energy = p::numeric(impact.get(), "energy");
-        out.impact = value;
-    }
-    return out;
+// A per-turret failure is local to that turret; the warning stays enabled for later rows.
+void note(Battle& b, const std::string& what, const std::exception& error) { b.warn(what, describe(error), false); }
+
+TurretPresentation& presentation(Battle& b) {
+    auto& w = *b.world;
+    if (!w.presentation) w.presentation = std::make_shared<TurretPresentation>();
+    return *w.presentation;
 }
-// The visual row a locally adopted (legacy) turret carries in its raw dictionary.
-Row visualRow(PyObject* raw) {
-    Row out;
-    out.attitude = point(field(raw, "attitude").get());
-    out.spin = point(field(raw, "spin").get());
-    auto source = field(raw, "flight");
-    auto& f = out.flight;
-    f.origin = optionalPoint(source.get(), "origin");
-    f.velocity = optionalPoint(source.get(), "velocity");
-    f.rest = point(field(source.get(), "rest").get());
-    f.duration = p::numeric(source.get(), "duration");
-    f.energy = p::numeric(source.get(), "energy");
-    f.landed = p::truth(source.get(), "landed");
-    auto contact = field(source.get(), "contact"), rest = field(source.get(), "rest_attitude"), body = field(source.get(), "body"),
-         segments = field(source.get(), "segments");
-    if (contact.get() != Py_None) f.contact = point(contact.get());
-    if (rest.get() != Py_None) f.rest_attitude = point(rest.get());
-    if (body.get() != Py_None) f.body = frame(body.get());
-    for (Py_ssize_t i = 0; i < p::size(segments.get()); ++i) {
-        auto value = p::item(segments.get(), i);
-        f.segments.push_back({point(field(value.get(), "origin").get()), point(field(value.get(), "velocity").get()),
-                              p::numeric(value.get(), "start"), p::numeric(value.get(), "duration")});
-    }
-    return out;
+bool resident(const TurretPresentation& t, std::int64_t vehicle) {
+    for (const auto& e : t.entries) if (e->vehicle == vehicle) return true;
+    for (const auto& r : t.retiring) if (r.vehicle == vehicle) return true;
+    return false;
 }
-
-struct Entry {
-    p::Ref raw;
-    std::unique_ptr<p::Ref> entity, matrix;
-    Row row;
-    present::Buffer buffer;
-    std::int64_t id = 0, vehicle = 0, presented_impact = 0;
-    double started = 0., created = 0.;
-    bool canonical = false, settled = false, impacted = false, failed = false;
-    Entry(PyObject* r, Tuning t) : raw(p::retain(r)), buffer(t) {}
-};
-// One accepted row: the raw dictionary the stock manager consumes and its presentation progress.
-struct Accepted {
-    p::Ref raw;
-    Row row;
-    bool geometry = false, failed = false;
-    std::shared_ptr<const void> attempted_geometry;
-    std::int64_t visual_revision = 0;
-    Accepted(PyObject* r, Row value) : raw(p::retain(r)), row(std::move(value)) {}
-};
-
-struct Owner {
-    p::Ref weak_manager, bigworld, math;
-    std::uint64_t generation = 0;
-    Tuning tuning;
-    std::vector<std::shared_ptr<Entry>> entries;
-    std::map<std::string, std::shared_ptr<Accepted>> accepted;
-    std::vector<std::string> accepted_order;
-    double timeout = 0., aoi = 0.;
-    bool closed = false, spg = false;
-    std::string strategic, arty;
-
-    explicit Owner(PyObject* m)
-        : weak_manager(PyWeakref_NewRef(m, nullptr)), bigworld(field(m, "_bigworld")), math(field(m, "_math")) {
-        p::Ref flight(PyImport_ImportModule("gui.mods.offline_lan_0922.turret_detachment")),
-            sync(PyImport_ImportModule("gui.mods.offline_lan_0922.snapshot_sync")),
-            presenter(PyImport_ImportModule("gui.mods.offline_lan_0922.entities.detached_turret")),
-            spotting(PyImport_ImportModule("gui.mods.offline_lan_0922.spotting"));
-        tuning = {p::numeric(flight.get(), "GRAVITY"), p::numeric(flight.get(), "FLIGHT_STEP_SECONDS"),
-                  p::numeric(sync.get(), "MIN_TIMED_DELAY_US") / 1.e6, p::numeric(sync.get(), "INITIAL_TIMED_DELAY_US") / 1.e6,
-                  p::numeric(sync.get(), "TIMED_DELAY_DECAY_RATIO")};
-        timeout = p::numeric(presenter.get(), "CANONICAL_MODEL_TIMEOUT_SECONDS");
-        aoi = p::numeric(spotting.get(), "VEHICLE_AOI_RADIUS");
+// The source identity check before adopting a never-observed entity id.
+bool matches(PyObject* entity, std::int64_t vehicle) {
+    auto direct = field(entity, "vehicleID");
+    auto properties = field(entity, "properties");
+    auto id = direct.get() != Py_None ? p::retain(direct.get())
+                                       : PyDict_Check(properties.get()) ? field(properties.get(), "vehicleID") : p::retain(Py_None);
+    if (id.get() == Py_None) return false;
+    PyObject* number = PyNumber_Int(id.get());
+    if (!number) { PyErr_Clear(); return false; }
+    p::Ref held(number);
+    return p::wide(number) == vehicle;
+}
+bool destroyEntity(Battle& b, std::int64_t id) {
+    try {
+        auto value = p::integer(id);
+        p::Ref args(PyTuple_Pack(1, value.get()));
+        builtin(b.engine.bigworld.get(), "destroyEntity", args.get());
+        return true;
+    } catch (const std::exception& error) {
+        note(b, "detached turret teardown failed", error);
+        return false;
     }
-    PyObject* manager() const {
-        auto* m = PyWeakref_GetObject(weak_manager.get());
-        if (m == Py_None) throw p::Error("native turret manager was released");
-        return m;
-    }
-    Battle* battle() const {
-        Battle* b = current();
-        return b && generation && b->generation == generation ? b : nullptr;
-    }
-    bool active() const { return !closed && PyWeakref_GetObject(weak_manager.get()) != Py_None && (!generation || battle()); }
-    std::shared_ptr<Entry> find(PyObject* raw) const {
-        for (const auto& e : entries) if (e->raw.get() == raw) return e;
-        return {};
-    }
-    p::Ref resolve(std::int64_t id) const {
-        Battle* b = current();
-        return b ? b->entity(id) : p::retain(Py_None);
-    }
-    bool matches(PyObject* entity, PyObject* raw) const {
-        auto id = field(entity, "vehicleID");
-        if (id.get() == Py_None) {
-            auto properties = field(entity, "properties");
-            if (PyDict_Check(properties.get())) {
-                auto actual = field(properties.get(), "vehicleID");
-                return actual.get() != Py_None && p::wide(actual.get()) == p::integral(raw, "vehicle_id");
-            }
-            return false;
-        }
-        return p::wide(id.get()) == p::integral(raw, "vehicle_id");
-    }
-    void erase(const std::shared_ptr<Entry>& e) {
-        auto rows = field(manager(), "_turrets");
-        removeIdentity(rows.get(), e->raw.get());
-        entries.erase(std::remove(entries.begin(), entries.end(), e), entries.end());
-    }
-    std::size_t retirePoll() {
-        std::size_t retired = 0;
-        auto retiring = field(manager(), "_retiring");
-        if (!PyList_Check(retiring.get())) throw p::Error("native retiring turret list is invalid");
-        p::Ref snapshot(PyList_AsTuple(retiring.get()));
-        for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(snapshot.get()); ++i) {
-            auto* raw = PyTuple_GET_ITEM(snapshot.get(), i);
-            auto entity = resolve(p::integral(raw, "id")), previous = field(raw, "entity");
-            if (entity.get() == Py_None && previous.get() == Py_None) continue;
-            if (entity.get() != Py_None && (previous.get() == Py_None || previous.get() == entity.get())) {
-                if (!matches(entity.get(), raw)) { removeIdentity(retiring.get(), raw); continue; }
-                put(raw, "entity", entity);
-                auto id = p::integer(p::integral(raw, "id"));
-                p::Ref args(PyTuple_Pack(1, id.get()));
-                try {
-                    builtin(bigworld.get(), "destroyEntity", args.get());
-                } catch (const std::exception& error) {
-                    PyErr_Clear();
-                    log(std::string("Native detached turret retirement failed: ") + error.what());
-                    continue;
-                }
-            }
-            removeIdentity(retiring.get(), raw);
+}
+// Retires engine-owned ids only; a pending creation stays a tombstone until its entity exists.
+std::size_t retirePoll(Battle& b, TurretPresentation& t) {
+    std::size_t retired = 0;
+    for (auto at = t.retiring.begin(); at != t.retiring.end();) {
+        auto entity = b.entity(at->id);
+        if (entity.get() == Py_None && !at->entity) { ++at; continue; }
+        if (entity.get() != Py_None && (!at->entity || at->entity.get() == entity.get())) {
+            if (!matches(entity.get(), at->vehicle)) { at = t.retiring.erase(at); continue; }
+            at->entity = borrow(entity.get());
+            if (!destroyEntity(b, at->id)) { ++at; continue; }
             ++retired;
         }
-        return retired;
+        at = t.retiring.erase(at);
     }
-    void add(PyObject* raw) {
-        if (find(raw)) return;
-        auto e = std::make_shared<Entry>(raw, tuning);
-        e->id = p::integral(raw, "id");
-        e->vehicle = p::integral(raw, "vehicle_id");
-        e->row = visualRow(raw);
-        e->started = p::numeric(raw, "started");
-        e->created = p::numeric(raw, "created");
-        e->canonical = field(raw, "canonical_key").get() != Py_None;
-        e->settled = p::truth(raw, "settled");
-        e->impacted = p::truth(raw, "impacted");
-        entries.push_back(std::move(e));
-    }
-    void push(PyObject* raw, PyObject* wire, double now, double age) {
-        auto e = find(raw);
-        if (!e) { add(raw); e = find(raw); }
-        Row next;
-        if (!detached::readRow(wire, next)) throw p::Error("native turret canonical presentation row is invalid");
-        e->row = std::move(next);
-        e->started = p::numeric(raw, "started");
-        e->settled = p::truth(raw, "settled");
-        e->impacted = p::truth(raw, "impacted");
-        e->failed = false;
-        e->buffer.push(e->row, now, age);
-    }
-    void attach(Battle& b) {
-        if (generation == b.generation) return;
-        generation = b.generation;
-        accepted.clear();
-        accepted_order.clear();
-        const Actor* local = b.localVehicle();
-        auto entity = local ? b.entity(local->engine_id) : p::retain(Py_None);
-        auto descriptor = field(entity.get(), "typeDescriptor"), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
-        auto tag = p::text("SPG");
-        spg = tags.get() != Py_None && PySequence_Contains(tags.get(), tag.get()) == 1;
-        auto input = field(b.engine.modules.get(), "avatar_input_handler"), modes = field(input.get(), "_CTRL_MODE");
-        strategic = p::string(field(modes.get(), "STRATEGIC").get());
-        arty = p::string(field(modes.get(), "ARTY").get());
-    }
-    // Accepted rows in acceptance order; an unchanged row keeps its raw dictionary and presentation progress.
-    void ingest(const DetachedTurrets& turrets) {
-        std::vector<std::string> order;
-        for (const auto& key : turrets.order) {
-            const auto row = turrets.rows.find(key);
-            if (row == turrets.rows.end()) continue;
-            order.push_back(key);
-            const auto found = accepted.find(key);
-            if (found != accepted.end() && found->second->row.motion_sequence == row->second.motion_sequence &&
-                found->second->row.created_time_ms == row->second.created_time_ms)
-                continue;
-            p::Ref raw(detached::packRow(row->second));
-            auto fresh = std::make_shared<Accepted>(raw.get(), row->second);
-            if (found != accepted.end()) fresh->visual_revision = found->second->visual_revision;
-            accepted[key] = std::move(fresh);
-        }
-        for (auto at = accepted.begin(); at != accepted.end();)
-            if (std::find(order.begin(), order.end(), at->first) == order.end()) at = accepted.erase(at);
-            else ++at;
-        accepted_order = std::move(order);
-    }
-    p::Ref optional(Accepted& row, PyObject* object, const char* method, PyObject* args) {
-        try { return call(object, method, args); }
-        catch (const std::exception& error) {
-            PyErr_Clear();
-            if (!row.failed) { row.failed = true; log(std::string("Native turret ") + method + ": " + error.what()); }
-            return p::retain(Py_None);
-        }
-    }
-    bool accepted_still(const std::string& key, const std::shared_ptr<Accepted>& record) const {
-        const auto at = accepted.find(key);
-        return at != accepted.end() && at->second == record;
-    }
-    void schedule(Battle& b, World& w, double now, double server) {
-        if (!active()) return;
-        const Actor* local = b.localVehicle();
-        if (!local || !local->has_current) return;
-        Point origin{local->current[0], local->current[1], local->current[2]};
-        if (const auto spectated = visibility::spectatedEngineId(b)) {
-            for (const auto& actor : b.vehicles->actors)
-                if (actor.second->engine_id == *spectated && actor.second->ready) {
-                    const auto& pose = actor.second->current;
-                    origin = actor.second->local ? Point{pose[0], pose[1], pose[2]} : Point{float(pose[0]), float(pose[1]), float(pose[2])};
-                    break;
-                }
-        }
-        bool spg_view = false;
-        if (spg) {
-            auto handler = field(b.engine.avatar.get(), "inputHandler"), mode = field(handler.get(), "_AvatarInputHandler__ctrlModeName");
-            const auto name = p::string(mode.get());
-            spg_view = name == strategic || name == arty;
-        }
-        const auto order = accepted_order;
-        for (const auto& key : order) {
-            if (!active()) break;
-            const auto found = accepted.find(key);
-            if (found == accepted.end()) continue;
-            auto record = found->second;
-            auto* actor = b.vehicles->find(key);
-            if (!actor || !actor->ready || actor->tombstone || actor->missing) continue;
-            auto entity = resolve(actor->engine_id);
-            if (entity.get() == Py_None) continue;
-            // Visual-only debris owns no ray, hull, navigation or contact geometry.
-            if (!record->geometry && !record->row.flight.body) { w.turrets.geometry.insert(key); record->geometry = true; }
-            if (!record->geometry && actor->geometry && record->attempted_geometry != actor->geometry) {
-                record->attempted_geometry = actor->geometry;
-                auto* descriptor = stock_native_client_query::descriptor(*actor);
-                if (w.turret_obstacles && descriptor) {
-                    auto identity = p::text(key);
-                    p::Ref args(PyTuple_Pack(3, identity.get(), record->raw.get(), descriptor));
-                    auto result = optional(*record, w.turret_obstacles.get(), "add", args.get());
-                    if (!active()) break;
-                    if (!accepted_still(key, record)) continue;
-                    if (p::flag(result.get())) { w.turrets.geometry.insert(key); record->geometry = true; }
-                }
-            }
-            if (!p::flag(py::optional(entity.get(), "isTurretDetached").get()) ||
-                (!spg_view && std::hypot(origin[0] - record->row.flight.rest[0], origin[2] - record->row.flight.rest[2]) > aoi))
-                continue;
-            bool resident = false;
-            for (const auto& e : entries) if (e->vehicle == actor->engine_id) { resident = true; break; }
-            if (!resident) {
-                auto retiring = field(manager(), "_retiring");
-                for (Py_ssize_t i = 0; i < p::size(retiring.get()); ++i) {
-                    auto value = p::item(retiring.get(), i);
-                    if (p::integral(value.get(), "vehicle_id") == actor->engine_id) { resident = true; break; }
-                }
-            }
-            if (resident && record->visual_revision >= record->row.motion_sequence) continue;
-            const std::string retry_key = "visual:" + key;
-            const auto due = w.turrets.visual_retry.find(retry_key);
-            if (!resident && due != w.turrets.visual_retry.end() && now < due->second) continue;
-            w.turrets.visual_retry[retry_key] = now + .25;
-            p::Ref prepare_args(PyTuple_Pack(2, entity.get(), record->raw.get()));
-            auto plan = optional(*record, manager(), "prepare_canonical", prepare_args.get());
-            if (!active()) break;
-            if (!accepted_still(key, record) || !PyDict_Check(plan.get())) continue;
-            auto time = p::number(now), age = p::number(std::max(0., (server - double(record->row.created_time_ms)) / 1000.));
-            p::Ref launch_args(PyTuple_Pack(4, plan.get(), record->raw.get(), time.get(), age.get()));
-            auto launched = optional(*record, manager(), "launch_canonical", launch_args.get());
-            if (!active()) break;
-            if (!accepted_still(key, record)) continue;
-            if (p::flag(launched.get())) {
-                record->visual_revision = record->row.motion_sequence;
-                w.turrets.visual_revisions[key] = record->visual_revision;
-            }
-        }
-    }
-    p::Ref vector(const Point& v) {
-        auto args = p::tupleNumbers(v);
-        return builtin(math.get(), "Vector3", args.get());
-    }
-    void writeMatrix(const Entry& e, const present::Pose& pose) {
-#if defined(WOT_NATIVE_BATTLE_HOST_BUILD)
-        auto angles = p::tupleNumbers(pose.attitude);
-        p::Ref args(PyTuple_Pack(1, angles.get()));
-        builtin(e.matrix->get(), "setRotateYPR", args.get());
-        put(e.matrix->get(), "translation", vector(pose.position));
-#else
-        if (!BW::PyMatrix::Check(e.matrix->get())) throw p::Error("native turret provider is not a writable Matrix");
-        auto* matrix = static_cast<BW::PyMatrix*>(e.matrix->get());
-        matrix->setRotate(float(pose.attitude[0]), float(pose.attitude[1]), float(pose.attitude[2]));
-        matrix->translation(BW::Vector3(float(pose.position[0]), float(pose.position[1]), float(pose.position[2])));
-#endif
-    }
-    void impact(const Entry& e, const present::Pose& pose) {
-        auto raw = field(e.raw.get(), "flight");
-        if (!pose.body) {
-            p::Ref args(PyTuple_Pack(2, e.entity->get(), raw.get()));
-            call(manager(), "_report_impact", args.get());
-            return;
-        }
-        const auto& body = *pose.body;
-        if (!body.impact) return;
-        p::Ref flight(PyDict_Copy(raw.get()));
-        p::set(flight.get(), "landed", p::boolean(true));
-        p::set(flight.get(), "contact", p::numbers(body.impact->point));
-        p::set(flight.get(), "energy", p::number(body.impact->energy));
-        auto hit_frame = p::dict(), hit = p::dict();
-        p::set(hit.get(), "normal", p::numbers(body.impact->normal));
-        p::set(hit_frame.get(), "impact", hit);
-        p::set(flight.get(), "body", hit_frame);
-        p::Ref args(PyTuple_Pack(2, e.entity->get(), flight.get()));
-        call(manager(), "_report_impact", args.get());
-    }
-    void failedLoad(const std::shared_ptr<Entry>& e, double now) {
-        entries.erase(std::remove(entries.begin(), entries.end(), e), entries.end());
-        auto time = p::number(now);
-        p::Ref args(PyTuple_Pack(2, e->raw.get(), time.get()));
-        call(manager(), "_retire_failed_load", args.get());
-    }
-    std::size_t advance(double now) {
-        retirePoll();
-        if (!active()) return 0;
-        std::size_t written = 0;
-        const auto active_entries = entries;
-        for (const auto& e : active_entries) {
-            if (!active()) break;
-            try {
-                auto entity = resolve(e->id);
-                if (entity.get() == Py_None) {
-                    if (e->entity) erase(e);
-                    else if (e->canonical && now - e->created >= timeout) failedLoad(e, now);
-                    continue;
-                }
-                if ((e->entity && e->entity->get() != entity.get()) || !matches(entity.get(), e->raw.get())) { erase(e); continue; }
-                if (!e->entity) { e->entity = std::make_unique<p::Ref>(p::retain(entity.get())); put(e->raw.get(), "entity", entity); }
-                auto model = field(entity.get(), "model");
-                if (model.get() == Py_None) {
-                    if (e->canonical && now - e->created >= timeout) failedLoad(e, now);
-                    continue;
-                }
-                if (e->settled) continue;
-                if (!e->matrix) {
-                    p::Ref args(PyTuple_Pack(2, entity.get(), e->raw.get()));
-                    auto bound = call(manager(), "_bind", args.get());
-                    if (!active()) break;
-                    if (!p::flag(bound.get())) {
-                        auto retiring = field(manager(), "_retiring");
-                        p::append(retiring.get(), e->raw);
-                        erase(e);
-                        retirePoll();
-                        continue;
-                    }
-                    auto matrix = field(e->raw.get(), "matrix");
-                    if (matrix.get() == Py_None) throw p::Error("native turret Matrix binding is unavailable");
-                    e->matrix = std::make_unique<p::Ref>(std::move(matrix));
-                }
-                const double elapsed = std::max(0., now - e->started);
-                auto buffered = e->buffer.pose(now);
-                const auto pose = buffered ? *buffered : present::poseAt(e->row, elapsed, tuning);
-                writeMatrix(*e, pose);
-                if (!active()) break;
-                ++written;
-                const bool was_settled = e->settled;
-                const bool landed = pose.body ? bool(pose.body->impact) : elapsed >= e->row.flight.duration;
-                if (pose.body) e->settled = pose.body->sleeping && (!buffered || *e->buffer.cursor() >= e->buffer.samples().back().time);
-                else if (landed) e->settled = true;
-                if (e->settled != was_settled) put(e->raw.get(), "settled", p::boolean(e->settled));
-                if (landed) {
-                    if (pose.body && pose.body->impact_serial > e->presented_impact) {
-                        e->presented_impact = pose.body->impact_serial;
-                        put(e->raw.get(), "presented_impact_serial", p::integer(e->presented_impact));
-                        impact(*e, pose);
-                    } else if (!pose.body && !e->impacted) {
-                        e->impacted = true;
-                        put(e->raw.get(), "impacted", p::boolean(true));
-                        impact(*e, pose);
-                    }
-                }
-            } catch (const std::exception& error) {
-                PyErr_Clear();
-                if (!e->failed) { e->failed = true; log("Native detached turret " + std::to_string(e->id) + ": " + error.what()); }
-            }
-        }
-        return written;
-    }
-    std::size_t clear() {
-        closed = true;
-        auto* m = manager();
-        put(m, "_closed", p::boolean(true));
-        auto rows = field(m, "_turrets"), retiring = field(m, "_retiring");
-        if (!PyList_Check(rows.get())) throw p::Error("native active turret list is invalid");
-        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(rows.get()); ++i) p::append(retiring.get(), p::retain(PyList_GET_ITEM(rows.get(), i)));
-        entries.clear();
-        put(m, "_turrets", p::list());
-        return retirePoll();
-    }
-};
+    return retired;
+}
+void retire(TurretPresentation& t, const std::shared_ptr<Entry>& e) {
+    t.retiring.push_back({e->id, e->vehicle, e->key, e->entity});
+    t.entries.erase(std::remove(t.entries.begin(), t.entries.end(), e), t.entries.end());
+}
+void failedLoad(Battle& b, TurretPresentation& t, const std::shared_ptr<Entry>& e, double now) {
+    retire(t, e);
+    const auto attempt = t.attempts.find(e->key);
+    if (attempt != t.attempts.end()) attempt->second.next_retry = now + TurretPresentation::create_retry_seconds;
+    retirePoll(b, t);
+    note(b, "canonical turret model load timed out",
+         p::Error("vehicle " + std::to_string(e->vehicle) + " entity " + std::to_string(e->id)));
+}
+bool exploded(PyObject* component) {
+    auto models = field(component, "models");
+    return field(models.get(), "exploded").get() != Py_None;
+}
+bool sameRow(const detached::Row& a, const detached::Row& b) {
+    return a.motion_sequence == b.motion_sequence && a.created_time_ms == b.created_time_ms && a.motion_time_ms == b.motion_time_ms;
+}
 
-void destroy(PyObject* c) {
-    auto* o = static_cast<Owner*>(PyCapsule_GetPointer(c, capsule_name));
-    if (o) delete o;
-    else PyErr_Clear();
-}
-Owner& owner(PyObject* c) {
-    auto* o = static_cast<Owner*>(PyCapsule_GetPointer(c, capsule_name));
-    if (!o) throw p::Error("native turret presentation capsule is invalid");
-    return *o;
-}
-// The owner the stock manager carries as _native_turret_presentation, created on first use.
-Owner* managerOwner(PyObject* manager) {
-    auto held = field(manager, "_native_turret_presentation");
-    if (held.get() == Py_None) {
-        p::Ref capsule(PyCapsule_New(new Owner(manager), capsule_name, destroy));
-        put(manager, "_native_turret_presentation", capsule);
-        return &owner(capsule.get());
+// A visible started source with both exploded models; the accepted flight is never recomputed from this client.
+struct Plan {
+    std::int64_t entity_id = 0, space_id = 0;
+    Object compact_descr;
+};
+std::optional<Plan> prepareCanonical(Battle& b, const TurretPresentation& t, PyObject* entity) {
+    if (t.closed || !p::flag(field(entity, "isStarted").get())) return std::nullopt;
+    auto descriptor = field(entity, "typeDescriptor");
+    if (!exploded(field(descriptor.get(), "turret").get()) || !exploded(field(descriptor.get(), "gun").get())) return std::nullopt;
+    try {
+        Plan plan;
+        plan.entity_id = p::wide(py::attr(entity, "id").get());
+        plan.compact_descr = own(py::call(descriptor.get(), "makeCompactDescr"));
+        plan.space_id = p::wide(py::attr(b.engine.avatar.get(), "spaceID").get());
+        return plan;
+    } catch (const std::exception& error) {
+        note(b, "canonical turret descriptor unavailable", error);
+        return std::nullopt;
     }
-    return &owner(held.get());
 }
-PyObject* fail(const std::exception& e) {
-    if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, e.what());
-    return nullptr;
+
+bool launchFrozen(Battle& b, TurretPresentation& t, const Plan& plan, const detached::Row& row, double started, double now,
+                  const std::string& key) {
+    const auto pose = present::poseAt(row, std::max(0., now - started), t.tuning);
+    std::optional<std::int64_t> entity_id;
+    try {
+        auto properties = p::dict();
+        p::set(properties.get(), "vehicleID", p::integer(plan.entity_id));
+        p::set(properties.get(), "vehicleCompDescr", p::retain(plan.compact_descr.get()));
+        p::set(properties.get(), "isUnderWater", p::boolean(false));
+        p::set(properties.get(), "isCollidingWithWorld", p::boolean(false));
+        auto name = p::text("DetachedTurret");
+        auto space = p::integer(plan.space_id), zero = p::integer(0);
+        auto direction = p::tupleNumbers(std::array<double, 3>{pose.attitude[2], pose.attitude[1], pose.attitude[0]});
+        auto position = vector(b, pose.position);
+        p::Ref args(PyTuple_Pack(6, name.get(), space.get(), zero.get(), position.get(), direction.get(), properties.get()));
+        auto created = p::call(b.engine.bigworld.get(), "createEntity", args.get());
+        if (created.get() == Py_None) throw p::Error("createEntity returned no DetachedTurret");
+        entity_id = p::wide(created.get());
+        auto e = std::make_shared<Entry>(t.tuning);
+        e->id = *entity_id;
+        e->vehicle = plan.entity_id;
+        e->key = key;
+        e->row = row;
+        e->started = started;
+        e->created = now;
+        t.entries.push_back(std::move(e));
+        log("TURRET vehicle=" + std::to_string(plan.entity_id) + " entity=" + std::to_string(*entity_id) + " state=created");
+        return true;
+    } catch (const std::exception& error) {
+        // An allocated id may still be loading prerequisites; retain it for safe retirement.
+        if (entity_id) {
+            t.retiring.push_back({*entity_id, plan.entity_id, key, Object()});
+            retirePoll(b, t);
+        }
+        note(b, "detached turret creation failed", error);
+        return false;
+    }
 }
-PyObject* create(PyObject*, PyObject* m) {
-    try { return PyCapsule_New(new Owner(m), capsule_name, destroy); } catch (const std::exception& e) { return fail(e); }
+
+// One accepted flight, including late AOI admission: a late admission starts at the current flight/rest pose.
+bool launchCanonical(Battle& b, TurretPresentation& t, const Plan& plan, const std::string& key, const detached::Row& row,
+                     double now, double elapsed) {
+    if (t.closed) return false;
+    auto attempt = t.attempts.find(key);
+    if (attempt == t.attempts.end()) {
+        if (t.attempts.size() >= TurretPresentation::max_active) return false;
+        attempt = t.attempts.emplace(key, TurretPresentation::Attempt{row, now}).first;
+    } else if (!sameRow(attempt->second.row, row)) {
+        if (row.motion_sequence <= attempt->second.row.motion_sequence) return false;
+        attempt->second.row = row;
+    }
+    const double started = now - std::max(0., elapsed);
+    for (const auto& e : t.entries) {
+        if (e->key != key) continue;
+        if (row.motion_sequence > e->motion_sequence) {
+            const auto serial = [](const detached::Row& r) { return r.flight.body ? r.flight.body->impact_serial : 0; };
+            const bool new_impact = serial(row) > serial(e->row);
+            e->row = row;
+            e->started = started;
+            e->settled = false;
+            e->impacted = e->impacted && !new_impact;
+            e->motion_sequence = row.motion_sequence;
+            e->failed = false;
+            e->buffer.push(row, now, elapsed);
+        }
+        return true;
+    }
+    retirePoll(b, t);
+    bool retiring_key = false;
+    for (const auto& r : t.retiring) retiring_key = retiring_key || r.key == key;
+    if (resident(t, plan.entity_id) || retiring_key || now < attempt->second.next_retry) return false;
+    attempt->second.next_retry = now + TurretPresentation::create_retry_seconds;
+    if (!launchFrozen(b, t, plan, row, started, now, key)) return false;
+    auto& e = *t.entries.back();
+    e.motion_sequence = row.motion_sequence;
+    e.buffer.push(row, now, elapsed);
+    return true;
 }
-PyObject* adopt(PyObject*, PyObject* args) {
-    PyObject *c, *raw;
-    if (!PyArg_ParseTuple(args, "OO", &c, &raw)) return nullptr;
-    try { owner(c).add(raw); Py_RETURN_NONE; } catch (const std::exception& e) { return fail(e); }
+
+// Replaces the native filter matrix with the frozen arc's provider and gates stock collision off the debris.
+bool bind(Battle& b, PyObject* entity, Entry& e) {
+    try {
+        p::Ref none(PyTuple_New(0));
+        auto matrix = builtin(b.engine.math.get(), "Matrix", none.get());
+        auto model = py::attr(entity, "model");
+        put(model.get(), "matrix", matrix.get());
+        auto caps = p::list();
+        put(entity, "targetCaps", caps.get());
+        e.matrix = own(std::move(matrix));
+    } catch (const std::exception& error) {
+        note(b, "detached turret binding failed", error);
+        return false;
+    }
+    try {
+        put(entity, "_offlineNativeRemote", Py_True);
+        put(entity, "_offlineNativeDrawVisible", Py_False);
+    } catch (const std::exception& error) {
+        // A turret that flies but can still catch the aim marker is a smaller fault than no turret.
+        note(b, "detached turret collision gate failed", error);
+    }
+    return true;
 }
-PyObject* push(PyObject*, PyObject* args) {
-    PyObject *c, *raw, *row;
-    double now, age;
-    if (!PyArg_ParseTuple(args, "OOOdd", &c, &raw, &row, &now, &age)) return nullptr;
-    try { owner(c).push(raw, row, now, age); Py_RETURN_NONE; } catch (const std::exception& e) { return fail(e); }
+
+void writeMatrix(Battle& b, const Entry& e, const present::Pose& pose) {
+#if defined(WOT_NATIVE_BATTLE_HOST_BUILD)
+    auto angles = p::tupleNumbers(pose.attitude);
+    p::Ref args(PyTuple_Pack(1, angles.get()));
+    builtin(e.matrix.get(), "setRotateYPR", args.get());
+    put(e.matrix.get(), "translation", vector(b, pose.position).get());
+#else
+    (void)b;
+    if (!BW::PyMatrix::Check(e.matrix.get())) throw p::Error("native turret provider is not a writable Matrix");
+    auto* matrix = static_cast<BW::PyMatrix*>(e.matrix.get());
+    matrix->setRotate(float(pose.attitude[0]), float(pose.attitude[1]), float(pose.attitude[2]));
+    matrix->translation(BW::Vector3(float(pose.position[0]), float(pose.position[1]), float(pose.position[2])));
+#endif
 }
-PyObject* advance(PyObject*, PyObject* args) {
-    PyObject* c;
-    double now;
-    if (!PyArg_ParseTuple(args, "Od", &c, &now)) return nullptr;
-    try { return p::integer(owner(c).advance(now)).release(); } catch (const std::exception& e) { return fail(e); }
+
+// Hands one landing to stock's own touchdown effect (DetachedTurret.onStaticCollision).
+void reportImpact(Battle& b, PyObject* entity, double energy, const Point& contact, const Point& normal) {
+    auto collision = py::optional(entity, "onStaticCollision");
+    if (!py::callable(collision)) return;
+    try {
+        auto e = p::number(energy);
+        auto c = vector(b, contact), n = vector(b, normal);
+        py::invoke(collision.get(), e.get(), c.get(), n.get());
+    } catch (const std::exception& error) {
+        note(b, "detached turret impact effect failed", error);
+    }
 }
-PyObject* retireOwner(PyObject*, PyObject* c) {
-    try { return p::integer(owner(c).retirePoll()).release(); } catch (const std::exception& e) { return fail(e); }
+
+std::size_t advance(Battle& b, TurretPresentation& t, double now) {
+    retirePoll(b, t);
+    if (t.closed) return 0;
+    std::size_t written = 0;
+    const auto active = t.entries;
+    for (const auto& e : active) {
+        try {
+            auto entity = b.entity(e->id);
+            if (entity.get() == Py_None) {
+                // createEntity returns an id before prerequisites and onEnterWorld publish the entity.
+                if (e->entity) t.entries.erase(std::remove(t.entries.begin(), t.entries.end(), e), t.entries.end());
+                else if (now - e->created >= TurretPresentation::model_timeout_seconds) failedLoad(b, t, e, now);
+                continue;
+            }
+            if ((e->entity && e->entity.get() != entity.get()) || !matches(entity.get(), e->vehicle)) {
+                t.entries.erase(std::remove(t.entries.begin(), t.entries.end(), e), t.entries.end());
+                continue;
+            }
+            if (!e->entity) e->entity = borrow(entity.get());
+            if (field(entity.get(), "model").get() == Py_None) {
+                if (now - e->created >= TurretPresentation::model_timeout_seconds) failedLoad(b, t, e, now);
+                continue;
+            }
+            if (e->settled) continue;
+            if (!e->matrix) {
+                if (!bind(b, entity.get(), *e)) {
+                    retire(t, e);
+                    retirePoll(b, t);
+                    continue;
+                }
+                log("TURRET vehicle=" + std::to_string(e->vehicle) + " entity=" + std::to_string(e->id) +
+                    " state=bound elapsed_ms=" + std::to_string(std::max<std::int64_t>(0, std::int64_t((now - e->started) * 1000.))));
+            }
+            const double elapsed = std::max(0., now - e->started);
+            const auto buffered = e->buffer.pose(now);
+            const auto pose = buffered ? *buffered : present::poseAt(e->row, elapsed, t.tuning);
+            writeMatrix(b, *e, pose);
+            ++written;
+            const bool landed = pose.body ? bool(pose.body->impact) : elapsed >= e->row.flight.duration;
+            if (pose.body) e->settled = pose.body->sleeping && (!buffered || *e->buffer.cursor() >= e->buffer.samples().back().time);
+            else if (landed) e->settled = true;
+            if (!landed) continue;
+            if (pose.body && pose.body->impact_serial > e->presented_impact) {
+                e->presented_impact = pose.body->impact_serial;
+                const auto& impact = *pose.body->impact;
+                reportImpact(b, entity.get(), impact.energy, impact.point, impact.normal);
+            } else if (!pose.body && !e->impacted) {
+                e->impacted = true;
+                // No surface inside the search window: the arc has a terminal pose but no contact to report.
+                if (e->row.flight.landed && e->row.flight.contact)
+                    reportImpact(b, entity.get(), e->row.flight.energy, *e->row.flight.contact, Point{0., 1., 0.});
+            }
+        } catch (const std::exception& error) {
+            PyErr_Clear();
+            if (!e->failed) { e->failed = true; note(b, "detached turret pose write failed", error); }
+        }
+    }
+    return written;
 }
-PyObject* clearOwner(PyObject*, PyObject* c) {
-    try { return p::integer(owner(c).clear()).release(); } catch (const std::exception& e) { return fail(e); }
+
+// The descriptor turret and gun components below the detached root (turret_obstacles.turret_components).
+turret::DetachedDescriptor detachedDescriptor(PyObject* descriptor) {
+    turret::DetachedDescriptor out;
+    auto turret_part = py::attr(descriptor, "turret"), gun = py::attr(descriptor, "gun");
+    const auto gun_position = xyz(py::attr(turret_part.get(), "gunPosition").get());
+    auto component = [](PyObject* part, const Point& offset) {
+        auto tester = py::attr(part, "hitTester");
+        if (!py::callable(py::optional(tester.get(), "localHitTest"))) throw p::Error("detached turret hit tester is unavailable");
+        auto bbox = py::attr(tester.get(), "bbox");
+        turret::Component value;
+        value.bounds.minimum = xyz(p::item(bbox.get(), 0).get());
+        value.bounds.maximum = xyz(p::item(bbox.get(), 1).get());
+        for (unsigned axis = 0; axis < 3; ++axis)
+            if (!(value.bounds.minimum[axis] < value.bounds.maximum[axis])) throw p::Error("detached turret component bounds are empty");
+        value.offset = offset;
+        return value;
+    };
+    out.turret = component(turret_part.get(), Point{0., 0., 0.});
+    out.gun = component(gun.get(), gun_position);
+    return out;
 }
-// Called by the stock DetachedTurretPresentation manager through its native_client_turret_presentation facade.
-[[maybe_unused]] PyMethodDef methods[] = {
-    {"create", create, METH_O, nullptr},
-    {"adopt", adopt, METH_VARARGS, nullptr},
-    {"push", push, METH_VARARGS, nullptr},
-    {"advance", advance, METH_VARARGS, nullptr},
-    {"retire", retireOwner, METH_O, nullptr},
-    {"clear", clearOwner, METH_O, nullptr},
-    {nullptr, nullptr, 0, nullptr}};
+
+void attach(Battle& b, TurretPresentation& t) {
+    if (t.generation == b.generation) return;
+    t.generation = b.generation;
+    t.accepted.clear();
+    t.accepted_order.clear();
+    const Actor* local = b.localVehicle();
+    auto entity = local ? b.entity(local->engine_id) : p::retain(Py_None);
+    auto descriptor = field(entity.get(), "typeDescriptor"), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
+    auto tag = p::text("SPG");
+    t.spg = tags.get() != Py_None && PySequence_Contains(tags.get(), tag.get()) == 1;
+    auto input = field(b.engine.modules.get(), "avatar_input_handler"), modes = field(input.get(), "_CTRL_MODE");
+    t.strategic = p::string(field(modes.get(), "STRATEGIC").get());
+    t.arty = p::string(field(modes.get(), "ARTY").get());
+}
+
+// Accepted rows in acceptance order; an unchanged row keeps its presentation progress.
+void ingest(TurretPresentation& t, const DetachedTurrets& turrets) {
+    std::vector<std::string> order;
+    for (const auto& key : turrets.order) {
+        const auto row = turrets.rows.find(key);
+        if (row == turrets.rows.end()) continue;
+        order.push_back(key);
+        const auto found = t.accepted.find(key);
+        if (found != t.accepted.end() && sameRow(found->second.row, row->second)) continue;
+        TurretPresentation::Accepted fresh;
+        fresh.row = row->second;
+        if (found != t.accepted.end()) fresh.visual_revision = found->second.visual_revision;
+        t.accepted[key] = std::move(fresh);
+    }
+    for (auto at = t.accepted.begin(); at != t.accepted.end();)
+        if (std::find(order.begin(), order.end(), at->first) == order.end()) at = t.accepted.erase(at);
+        else ++at;
+    t.accepted_order = std::move(order);
+}
+
+void schedule(Battle& b, World& w, TurretPresentation& t, double now, double server) {
+    if (t.closed) return;
+    const Actor* local = b.localVehicle();
+    if (!local || !local->has_current) return;
+    Point origin{local->current[0], local->current[1], local->current[2]};
+    if (const auto spectated = visibility::spectatedEngineId(b)) {
+        for (const auto& actor : b.vehicles->actors)
+            if (actor.second->engine_id == *spectated && actor.second->ready) {
+                const auto& pose = actor.second->current;
+                origin = actor.second->local ? Point{pose[0], pose[1], pose[2]} : Point{float(pose[0]), float(pose[1]), float(pose[2])};
+                break;
+            }
+    }
+    bool spg_view = false;
+    if (t.spg) {
+        auto handler = field(b.engine.avatar.get(), "inputHandler"), mode = field(handler.get(), "_AvatarInputHandler__ctrlModeName");
+        const auto name = p::string(mode.get());
+        spg_view = name == t.strategic || name == t.arty;
+    }
+    const double aoi = visibility::vehicleAoiRadius();
+    const auto order = t.accepted_order;
+    for (const auto& key : order) {
+        if (t.closed) break;
+        const auto found = t.accepted.find(key);
+        if (found == t.accepted.end()) continue;
+        auto& record = found->second;
+        auto* actor = b.vehicles->find(key);
+        if (!actor || !actor->ready || actor->tombstone || actor->missing) continue;
+        auto entity = b.entity(actor->engine_id);
+        if (entity.get() == Py_None) continue;
+        // Visual-only debris owns no ray, hull, navigation or contact geometry.
+        if (!record.geometry && !record.row.flight.body) { w.turrets.geometry.insert(key); record.geometry = true; }
+        if (!record.geometry && actor->geometry && record.attempted_geometry != actor->geometry) {
+            record.attempted_geometry = actor->geometry;
+            if (auto* descriptor = stock_native_client_query::descriptor(*actor)) {
+                try {
+                    if (w.turrets.obstacles.put(detached::obstacleRecord(record.row), detachedDescriptor(descriptor))) {
+                        w.turrets.geometry.insert(key);
+                        record.geometry = true;
+                    }
+                } catch (const std::exception& error) {
+                    PyErr_Clear();
+                    if (!record.failed) { record.failed = true; note(b, "detached turret obstacle geometry", error); }
+                }
+            }
+        }
+        if (!p::flag(py::optional(entity.get(), "isTurretDetached").get()) ||
+            (!spg_view && std::hypot(origin[0] - record.row.flight.rest[0], origin[2] - record.row.flight.rest[2]) > aoi))
+            continue;
+        const bool present_now = resident(t, actor->engine_id);
+        if (present_now && record.visual_revision >= record.row.motion_sequence) continue;
+        const std::string retry_key = "visual:" + key;
+        const auto due = w.turrets.visual_retry.find(retry_key);
+        if (!present_now && due != w.turrets.visual_retry.end() && now < due->second) continue;
+        w.turrets.visual_retry[retry_key] = now + TurretPresentation::visual_retry_seconds;
+        const auto plan = prepareCanonical(b, t, entity.get());
+        if (!plan) continue;
+        const double age = std::max(0., (server - double(record.row.created_time_ms)) / 1000.);
+        if (launchCanonical(b, t, *plan, key, record.row, now, age)) {
+            record.visual_revision = record.row.motion_sequence;
+            w.turrets.visual_revisions[key] = record.visual_revision;
+        }
+    }
+}
 }
 
 void presentTurretRows(Battle& b) {
-    auto& w = *b.world;
-    if (b.worker || !w.turret_manager) return;
-    auto* o = managerOwner(w.turret_manager.get());
-    o->attach(b);
-    o->ingest(w.turrets);
+    if (b.worker) return;
+    auto& t = presentation(b);
+    attach(b, t);
+    ingest(t, b.world->turrets);
 }
 
 void advanceTurretPresentation(Battle& b, double now) {
-    auto& w = *b.world;
-    if (!w.turret_manager) return;
-    auto* o = managerOwner(w.turret_manager.get());
-    if (o->generation != b.generation) { o->attach(b); o->ingest(w.turrets); }
+    if (b.worker) return;
+    auto& t = presentation(b);
+    if (t.generation != b.generation) { attach(b, t); ingest(t, b.world->turrets); }
     const auto server = projectiles::serverTimeMs(b, now);
     if (!server) return;
-    o->schedule(b, w, now, std::max(0., std::trunc(*server)));
-    o->advance(now);
+    schedule(b, *b.world, t, now, std::max(0., std::trunc(*server)));
+    advance(b, t, now);
 }
 
 void retireTurretPresentation(Battle& b) {
     auto& w = *b.world;
-    if (!w.turret_manager) return;
-    // The stock manager clears its entities through this owner (destroy_all -> clear).
-    auto destroy_all = py::optional(w.turret_manager.get(), "destroy_all");
-    if (!py::callable(destroy_all)) return;
-    PyObject* done = PyObject_CallFunctionObjArgs(destroy_all.get(), nullptr);
-    if (done) Py_DECREF(done);
-    else PyErr_Clear();
-}
-}
-}
-
-#if !defined(WOT_NATIVE_BATTLE_HOST_BUILD)
-namespace {
-class TurretPresentationModule final : public BW::Script::InitTimeJob {
-public:
-    TurretPresentationModule() : BW::Script::InitTimeJob(1) {}
-    void init() override {
-        if (!Py_InitModule("offline_client_turret_presentation_native", native_battle::world::methods)) {
-            PyErr_Print();
-            CRITICAL_MSG("Native visible turret presentation initialization failed\n");
-        }
+    if (!w.presentation) return;
+    // Close presentation and retire only engine-owned turret entities; a pending creation stays a tombstone for the
+    // teardown poll before the battle space retires.
+    auto& t = *w.presentation;
+    t.closed = true;
+    for (const auto& e : t.entries) t.retiring.push_back({e->id, e->vehicle, e->key, e->entity});
+    t.entries.clear();
+    try {
+        retirePoll(b, t);
+    } catch (const std::exception&) {
+        PyErr_Clear();
     }
-};
-TurretPresentationModule turretPresentationModule;
 }
-#endif
+}
+}

@@ -96,20 +96,9 @@ bool exactKeys(const Value& object, std::initializer_list<const char*> names) {
 
 void disableDestructibles(Battle& b, const std::string& error) {
     auto& w = state(b);
-    Object sensor = std::move(w.sensor);
-    w.sensor = Object();
-    if (sensor) {
-        for (const char* name : {"set_event_sink", "reset", "set_catalog"}) {
-            PyObject* callback = PyObject_GetAttrString(sensor.get(), name);
-            if (!callback) { PyErr_Clear(); continue; }
-            p::Ref held(callback);
-            if (!PyCallable_Check(callback)) continue;
-            PyObject* done = std::string(name) == "reset" ? PyObject_CallFunctionObjArgs(callback, nullptr)
-                                                          : PyObject_CallFunctionObjArgs(callback, Py_None, nullptr);
-            if (done) Py_DECREF(done);
-            else PyErr_Clear();
-        }
-    }
+    // Native crushing, catalog contacts and catalog shots stop for the rest of the round on this peer.
+    w.catalog.reset();
+    withdrawCatalog(b);
     b.warn("destructible interactions", error);
 }
 
@@ -125,22 +114,9 @@ bool observeDestructiblesDisabled(Battle& b, const Value& message) {
     start.object["destructibles_disabled_reason"] = text(reason);
     w.destructibles_disabled = true;
     w.destructibles_disabled_reason = reason;
-    if (w.sensor) disableDestructibles(b, "RuntimeError: LAN server disabled destructible interactions: " + reason);
+    if (b.featureEnabled("destructible interactions"))
+        disableDestructibles(b, "RuntimeError: LAN server disabled destructible interactions: " + reason);
     return true;
-}
-
-namespace {
-// One canonical destructible event: the visible drive owns it on the client, the native Bot world on the worker.
-bool applyDestructibleEvent(Battle& b, const Value& event) {
-    if (!b.worker) return local::destructibleIngress(b, event);
-    if (bots::enabled(b)) return bots::worldIngress(b, event);
-    auto& w = state(b);
-    if (!w.sensor) {
-        if (w.destructibles_disabled || !b.featureEnabled("destructible interactions")) return false;
-        throw p::Error("#1513 destructible runtime is unavailable");
-    }
-    throw p::Error("#1513 destructible event has no native owner on this peer");
-}
 }
 
 bool applyDestructibleState(Battle& b, const Value& events) {
@@ -149,7 +125,7 @@ bool applyDestructibleState(Battle& b, const Value& events) {
     bool changed = false;
     for (const auto& event : rows.array) {
         if (event.resolved().kind != Kind::Object) throw p::Error("canonical destructible event is malformed");
-        changed = applyDestructibleEvent(b, event) || changed;
+        changed = ingressDestructible(b, event) || changed;
     }
     return changed;
 }
@@ -448,23 +424,12 @@ void detachedTurrets(Battle& b, double now) {
 void prewarm(Battle& b, double now) {
     auto& w = state(b);
     const bool countdown = !b.live && b.prebattle_deadline >= 0.;
-    if (w.sensor && (countdown || (b.worker && b.live))) {
+    const bool enabled = !w.destructibles_disabled && b.featureEnabled("destructible interactions");
+    if (enabled && (countdown || (b.worker && b.live))) {
         try {
             if (bots::enabled(b)) bots::prewarmPlayers(b, now);
-            else if (!b.worker && b.local) {
-                // Register countdown tree identities around the player's own spawn.
-                auto prewarm = py::optional(w.sensor.get(), "prewarm_tree_registry");
-                const Actor* actor = b.localVehicle();
-                auto entity = actor ? b.entity(actor->engine_id) : p::retain(Py_None);
-                auto descriptor = py::optional(entity.get(), "typeDescriptor");
-                if (py::callable(prewarm) && descriptor.get() != Py_None) {
-                    auto space = py::attr(b.engine.avatar.get(), "spaceID");
-                    const auto& at = b.local->position;
-                    p::Ref vector(PyObject_CallMethod(b.engine.math.get(), const_cast<char*>("Vector3"), const_cast<char*>("ddd"), at[0], at[1], at[2]));
-                    auto yaw = p::number(b.local->yaw), time = p::number(now);
-                    py::invoke(prewarm.get(), space.get(), vector.get(), yaw.get(), descriptor.get(), time.get());
-                }
-            }
+            // Register countdown tree identities around the player's own spawn.
+            else if (!b.worker && b.local && b.localVehicle()) prewarmTrees(b, b.local->position, b.local->yaw);
         } catch (const std::exception&) {
             // One not-yet-streamed native item is local to this pose; the next frame retries.
             PyErr_Clear();
@@ -477,48 +442,42 @@ void prewarm(Battle& b, double now) {
     }
 }
 
-std::map<std::string, std::int64_t> registryCounts(const Battle& b) {
-    std::map<std::string, std::int64_t> out;
-    if (!b.world || !b.world->sensor) return out;
-    auto reader = py::optional(b.world->sensor.get(), "registry_counts");
-    if (!py::callable(reader)) return out;
-    auto counts = py::invoke(reader.get());
-    if (!PyDict_Check(counts.get())) return out;
-    Py_ssize_t cursor = 0;
-    PyObject *key, *value;
-    while (PyDict_Next(counts.get(), &cursor, &key, &value)) out[p::string(key)] = p::wide(value);
-    return out;
-}
-
-void start(Battle& b, Object sensor, Object turret_manager, Object turret_obstacles, const std::string& config_dir) {
+void start(Battle& b, const std::string& config_dir) {
     b.world = std::make_unique<World>();
     auto& w = *b.world;
-    w.sensor = std::move(sensor);
-    w.turret_manager = std::move(turret_manager);
-    w.turret_obstacles = std::move(turret_obstacles);
-    const auto& disabled = b.start.get("destructibles_disabled").resolved();
-    w.destructibles_disabled = disabled.kind == Kind::Boolean && disabled.boolean;
     try {
         loadFoliage(b, config_dir);
     } catch (const std::exception& e) {
         w.foliage.reset();
         b.warn("foliage camouflage", describe(e));
     }
+    const auto& map = b.config.get("map").resolved().text;
+    try {
+        w.catalog = loadDestructibleCatalog(config_dir, map);
+        if (!w.catalog) throw p::Error("validated destructible catalog is unavailable for " + shortMapName(map));
+    } catch (const std::exception& e) {
+        disableDestructibles(b, describe(e));
+    }
+    // The server's round-wide optional-feature decision in the start message.
+    observeDestructiblesDisabled(b, b.start);
 }
 
 void retire(Battle& b) {
     if (!b.world) return;
     retireTurretPresentation(b);
-    auto& w = *b.world;
-    if (w.turret_obstacles) {
-        auto clear = py::optional(w.turret_obstacles.get(), "clear");
-        if (py::callable(clear)) {
-            PyObject* done = PyObject_CallFunctionObjArgs(clear.get(), nullptr);
-            if (done) Py_DECREF(done);
-            else PyErr_Clear();
-        }
-    }
+    b.world->turrets.obstacles.clear();
+    closeSpace(b);
     b.world.reset();
+}
+
+bool keepNavigationSurface(const Surface& surface) {
+    // 71..85 are original destructible materials; 87..100 are damaged replacements that stay solid.
+    return surface.material < 71 || surface.material >= 86;
+}
+
+const stock_native_bot_turret::Obstacles* turretObstacles(const Battle& b) {
+    if (b.worker || !b.world) return nullptr;
+    return &b.world->turrets.obstacles;
 }
 }
 }
