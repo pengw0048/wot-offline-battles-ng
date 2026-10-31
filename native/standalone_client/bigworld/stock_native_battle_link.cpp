@@ -1125,6 +1125,7 @@ std::optional<std::int64_t> botAuthorityId() { return link ? link->s.bot_authori
 void dropAuthority() { if (link) link->s.bot_authority_id.reset(); }
 std::int64_t team() { return link ? link->team : 1; }
 std::shared_ptr<const Value> lastSnapshot() { return link ? link->last_snapshot : nullptr; }
+double now() { return clock(); }
 std::optional<double> rttMs() { return link ? link->rtt_ms : std::nullopt; }
 std::optional<double> minimumRttMs() { return link ? link->minimum_rtt_ms : std::nullopt; }
 

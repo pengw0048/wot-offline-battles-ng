@@ -71,7 +71,6 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     // The round this owner serves; refresh and launch read its actor table and projectile clock.
     native_battle::Battle* battle=nullptr;
     std::uint64_t generation=0;
-    std::unique_ptr<p::Ref> process_clock;
     std::uint64_t registry_epoch=0,rejected=0,record_failures=0,effect_failures=0;
     std::string round;
     damage::StunConfig stun;
@@ -165,18 +164,17 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         if(pending.empty())confirmations.erase(launch.shooter);
         battle->projectiles->bot_fire_seen[launch.shooter]=last;
     }
-    static double builtinClock(PyObject* fn){if(!fn||!PyCFunction_Check(fn))throw p::Error("Native clock unavailable");const int flags=PyCFunction_GET_FLAGS(fn);PyObject*result=nullptr;if((flags&METH_NOARGS)!=0)result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),nullptr);else if((flags&METH_VARARGS)!=0){p::Ref args(PyTuple_New(0));result=PyCFunction_GET_FUNCTION(fn)(PyCFunction_GET_SELF(fn),args.get());}else throw p::Error("Native clock signature invalid");p::Ref value(result);return p::scalar(value.get());}
-    double processTime(){return builtinClock(process_clock?process_clock->get():nullptr);}
 
     bool observe(const Value&raw,double at){
-        current();now=at;const auto&message=raw.resolved();if(message.kind!=Kind::Object||!std::isfinite(at))return false;auto epoch=optionalInteger(message,"authority_epoch");if(!epoch)epoch=link::authorityEpoch(*battle);const auto server=optionalInteger(message,"server_time_ms");double anchor=at;const auto&received=message.get("_client_received_time").resolved();if(received.kind!=Kind::Null)anchor=std::max(0.,at-std::max(0.,std::min(60.,processTime()-w::scalar(received))));
-        // The worker link exposes no round-trip time, so the anchor is the local receive time.
+        current();now=at;const auto&message=raw.resolved();if(message.kind!=Kind::Object||!std::isfinite(at))return false;auto epoch=optionalInteger(message,"authority_epoch");if(!epoch)epoch=link::authorityEpoch(*battle);const auto server=optionalInteger(message,"server_time_ms");double anchor=at;const auto&received=message.get("_client_received_time").resolved();if(received.kind!=Kind::Null)anchor=std::max(0.,at-std::max(0.,std::min(60.,link::now()-w::scalar(received))));
+        const auto rtt=link::minimumRttMs()?link::minimumRttMs():link::rttMs();
+        if(rtt)anchor=std::max(0.,anchor-std::max(0.,std::min(.25,*rtt/2000.)));
         if(!owner.observe(epoch,server,anchor,at))return false;
         return true;
     }
     bool install(native_battle::Battle&b){
         if(battle)throw p::Error("Native projectile owner already installed");if(!b.projectiles||!b.startup)throw p::Error("Native projectile battle state is unavailable");battle=&b;generation=b.generation;registry_epoch=registry.epoch;
-        p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!random.install(instance.get()))throw p::Error("Native projectile RNG installation failed");p::Ref timing(PyImport_ImportModule("time"));auto clock=p::value(timing.get(),"monotonic");process_clock=std::make_unique<p::Ref>(clock.get()!=Py_None?p::retain(clock.get()):p::value(timing.get(),"clock"));
+        p::Ref module(PyImport_ImportModule("random"));auto instance=p::value(module.get(),"_inst");if(!random.install(instance.get()))throw p::Error("Native projectile RNG installation failed");
         p::Ref stun_module(PyImport_ImportModule("items.stun"));auto cfg=p::value(stun_module.get(),"g_cfg");if(!damage::readStunConfig(cfg.get(),stun))throw p::Error("Native projectile stun config unavailable");battle_end_ms=std::int64_t(std::round((native_battle::startup::prebattleSeconds(b)+native_battle::startup::battleSeconds(b))*1000.));
         round=roundText(b.start.get("round_id"));for(const auto&seen:b.projectiles->bot_fire_seen)confirmed_sequences[seen.first]=seen.second;
         const auto&server=*b.projectiles;auto epoch=server.epoch;if(!epoch)epoch=link::authorityEpoch(b);const double install_now=b.clock();owner.observe(epoch,server.server_time_ms,server.server_local_time,install_now);for(const auto&actor:runtime.actors()){const auto sequence=runtime.weapons().at({ActorKind::Bot,actor.first}).fire_seq;confirmed_sequences[actor.first]=std::max(confirmed_sequences[actor.first],sequence);}refresh();const auto&snapshot=b.startup->last_snapshot.resolved();if(snapshot.kind==Kind::Object)ingress(snapshot,install_now);return true;

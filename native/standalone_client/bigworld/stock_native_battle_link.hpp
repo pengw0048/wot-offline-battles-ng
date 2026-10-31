@@ -50,6 +50,8 @@ void dropAuthority();
 std::int64_t team();
 // The newest accepted snapshot of the current round's lineage.
 std::shared_ptr<const Value> lastSnapshot();
+// The link's receive clock in seconds: `_client_received_time` stamps use it.
+double now();
 std::optional<double> rttMs();
 std::optional<double> minimumRttMs();
 // Server battle timing projected onto now: seconds until combat starts and ends, its duration and phase.
