@@ -5,12 +5,17 @@
 #endif
 #include "stock_native_battle_bots.hpp"
 #include "stock_native_battle_subsystems.hpp"
+#include "stock_native_battle_bots_needs.hpp"
+#include "stock_native_bot_clock.hpp"
+#include "stock_native_bot_owner.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace native_battle {
 namespace bots {
 namespace {
+using OwnerRef = std::shared_ptr<stock_native_bot::Owner>;
+namespace owner = stock_native_bot::owner;
 constexpr double MANIFEST_RETRY_SECONDS = 0.25;
 constexpr double REMOTE_TRACK_SECONDS = 1.0 / 20.0;
 constexpr double TRACK_SCROLL_MIN = -15.0, TRACK_SCROLL_MAX = 30.0;
@@ -26,39 +31,33 @@ const char* const DIAGNOSTIC_FIELDS[] = {
 
 BotAuthority* authority(const Battle& b) { return b.bots.get(); }
 PyObject* shell(const Battle& b) { return b.engine.shell.get(); }
-p::Ref nativeCall(const Battle& b, const char* name, std::initializer_list<PyObject*> args) {
-    p::Ref tuple(PyTuple_New(Py_ssize_t(args.size())));
-    Py_ssize_t i = 0;
-    for (PyObject* v : args) { Py_INCREF(v); PyTuple_SET_ITEM(tuple.get(), i++, v); }
-    auto fn = py::attr(b.bots->native.get(), name);
-    return p::Ref(PyObject_Call(fn.get(), tuple.get(), nullptr));
-}
+PyObject* runtime(const Battle& b) { return b.bots->runtime.get(); }
 // The native owner, created on first use while this client is the round's Bot authority.
-PyObject* prepare(Battle& b) {
+OwnerRef prepare(Battle& b) {
     auto* a = authority(b);
     if (!a || !a->runtime) return nullptr;
-    PyObject* runtime = a->runtime.get();
-    if (!isAuthority(b) || py::attr(runtime, "adapter").get() == Py_None || p::flag(py::attr(runtime, "finished").get()))
+    PyObject* raw = a->runtime.get();
+    if (!isAuthority(b) || py::attr(raw, "adapter").get() == Py_None || p::flag(py::attr(raw, "finished").get()))
         return nullptr;
-    if (!a->owner) a->owner = own(nativeCall(b, "create", {runtime, shell(b)}));
-    return a->owner.get();
+    if (!a->owner) a->owner = owner::create(b, raw);
+    return a->owner;
 }
-PyObject* existing(const Battle& b) {
+OwnerRef existing(const Battle& b) {
     const auto* a = authority(b);
-    return a && a->owner ? a->owner.get() : nullptr;
+    return a ? a->owner : nullptr;
 }
 p::Ref client(const Battle& b) { return p::retain(b.engine.client ? b.engine.client.get() : Py_None); }
 // Native world events wait until the battle is live; each accepted send is acknowledged.
 bool flushWorld(Battle& b) {
-    PyObject* owner = existing(b);
-    if (!owner) return true;
-    auto events = nativeCall(b, "world_events", {owner, b.bots->runtime.get(), shell(b)});
+    OwnerRef o = existing(b);
+    if (!o) return true;
+    auto events = owner::worldEvents(*o, b, runtime(b));
     if (!b.live) return PySequence_Size(events.get()) == 0;
     for (Py_ssize_t i = 0; i < PySequence_Size(events.get()); ++i) {
         auto row = p::item(events.get(), i);
         auto sequence = p::item(row.get(), 0), event = p::item(row.get(), 1);
         if (!p::flag(py::call(client(b).get(), "send_destructible", event.get()).get())) return false;
-        nativeCall(b, "ack_world", {owner, sequence.get()});
+        owner::acknowledgeWorld(*o, std::uint64_t(p::wide(sequence.get())));
     }
     return true;
 }
@@ -102,14 +101,14 @@ bool send(Battle& b, PyObject* message) {
     if (messageIs(message, "bot_state")) {
         Object armors = own(field(message, "human_ram_armors"));
         if (armors.get() == Py_None && b.worker) {
-            PyObject* owner = existing(b);
-            armors = own(owner ? nativeCall(b, "human_ram", {owner, b.bots->runtime.get(), shell(b)}) : p::Ref(PyList_New(0)));
+            OwnerRef o = existing(b);
+            armors = own(o ? owner::humanRam(*o, b, runtime(b)) : p::Ref(PyList_New(0)));
         }
         auto kwargs = p::dict();
         if (has(message, "push_contacts")) p::set(kwargs.get(), "push_contacts", field(message, "push_contacts"));
         if (b.worker) {
-            PyObject* owner = existing(b);
-            auto turrets = owner ? nativeCall(b, "detached_rows", {owner}) : p::Ref(PyList_New(0));
+            OwnerRef o = existing(b);
+            auto turrets = o ? owner::detachedRows(*o) : p::Ref(PyList_New(0));
             if (p::flag(turrets.get())) p::set(kwargs.get(), "detached_turrets", turrets);
         }
         if (has(message, "sample_time_us")) {
@@ -159,12 +158,12 @@ bool send(Battle& b, PyObject* message) {
 
 // Publishes accepted Bot launches in fire-sequence order; a refused launch blocks that Bot's later ones.
 bool resolveFire(Battle& b, PyObject* message) {
-    PyObject* owner = existing(b);
-    if (!owner) return false;
+    OwnerRef o = existing(b);
+    if (!o) return false;
     auto sender = py::optional(client(b).get(), "send_projectile_launch");
     if (!py::callable(sender)) return false;
     bool complete = true;
-    Object wave = own(nativeCall(b, "projectile_launches", {owner, b.bots->runtime.get(), message}));
+    Object wave = own(owner::projectileLaunches(*o, runtime(b), message));
     while (p::flag(wave.get())) {
         for (Py_ssize_t i = 0; i < PySequence_Size(wave.get()); ++i) {
             auto row = p::item(wave.get(), i);
@@ -175,17 +174,14 @@ bool resolveFire(Battle& b, PyObject* message) {
                 accepted = PyObject_RichCompareBool(result, sequence.get(), Py_EQ) == 1;
                 Py_DECREF(result);
             } else if (PyErr_ExceptionMatches(PyExc_Exception)) {
-                auto error = describe(p::Error("projectile launch send failed"));
-                auto message_text = p::text(error);
-                nativeCall(b, "transport_error", {owner, b.bots->runtime.get(), message_text.get()});
+                owner::transportError(*o, describe(p::Error("projectile launch send failed")));
             } else {
                 throw p::Error("projectile launch send interrupted");
             }
-            auto ok = p::integer(accepted ? 1 : 0);
-            nativeCall(b, "projectile_launch_result", {owner, bot.get(), sequence.get(), ok.get()});
+            owner::projectileLaunchResult(*o, p::wide(bot.get()), p::wide(sequence.get()), accepted);
             complete = complete && accepted;
         }
-        wave = own(nativeCall(b, "projectile_launches", {owner, b.bots->runtime.get(), Py_None}));
+        wave = own(owner::projectileLaunches(*o, runtime(b), Py_None));
     }
     return complete;
 }
@@ -233,41 +229,37 @@ void dispatchOutgoing(Battle& b, PyObject* outgoing) {
 }
 
 // The worker's fixed-control debt after one Bot update.
-void recordControl(Battle& b, std::int64_t sample_before) {
+void recordControl(Battle& b, const stock_native_bot::Clock& clock, std::int64_t sample_before) {
     auto* a = authority(b);
-    PyObject* runtime = a->runtime.get();
-    auto integral = [&](const char* name, std::int64_t fallback) {
-        auto v = py::optional(runtime, name);
-        try { return v.get() == Py_None ? fallback : p::wide(v.get()); } catch (const p::Error&) { PyErr_Clear(); return fallback; }
-    };
-    auto numeric = [&](const char* name, double fallback) {
-        auto v = py::optional(runtime, name);
-        try { return v.get() == Py_None ? fallback : p::scalar(v.get()); } catch (const p::Error&) { PyErr_Clear(); return fallback; }
-    };
-    const std::int64_t advanced = std::max<std::int64_t>(0, integral("_sample_time_us", 0) - sample_before);
+    const std::int64_t advanced = std::max<std::int64_t>(0, clock.sample_us - sample_before);
     const bool moved = advanced > 0;
     const double seconds = double(advanced) / 1000000.;
-    std::int64_t steps = std::max<std::int64_t>(0, integral("_last_update_control_steps", moved ? 1 : 0));
-    double max_step = std::max(0., numeric("_last_update_max_control_step", seconds));
+    std::int64_t steps = std::int64_t(clock.callback_steps);
+    double max_step = std::max(0., clock.callback_max_step);
     if (!std::isfinite(max_step)) max_step = seconds;
-    const double debt = std::max(0., numeric("_accumulator", 0.));
+    const double debt = std::max(0., clock.bank);
     a->control_debt = debt;
     a->max_control_debt = std::max(a->max_control_debt, debt);
     if (moved) {
         if (steps <= 0) steps = 1;
         a->control_steps += std::uint64_t(steps);
         a->max_control_step = std::max(a->max_control_step, max_step);
-        const double period = std::max(0., numeric("_control_seconds", 0.));
+        const double period = std::max(0., clock.period);
         if (steps > 1 || seconds > period + 1.0e-9) ++a->catchup_callbacks;
         if (debt + 1.0e-9 >= period && period > 0.) ++a->debt_callbacks;
     }
 }
+// The #1513 collision preparation scope brackets every native world query of one Bot step.
+struct CollisionPreparation {
+    Battle& b;
+    explicit CollisionPreparation(Battle& battle) : b(battle) { world::beginCollisionPreparation(b); }
+    ~CollisionPreparation() { world::endCollisionPreparation(b); }
+};
 }
 
 void install(Battle& b, PyObject* runtime) {
     if (!b.bots) b.bots = std::make_unique<BotAuthority>();
     b.bots->runtime = borrow(runtime);
-    b.bots->native = own(p::Ref(PyImport_ImportModule("offline_bot_runtime_native")));
     py::set(runtime, "_standalone_battle", shell(b));
 }
 
@@ -275,8 +267,8 @@ void retire(Battle& b) {
     auto* a = authority(b);
     if (!a) return;
     if (a->owner) {
-        Object owner = std::move(a->owner);
-        nativeCall(b, "close", {owner.get()});
+        OwnerRef o = std::move(a->owner);
+        owner::close(*o);
     }
     b.bots.reset();
 }
@@ -294,58 +286,29 @@ void update(Battle& b, double now, double dt) {
     if (b.worker) ++a->authority_callbacks;
     // Only the hidden worker's native owner simulates; a visible client is never the Bot authority.
     if (!enabled(b)) return;
-    PyObject* runtime = a->runtime.get();
-    PyObject* owner = prepare(b);
-    auto players = nativeCall(b, "players", {runtime, shell(b)});
-    if (owner) {
-        auto at = p::number(now);
-        auto results = nativeCall(b, "player_contacts", {owner, runtime, shell(b), players.get(), at.get()});
-        if (flushWorld(b)) {
-            for (Py_ssize_t i = 0; i < PySequence_Size(results.get()); ++i) {
-                auto row = p::item(results.get(), i);
-                auto player = p::value(row.get(), "player_id"), seq = p::value(row.get(), "seq");
-                auto accepted = p::value(row.get(), "accepted"), token = p::value(row.get(), "token");
-                if (p::flag(py::call(client(b).get(), "send_player_destructible_contact_result", player.get(), seq.get(), accepted.get(),
-                                     token.get()).get()))
-                    nativeCall(b, "ack_player_contact", {owner, p::value(row.get(), "serial").get(), at.get()});
-            }
+    PyObject* raw = a->runtime.get();
+    OwnerRef o = prepare(b);
+    if (!o) return;
+    auto players = owner::players(b, raw);
+    auto results = owner::playerContacts(*o, b, raw, players.get(), now);
+    if (flushWorld(b)) {
+        for (Py_ssize_t i = 0; i < PySequence_Size(results.get()); ++i) {
+            auto row = p::item(results.get(), i);
+            auto player = p::value(row.get(), "player_id"), seq = p::value(row.get(), "seq");
+            auto accepted = p::value(row.get(), "accepted"), token = p::value(row.get(), "token");
+            if (p::flag(py::call(client(b).get(), "send_player_destructible_contact_result", player.get(), seq.get(), accepted.get(),
+                                 token.get()).get()))
+                owner::acknowledgePlayerContact(*o, std::uint64_t(p::wide(p::value(row.get(), "serial").get())), now);
         }
     }
-    std::int64_t sample_before = 0;
+    const std::int64_t sample_before = owner::clock(*o).sample_us;
+    Object outgoing;
     {
-        auto v = py::optional(runtime, "_sample_time_us");
-        try { sample_before = v.get() == Py_None ? 0 : p::wide(v.get()); } catch (const p::Error&) { PyErr_Clear(); }
+        CollisionPreparation scope(b);
+        outgoing = own(owner::update(*o, b, raw, dt, now, players.get()));
     }
-    Object outgoing = own(p::Ref(PyList_New(0)));
-    if (owner) {
-        // The #1513 collision preparation scope brackets every native world query of one Bot step.
-        auto sensor = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.destructibles_sensor"));
-        auto scope = py::call(sensor.get(), "collision_preparation_scope_1513");
-        py::call(scope.get(), "__enter__");
-        auto elapsed = p::number(dt), at = p::number(now);
-        PyObject* produced = nullptr;
-        {
-            p::Ref tuple(PyTuple_Pack(6, owner, runtime, shell(b), elapsed.get(), at.get(), players.get()));
-            auto fn = py::attr(a->native.get(), "update");
-            produced = PyObject_Call(fn.get(), tuple.get(), nullptr);
-        }
-        if (!produced) {
-            PyObject *type, *value, *trace;
-            PyErr_Fetch(&type, &value, &trace);
-            PyErr_NormalizeException(&type, &value, &trace);
-            PyObject* swallowed = PyObject_CallMethod(scope.get(), const_cast<char*>("__exit__"), const_cast<char*>("OOO"),
-                                                      type ? type : Py_None, value ? value : Py_None, trace ? trace : Py_None);
-            const bool suppressed = swallowed && PyObject_IsTrue(swallowed) > 0;
-            Py_XDECREF(swallowed);
-            if (!suppressed) { PyErr_Restore(type, value, trace); throw p::Error("native Bot update failed"); }
-            Py_XDECREF(type); Py_XDECREF(value); Py_XDECREF(trace);
-        } else {
-            outgoing = Object(produced);
-            py::call(scope.get(), "__exit__", Py_None, Py_None, Py_None);
-        }
-        flushWorld(b);
-    }
-    recordControl(b, sample_before);
+    flushWorld(b);
+    recordControl(b, owner::clock(*o), sample_before);
     for (Py_ssize_t i = 0; i < PySequence_Size(outgoing.get()); ++i) {
         auto message = p::item(outgoing.get(), i);
         const bool state = messageIs(message.get(), "bot_state");
@@ -358,13 +321,9 @@ void update(Battle& b, double now, double dt) {
 std::size_t presentPoses(Battle& b, double now) {
     auto* a = authority(b);
     if (!a || !b.live || b.replay || !enabled(b)) return 0;
-    PyObject* owner = prepare(b);
-    if (!owner) return 0;
-    auto states = nativeCall(b, "presentation", {owner, a->runtime.get()});
-    auto at = p::number(b.clock());
-    nativeCall(b, "apply_presentation", {owner, a->runtime.get(), shell(b), states.get(), at.get()});
-    const Py_ssize_t count = PySequence_Size(states.get());
-    a->bot_count = count > 0 ? std::size_t(count) : 0;
+    OwnerRef o = prepare(b);
+    if (!o) return 0;
+    a->bot_count = owner::presentPoses(*o, b, runtime(b), now);
     return a->bot_count;
 }
 
@@ -430,13 +389,20 @@ bool tracks(Battle& b, Actor& vehicle, double yaw, double now) {
     auto engine = p::integer(vehicle.engine_id);
     auto entity = py::call(b.engine.remote_factory.get(), "get", engine.get());
     if (entity.get() == Py_None) return false;
-    auto& shown = vehicle.presented;
     if (vehicle.native_remote && PyObject_HasAttrString(entity.get(), "_offlineNativeDrawVisible") &&
-        !p::flag(py::attr(entity.get(), "_offlineNativeDrawVisible").get()) && !shown.track_pending)
+        !p::flag(py::attr(entity.get(), "_offlineNativeDrawVisible").get()) && !vehicle.presented.track_pending)
         return true;
-    const double turn = rememberTrackTurn(vehicle, yaw, now);
+    return tracksWithTurn(b, vehicle, rememberTrackTurn(vehicle, yaw, now), now);
+}
+
+bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now) {
+    if (b.worker || !b.engine.remote_factory) return false;
+    auto& shown = vehicle.presented;
     // Carry the 20 Hz deadline so every render rate averages the same feed cadence.
     if (shown.track_next_update > 0. && now + 1.0e-9 < shown.track_next_update) return false;
+    auto engine = p::integer(vehicle.engine_id);
+    auto entity = py::call(b.engine.remote_factory.get(), "get", engine.get());
+    if (entity.get() == Py_None) return false;
     const double base = shown.track_next_update > 0. ? shown.track_next_update : now;
     const double periods = std::max(1., std::floor(std::max(0., now - base) / REMOTE_TRACK_SECONDS) + 1.);
     shown.track_next_update = base + periods * REMOTE_TRACK_SECONDS;
@@ -451,14 +417,11 @@ bool tracks(Battle& b, Actor& vehicle, double yaw, double now) {
         else if (turn > TURNING_RATE) flags |= ROTATE_RIGHT;
         power = flags ? ENGINE_RUNNING : ENGINE_IDLE;
     }
-    auto physics = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.vehicle_physics"));
-    if (!shown.track_params) shown.track_params = own(py::call(physics.get(), "derive_params", py::attr(entity.get(), "typeDescriptor").get()));
-    auto v = p::number(speed), omega = p::number(turn), airborne = p::boolean(state.get("airborne").truth());
-    auto direction = p::number(state.get("movement_dir").numeric());
-    auto scroll = py::call(physics.get(), "track_scroll", shown.track_params.get(), v.get(), omega.get(), airborne.get(), direction.get());
+    auto descriptor = py::attr(entity.get(), "typeDescriptor");
+    const auto scroll = local::trackScroll(b, vehicle, descriptor.get(), speed, turn, state.get("airborne").truth(),
+                                           state.get("movement_dir").numeric());
     auto clamp = [](double value) { return std::max(TRACK_SCROLL_MIN, std::min(TRACK_SCROLL_MAX, value)); };
-    auto left = p::number(clamp(p::scalar(p::item(scroll.get(), 0).get())));
-    auto right = p::number(clamp(p::scalar(p::item(scroll.get(), 1).get())));
+    auto left = p::number(clamp(scroll[0])), right = p::number(clamp(scroll[1]));
     p::Ref mode(Py_BuildValue("(LL)", static_cast<long long>(power), static_cast<long long>(flags)));
     return p::flag(py::call(entity.get(), "update_tracks", left.get(), right.get(), mode.get()).get());
 }
@@ -542,34 +505,29 @@ bool reconcileAuthority(Battle& b, PyObject* player_id) {
 
 void snapshot(Battle& b, PyObject* message) {
     if (b.bots) b.bots->last_snapshot = borrow(message);
-    PyObject* owner = existing(b);
-    if (!owner) return;
-    nativeCall(b, "snapshot", {owner, b.bots->runtime.get(), message});
+    OwnerRef o = existing(b);
+    if (!o) return;
+    owner::snapshot(*o, runtime(b), message);
     if (PyDict_Check(message) && PyDict_GetItemString(message, "battle_result") && PyDict_GetItemString(message, "battle_result") != Py_None)
-        py::set(b.bots->runtime.get(), "finished", Py_True);
+        py::set(runtime(b), "finished", Py_True);
 }
 
 bool projectileIngress(Battle& b, PyObject* message, double now) {
-    PyObject* owner = existing(b);
-    auto at = p::number(now);
-    return owner && p::flag(nativeCall(b, "projectile_ingress", {owner, b.bots->runtime.get(), message, at.get()}).get());
+    OwnerRef o = existing(b);
+    return o && owner::projectileIngress(*o, runtime(b), message, now);
 }
 bool projectileObserve(Battle& b, PyObject* message, double now) {
-    PyObject* owner = existing(b);
-    auto at = p::number(now);
-    return owner && p::flag(nativeCall(b, "projectile_observe", {owner, b.bots->runtime.get(), message, at.get()}).get());
+    OwnerRef o = existing(b);
+    return o && owner::projectileObserve(*o, runtime(b), message, now);
 }
 bool projectileEvent(Battle& b, PyObject* event, double now) {
-    PyObject* owner = existing(b) ? existing(b) : prepare(b);
-    auto at = p::number(now);
-    return owner && p::flag(nativeCall(b, "projectile_event", {owner, b.bots->runtime.get(), event, at.get()}).get());
+    OwnerRef o = existing(b) ? existing(b) : prepare(b);
+    return o && owner::projectileEvent(*o, runtime(b), event, now);
 }
 std::size_t projectileAdvance(Battle& b, double now, bool force_progress) {
-    PyObject* owner = existing(b);
-    if (!owner) return 0;
-    auto at = p::number(now);
-    auto force = p::integer(force_progress ? 1 : 0);
-    auto rows = nativeCall(b, "projectile_advance", {owner, b.bots->runtime.get(), shell(b), at.get(), force.get()});
+    OwnerRef o = existing(b);
+    if (!o) return 0;
+    auto rows = owner::projectileAdvance(*o, b, runtime(b), now, force_progress);
     auto lan = client(b);
     std::size_t sent_count = 0;
     for (Py_ssize_t i = 0; i < PySequence_Size(rows.get()); ++i) {
@@ -580,75 +538,58 @@ std::size_t projectileAdvance(Battle& b, double now, bool force_progress) {
         PyObject* result = PyObject_Call(py::attr(lan.get(), name.c_str()).get(), p::Ref(PyTuple_New(0)).get(), wire.get());
         if (result) { sent = PyObject_IsTrue(result) > 0; Py_DECREF(result); }
         else if (PyErr_ExceptionMatches(PyExc_Exception)) {
-            auto error = p::text(describe(p::Error("projectile send failed")));
-            nativeCall(b, "transport_error", {owner, b.bots->runtime.get(), error.get()});
+            owner::transportError(*o, describe(p::Error("projectile send failed")));
         } else {
             throw p::Error("projectile send interrupted");
         }
-        auto ok = p::integer(sent ? 1 : 0);
-        nativeCall(b, "projectile_ack", {owner, serial.get(), ok.get()});
+        owner::projectileAcknowledge(*o, std::uint64_t(p::wide(serial.get())), sent);
         sent_count += sent ? 1 : 0;
     }
     return sent_count;
 }
 bool worldIngress(Battle& b, PyObject* event, double now) {
-    PyObject* owner = prepare(b);
-    auto at = p::number(now);
-    return owner && p::flag(nativeCall(b, "world_ingress", {owner, b.bots->runtime.get(), event, at.get()}).get());
+    OwnerRef o = prepare(b);
+    return o && owner::worldIngress(*o, runtime(b), event, now);
 }
 bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, PyObject* state, double now) {
-    PyObject* owner = existing(b) ? existing(b) : prepare(b);
-    if (!owner) return false;
-    // The native owner keys the queue by the record identity it reads: key, kind and engine id.
-    auto record = p::dict();
-    p::set(record.get(), "kind", p::text(vehicle.kind));
-    p::set(record.get(), "engine_id", p::integer(vehicle.engine_id));
-    p::set(record.get(), "network_id", p::integer(vehicle.id));
-    auto at = p::number(now);
-    return p::flag(nativeCall(b, "detached_queue", {owner, b.bots->runtime.get(), record.get(), entity, state ? state : Py_None, at.get()}).get());
+    OwnerRef o = existing(b) ? existing(b) : prepare(b);
+    return o && owner::detachedQueue(*o, runtime(b), vehicle, entity, state, now);
 }
 bool detachedIngress(Battle& b, PyObject* message, double now) {
-    PyObject* owner = existing(b);
-    auto at = p::number(now);
-    return owner && p::flag(nativeCall(b, "detached_ingress", {owner, b.bots->runtime.get(), message, at.get()}).get());
+    OwnerRef o = existing(b);
+    return o && owner::detachedIngress(*o, runtime(b), message, now);
 }
 bool acknowledgeLaunch(Battle& b, std::int64_t bot_id, std::int64_t sequence) {
-    PyObject* owner = existing(b);
-    auto bot = p::integer(bot_id), seq = p::integer(sequence);
-    return owner && p::flag(nativeCall(b, "ack_launch", {owner, bot.get(), seq.get()}).get());
+    OwnerRef o = existing(b);
+    return o && owner::acknowledgeLaunch(*o, bot_id, sequence);
 }
 bool acknowledgeRam(Battle& b, std::int64_t player_id, std::int64_t sequence) {
-    PyObject* owner = existing(b);
-    auto player = p::integer(player_id), seq = p::integer(sequence);
-    return owner && p::flag(nativeCall(b, "ack_ram", {owner, player.get(), seq.get()}).get());
+    OwnerRef o = existing(b);
+    if (o) owner::acknowledgeRam(*o, player_id, sequence);
+    return bool(o);
 }
 std::size_t prewarm(Battle& b, double now) {
-    PyObject* owner = prepare(b);
-    auto at = p::number(now);
-    return owner ? std::size_t(std::max<std::int64_t>(0, p::wide(nativeCall(b, "prewarm", {owner, b.bots->runtime.get(), shell(b), at.get()}).get()))) : 0;
+    OwnerRef o = prepare(b);
+    return o ? owner::prewarm(*o, b, runtime(b), now) : 0;
 }
 std::size_t prewarmPlayers(Battle& b, double now) {
-    PyObject* owner = prepare(b);
-    auto at = p::number(now);
-    return owner ? std::size_t(std::max<std::int64_t>(0, p::wide(nativeCall(b, "prewarm_players", {owner, b.bots->runtime.get(), shell(b), at.get()}).get())))
-                 : 0;
+    OwnerRef o = prepare(b);
+    return o ? owner::prewarmPlayers(*o, b, runtime(b), now) : 0;
 }
 
 // The hidden worker's water observations; sent when the native owner produced a batch.
 bool playerEnvironment(Battle& b, double dt, double now) {
     auto lan = client(b);
     if (dt <= 0. || lan.get() == Py_None) return false;
-    PyObject* owner = prepare(b);
-    if (!owner) return false;
-    auto elapsed = p::number(dt);
-    auto authority_flag = p::integer(p::flag(py::call(lan.get(), "is_bot_authority").get()) ? 1 : 0);
-    auto batch = nativeCall(b, "player_environment", {owner, b.bots->runtime.get(), shell(b), elapsed.get(), authority_flag.get()});
-    if (batch.get() == Py_None) return false;
-    auto sequence = p::item(batch.get(), 0), observations = p::item(batch.get(), 1);
+    OwnerRef o = prepare(b);
+    if (!o) return false;
+    const bool authority_flag = p::flag(py::call(lan.get(), "is_bot_authority").get());
+    auto batch = owner::playerEnvironment(*o, b, runtime(b), dt, authority_flag);
+    if (!batch) return false;
+    auto sequence = p::integer(batch->first);
     auto sender = py::optional(lan.get(), "send_player_environment");
-    const bool sent = py::callable(sender) && p::flag(py::invoke(sender.get(), observations.get(), sequence.get()).get());
-    auto ok = p::integer(sent ? 1 : 0);
-    nativeCall(b, "ack_player_environment", {owner, shell(b), sequence.get(), ok.get()});
+    const bool sent = py::callable(sender) && p::flag(py::invoke(sender.get(), batch->second.get(), sequence.get()).get());
+    owner::acknowledgePlayerEnvironment(*o, b, batch->first, sent);
     return sent;
 }
 

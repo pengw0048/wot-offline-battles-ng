@@ -3,14 +3,32 @@
 #include "stock_native_battle.hpp"
 #include <array>
 
+namespace stock_native_bot { struct Owner; }
+
 namespace native_battle {
 struct BotAuthority {
     // The Python BotRuntime still builds the round manifest and holds the per-Bot rows the native
-    // owner's snapshot bridges read; everything around it is here.
+    // owner's cold installation reads; everything around it is here.
     Object runtime;
-    Object native;          // offline_bot_runtime_native
-    Object owner;           // the native simulation owner, created when this client becomes the authority
-    Object last_snapshot;   // the latest accepted snapshot message, for an authority takeover
+    // The native simulation owner, created when this client becomes the authority. Callers hold a
+    // copy across any stock call that can re-enter and retire it.
+    std::shared_ptr<stock_native_bot::Owner> owner;
+    Object last_snapshot;   // the latest accepted snapshot message: human input, ram probes, takeover
+    // Player water sampling clock and sequence; they outlive an owner replaced by an authority change.
+    double player_environment_check = 0.;
+    std::int64_t player_environment_seq = 0;
+    // Worker pose presentation per Bot: the lifecycle it belongs to and the writes already made.
+    struct PresentedBot {
+        const Actor* vehicle = nullptr;
+        std::int64_t engine_id = 0;
+        std::uint64_t generation = 0;
+        std::optional<std::array<double, 3>> clock;           // time, yaw, and
+        std::optional<std::array<double, 6>> sample;          // the presented location and rotation
+        std::optional<std::array<double, 11>> pose;           // position, rotation, speed, epoch, alive, siege
+        std::optional<std::array<double, 5>> aim;
+        std::optional<std::array<double, 9>> projectile;
+    };
+    std::map<std::int64_t, PresentedBot> presented;
     // One manifest enqueue tenure: generation, round, authority id, authority epoch.
     double next_manifest_retry = 0., manifest_retry_deadline = 0.;
     std::optional<std::array<Value, 4>> manifest_retry_identity;
@@ -44,6 +62,8 @@ void workerProbe(Battle& b);
 // Remote Bot belts and engine mode for a vehicle presented outside the native replica, from its
 // presented yaw; false when the 20 Hz feed is not due or the stock update refused it.
 bool tracks(Battle& b, Actor& vehicle, double yaw, double now);
+// The same feed with a caller-measured turn rate (rad/s).
+bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 // Measures a presented yaw's turn rate for the belt feed.
 double rememberTrackTurn(Actor& vehicle, double yaw, double now);
 

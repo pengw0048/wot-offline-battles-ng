@@ -13,7 +13,8 @@ struct ResourceStamp {
     }
     bool operator!=(const ResourceStamp& other) const { return !(*this==other); }
 };
-// Returns a new reference, including Py_None when no entity exists.
+// Returns a new reference, including Py_None when no entity exists. Entities and overlays resolve
+// through native_battle::current(); the first argument is unused and kept for existing callers.
 _object* readNativeEntity(_object* battle,std::int64_t engine_id);
 // Bypass the Python Vehicle attribute hook while retaining its stored overlay.
 // The exact #1513 turret-detachment property is evaluated from its two fields.

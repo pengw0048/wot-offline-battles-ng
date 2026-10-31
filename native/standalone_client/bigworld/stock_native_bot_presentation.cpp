@@ -3,17 +3,21 @@
 #include "pyscript/script_math.hpp"
 #endif
 #include "stock_native_bot_presentation.hpp"
+#include "stock_native_battle_bots.hpp"
+#include "stock_native_bot_runtime.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_bot_services.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <tuple>
 
 namespace stock_native_bot {
 namespace p=stock_native_bot_python;
 namespace {
 using Pose=std::array<double,6>;
+using native_battle::Value;
 constexpr double pi=3.1415926535897932384626433832795;
 double wrap(double angle){return angle-std::floor((angle+pi)/(2*pi))*(2*pi);}
 double principal(double angle){return angle<-pi||angle>pi?wrap(angle):angle;}
@@ -27,12 +31,7 @@ p::Ref field(PyObject*object,const char*name){
     if(!value&&PyErr_ExceptionMatches(PyExc_AttributeError)){PyErr_Clear();return p::retain(Py_None);}
     return p::Ref(value);
 }
-void remove(PyObject*object,const char*name){
-    if(PyDict_GetItemString(object,name)&&PyDict_DelItemString(object,name)<0)throw p::Error("Native pose cache removal failed");
-}
 bool equal(PyObject*a,PyObject*b){const int value=PyObject_RichCompareBool(a,b,Py_EQ);if(value<0)throw p::Error("Native pose cache comparison failed");return value!=0;}
-void bump(PyObject*battle,const char*name){assign(battle,name,p::integer(p::integral(battle,name)+1));}
-void clear(PyObject*record){for(const char*name:{"_authority_presentation_lifecycle","_authority_pose_signature","_authority_aim_signature","_authority_projectile_pose_cache"})remove(record,name);}
 #if defined(WOT_NATIVE_PRESENTATION_HOST_BUILD)
 // The portable fixture supplies explicitly native matrix/vector test doubles.
 extern PyObject* presentationVector(const Point&);
@@ -110,44 +109,47 @@ void setAim(PyObject*entity,const geometry::Vehicle&vehicle,double hull,double a
     writeAim(turret.get(),relative,0.);writeAim(gun.get(),0.,component_pitch);
 }
 }
-bool presentNativeBotPoses(PyObject*battle,PyObject*states,double now,const NativeServices&services,std::vector<std::string>&errors){
-    auto records=p::value(battle,"_records"),bots=p::value(battle,"_bots"),times=p::value(battle,"_bot_pose_times"),rates=p::value(battle,"_bot_yaw_rates");
-    const auto epoch=p::value(bots.get(),"_sample_time_us");bool applied=false;
-    for(Py_ssize_t index=0;index<p::size(states);++index){auto state=p::item(states,index);if(!PyDict_Check(state.get()))continue;
-        auto id=p::value(state.get(),"id");if(id.get()==Py_None)continue;const auto bot=p::wide(id.get());
-        auto record=p::value(records.get(),("bot:"+std::to_string(bot)).c_str());if(!PyDict_Check(record.get()))continue;
+std::size_t presentNativeBotPoses(native_battle::Battle&b,const Runtime&runtime,double now,const NativeServices&services,std::vector<std::string>&errors){
+    using Bot=native_battle::BotAuthority::PresentedBot;
+    auto&authority=*b.bots;const double epoch=double(runtime.clock().sample_us);
+    // The pinned presentation order: slot, then team.
+    std::vector<const Actor*> order;for(const auto&entry:runtime.actors())order.push_back(&entry.second);
+    std::stable_sort(order.begin(),order.end(),[](const Actor*l,const Actor*r){return std::tie(l->slot,l->team)<std::tie(r->slot,r->team);});
+    for(const auto*actor:order){const auto bot=actor->motion.id;
+        auto*vehicle=b.vehicle("bot:"+std::to_string(bot));if(!vehicle)continue;
         try{
-            if(!p::truth(record.get(),"ready")){clear(record.get());continue;}
+            if(!vehicle->ready){authority.presented.erase(bot);continue;}
             const auto*installed=services.find({offline_simulation::ActorKind::Bot,bot});if(!installed)continue;
-            const auto&vehicle=installed->geometry[installed->mode];const auto engine=p::integral(record.get(),"engine_id");
-            p::Ref entity(readNativeEntity(battle,engine));if(entity.get()==Py_None)throw p::Error("Native pose entity is unavailable");
+            const auto&geometry=installed->geometry[installed->mode];const auto engine=vehicle->engine_id;
+            p::Ref entity=b.entity(engine);if(entity.get()==Py_None)throw p::Error("Native pose entity is unavailable");
             auto presentation=field(entity.get(),"_offlineLANPresentation");
             if(presentation.get()!=Py_True)throw p::Error("Native worker pose requires its RemoteVehicle owner");
-            const auto generation=p::integer(p::integral(battle,"_generation")),engine_value=p::integer(engine);p::Ref address(PyLong_FromVoidPtr(record.get()));
-            p::Ref lifecycle(PyTuple_Pack(4,generation.get(),id.get(),engine_value.get(),address.get()));auto old_lifecycle=p::value(record.get(),"_authority_presentation_lifecycle");
-            if(!equal(lifecycle.get(),old_lifecycle.get())){clear(record.get());p::set(record.get(),"_authority_presentation_lifecycle",lifecycle);
-                for(auto*map:{times.get(),rates.get()})if(PyDict_GetItem(map,id.get())&&PyDict_DelItem(map,id.get())<0)throw p::Error("Native pose lifecycle reset failed");}
-            Pose pose={p::numeric(state.get(),"x"),p::numeric(state.get(),"y"),p::numeric(state.get(),"z"),principal(p::numeric(state.get(),"yaw")),principal(p::numeric(state.get(),"pitch")),principal(p::numeric(state.get(),"roll"))};
-            const double aim=principal(p::numeric(state.get(),"aim_yaw",pose[3])),pitch=principal(p::numeric(state.get(),"gun_pitch")),turret=principal(p::numeric(state.get(),"turret_yaw",wrap(aim-pose[3])));
-            p::Ref position(presentationVector(xyz(pose)));const auto actual=presentationXYZ(position.get());const auto location=p::tupleNumbers(actual),rotation=p::tupleNumbers(Point{pose[5],pose[4],pose[3]});p::Ref sample(PyTuple_Pack(2,location.get(),rotation.get()));
-            std::optional<double> relax;auto*old_time=PyDict_GetItem(times.get(),id.get());
-            if(!old_time||!equal(PyTuple_GetItem(old_time,2),sample.get())){const auto stamp=p::number(now),yaw=p::number(p::numeric(state.get(),"yaw"));p::Ref entry(PyTuple_Pack(3,stamp.get(),yaw.get(),sample.get()));
-                double rate=0.;if(old_time){const double elapsed=std::min(.5,now-p::scalar(PyTuple_GetItem(old_time,0)));if(elapsed>0.){rate=wrap(p::numeric(state.get(),"yaw")-p::scalar(PyTuple_GetItem(old_time,1)))/elapsed;relax=elapsed*1.35;}}
-                if(PyDict_SetItem(times.get(),id.get(),entry.get())<0)throw p::Error("Native pose clock mirror failed");const auto value=p::number(rate);if(PyDict_SetItem(rates.get(),id.get(),value.get())<0)throw p::Error("Native pose turn mirror failed");}
-            const double speed=p::numeric(state.get(),"speed");const bool alive=p::truth(state.get(),"alive",true)&&p::numeric(state.get(),"health",1.)>0.;bool moving=alive&&(speed!=0.||p::truth(state.get(),"airborne"));
-            if(alive)for(const char*name:{"movement_dir","rotation_dir","vertical_speed","slide_speed","push_x","push_z","air_lateral_x","air_lateral_z"})moving=moving||p::numeric(state.get(),name)!=0.;
-            const auto raw_position=p::tupleNumbers(xyz(pose)),velocity=p::number(speed),live=p::boolean(alive),mode=p::integer(p::integral(state.get(),"siege_state"));
-            p::Ref signature(PyTuple_Pack(7,lifecycle.get(),raw_position.get(),rotation.get(),velocity.get(),moving?epoch.get():Py_None,live.get(),mode.get()));auto old_pose=p::value(record.get(),"_authority_pose_signature");
-            if(equal(signature.get(),old_pose.get()))bump(battle,"_authority_pose_skips");else try{setPose(entity.get(),pose,relax,now,moving);p::set(record.get(),"_authority_pose_signature",signature);bump(battle,"_authority_pose_writes");}catch(const std::exception&e){remove(record.get(),"_authority_pose_signature");PyErr_Clear();errors.push_back(e.what());}
-            const auto aim_values=p::tupleNumbers(std::array<double,4>{pose[3],aim,pitch,pose[4]});p::Ref aim_signature(PyTuple_Pack(3,lifecycle.get(),aim_values.get(),mode.get()));auto old_aim=p::value(record.get(),"_authority_aim_signature");
-            if(equal(aim_signature.get(),old_aim.get()))bump(battle,"_authority_aim_skips");else try{setAim(entity.get(),vehicle,pose[3],aim,pitch);p::set(record.get(),"_authority_aim_signature",aim_signature);bump(battle,"_authority_aim_writes");}catch(const std::exception&e){remove(record.get(),"_authority_aim_signature");PyErr_Clear();errors.push_back(e.what());}
-            const auto projectile_values=p::tupleNumbers(std::array<double,8>{pose[0],pose[1],pose[2],pose[3],pose[4],pose[5],turret,pitch});p::Ref projectile_signature(PyTuple_Pack(3,lifecycle.get(),projectile_values.get(),mode.get()));auto old_projectile=p::value(record.get(),"_authority_projectile_pose_cache"),collision=p::value(record.get(),"projectile_collision_pose");
-            if(!PyTuple_Check(old_projectile.get())||PyTuple_GET_SIZE(old_projectile.get())!=2||!equal(PyTuple_GET_ITEM(old_projectile.get(),0),projectile_signature.get())||PyTuple_GET_ITEM(old_projectile.get(),1)!=collision.get()){
-                auto value=p::dict();const char*names[]={"x","y","z","yaw","pitch","roll"};for(unsigned i=0;i<6;++i)p::set(value.get(),names[i],p::number(pose[i]));p::set(value.get(),"turret_yaw",p::number(turret));p::set(value.get(),"gun_pitch",p::number(pitch));p::set(value.get(),"siege_state",mode);
-                p::Ref cache(PyTuple_Pack(2,projectile_signature.get(),value.get()));p::set(record.get(),"projectile_collision_pose",value);p::set(record.get(),"_authority_projectile_pose_cache",cache);}
-            applied=true;
-        }catch(const std::exception&e){clear(record.get());PyErr_Clear();errors.push_back(e.what());}
+            auto&shown=authority.presented[bot];
+            if(shown.vehicle!=vehicle||shown.engine_id!=engine||shown.generation!=b.generation){
+                shown=Bot{};shown.vehicle=vehicle;shown.engine_id=engine;shown.generation=b.generation;authority.yaw_rates.erase(bot);}
+            const auto&m=actor->motion;const auto&weapon=runtime.weapons().at({offline_simulation::ActorKind::Bot,bot});
+            Pose pose={m.position[0],m.position[1],m.position[2],principal(m.yaw),principal(m.pitch),principal(m.roll)};
+            const double aim=principal(actor->weapon.aim_yaw),pitch=principal(weapon.aim.gun_pitch),turret=principal(weapon.aim.turret_yaw);
+            p::Ref position(presentationVector(xyz(pose)));const auto actual=presentationXYZ(position.get());
+            const std::array<double,6> sample{{actual[0],actual[1],actual[2],pose[5],pose[4],pose[3]}};
+            std::optional<double> relax;
+            if(!shown.sample||*shown.sample!=sample){double rate=0.;
+                if(shown.clock){const double elapsed=std::min(.5,now-(*shown.clock)[0]);if(elapsed>0.){rate=wrap(m.yaw-(*shown.clock)[1])/elapsed;relax=elapsed*1.35;}}
+                shown.clock=std::array<double,3>{{now,m.yaw,0.}};shown.sample=sample;authority.yaw_rates[bot]=rate;}
+            const bool alive=actor->combat.alive&&actor->combat.health>0;bool moving=alive&&(m.speed!=0.||m.airborne);
+            if(alive)for(double v:{double(m.movement_direction),double(m.rotation_direction),m.vertical_speed,m.slide_speed,m.push_x,m.push_z,m.air_lateral_x,m.air_lateral_z})moving=moving||v!=0.;
+            const double mode=double(actor->siege.mode);
+            const std::array<double,11> signature{{pose[0],pose[1],pose[2],pose[5],pose[4],pose[3],m.speed,moving?epoch:-1.,alive?1.:0.,mode,0.}};
+            if(shown.pose!=signature)try{shown.pose.reset();setPose(entity.get(),pose,relax,now,moving);shown.pose=signature;}catch(const std::exception&e){PyErr_Clear();errors.push_back(e.what());}
+            const std::array<double,5> aim_signature{{pose[3],aim,pitch,pose[4],mode}};
+            if(shown.aim!=aim_signature)try{shown.aim.reset();setAim(entity.get(),geometry,pose[3],aim,pitch);shown.aim=aim_signature;}catch(const std::exception&e){PyErr_Clear();errors.push_back(e.what());}
+            const std::array<double,9> projectile{{pose[0],pose[1],pose[2],pose[3],pose[4],pose[5],turret,pitch,mode}};
+            if(shown.projectile!=projectile){Value value;value.kind=Value::Kind::Object;const char*names[]={"x","y","z","yaw","pitch","roll","turret_yaw","gun_pitch"};
+                for(unsigned i=0;i<8;++i){auto&v=value.object[names[i]];v.kind=Value::Kind::Number;v.number=projectile[i];}
+                auto&siege=value.object["siege_state"];siege.kind=Value::Kind::Integer;siege.integer=actor->siege.mode;
+                vehicle->presented.collision_pose=std::move(value);shown.projectile=projectile;}
+        }catch(const std::exception&e){authority.presented.erase(bot);PyErr_Clear();errors.push_back(e.what());}
     }
-    return applied;
+    return order.size();
 }
 }
