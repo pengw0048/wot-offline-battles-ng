@@ -54,7 +54,7 @@ std::optional<Point> pointOf(const Value& v) {
     return out;
 }
 p::Ref tuple(const Point& v) { return p::Ref(Py_BuildValue("(ddd)", v[0], v[1], v[2])); }
-p::Ref vector3(const Battle& b, const Point& v) { return py::call(b.engine.math.get(), "Vector3", p::number(v[0]).release(), p::number(v[1]).release(), p::number(v[2]).release()); }
+p::Ref vector3(const Battle& b, const Point& v) { return py::call(b.engine.math.get(), "Vector3", p::number(v[0]).get(), p::number(v[1]).get(), p::number(v[2]).get()); }
 // start + velocity * t + gravity * t^2 / 2
 Point trajectory(const Point& start, const Point& velocity, double gravity, double elapsed) {
     return {start[0] + velocity[0] * elapsed, start[1] + velocity[1] * elapsed - .5 * gravity * elapsed * elapsed, start[2] + velocity[2] * elapsed};
@@ -268,7 +268,7 @@ bool wreckHit(Battle& b, const std::string& id, const Value& event) {
     needs::reportEffect(b, "wreck_hit", p::text("armorHit").get(), index.get(), impact_tuple.get(), direction.get(), nullptr);
     return b.feature("projectile impact presentation", [&] {
         // The #1513 impact trio needs the shooter and target identities, as for a live vehicle hit.
-        auto offset = py::call(direction.get(), "scale", p::number(0.4).release());
+        auto offset = py::call(direction.get(), "scale", p::number(0.4).get());
         p::Ref start(PyNumber_Subtract(position.get(), offset.get()));
         p::Ref end(PyNumber_Add(position.get(), offset.get()));
         auto* shooter = b.vehicle(meta.shooter_kind + ":" + std::to_string(meta.shooter_id));
@@ -633,7 +633,7 @@ public:
     void control(const char* field) {
         const auto event = name(field);
         if (event.empty()) return;
-        try { if (soundsEnabled()) py::call(sounds().get(), "playSound2D", p::text(event).release()); }
+        try { if (soundsEnabled()) py::call(sounds().get(), "playSound2D", p::text(event).get()); }
         catch (const std::exception& e) { soundError(event, e); }
     }
     void stopLane() {
@@ -648,7 +648,7 @@ public:
         stopLane();
         try {
             if (soundsEnabled()) {
-                lane = own(py::call(sounds().get(), "getSound2D", p::text(event).release()));
+                lane = own(py::call(sounds().get(), "getSound2D", p::text(event).get()));
                 py::call(lane.get(), "play");
                 last_tick = now;
                 if (kind == "short") short_played = true;
@@ -687,7 +687,7 @@ public:
         const double end = std::max(now, *deadline);
         try {
             const auto caliber = name("caliber");
-            if (!caliber.empty()) py::call(sounds().get(), "setSwitch", p::text("SWITCH_ext_rld_automat_caliber").release(), p::text(caliber).release());
+            if (!caliber.empty()) py::call(sounds().get(), "setSwitch", p::text("SWITCH_ext_rld_automat_caliber").get(), p::text(caliber).get());
         } catch (const std::exception& e) { soundError("caliber", e); }
         constexpr double min_spacing = .06;
         constexpr int max_cues = 64;
@@ -961,8 +961,8 @@ std::optional<Point> visualStart(Battle& b, PyObject* entity, const Value& norma
     if (!py::callable(on_screen)) return std::nullopt;
     try {
         auto compound = py::attr(py::attr(entity, "appearance").get(), "compoundModel");
-        auto node = py::call(compound.get(), "node", p::text("HP_gunFire").release());
-        auto matrix = py::call(b.engine.math.get(), "Matrix", node.release());
+        auto node = py::call(compound.get(), "node", p::text("HP_gunFire").get());
+        auto matrix = py::call(b.engine.math.get(), "Matrix", node.get());
         auto native_point = py::attr(matrix.get(), "translation");
         Point point;
         for (int i = 0; i < 3; ++i) point[i] = p::scalar(p::item(native_point.get(), i).get());
@@ -1027,7 +1027,7 @@ p::Ref showLocalShotWithoutExtra(Battle& b, PyObject* entity, PyObject* burst_co
     auto shoot = [&] { return py::call(entity, "showShooting", burst_count, Py_False); };
     auto extras = py::optional(py::optional(entity, "typeDescriptor").get(), "extrasDict");
     auto original = PyDict_Check(extras.get()) ? p::retain(PyDict_GetItemString(extras.get(), "shoot") ? PyDict_GetItemString(extras.get(), "shoot") : Py_None)
-                                               : py::call(extras.get(), "get", p::text("shoot").release());
+                                               : py::call(extras.get(), "get", p::text("shoot").get());
     // No shoot extra: the stock call has no cosmetic work to suppress, only its dispersion handshake.
     if (original.get() == Py_None) return shoot();
     b.feature("shot muzzle retirement", [&] { py::call(original.get(), "stopFor", entity); }, false);
@@ -1292,7 +1292,7 @@ bool cancelBurst(Battle& b, bool apply_settings) {
         b.feature("shot muzzle retirement", [&] {
             auto entity = b.entity(p::wide(py::attr(b.engine.server.get(), "vehicle_id").get()));
             auto extras = py::optional(py::optional(entity.get(), "typeDescriptor").get(), "extrasDict");
-            auto extra = py::call(extras.get(), "get", p::text("shoot").release());
+            auto extra = py::call(extras.get(), "get", p::text("shoot").get());
             if (extra.get() != Py_None) py::call(extra.get(), "stopFor", entity.get());
         }, false);
     }
@@ -1311,15 +1311,15 @@ std::vector<std::string> publish(Battle& b, PyObject* entity, const std::vector<
             auto* avatar = b.engine.avatar.get();
             switch (e.kind) {
             case HudEdge::Kind::Ammo:
-                py::call(avatar, "updateVehicleAmmo", vehicle_id.get(), p::integer(e.compact).release(), p::integer(e.quantity).release(),
-                         p::integer(e.clip).release(), p::integer(0).release());
+                py::call(avatar, "updateVehicleAmmo", vehicle_id.get(), p::integer(e.compact).get(), p::integer(e.quantity).get(),
+                         p::integer(e.clip).get(), p::integer(0).get());
                 break;
             case HudEdge::Kind::Shell:
-                py::call(avatar, "updateVehicleSetting", vehicle_id.get(), p::integer(e.setting).release(), p::integer(e.compact).release());
+                py::call(avatar, "updateVehicleSetting", vehicle_id.get(), p::integer(e.setting).get(), p::integer(e.compact).get());
                 break;
             case HudEdge::Kind::Equipment:
-                py::call(avatar, "updateVehicleAmmo", vehicle_id.get(), p::integer(e.compact).release(), p::integer(e.quantity).release(),
-                         p::integer(e.stage).release(), p::integer(e.remaining_seconds).release());
+                py::call(avatar, "updateVehicleAmmo", vehicle_id.get(), p::integer(e.compact).get(), p::integer(e.quantity).get(),
+                         p::integer(e.stage).get(), p::integer(e.remaining_seconds).get());
                 break;
             case HudEdge::Kind::Targeting: {
                 auto aim = py::call(entity, "getAimParams");
@@ -1336,7 +1336,7 @@ std::vector<std::string> publish(Battle& b, PyObject* entity, const std::vector<
                 break;
             }
             case HudEdge::Kind::Reload: {
-                py::call(avatar, "updateVehicleGunReloadTime", vehicle_id.get(), p::number(e.remaining).release(), p::number(e.duration).release());
+                py::call(avatar, "updateVehicleGunReloadTime", vehicle_id.get(), p::number(e.remaining).get(), p::number(e.duration).get());
                 if (!alive()) return accepted_ids;
                 b.gun->reload_event = std::make_pair(e.remaining, e.duration);
                 // The native owner already selected and froze this edge; the resource owner supplies only the effect.
@@ -1372,7 +1372,7 @@ bool publishKind(Battle& b, const std::string& kind, double now, bool force, dou
         if (kind == "reload") {
             const auto event = std::make_pair(std::max(0., remaining), std::max(0., duration));
             if (!force && b.gun->reload_event == event) return false;
-            py::call(b.engine.avatar.get(), "updateVehicleGunReloadTime", vehicle_id.get(), p::number(event.first).release(), p::number(event.second).release());
+            py::call(b.engine.avatar.get(), "updateVehicleGunReloadTime", vehicle_id.get(), p::number(event.first).get(), p::number(event.second).get());
             b.gun->reload_event = event;
             return true;
         }
@@ -1385,15 +1385,15 @@ bool publishKind(Battle& b, const std::string& kind, double now, bool force, dou
                 const std::int64_t compact = compact_raw.get() == Py_None ? 0 : p::wide(compact_raw.get());
                 const int quantity = std::size_t(index) < gun->ammunition.size() ? gun->ammunition[index] : 0;
                 const int in_clip = index == gun->shot ? gun->clip : 0;
-                py::call(b.engine.avatar.get(), "updateVehicleAmmo", vehicle_id.get(), p::integer(compact).release(),
-                         p::integer(std::max(0, std::min(quantity, 65535))).release(), p::integer(std::max(0, std::min(in_clip, 255))).release(),
-                         p::integer(0).release());
+                py::call(b.engine.avatar.get(), "updateVehicleAmmo", vehicle_id.get(), p::integer(compact).get(),
+                         p::integer(std::max(0, std::min(quantity, 65535))).get(), p::integer(std::max(0, std::min(in_clip, 255))).get(),
+                         p::integer(0).get());
                 if (index == gun->shot) current_shell = compact;
             }
             if (current_shell) {
                 auto settings = py::attr(b.engine.constants.get(), "VEHICLE_SETTING");
-                py::call(b.engine.avatar.get(), "updateVehicleSetting", vehicle_id.get(), py::attr(settings.get(), "CURRENT_SHELLS").release(),
-                         p::integer(*current_shell).release());
+                py::call(b.engine.avatar.get(), "updateVehicleSetting", vehicle_id.get(), py::attr(settings.get(), "CURRENT_SHELLS").get(),
+                         p::integer(*current_shell).get());
             }
             return true;
         }
