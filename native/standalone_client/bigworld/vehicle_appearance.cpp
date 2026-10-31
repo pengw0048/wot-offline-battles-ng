@@ -1377,8 +1377,15 @@ public:
         Py_INCREF( product_.get() );
         return product_.get();
     }
-    static PyCompoundAssembler * New() { return new PyCompoundAssembler(); }
-    PY_AUTO_FACTORY_DECLARE( PyCompoundAssembler, END )
+    // #1513 0x008d79c0: CompoundAssembler( name = '', spaceID = 0 ), both optional.
+    static PyCompoundAssembler * New( const BW::string & name, uint32 spaceID )
+    {
+        PyCompoundAssembler * assembler = new PyCompoundAssembler();
+        assembler->assemblerName_ = name;
+        assembler->spaceID_ = spaceID;
+        return assembler;
+    }
+    PY_AUTO_FACTORY_DECLARE( PyCompoundAssembler, OPTARG( BW::string, "", OPTARG( uint32, 0, END ) ) )
 
 private:
     void append( AssemblyOperationKind kind, const BW::string & model,
