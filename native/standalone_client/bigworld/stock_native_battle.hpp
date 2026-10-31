@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <new>
 #include <memory>
 #include <optional>
 #include <set>
@@ -23,6 +24,8 @@ using cs::Value;
 using Object = cs::Handle;
 inline Object own(p::Ref value) { return Object(value.release()); }
 inline Object borrow(PyObject* value) { Py_XINCREF(value); return Object(value); }
+// Rebinds a p::Ref (it has no assignment).
+inline void replace(p::Ref& target, p::Ref value) { target.~Ref(); new (&target) p::Ref(std::move(value)); }
 
 // Calls into stock Python objects. Each throws p::Error with the Python exception set on failure.
 namespace py {
@@ -70,6 +73,8 @@ struct World;
 struct BotAuthority;
 struct Diagnostics;
 struct Startup;
+struct Critical;
+struct Remote;
 
 struct Battle {
     Battle();
@@ -94,6 +99,8 @@ struct Battle {
     std::unique_ptr<BotAuthority> bots;
     std::unique_ptr<Diagnostics> diagnostics;
     std::unique_ptr<Startup> startup;
+    std::unique_ptr<Critical> critical;
+    std::unique_ptr<Remote> remote;
 
     bool running() const { return phase == Phase::Running; }
     double clock() const;
