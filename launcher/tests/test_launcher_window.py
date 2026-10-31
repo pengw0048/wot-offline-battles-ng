@@ -2059,6 +2059,25 @@ class WindowTest(unittest.TestCase):
             environment[core.SERVER_BOT_LINEUP_ENV_0922])
         self.window._stop_server(force=True)
 
+    def test_launcher_owned_server_starts_ng_rounds_without_bot_tactics(self):
+        server = _Process()
+        with mock.patch.dict(os.environ, {
+                    "WOT_0922_BOT_TACTICS_PATH": "inherited-active.json"}), \
+                mock.patch("bot_tactics_store.Store.ensure_active",
+                           side_effect=AssertionError("tactics staged")), \
+                mock.patch("core.listener_status",
+                           return_value=core.LISTENER_FREE), \
+                mock.patch("core.wait_for_server", return_value=True), \
+                mock.patch("core.local_addresses", return_value=[]), \
+                mock.patch("wot_launcher.subprocess.Popen",
+                           return_value=server) as popen:
+            self.assertTrue(self.window._start_server(
+                self.settings_dir, core.PORT_0_9_22))
+
+        self.assertNotIn("WOT_0922_BOT_TACTICS_PATH",
+                         popen.call_args.kwargs["env"])
+        self.window._stop_server(force=True)
+
     def test_launcher_owned_server_reuse_requires_game_and_visibility_context(self):
         server = _Process()
         self.window._server = server

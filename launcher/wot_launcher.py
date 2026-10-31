@@ -3295,18 +3295,6 @@ class LauncherWindow(object):
                     "compatible server already uses port %d. Close it "
                     "first." % core.DEFAULT_SERVER_PORT)
                 return False
-            custom_tactics = False
-            try:
-                store = bot_tactics_store.Store()
-                if store.active_path.exists():
-                    active = store.active()
-                    custom_tactics = bool(active['behavior'] or active['maps'])
-            except Exception as error:
-                self._log("Bot tactics: %s" % error)
-                return False
-            if custom_tactics:
-                self._log("Custom Bot tactics require a launcher-owned server; stop the external server first.")
-                return False
             if bot_lineup or bot_excluded_vehicles:
                 self._log(
                     "The exact Bot lineup or vehicle exclusions need a "
@@ -3327,11 +3315,9 @@ class LauncherWindow(object):
             port_version, game_root, loopback_only=loopback_only,
             bot_lineup=bot_lineup,
             bot_excluded_vehicles=bot_excluded_vehicles)
-        try:
-            environment["WOT_0922_BOT_TACTICS_PATH"] = bot_tactics_store.Store().ensure_active()
-        except Exception as error:
-            self._log("Bot tactics: %s" % error)
-            return False
+        # The NG worker's round start accepts only the empty tactics profile,
+        # which the server uses when no WOT_0922_BOT_TACTICS_PATH is given.
+        environment.pop("WOT_0922_BOT_TACTICS_PATH", None)
         server_log_path = core.server_log_path()
         report_session = self._active_report_session
         if report_session is not None:
