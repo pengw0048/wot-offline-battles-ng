@@ -83,4 +83,25 @@ double visibility::shotCamouflageSeconds() { return 0.75; }
 void visibility::resetSpottingTimer(Battle& b) {
     if (b.visibility && b.live && !b.worker) b.feature("spotting", [&] { spotting(b, b.clock(), false); }, false);
 }
+
+// Battle hooks are native (compat::); lobby, account and garage stay on the Python OfflineCompatibility object.
+void compat::setBattleNetworkClient(Battle& b, PyObject* client) { setNetworkClient(b, client); }
+void compat::configureBattle(Battle& b, PyObject* gui_type, PyObject* bonus_type, const std::string& name, std::int64_t team, PyObject* arena_type_id) {
+    configure(b, gui_type, bonus_type, p::text(name).get(), p::integer(team).get(), arena_type_id);
+}
+void compat::deactivateMap(Battle& b) { deactivate(b); }
+void compat::synchroniseVehicleMarkerIdentity(Battle& b, std::int64_t vehicle_id) {
+    if (!synchroniseMarkerIdentity(b, vehicle_id)) throw p::Error("#1513 vehicle marker identity did not synchronise");
+}
+void compat::assertVehicleMarkerIdentity(Battle& b, std::int64_t vehicle_id) {
+    if (!assertMarkerIdentity(b, vehicle_id)) throw p::Error("#1513 vehicle marker identity does not match the player vehicle");
+}
+bool compat::retireCurrentPlayer(Battle& b) { return p::flag(py::call(b.engine.compatibility.get(), "retire_current_player").get()); }
+void compat::restoreLobbyAccount(Battle& b) { py::call(b.engine.compatibility.get(), "restore_lobby_account"); }
+void compat::disconnect(Battle& b) { py::call(b.engine.compatibility.get(), "disconnect"); }
+p::Ref compat::garageState(Battle& b) { return py::call(b.engine.compatibility.get(), "garage_state"); }
+std::pair<p::Ref, p::Ref> compat::dispatchAccountIntCommand(Battle& b, PyObject* command, PyObject* values) {
+    auto result = py::call(b.engine.compatibility.get(), "dispatch_account_int_command", command, values);
+    return {p::item(result.get(), 0), p::item(result.get(), 1)};
+}
 }
