@@ -88,7 +88,7 @@ class PlayerContactsTest(unittest.TestCase):
                        '-bundle', '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
                        '-I' + str(folder), '-I' + str(Path(source) / 'native'), '-I' + str(ROOT / 'bigworld'),
                        str(ROOT / 'bigworld/stock_native_player_contacts_python.cpp'),
-                       str(ROOT / 'tests/stock_native_player_contacts_python_host.cpp'), '-o', str(folder / 'player_contacts_test.so')]
+                       str(ROOT / 'tests/stock_native_player_contacts_python_host.cpp'), str(ROOT / 'tests/stock_native_client_state_host.cpp'), '-o', str(folder / 'player_contacts_test.so')]
             built = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             script = folder / 'test.py'

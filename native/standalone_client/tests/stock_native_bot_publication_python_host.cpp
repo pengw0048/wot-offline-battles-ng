@@ -1,5 +1,6 @@
 #include "../bigworld/stock_native_bot_publication_python.hpp"
 #include <Python.h>
+#include "../bigworld/stock_native_client_state.hpp"
 using namespace stock_native_bot;
 static PyObject* publish(PyObject*,PyObject*){
     Output out;out.state.rows={{1,2,3}};out.state.sample_us=100;out.state.edge_sample_us=90;out.state.edge_revision=7;
@@ -7,7 +8,7 @@ static PyObject* publish(PyObject*,PyObject*){
     contacts::Report r;r.bot=1;r.target=2;r.sequence=8;r.damage_bot=4;r.damage_target=6;r.positions={{1,2,3,4}};r.bot_tracks={"leftTrackHealth"};r.closing_speed=7;out.state.reports.push_back(r);r.target_human=true;r.player_receipt=12;out.state.reports.push_back(r);
     out.pushes.push_back({5,2,1,true,false});out.hazards={1};out.environment_fires={2};out.falls={{{1,20}}};out.critical.push_back({1,"collision",4,2});
     observation::Observation obs;observation::Contact c;c.observing_team=1;c.target_team=2;c.target={offline_simulation::ActorKind::Human,2};c.visible=c.fresh=true;c.time_left=.5;c.radio_recipients.push_back({{offline_simulation::ActorKind::Bot,1},.4});c.visible_by_bot_ids={1};c.shootable_by_bot_ids={1};c.position={{10,20,30}};c.health=50;c.max_health=100;c.class_tag="heavyTank";c.armor=80;obs.contacts.push_back(c);obs.player_vision_ranges.push_back({2,350});obs.radio_links.push_back({{offline_simulation::ActorKind::Human,2},{{offline_simulation::ActorKind::Bot,1}}});out.observation=obs;
-    return packNativeOutputs({out},100);
+    return stock_native_client_state::write(packNativeOutputs({out},100));
 }
 static PyMethodDef methods[]={{"publish",publish,METH_NOARGS,nullptr},{nullptr,nullptr,0,nullptr}};
 extern "C" void initpublication_test(){Py_InitModule("publication_test",methods);}

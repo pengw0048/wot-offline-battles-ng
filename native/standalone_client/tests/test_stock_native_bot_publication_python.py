@@ -20,7 +20,12 @@ launch=namespace['_launch_value']((1,1,(9,8,1,3,2,0,.03),95,(1.,2.,3.,.1,.2,.3),
 result=native.publish()
 assert [r['type'] for r in result]==['bot_state','bot_ram','bot_ram','bot_observation']
 state=result[0]
-assert state['launches'][0]==launch,(state['launches'][0],launch)
+def listed(value):
+    # Native values carry the pinned tuples as lists.
+    if isinstance(value, (list, tuple)): return [listed(v) for v in value]
+    if isinstance(value, dict): return dict((k, listed(v)) for k, v in value.items())
+    return value
+assert state['launches'][0]==listed(launch),(state['launches'][0],launch)
 assert state['rows']==[[1,2,3]] and state['source_batch_horizon_us']==100
 assert state['push_contacts']==dict(contacts=[dict(seq=5,attacker_kind='human',attacker_id=2,target_kind='bot',target_id=1)],hazards=[1],falls=[[1,20]],critical_totals=[[1,'collision',4,2]],environment_fires=[2])
 assert result[1]==dict(type='bot_ram',bot_id=1,target_kind='bot',target_id=2,ram_seq=8,damage_to_bot=4,damage_to_target=6,track_contacts_bot=['leftTrackHealth'],track_contacts_target=[],track_impact_speed=7.,contact_positions=[1.,2.,3.,4.])
@@ -42,7 +47,7 @@ class PublicationTests(unittest.TestCase):
             folder=Path(directory);script=folder/'test.py';script.write_text(FIXTURE)
             law=(Path(source)/'native/offline_release_drive_python.inc').read_text().split('PyObject *WOT_CDECL release_drive(')[0]
             (folder/'offline_release_drive_law.hpp').write_text('#pragma once\n#include <algorithm>\n#include <cmath>\n'+law)
-            command=['c++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(Path(source)/'native'),'-I'+str(ROOT/'bigworld'),str(ROOT/'bigworld/stock_native_bot_publication_python.cpp'),str(ROOT/'tests/stock_native_bot_publication_python_host.cpp'),'-o',str(folder/'publication_test.so')]
+            command=['c++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(Path(source)/'native'),'-I'+str(ROOT/'bigworld'),str(ROOT/'bigworld/stock_native_bot_publication_python.cpp'),str(ROOT/'tests/stock_native_bot_publication_python_host.cpp'),str(ROOT/'tests/stock_native_client_state_host.cpp'),'-o',str(folder/'publication_test.so')]
             built=subprocess.run(command,text=True,capture_output=True);self.assertEqual(built.returncode,0,built.stderr)
             run=subprocess.run([py27,'-B',str(script),source],text=True,capture_output=True);self.assertEqual(run.returncode,0,run.stderr)
             self.assertIn('native publication boundary passed',run.stdout)
