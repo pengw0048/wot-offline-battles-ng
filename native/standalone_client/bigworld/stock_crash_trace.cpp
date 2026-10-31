@@ -8,8 +8,9 @@ LONG CALLBACK traceAccessViolation(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || InterlockedIncrement(&reported) > 3)
         return EXCEPTION_CONTINUE_SEARCH;
     const CONTEXT* c = info->ContextRecord;
+    const DWORD image = DWORD(GetModuleHandle(nullptr));
     char line[1024];
-    int used = _snprintf_s(line, sizeof(line), _TRUNCATE, "CRASH_TRACE eip=%08lx esp=%08lx ebp=%08lx frames=", c->Eip, c->Esp, c->Ebp);
+    int used = _snprintf_s(line, sizeof(line), _TRUNCATE, "CRASH_TRACE base=%08lx eip=%08lx esp=%08lx ebp=%08lx frames=", image, c->Eip, c->Esp, c->Ebp);
     DWORD frame = c->Ebp;
     for (int i = 0; i < 32 && frame && !(frame & 3) && used > 0 && used < int(sizeof(line)) - 12; ++i) {
         if (IsBadReadPtr(reinterpret_cast<const void*>(frame), 8)) break;
