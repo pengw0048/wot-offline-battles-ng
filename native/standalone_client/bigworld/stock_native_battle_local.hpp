@@ -79,7 +79,6 @@ void restoreRamContactHook(Battle& b);
 // Seeds the stock Siege indicator cache once the client is ready.
 bool seedSiegeHud(Battle& b, Actor& local);
 // Advances the visible world owner's scene and destruction ledger (the foliage/frame chain).
-void worldFrame(Battle& b, double now);
 // The exact suspension parameters for the mounted descriptor, or None when detailed suspension is excluded.
 PyObject* ensureSuspensionParams(Battle& b, PyObject* descriptor);
 // Accepted canonical destruction for the visible world owner.

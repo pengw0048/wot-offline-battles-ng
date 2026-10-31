@@ -343,7 +343,6 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_projectile_wire.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_world_events.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_world_pipeline.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/stock_native_world_snapshot.cpp"
 )
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})

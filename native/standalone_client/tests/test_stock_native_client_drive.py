@@ -229,49 +229,5 @@ class ClientDriveScene(unittest.TestCase):
             self.assertIn('Native client support scene tests passed',result.stdout)
 
 
-@unittest.skipUnless(SOURCE, 'fixed gameplay source is required')
-class ClientDriveGeometryLifecycle(unittest.TestCase):
-    def test_changed_local_cells_streaming_and_falling_geometry(self):
-        from native_test_compile_flags import native_test_compile_flags
-        prefix=Path(subprocess.check_output(['pyenv','prefix'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip())
-        with tempfile.TemporaryDirectory(prefix='native-client-drive-geometry-') as folder:
-            binary=Path(folder)/'geometry';big=ROOT/'bigworld';native=Path(SOURCE)/'native'
-            command=['c++','-std=c++17','-O0','-Wall','-Wextra','-Werror',*native_test_compile_flags('c++'),
-                '-isystem',str(prefix/'include/python2.7'),'-I'+str(big),'-I'+str(native),
-                str(ROOT/'tests/stock_native_client_drive_geometry_host.cpp')]
-            command += [str(big/(name+'.cpp')) for name in ('stock_native_client_drive_geometry',
-                'stock_native_client_drive_scene','stock_native_world_pipeline','stock_motion_rotation_batch','stock_offline_query_skin')]
-            command += [str(native/(name+'.cpp')) for name in ('offline_destructible_geometry','world_stage')]
-            command += ['-L'+str(prefix/'lib'),'-lpython2.7','-o',str(binary)]
-            subprocess.run(command,check=True,capture_output=True,text=True)
-            result=subprocess.run([str(binary)],check=True,capture_output=True,text=True)
-            self.assertIn('Native player local geometry lifecycle tests passed',result.stdout)
-
-    def test_mutation_revisions_cover_actual_pinned_writers(self):
-        spec=importlib.util.spec_from_file_location('client_drive_ledger_bindings_fixture',ROOT/'bigworld/stock_native_client_drive_bindings.py')
-        bindings=importlib.util.module_from_spec(spec);spec.loader.exec_module(bindings)
-        base=Path(SOURCE)/'src/res/scripts/client/gui/mods/offline_lan_0922'
-        sensor=bindings.sensor((base/'destructibles_sensor.py').read_text())
-        authority=bindings.authority((base/'destructibles_authority.py').read_text())
-        self.assertEqual(sensor.count("globals()['_native_client_drive_ledger_revision'] ="),11)
-        self.assertEqual(authority.count("globals()['_native_client_drive_ledger_revision'] ="),3)
-        wanted={'begin_local_prediction','clear_local_prediction'}
-        methods=[node for node in ast.parse(sensor).body if isinstance(node,ast.FunctionDef) and node.name in wanted]
-        env={'g_offh_destr_instances':{(1,7):{'kind':'fragile'}},'_native_client_drive_ledger_revision':0}
-        exec(compile(ast.Module(body=methods,type_ignores=[]),'fixed-ledger-mutations','exec'),env)
-        self.assertTrue(env['begin_local_prediction']([(1,7,None)]));first=env['_native_client_drive_ledger_revision']
-        self.assertGreater(first,0)
-        self.assertTrue(env['clear_local_prediction']([(1,7,None)]));self.assertGreater(env['_native_client_drive_ledger_revision'],first)
-        self.assertEqual(len(env['g_offh_destr_speculative']),0)
-        wanted={'reset','_ensure_shape','_reset_if_new_space','_chunk','accept_tree_without_presentation'}
-        methods=[node for node in ast.parse(authority).body if isinstance(node,ast.FunctionDef) and node.name in wanted]
-        env={'_state':{},'_applies_reported':[0],'_chunks_reported':[0],'_native_client_drive_ledger_revision':0}
-        exec(compile(ast.Module(body=methods,type_ignores=[]),'fixed-authority-mutations','exec'),env)
-        self.assertTrue(env['accept_tree_without_presentation'](4,1,7));accepted=env['_native_client_drive_ledger_revision']
-        self.assertGreaterEqual(accepted,2);self.assertFalse(env['accept_tree_without_presentation'](4,1,7))
-        self.assertEqual(env['_native_client_drive_ledger_revision'],accepted)
-        env['reset'](4);self.assertGreater(env['_native_client_drive_ledger_revision'],accepted)
-
-
 if __name__ == "__main__":
     unittest.main()

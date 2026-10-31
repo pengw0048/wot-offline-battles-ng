@@ -38,7 +38,7 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     PlayerImpact&impact_;PlayerRam&ram_;PlayerFeedback feedback_;
     std::shared_ptr<stock_native_client_query::ProjectileTurrets>turrets_;
     NativeWorldConfig config_;SceneMotion motion_;LegacySupport legacy_;
-    LocalGeometry&local_geometry_;stock_native_bot_python::Ref sensor_;
+    LocalGeometry&local_geometry_;
     std::optional<std::array<Point,2>>geometry_region_;
     std::uint64_t geometry_stream_=0;
     std::optional<step::VerticalMemory>saved_memory_;
@@ -66,7 +66,7 @@ public:
         std::shared_ptr<stock_native_client_state::Actor>,PlayerDriver&,stock_native_world::NativeScene&,
         stock_native_world::Pipeline&,Ground&,Owner*,NativePeers&,PlayerContacts&,PublicationLedger&,
         PlayerImpact&,PlayerRam&,std::shared_ptr<stock_native_client_query::ProjectileTurrets>,NativeWorldConfig,
-        LocalGeometry&,_object*sensor);
+        LocalGeometry&);
     void frame(double now,std::optional<ID>motion_anchor={},double motion_local=0.);
     void environment(int drowned,int overturned,bool pending_damage){drown_level_=drowned;overturn_level_=overturned;damage_pending_=pending_damage;}
     void battleOver(bool value){battle_over_=value;}

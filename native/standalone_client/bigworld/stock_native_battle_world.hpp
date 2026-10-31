@@ -69,7 +69,7 @@ void retire(Battle& b);
 
 // The shared native destructible space. Local drive, Bot runtime, projectiles, queries and foliage use this
 // instead of creating their own registry/scene/backend/events; empty before openSpace or after retire.
-SceneAccess sceneAccess(Battle& b);
+SceneAccess sceneAccess(const Battle& b);
 // The worker Bot runtime's detached-turret sweep veto for native destruction (default: every sweep is allowed).
 void setTurretSweep(Battle& b, std::function<bool(const TurretSweep&)> veto);
 

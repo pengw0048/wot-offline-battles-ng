@@ -14,16 +14,12 @@
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_destructible_backend.hpp"
-#include "stock_native_world_snapshot.hpp"
 #include "stock_native_world_events.hpp"
 #include "stock_native_client_self_presentation.hpp"
 #include "stock_native_client_critical.hpp"
 #include "stock_native_battle_local.hpp"
+#include "stock_native_battle_world.hpp"
 namespace native_battle {
-namespace world {
-// Provided by the world subsystem: the destructibles sensor whose accepted ledger the visible world mirrors.
-PyObject* sensor(const Battle&);
-}
 namespace vehicles {
 // Provided by the vehicles subsystem: the accepted motion revision time (us) and the local clock it arrived at.
 std::optional<std::pair<std::int64_t,double>> poseMotionAnchor(const Battle&);
@@ -71,9 +67,10 @@ step::SuspensionDescriptor descriptor(PyObject*params){step::SuspensionDescripto
     return out;
 }
 struct NativeOwner {
-    BW::ClientSpacePtr space;world::Registry registry;stock_native_destructible::NativeBackend backend;
-    world::NativeScene scene;world::Pipeline pipeline;SceneGround ground;LocalGeometry local_geometry;
-    std::unique_ptr<p::Ref> sensor,authority;native_battle::Battle*battle=nullptr;
+    // The battle space's shared native world (world::sceneAccess); this owner keeps its own actor pipeline.
+    SceneAccess world_access;world::Registry& registry;stock_native_destructible::NativeBackend& backend;
+    world::NativeScene& scene;world::Pipeline pipeline;SceneGround ground;LocalGeometry local_geometry;
+    native_battle::Battle*battle=nullptr;
     std::unique_ptr<Owner> drive;std::unique_ptr<p::Ref> params;std::uint64_t generation=0;bool retired=false;
     StatusOwner statuses;
     std::unique_ptr<PlayerDriver> player;
@@ -89,50 +86,13 @@ struct NativeOwner {
     std::shared_ptr<const void>player_geometry;
     std::uint64_t full_frames=0,cold_projections=0;
     std::uint64_t mirrored_journal=0;
-    std::unique_ptr<world::WorldEvents> events;
-    std::optional<double> last_frame;
-    bool ledger_installed=false;std::array<std::int64_t,2> ledger_revision{};std::uint64_t ledger_refreshes=0,ledger_reuses=0;
-    std::uint64_t native_accepted_revision=0;
-    std::set<world::MaterialKey> native_destroyed;
-    NativeOwner(BW::ClientSpacePtr s,std::uint16_t flags,std::uint64_t gen):space(s),backend(s,registry,[](const world::TurretSweep&){return true;}),
-        scene(s,registry,backend),pipeline(registry,scene,flags),ground(pipeline),generation(gen){}
+    world::WorldEvents* events=nullptr;
+    NativeOwner(SceneAccess access,std::uint16_t flags,std::uint64_t gen):world_access(std::move(access)),registry(*world_access.registry),
+        backend(*world_access.backend),scene(*world_access.scene),pipeline(registry,scene,flags),ground(pipeline),generation(gen){events=world_access.events;}
     bool current(const native_battle::Battle&b)const{return !retired&&scene.current()&&b.generation==generation;}
-    void retire(){retired=true;actual.reset();scene.retire();backend.retire();if(Py_IsInitialized()&&battle)retireSelfPresentation(*battle);}
-    void syncLedger(){
-        // The existing visible adapter owns destruction and its presentation.
-        // Copy only its accepted raw ledger at a slice boundary. No per-ray
-        // producer, predicate, authority method or animator runs in Python.
-        const std::array<std::int64_t,2> revision{{p::integral(authority->get(),"_native_client_drive_ledger_revision",-1),p::integral(sensor->get(),"_native_client_drive_ledger_revision",-1)}};
-        if(revision[0]<0||revision[1]<0)throw p::Error("Native player ledger mutation counters were not installed");
-        const auto native_revision=backend.runtime().counters().accepted;
-        if(ledger_installed&&revision==ledger_revision&&native_revision==native_accepted_revision){++ledger_reuses;return;}
-        if(native_revision!=native_accepted_revision){for(const auto&event:backend.runtime().acceptedOrders())native_destroyed.insert({event.key.first,event.key.second,event.kind==world::Kind::Structure?event.material:-1});native_accepted_revision=native_revision;}
-        std::set<world::MaterialKey> broken,speculative;std::set<world::Key> trees;
-        auto state=p::value(authority->get(),"_state"),chunks=p::value(state.get(),"chunks");
-        if(!PyDict_Check(chunks.get()))throw p::Error("Native player accepted world ledger is unavailable");
-        Py_ssize_t cursor=0;PyObject*chunk=nullptr,*row=nullptr;
-        auto token=[&](PyObject*raw,std::int64_t chunk_id,bool with_chunk){
-            const auto size=p::size(raw);if(size!=(with_chunk?3:2))throw p::Error("Native player world ledger width is invalid");
-            auto first=p::item(raw,0),item=p::item(raw,with_chunk?1:0),material=p::item(raw,with_chunk?2:1);
-            const auto c=with_chunk?p::wide(first.get()):chunk_id,i=p::wide(item.get());
-            if(c<0||std::uint64_t(c)>0xffffffffULL||i<0||i>0xffff)throw p::Error("Native player world ledger identity is invalid");
-            return world::MaterialKey{std::uint32_t(c),std::uint32_t(i),material.get()==Py_None?-1:p::wide(material.get())};};
-        auto visit=[&](PyObject*raw,const auto&callback){if(!PySet_Check(raw)&&!PyFrozenSet_Check(raw))throw p::Error("Native player world ledger requires a raw set");
-            p::Ref iterator(PyObject_GetIter(raw));while(PyObject*item=PyIter_Next(iterator.get())){p::Ref value(item);callback(value.get());}if(PyErr_Occurred())throw p::Error("Native player world ledger iteration failed");};
-        while(PyDict_Next(chunks.get(),&cursor,&chunk,&row)){const auto id=p::wide(chunk);auto keys=p::value(row,"keys");if(keys.get()!=Py_None)visit(keys.get(),[&](PyObject*v){broken.insert(token(v,id,false));});}
-        auto pending=p::value(sensor->get(),"g_offh_destr_speculative");if(pending.get()!=Py_None)visit(pending.get(),[&](PyObject*v){speculative.insert(token(v,0,true));});
-        auto tree_state=p::value(sensor->get(),"g_offh_tree_state");
-        auto committed=[&](){auto value=p::value(tree_state.get(),"native_committed");return value.get()==Py_None?p::value(tree_state.get(),"felled"):p::retain(value.get());}();
-        if(committed.get()!=Py_None)visit(committed.get(),[&](PyObject*v){const auto key=visibleTreeKey(v);if(key&&!registry.isolated(*key)){trees.insert(*key);broken.insert({key->first,key->second,-1});}});
-        broken.insert(native_destroyed.begin(),native_destroyed.end());
-        if(registry.skin.destroyed!=broken||registry.skin.speculative!=speculative){registry.skin.destroyed=std::move(broken);registry.skin.speculative=std::move(speculative);++registry.generation;}
-        registry.skin.tree_instances.insert(trees.begin(),trees.end());
-        ledger_revision=revision;ledger_installed=true;++ledger_refreshes;
-    }
-    void bumpLedger(){for(auto*object:{authority->get(),sensor->get()})attribute(object,"_native_client_drive_ledger_revision",p::integer(p::integral(object,"_native_client_drive_ledger_revision",0)+1));}
-    void mirrorJournal(){if(registry.journal.empty()||registry.journal.back().sequence<=mirrored_journal)return;const auto first=std::upper_bound(registry.journal.begin(),registry.journal.end(),mirrored_journal,[](std::uint64_t sequence,const world::Event&event){return sequence<event.sequence;});bool changed=false;for(auto at=first;at!=registry.journal.end();++at){require(events&&events->mirrorOnly(at->destruction));mirrored_journal=at->sequence;changed=true;}if(changed){bumpLedger();syncLedger();}}
-    void frame(double now){if(!std::isfinite(now))throw p::Error("Native player world clock is invalid");syncLedger();
-        if(events){require(events->mappingChanged(now));backend.runtime().update(last_frame?std::max(0.,now-*last_frame):0.,now);require(events->synchronizeGeometry());}last_frame=now;}
+    // The shared scene/backend belong to the world space; this owner only stops using them.
+    void retire(){retired=true;actual.reset();if(Py_IsInitialized()&&battle)retireSelfPresentation(*battle);}
+    void mirrorJournal(){if(registry.journal.empty()||registry.journal.back().sequence<=mirrored_journal)return;const auto first=std::upper_bound(registry.journal.begin(),registry.journal.end(),mirrored_journal,[](std::uint64_t sequence,const world::Event&event){return sequence<event.sequence;});bool changed=false;for(auto at=first;at!=registry.journal.end();++at){require(events&&events->mirrorOnly(at->destruction));mirrored_journal=at->sequence;changed=true;}(void)changed;}
     void installParams(PyObject*value){if(params&&params->get()==value)return;
         drive.reset(new Owner(descriptor(value)));params.reset(new p::Ref(p::retain(value)));}
     void installActual(native_battle::Battle&battle,PyObject*entity,const std::shared_ptr<stock_native_client_state::State>&state){
@@ -149,7 +109,7 @@ struct NativeOwner {
         {step::InternalLayout layout;if(!step::load_internal_layout(resource.get(),layout))throw p::Error("Native player internal geometry installation failed");auto impact_config=readPlayerImpactConfig(entity);if(impact)impact->metadata(std::move(impact_config),std::move(layout));else impact=std::make_unique<PlayerImpact>(publication,std::move(impact_config),std::move(layout));}
         if(!ram)ram=std::make_unique<PlayerRam>(publication,state,found->second,nativeRamGeometry());
         auto config=readNativeWorldConfig(battle,entity,player->descriptor());auto turrets=stock_native_client_query::projectileTurrets(battle);
-        actual=std::make_unique<NativePlayerWorld>(battle,entity,state,found->second,*player,scene,pipeline,ground,drive.get(),*peers,player_contacts,publication,*impact,*ram,std::move(turrets),std::move(config),local_geometry,sensor->get());
+        actual=std::make_unique<NativePlayerWorld>(battle,entity,state,found->second,*player,scene,pipeline,ground,drive.get(),*peers,player_contacts,publication,*impact,*ram,std::move(turrets),std::move(config),local_geometry);
         player_entity=std::make_unique<p::Ref>(p::retain(entity));player_physics=std::make_unique<p::Ref>(p::retain(physics.get()));player_resource=std::make_unique<p::Ref>(p::retain(resource.get()));player_descriptor_revision=found->second->descriptor_revision;player_geometry=found->second->geometry;
     }
 };
@@ -160,7 +120,7 @@ void publishPose(native_battle::LocalVehicle&local,const PlayerState&s){local.po
 // The latest accepted motion revision time (us) and the local clock it was received at, from the replica.
 std::optional<std::pair<ID,double>> motionAnchor(const native_battle::Battle&b){return native_battle::vehicles::poseMotionAnchor(b);}
 }
-SceneAccess sceneAccess(const native_battle::Battle&b){auto owner=owned(b);return {owner,&owner->registry,&owner->scene,&owner->pipeline,&owner->backend,owner->events.get()};}
+SceneAccess sceneAccess(const native_battle::Battle&b){auto access=native_battle::world::sceneAccess(b);if(!access.registry)throw p::Error("Native client scene owner is unavailable");return access;}
 void synchronizeStatus(const native_battle::Battle&b,double now){
     auto owner=owned(b);const auto anchor=native_battle::projectiles::serverClockAnchor(b);std::optional<double>estimated;if(anchor)estimated=anchor->first+std::max(0.,now-anchor->second)*1000.;owner->statuses.synchronize(*b.vehicles,now,estimated);
 }
@@ -174,7 +134,7 @@ void installPlayer(native_battle::Battle&b,PyObject*entity,PyObject*params){
     auto metadata=readPlayerDescriptor(b,entity,params);
     if(owner->player)owner->player->descriptor(std::move(metadata));else{owner->player=std::make_unique<PlayerDriver>(std::move(metadata),readPlayerInitialState(b,*actor));owner->player->controls()=readPlayerInitialControls(b);const auto&s=owner->player->state();const auto&c=owner->player->controls();require(state.updateLocal({s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll,c.aim_yaw,c.gun_pitch},{},s.speed));}
 }
-void mirrorDestruction(const native_battle::Battle&b,const world::Destruction&event){auto owner=owned(b);if(!owner->events||!owner->events->mirrorOnly(event))throw p::Error("Native accepted destruction mirror failed");owner->bumpLedger();owner->syncLedger();}
+void mirrorDestruction(const native_battle::Battle&b,const world::Destruction&event){auto owner=owned(b);if(!owner->events||!owner->events->mirrorOnly(event))throw p::Error("Native accepted destruction mirror failed");}
 }
 
 namespace native_battle {namespace local {
@@ -183,16 +143,9 @@ namespace cs=stock_native_client_state;
 // The visible player's native world owner over the battle's space, created before the first frame.
 void prepare(Battle&b){
     if(b.worker||!b.local||dr::existing(b))return;
-    const auto id=p::integral(b.engine.avatar.get(),"spaceID");if(id<=0||id>2147483647)throw p::Error("Native player space identity is invalid");
-    auto space=BW::SpaceManager::instance().space(BW::SpaceID(id));if(!space||space->cleared())throw p::Error("Native player space is unavailable");
+    auto access=world::sceneAccess(b);if(!access.registry)throw p::Error("Native player space is unavailable");
     // TRIANGLE_NOCOLLIDE | TRIANGLE_WATER (collision_flags.VEHICLE_SKIP_FLAGS).
-    auto owner=std::make_shared<dr::NativeOwner>(space,std::uint16_t(0x10|0x40),b.generation);owner->battle=&b;
-    PyObject*sensor=native_battle::world::sensor(b);owner->sensor.reset(new p::Ref(p::retain(sensor)));
-    owner->authority.reset(new p::Ref(p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.destructibles_authority"))));
-    p::Ref builder(PyImport_ImportModule("gui.mods.offline_lan_0922.stock_native_world_snapshot"));p::Ref build_args(PyTuple_Pack(1,sensor));auto dto=p::call(builder.get(),"build",build_args.get());
-    owner->local_geometry.seedIsolation(sensor);
-    dr::require(stock_native_world::installWorldSnapshot(dto.get(),owner->registry,owner->scene,owner->backend));owner->syncLedger();
-    dr::require(owner->backend.installPresenter());owner->events=std::make_unique<stock_native_world::WorldEvents>(owner->registry,owner->backend,owner->scene,std::uint32_t(id));dr::require(owner->events->install(b.engine.shell.get()));
+    auto owner=std::make_shared<dr::NativeOwner>(std::move(access),std::uint16_t(0x10|0x40),b.generation);owner->battle=&b;
     b.local->drive=owner;
 }
 void retire(Battle&b){
@@ -200,14 +153,13 @@ void retire(Battle&b){
     stock_native_client_survival::retire(b);stock_native_client_critical::close(b);
     auto owner=std::static_pointer_cast<dr::NativeOwner>(b.local->drive);if(owner){try{owner->retire();}catch(const std::exception&){PyErr_Clear();}}b.local->drive.reset();
 }
-void worldFrame(Battle&b,double now){auto owner=dr::existing(b);if(owner)owner->frame(now);}
-bool ingress(Battle&b,const Value&event,double now){auto owner=dr::owned(b);if(!owner->events)throw p::Error("Native visible world events are not installed");p::Ref raw(cs::write(event));const bool accepted=owner->events->ingress(raw.get(),now);if(!accepted&&PyErr_Occurred())throw p::Error("Native canonical destruction was not applied");owner->bumpLedger();owner->syncLedger();return accepted;}
+bool ingress(Battle&b,const Value&event,double now){auto owner=dr::owned(b);if(!owner->events)throw p::Error("Native visible world events are not installed");p::Ref raw(cs::write(event));const bool accepted=owner->events->ingress(raw.get(),now);if(!accepted&&PyErr_Occurred())throw p::Error("Native canonical destruction was not applied");return accepted;}
 void died(Battle&b){if(b.replay)return;auto owner=dr::existing(b);if(owner&&owner->player)owner->player->state().speed=0.;if(b.local)b.local->speed=0.;}
 // One visible player slice: world ingress, status, the native driver and its reliable input publications.
 void drive(Battle&b,double dt){
     auto owner=dr::owned(b);auto state=b.vehicles;const auto key="player:"+std::to_string(state->local_player_id);const auto found=state->actors.find(key);
     if(found==state->actors.end()||!found->second||!found->second->has_current)return;auto entity=dr::engineEntity(found->second->engine_id);if(entity.get()==Py_None)return;
-    const double now=b.clock();owner->frame(now);owner->installActual(b,entity.get(),state);owner->peer_installer.synchronize(b,*state,*owner->peers);dr::synchronizeStatus(b,now);
+    const double now=b.clock();owner->installActual(b,entity.get(),state);owner->peer_installer.synchronize(b,*state,*owner->peers);dr::synchronizeStatus(b,now);
     const auto anchor=dr::motionAnchor(b);owner->actual->frame(now,anchor?std::optional<dr::ID>{anchor->first}:std::nullopt,anchor?anchor->second:now);
     const auto levels=stock_native_client_survival::levels(b);owner->actual->environment(levels[0],levels[1],stock_native_client_critical::report(b).resolved().kind!=Value::Kind::Null);owner->actual->battleOver(b.result.resolved().kind!=Value::Kind::Null);
     owner->player->controls().autorotation=stock_native_client_input::autorotationEnabled(b);const auto publication=owner->player->advance(*owner->actual,dt);++owner->full_frames;owner->mirrorJournal();
@@ -220,8 +172,8 @@ bool acknowledgeContacts(Battle&b,const Value&snapshot,bool destructible){try{au
         if(!destructible)return owner->publication.acknowledgeRam(dr::ID(row.get("ram_contact_admitted_seq").numeric()),dr::ID(row.get("ram_contact_resolved_seq").numeric()));
         const auto vector=[&](const char*name){std::vector<dr::ID>out;for(const auto&value:row.get(name).resolved().array)out.push_back(dr::ID(value.numeric()));return out;};
         const auto rejected=owner->publication.acknowledgeDestructible(dr::ID(row.get("destructible_contact_admitted_seq").numeric()),dr::ID(row.get("destructible_contact_resolved_seq").numeric()),vector("destructible_contact_resolved_seqs"),vector("destructible_contact_rejected_seqs"));
-        auto predicted=p::value(owner->sensor->get(),"g_offh_destr_speculative");for(const auto&receipt:rejected)for(const auto&token:receipt.get("token").resolved().array){const auto&fields=token.resolved().array;if(fields.size()!=3)continue;const auto chunk=std::uint32_t(fields[0].numeric()),item=std::uint32_t(fields[1].numeric());const auto&material=fields[2].resolved();const dr::ID kind=material.kind==Value::Kind::Null?-1:dr::ID(material.numeric());owner->registry.skin.speculative.erase({chunk,item,kind});if(predicted.get()!=Py_None){auto mat=kind==-1?p::retain(Py_None):p::integer(kind);p::Ref k(Py_BuildValue("(IIO)",chunk,item,mat.get()));if(PySet_Discard(predicted.get(),k.get())<0)throw p::Error("Native rejected local prediction could not retire");}}
-        if(!rejected.empty()){owner->bumpLedger();++owner->registry.generation;owner->syncLedger();}return true;
+        for(const auto&receipt:rejected)for(const auto&token:receipt.get("token").resolved().array){const auto&fields=token.resolved().array;if(fields.size()!=3)continue;const auto chunk=std::uint32_t(fields[0].numeric()),item=std::uint32_t(fields[1].numeric());const auto&material=fields[2].resolved();const dr::ID kind=material.kind==Value::Kind::Null?-1:dr::ID(material.numeric());owner->registry.skin.speculative.erase({chunk,item,kind});}
+        if(!rejected.empty())++owner->registry.generation;return true;
     }return false;
 }catch(const std::exception&){PyErr_Clear();return false;}}
 bool observeFeedback(Battle&b,PyObject*first,PyObject*second,double now){try{auto owner=dr::existing(b);if(!owner||!owner->actual)return false;auto a=p::value(first,"filter"),c=p::value(second,"filter"),av=p::value(a.get(),"velocity"),bv=p::value(c.get(),"velocity");BW::Vector3 va,vb;if(BW::Script::setData(av.get(),va)!=0||BW::Script::setData(bv.get(),vb)!=0)throw p::Error("Native observed contact velocity unavailable");owner->actual->observeFeedback(p::integral(first,"id"),p::integral(second,"id"),{va.x,va.y,va.z},{vb.x,vb.y,vb.z},now);return true;}catch(const std::exception&){PyErr_Clear();return false;}}
