@@ -1,10 +1,12 @@
 #pragma once
 // Every subsystem the native battle owns.
 #include "stock_native_battle_bots.hpp"
+#include "stock_native_battle_compat.hpp"
 #include "stock_native_battle_critical.hpp"
 #include "stock_native_battle_events.hpp"
 #include "stock_native_battle_feedback.hpp"
 #include "stock_native_battle_local.hpp"
+#include "stock_native_battle_params.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_remote.hpp"
 #include "stock_native_battle_startup.hpp"
