@@ -4,13 +4,15 @@
 
 namespace {
 LONG CALLBACK traceAccessViolation(EXCEPTION_POINTERS* info) {
-    static volatile LONG reported = 0;
-    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || InterlockedIncrement(&reported) > 3)
-        return EXCEPTION_CONTINUE_SEARCH;
+    static volatile LONG reported = 0, thrown = 0;
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    // 0xE06D7363 is an MSVC C++ throw: the first ones locate native battle failures that carry no source position.
+    if (code == 0xE06D7363) { if (InterlockedIncrement(&thrown) > 400) return EXCEPTION_CONTINUE_SEARCH; }
+    else if (code != EXCEPTION_ACCESS_VIOLATION || InterlockedIncrement(&reported) > 3) return EXCEPTION_CONTINUE_SEARCH;
     const CONTEXT* c = info->ContextRecord;
     const DWORD image = DWORD(GetModuleHandle(nullptr));
     char line[1024];
-    int used = _snprintf_s(line, sizeof(line), _TRUNCATE, "CRASH_TRACE base=%08lx eip=%08lx esp=%08lx ebp=%08lx frames=", image, c->Eip, c->Esp, c->Ebp);
+    int used = _snprintf_s(line, sizeof(line), _TRUNCATE, "%s base=%08lx eip=%08lx esp=%08lx ebp=%08lx frames=", code == 0xE06D7363 ? "THROW_TRACE" : "CRASH_TRACE", image, c->Eip, c->Esp, c->Ebp);
     DWORD frame = c->Ebp;
     for (int i = 0; i < 32 && frame && !(frame & 3) && used > 0 && used < int(sizeof(line)) - 12; ++i) {
         if (IsBadReadPtr(reinterpret_cast<const void*>(frame), 8)) break;
@@ -20,6 +22,7 @@ LONG CALLBACK traceAccessViolation(EXCEPTION_POINTERS* info) {
         frame = slots[0];
     }
     ERROR_MSG("%s\n", line);
+    if (code == 0xE06D7363) return EXCEPTION_CONTINUE_SEARCH;
     // FPO frames break the EBP chain: also list stack words that point into this image.
     const auto* base = reinterpret_cast<const BYTE*>(GetModuleHandle(nullptr));
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
