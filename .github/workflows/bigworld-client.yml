@@ -61,11 +61,11 @@ jobs:
           $env:WWISE_DEST = Join-Path $PWD "wwise-sdk"
           New-Item -ItemType Directory -Path $env:WWISE_DEST | Out-Null
           @'
-import os, sys, tarfile
-kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
-with tarfile.open(os.environ["WWISE_ARCHIVE"], "r:xz") as archive:
-    archive.extractall(os.environ["WWISE_DEST"], **kwargs)
-'@ | py -3 -
+          import os, sys, tarfile
+          kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+          with tarfile.open(os.environ["WWISE_ARCHIVE"], "r:xz") as archive:
+              archive.extractall(os.environ["WWISE_DEST"], **kwargs)
+          '@ | py -3 -
           if ($LASTEXITCODE -ne 0) { throw "The licensed Wwise SDK archive could not be extracted." }
       - name: Select the licensed Wwise SDK
         if: ${{ !inputs.client_build_run }}
