@@ -132,7 +132,8 @@ std::int64_t marksOnGun(Battle& b, const Value& raw) {
 
 // BattleRuntime._create_remote(event): one remote vehicle entity for a replica create event.
 void create(Battle& b, Actor& v, const Value& event) {
-    if (v.presented.remote || v.engine_id) return;
+    // The local player is presented by its own Vehicle (installLocal), never by a remote one.
+    if (v.local || v.key == "player:" + std::to_string(b.local_player) || v.presented.remote || v.engine_id) return;
     Value state = field(event, "state");
     const Value initial = has(event, "initial_state") ? field(event, "initial_state") : state;
     if (!has(state, "team") || !has(state, "slot")) return;
