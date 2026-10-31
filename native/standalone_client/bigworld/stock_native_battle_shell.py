@@ -156,3 +156,49 @@ def battle(source):
     if 'class BattleRuntime(' not in source or 'g_battle_runtime = BattleRuntime()' not in source:
         raise ValueError('The pinned battle runtime seam changed')
     return SHELL
+
+
+WORKER_SHELL = '''"""Thin glue between bootstrap and the native hidden-worker session (offline_native_battle)."""
+
+import offline_native_battle as _native
+
+
+class WorkerSession(object):
+    """Forward bootstrap's worker session calls to the native session owner."""
+
+    def __init__(self, config, lobby_ready=None, callback=None, cancel_callback=None, bigworld=None):
+        _native.worker_session_install(dict(config or {}), lobby_ready, bigworld)
+
+    def start(self):
+        return _native.worker_session_start()
+
+    def stop(self, show_login=False, restore_account=False, release_join=False):
+        _native.worker_session_stop(int(bool(restore_account)))
+'''
+
+
+def worker(source):
+    """Return the replacement authority_worker module; the pinned source is not used."""
+    del source
+    return WORKER_SHELL
+
+
+ENGINE_AUDIO_SHELL = '''"""Bootstrap's engine audio hook: the native relay owns audition assembly."""
+
+import offline_native_battle as _native
+
+
+def install():
+    return _native.engine_audio_install()
+
+
+def uninstall():
+    _native.engine_audio_uninstall()
+'''
+
+
+def engine_audio(source):
+    """Return the replacement engine_audio module; the pinned source is not used."""
+    if 'def install(' not in source or 'def uninstall(' not in source:
+        raise ValueError('The pinned engine audio seam changed')
+    return ENGINE_AUDIO_SHELL

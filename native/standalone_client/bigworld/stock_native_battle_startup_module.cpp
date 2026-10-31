@@ -8,6 +8,8 @@
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_visibility.hpp"
 #include "stock_native_battle_world.hpp"
+#include "stock_native_battle_bots.hpp"
+#include "stock_native_battle_remote.hpp"
 
 namespace native_battle {
 namespace startup {
@@ -95,6 +97,8 @@ PyObject* chatAckPy(PyObject*, PyObject* args) { return message(args, [](Battle&
 PyObject* commandPy(PyObject*, PyObject* args) { return message(args, [](Battle& b, const Value& v) { return teamCommand(b, v); }); }
 PyObject* commandAckPy(PyObject*, PyObject* args) { return message(args, [](Battle& b, const Value& v) { return teamCommandAck(b, v); }); }
 PyObject* commandTerminalPy(PyObject*, PyObject* args) { return message(args, [](Battle& b, const Value& v) { return teamCommandTerminal(b, v); }); }
+PyObject* engineAudioInstallPy(PyObject*, PyObject*) { return entry([&] { return boolean(remote::installEngineAudio()); }); }
+PyObject* engineAudioUninstallPy(PyObject*, PyObject*) { return entry([&] { remote::uninstallEngineAudio(); Py_RETURN_NONE; }); }
 PyObject* replayLocalPy(PyObject*, PyObject* args) {
     PyObject* raw;
     if (!PyArg_ParseTuple(args, "O", &raw)) return nullptr;
@@ -122,6 +126,8 @@ PyMethodDef methods[] = {
     {"on_team_command_ack", commandAckPy, METH_VARARGS, nullptr},
     {"on_team_command_terminal", commandTerminalPy, METH_VARARGS, nullptr},
     {"apply_replay_local", replayLocalPy, METH_VARARGS, nullptr},
+    {"engine_audio_install", engineAudioInstallPy, METH_NOARGS, "Wrap stock audition assembly with the native engine audio relay."},
+    {"engine_audio_uninstall", engineAudioUninstallPy, METH_NOARGS, "Restore stock audition assembly."},
     {nullptr, nullptr, 0, nullptr}};
 }
 
@@ -135,7 +141,13 @@ class NativeBattleModule final : public BW::Script::InitTimeJob {
 public:
     NativeBattleModule() : BW::Script::InitTimeJob(1) {}
     void init() override {
-        if (!Py_InitModule("offline_native_battle", native_battle::startup::moduleMethods())) {
+        PyObject* module = Py_InitModule("offline_native_battle", native_battle::startup::moduleMethods());
+        // The hidden worker's session entry points live in the same module.
+        for (PyMethodDef* def = module ? native_battle::bots::methods() : nullptr; def && def->ml_name; ++def) {
+            PyObject* function = PyCFunction_NewEx(def, nullptr, nullptr);
+            if (!function || PyModule_AddObject(module, def->ml_name, function) < 0) { module = nullptr; break; }
+        }
+        if (!module) {
             PyErr_Print();
             CRITICAL_MSG("Native battle module initialization failed\n");
         }

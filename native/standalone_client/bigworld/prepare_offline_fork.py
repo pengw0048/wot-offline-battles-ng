@@ -301,6 +301,8 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('destructibles_authority.py')] = (
     lambda source: drive_bindings.authority(
         query_bindings.ADAPTERS['destructibles_authority.py'](source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = battle_shell.battle
+ADAPTERS[NATIVE_MATH_PATH.with_name('authority_worker.py')] = battle_shell.worker
+ADAPTERS[NATIVE_MATH_PATH.with_name('engine_audio.py')] = battle_shell.engine_audio
 ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_delta.py')] = (
     lambda source: transport_bindings.delta(snapshot_bindings.delta(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('lan_client.py')] = (
