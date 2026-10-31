@@ -8,6 +8,7 @@
 #include <Python.h>
 #endif
 #include "stock_native_bot_resource_lifecycle.hpp"
+#include "stock_native_battle.hpp"
 #include <stdexcept>
 #include <limits>
 #include <cstring>
@@ -52,10 +53,12 @@ void modelTokens(PyObject* object,ResourceStamp& stamp){
 #endif
 }
 }
-PyObject* readNativeEntity(PyObject* battle,std::int64_t engine_id){try{
-    Ref factory(value(battle,"_remote_factory"));Ref vehicles(value(factory.p,"_vehicles"));
-    if(PyDict_Check(vehicles.p)){Ref key(PyLong_FromLongLong(engine_id));auto entity=PyDict_GetItem(vehicles.p,key.p);
-        if(entity&&entity!=Py_None){Py_INCREF(entity);return entity;}}
+PyObject* readNativeEntity(PyObject*,std::int64_t engine_id){try{
+    // The current battle's remote factory owns presented remote vehicles; BigWorld owns the rest.
+    auto* battle=native_battle::current();
+    if(battle&&battle->engine.remote_factory){Ref vehicles(value(battle->engine.remote_factory.get(),"_vehicles"));
+        if(PyDict_Check(vehicles.p)){Ref key(PyLong_FromLongLong(engine_id));auto entity=PyDict_GetItem(vehicles.p,key.p);
+            if(entity&&entity!=Py_None){Py_INCREF(entity);return entity;}}}
 #if !defined(WOT_RESOURCE_LIFECYCLE_HOST_BUILD)
     auto* control=BW::ConnectionControl::pInstance();
     auto* entity=control&&engine_id>=std::numeric_limits<BW::EntityID>::min()&&
@@ -72,9 +75,10 @@ PyObject* readNativeEntityField(PyObject* battle,PyObject* entity,const char* na
         // constants.SPECIAL_VEHICLE_HEALTH.IS_TURRET_DETACHED in #1513.
         return PyBool_FromLong(health<0&&(health|-13L)==-13L&&plainFlag(confirmed.p));
     }
-    if(battle&&entity&&entity!=Py_None&&(!std::strcmp(name,"health")||!std::strcmp(name,"isCrewActive")||
+    auto* current=native_battle::current();
+    if(current&&current->engine.compatibility&&entity&&entity!=Py_None&&(!std::strcmp(name,"health")||!std::strcmp(name,"isCrewActive")||
         !std::strcmp(name,"position")||!std::strcmp(name,"yaw")||!std::strcmp(name,"matrix")||!std::strcmp(name,"speedInfo"))){
-        Ref runtime(value(battle,"_runtime")),compatibility(value(runtime.p,"compatibility")),overlays(value(compatibility.p,"_vehicle_property_overlays"));
+        Ref overlays(value(current->engine.compatibility.get(),"_vehicle_property_overlays"));
         if(PyDict_Check(overlays.p)){Ref key(PyLong_FromVoidPtr(entity));auto* overlay=PyDict_GetItem(overlays.p,key.p);
             if(overlay&&PyDict_Check(overlay)){auto* result=PyDict_GetItemString(overlay,name);if(result){Py_INCREF(result);return result;}}}
     }

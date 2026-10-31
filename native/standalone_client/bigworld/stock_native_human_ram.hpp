@@ -3,6 +3,7 @@
 #include "offline_simulation_types.h"
 #include <string>
 struct _object;
+namespace native_battle { struct Battle; }
 namespace stock_native_human_ram {
 using ID=std::int64_t;
 using Body=stock_native_bot_armor::Body;
@@ -30,8 +31,8 @@ public:
         if(!result)return {};return Plates{result->value,result->tracks};
     }
 };
-// Reads accepted plain-data requests and record/entity readiness, then invokes
+// Reads the latest snapshot's plain-data requests and vehicle/entity readiness, then invokes
 // only typed native geometry. Bad requests are isolated to their own row;
 // missing resources omit a reply so the server retains the exact substep.
-_object* results(_object* battle,World&,std::vector<std::string>* errors=nullptr);
+_object* results(native_battle::Battle&,World&,std::vector<std::string>* errors=nullptr);
 }

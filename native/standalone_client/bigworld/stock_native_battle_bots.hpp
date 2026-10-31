@@ -3,14 +3,40 @@
 #include "stock_native_battle.hpp"
 #include <array>
 
+namespace stock_native_bot { struct Owner; }
+
 namespace native_battle {
 struct BotAuthority {
     // The Python BotRuntime still builds the round manifest and holds the per-Bot rows the native
-    // owner's snapshot bridges read; everything around it is here.
+    // owner's cold installation reads; everything around it is here.
     Object runtime;
-    Object native;          // offline_bot_runtime_native
-    Object owner;           // the native simulation owner, created when this client becomes the authority
-    Object last_snapshot;   // the latest accepted snapshot message, for an authority takeover
+    // The native simulation owner, created when this client becomes the authority. Callers hold a
+    // copy across any stock call that can re-enter and retire it.
+    std::shared_ptr<stock_native_bot::Owner> owner;
+    Object last_snapshot;   // the latest accepted snapshot message: human input, ram probes, takeover
+    // BotRuntime facts adopted after each battle_start; no frame reads the BotRuntime.
+    std::optional<std::int64_t> authority_id;
+    bool finished = false, adapter = false;
+    Value runtime_round;
+    std::int64_t native_generation = 0;
+    Object pending_manifest;   // the frozen unsent manifest of this round and authority
+    // Each Bot's static collision profile (mass, collision_shape, ram_profile, vehicle, team).
+    std::map<std::int64_t, Value> profiles;
+    // Player water sampling clock and sequence; they outlive an owner replaced by an authority change.
+    double player_environment_check = 0.;
+    std::int64_t player_environment_seq = 0;
+    // Worker pose presentation per Bot: the lifecycle it belongs to and the writes already made.
+    struct PresentedBot {
+        const Actor* vehicle = nullptr;
+        std::int64_t engine_id = 0;
+        std::uint64_t generation = 0;
+        std::optional<std::array<double, 3>> clock;           // time, yaw, and
+        std::optional<std::array<double, 6>> sample;          // the presented location and rotation
+        std::optional<std::array<double, 11>> pose;           // position, rotation, speed, epoch, alive, siege
+        std::optional<std::array<double, 5>> aim;
+        std::optional<std::array<double, 9>> projectile;
+    };
+    std::map<std::int64_t, PresentedBot> presented;
     // One manifest enqueue tenure: generation, round, authority id, authority epoch.
     double next_manifest_retry = 0., manifest_retry_deadline = 0.;
     std::optional<std::array<Value, 4>> manifest_retry_identity;
@@ -26,6 +52,9 @@ struct BotAuthority {
 };
 
 namespace bots {
+// Creates the round's BotRuntime (startup::createBotRuntime), runs its battle_start, materializes
+// the authority manifest's Bots and sends its opening messages.
+void start(Battle& b);
 // Startup installs the round's BotRuntime; retirement closes the native owner.
 void install(Battle& b, PyObject* runtime);
 void retire(Battle& b);
@@ -44,6 +73,8 @@ void workerProbe(Battle& b);
 // Remote Bot belts and engine mode for a vehicle presented outside the native replica, from its
 // presented yaw; false when the 20 Hz feed is not due or the stock update refused it.
 bool tracks(Battle& b, Actor& vehicle, double yaw, double now);
+// The same feed with a caller-measured turn rate (rad/s).
+bool tracksWithTurn(Battle& b, Actor& vehicle, double turn, double now);
 // Measures a presented yaw's turn rate for the belt feed.
 double rememberTrackTurn(Actor& vehicle, double yaw, double now);
 
@@ -67,6 +98,22 @@ std::size_t prewarm(Battle& b, double now);
 std::size_t prewarmPlayers(Battle& b, double now);
 // The worker's native water observations (the pinned _publish_player_environment).
 bool playerEnvironment(Battle& b, double dt, double now);
+// Value-typed entry points the other subsystems call.
+// The worker's render callback started (progress counter).
+void frameStarted(Battle& b, double rule_dt, double raw_dt);
+void applySnapshot(Battle& b, const Value& snapshot);
+void reconcileAuthority(Battle& b, const Value& player_id);
+bool worldIngress(Battle& b, const Value& event);
+// nullopt when no native owner handles detached turrets yet.
+std::optional<bool> detachedIngress(Battle& b, const Value& message);
+bool detachedQueue(Battle& b, Actor& vehicle, PyObject* entity, const Value* state);
+// Advances native detached turrets; returns the advanced row count.
+std::size_t detachedAdvance(Battle& b, double now);
+void prewarmBots(Battle& b, double now);
+// Resolves the players' destructible contacts and sends each verdict; returns the sent count.
+std::size_t playerContacts(Battle& b, const Value& players, double now);
+// A Bot's static collision profile, or null before its manifest.
+const Value* currentState(const Battle& b, std::int64_t bot_id);
 // Every live record entered the native space (the worker acquires draw-off after this).
 bool readyForDrawOff(const Battle& b);
 // One worker PERF row: fixed-control debt and Bot diagnostics.

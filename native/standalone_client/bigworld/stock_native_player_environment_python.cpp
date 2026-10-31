@@ -2,6 +2,7 @@
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
+#include "stock_native_battle.hpp"
 #include <algorithm>
 #include <cmath>
 namespace stock_native_player_environment {
@@ -25,40 +26,39 @@ bool readMetadata(PyObject* descriptor,Metadata& output){try{
  for(const char* name:devices){const auto pool=stock_native_bot_descriptor::devicePool(descriptor,name);if(pool.maximum)m.maxima[name]=*pool.maximum;}
  m.crew=drowningRoster(descriptor);output=std::move(m);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool readPlayer(PyObject* record,PyObject* entity,const Metadata& metadata,Player& output,PyObject* battle){try{
- const auto entityValue=[&](const char* name){return p::Ref(stock_native_bot::readNativeEntityField(battle,entity,name));};
- if(!record||!PyDict_Check(record)||!entity||entity==Py_None)return false;auto kind=p::value(record,"kind"),local=p::value(record,"local"),state=p::value(record,"state");
- if(p::string(kind.get())!="player"||p::flag(local.get())||!PyDict_Check(state.get())||!p::truth(state.get(),"alive",true)||p::numeric(state.get(),"health")<=0.)return false;
- Player row;row.native_remote=p::truth(record,"native_remote");auto siege=entityValue("siegeState");row.siege_state=siege.get()==Py_None?0:int(p::wide(siege.get()));row.id=p::integral(record,"network_id");if(row.id<=0)return false;row.input_sequence=std::max<std::int64_t>(0,p::integral(state.get(),"input_seq"));row.descriptor=metadata;
- auto snapshot=p::value(record,"projectile_collision_pose");auto source=PyDict_Check(snapshot.get())?snapshot.get():state.get();
- bool xyz=true;for(const char*k:{"x","y","z"})if(!p::field(source,k))xyz=false;
- if(xyz){row.pose.position={p::numeric(source,"x"),p::numeric(source,"y"),p::numeric(source,"z")};}
- else if(p::field(state.get(),"x")&&p::field(state.get(),"y")&&p::field(state.get(),"z")){row.pose.position={p::numeric(state.get(),"x"),p::numeric(state.get(),"y"),p::numeric(state.get(),"z")};}
+bool readPlayer(const native_battle::Actor& record,PyObject* entity,const Metadata& metadata,Player& output){try{
+ using native_battle::Value;
+ const auto entityValue=[&](const char* name){return p::Ref(stock_native_bot::readNativeEntityField(nullptr,entity,name));};
+ if(!entity||entity==Py_None)return false;const Value& state=record.state.resolved();
+ if(record.kind!="player"||record.local||state.kind!=Value::Kind::Object||!state.get("alive").truth(true)||state.get("health").numeric()<=0.)return false;
+ Player row;row.native_remote=record.native_remote;auto siege=entityValue("siegeState");row.siege_state=siege.get()==Py_None?0:int(p::wide(siege.get()));row.id=record.id;if(row.id<=0)return false;row.input_sequence=std::max<std::int64_t>(0,std::int64_t(state.get("input_seq").numeric()));row.descriptor=metadata;
+ const Value& snapshot=record.presented.collision_pose.resolved();const Value& source=snapshot.kind==Value::Kind::Object?snapshot:state;
+ const auto has=[](const Value& v,const char* k){return v.object.count(k)!=0;};
+ if(has(source,"x")&&has(source,"y")&&has(source,"z")){row.pose.position={source.get("x").numeric(),source.get("y").numeric(),source.get("z").numeric()};}
+ else if(has(state,"x")&&has(state,"y")&&has(state,"z")){row.pose.position={state.get("x").numeric(),state.get("y").numeric(),state.get("z").numeric()};}
  else {auto pos=entityValue("position");row.pose.position=point(pos.get());}
- row.pose.yaw=p::numeric(source,"yaw");row.pose.pitch=p::numeric(source,"pitch");row.pose.roll=p::numeric(source,"roll");
+ row.pose.yaw=source.get("yaw").numeric();row.pose.pitch=source.get("pitch").numeric();row.pose.roll=source.get("roll").numeric();
  auto hp=entityValue("devices_hp"),destroyed=entityValue("_destroyed_devices"),critical=entityValue("_critical_devices"),crew=entityValue("_crew_ko");
  auto dead=names(destroyed.get()),damaged=names(critical.get());row.critical.crew_ko=names(crew.get());row.critical.fire=p::flag(entityValue("is_on_fire").get());row.critical.ammo_rack_death=p::flag(entityValue("_ammo_rack_death").get());
  if(hp.get()!=Py_None){if(!PyDict_Check(hp.get()))throw p::Error("Player device HP is invalid");Py_ssize_t i=0;PyObject *key=nullptr,*v=nullptr;while(PyDict_Next(hp.get(),&i,&key,&v)){auto name=p::string(key);auto& d=row.critical.devices[name];d.hp=p::scalar(v);const auto maximum=metadata.maxima.find(name);if(maximum!=metadata.maxima.end())d.maximum=maximum->second;}}
  for(const auto& n:dead)row.critical.devices[n].destroyed=true;for(const auto& n:damaged)if(!dead.count(n))row.critical.devices[n].critical=true;
  output=std::move(row);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
-bool readAndAdvance(PyObject* battle,double dt,bool authority,Owner& owner,World& world,
+bool readAndAdvance(native_battle::Battle& battle,double dt,bool authority,Owner& owner,World& world,
  MetadataCache& cache,std::optional<Batch>& output){try{
  if(!owner.willSample(dt,authority)){output=owner.advance(dt,authority,{},world);return true;}
- auto records=p::value(battle,"_records");if(!PyDict_Check(records.get()))throw p::Error("Player environment records invalid");
- std::vector<Player> players;std::set<std::int64_t> present;Py_ssize_t cursor=0;PyObject* key=nullptr,*record=nullptr;
- while(PyDict_Next(records.get(),&cursor,&key,&record)){
-  if(!PyDict_Check(record))continue;
-  try {auto kind=p::value(record,"kind");if(p::string(kind.get())!="player"||p::truth(record,"local"))continue;
-   const auto id=p::integral(record,"network_id");if(id<=0)continue;present.insert(id);
-   p::Ref entity(stock_native_bot::readNativeEntity(battle,p::integral(record,"engine_id")));if(entity.get()==Py_None)continue;
-   p::Ref descriptor(stock_native_bot::readNativeEntityField(battle,entity.get(),"typeDescriptor"));if(descriptor.get()==Py_None)continue;
+ std::vector<Player> players;std::set<std::int64_t> present;
+ for(const auto& entry:battle.vehicles->actors){const auto& record=*entry.second;
+  try {if(record.kind!="player"||record.local)continue;
+   const auto id=record.id;if(id<=0)continue;present.insert(id);
+   p::Ref entity=p::Ref(stock_native_bot::readNativeEntity(nullptr,record.engine_id));if(entity.get()==Py_None)continue;
+   p::Ref descriptor(stock_native_bot::readNativeEntityField(nullptr,entity.get(),"typeDescriptor"));if(descriptor.get()==Py_None)continue;
    auto entry=cache.find(id);if(entry==cache.end()||entry->second.descriptor.get()!=descriptor.get()){
     Metadata metadata;if(!readMetadata(descriptor.get(),metadata)){PyErr_Clear();continue;}
     Py_INCREF(descriptor.get());
     cache[id]={std::shared_ptr<PyObject>(descriptor.get(),[](PyObject* value){if(Py_IsInitialized())Py_DECREF(value);}),std::move(metadata)};entry=cache.find(id);
    }
-   Player player;if(readPlayer(record,entity.get(),entry->second.metadata,player,battle))players.push_back(std::move(player));else PyErr_Clear();
+   Player player;if(readPlayer(record,entity.get(),entry->second.metadata,player))players.push_back(std::move(player));else PyErr_Clear();
   }catch(const std::exception&){PyErr_Clear();}
  }
  for(auto i=cache.begin();i!=cache.end();)if(!present.count(i->first))i=cache.erase(i);else ++i;
