@@ -9,6 +9,7 @@
 #include "stock_native_battle_bots_needs.hpp"
 #include "stock_native_bot_clock.hpp"
 #include "stock_native_bot_owner.hpp"
+#include "stock_native_battle_link.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -115,8 +116,8 @@ bool send(Battle& b, PyObject* message) {
         if (has(message, "push_contacts")) p::set(kwargs.get(), "push_contacts", field(message, "push_contacts"));
         if (b.worker) {
             OwnerRef o = existing(b);
-            auto turrets = o ? owner::detachedRows(*o) : p::Ref(PyList_New(0));
-            if (p::flag(turrets.get())) p::set(kwargs.get(), "detached_turrets", turrets);
+            const auto turrets = o ? owner::detachedRows(*o) : Value();
+            if (!turrets.array.empty()) p::set(kwargs.get(), "detached_turrets", p::Ref(cs::write(turrets)));
         }
         if (has(message, "sample_time_us")) {
             p::set(kwargs.get(), "sample_time_us", field(message, "sample_time_us"));
@@ -164,32 +165,20 @@ bool send(Battle& b, PyObject* message) {
 }
 
 // Publishes accepted Bot launches in fire-sequence order; a refused launch blocks that Bot's later ones.
-bool resolveFire(Battle& b, PyObject* message) {
+bool resolveFire(Battle& b, const Value& message) {
     OwnerRef o = existing(b);
     if (!o) return false;
-    auto sender = py::optional(client(b).get(), "send_projectile_launch");
-    if (!py::callable(sender)) return false;
     bool complete = true;
-    Object wave = own(owner::projectileLaunches(*o, message));
-    while (p::flag(wave.get())) {
-        for (Py_ssize_t i = 0; i < PySequence_Size(wave.get()); ++i) {
-            auto row = p::item(wave.get(), i);
-            auto bot = p::item(row.get(), 0), sequence = p::item(row.get(), 1), args = p::item(row.get(), 2), kwargs = p::item(row.get(), 3);
+    auto wave = owner::projectileLaunches(*o, &message);
+    while (!wave.empty()) {
+        for (const auto& launch : wave) {
             bool accepted = false;
-            p::Ref positional(PySequence_Tuple(args.get()));
-            PyObject* result = PyObject_Call(sender.get(), positional.get(), kwargs.get());
-            if (result) {
-                accepted = PyObject_RichCompareBool(result, sequence.get(), Py_EQ) == 1;
-                Py_DECREF(result);
-            } else if (PyErr_ExceptionMatches(PyExc_Exception)) {
-                owner::transportError(*o, describe(p::Error("projectile launch send failed")));
-            } else {
-                throw p::Error("projectile launch send interrupted");
-            }
-            owner::projectileLaunchResult(*o, p::wide(bot.get()), p::wide(sequence.get()), accepted);
+            try { accepted = link::send(b, launch.message); }
+            catch (const std::exception& e) { owner::transportError(*o, "projectile launch send failed: " + describe(e)); }
+            owner::projectileLaunchResult(*o, launch.bot, launch.sequence, accepted);
             complete = complete && accepted;
         }
-        wave = own(owner::projectileLaunches(*o, Py_None));
+        wave = owner::projectileLaunches(*o, nullptr);
     }
     return complete;
 }
@@ -197,7 +186,7 @@ bool resolveFire(Battle& b, PyObject* message) {
 // Sends one authority message; an accepted Bot state then publishes its launches.
 bool enqueue(Battle& b, PyObject* message) {
     const bool accepted = send(b, message);
-    if (accepted && messageIs(message, "bot_state")) resolveFire(b, message);
+    if (accepted && messageIs(message, "bot_state")) resolveFire(b, cs::read(message));
     return accepted;
 }
 
@@ -481,37 +470,29 @@ void snapshot(Battle& b, PyObject* message) {
         b.bots->finished = true;
 }
 
-bool projectileIngress(Battle& b, PyObject* message, double now) {
+bool projectileIngress(Battle& b, const Value& message, double now) {
     OwnerRef o = existing(b);
     return o && owner::projectileIngress(*o, message, now);
 }
-bool projectileObserve(Battle& b, PyObject* message, double now) {
+bool projectileObserve(Battle& b, const Value& message, double now) {
     OwnerRef o = existing(b);
     return o && owner::projectileObserve(*o, message, now);
 }
-bool projectileEvent(Battle& b, PyObject* event, double now) {
+bool projectileEvent(Battle& b, const Value& event, double now) {
     OwnerRef o = existing(b) ? existing(b) : prepare(b);
     return o && owner::projectileEvent(*o, event, now);
 }
 std::size_t projectileAdvance(Battle& b, double now, bool force_progress) {
     OwnerRef o = existing(b);
     if (!o) return 0;
-    auto rows = owner::projectileAdvance(*o, b, now, force_progress);
-    auto lan = client(b);
     std::size_t sent_count = 0;
-    for (Py_ssize_t i = 0; i < PySequence_Size(rows.get()); ++i) {
-        auto row = p::item(rows.get(), i);
-        auto serial = p::item(row.get(), 0), kind = p::item(row.get(), 1), wire = p::item(row.get(), 2);
-        const std::string name = "send_projectile_" + text(kind.get());
+    for (auto& row : owner::projectileAdvance(*o, b, now, force_progress)) {
+        row.wire.object["type"].kind = Value::Kind::Text;
+        row.wire.object["type"].text = "projectile_" + row.kind;
         bool sent = false;
-        PyObject* result = PyObject_Call(py::attr(lan.get(), name.c_str()).get(), p::Ref(PyTuple_New(0)).get(), wire.get());
-        if (result) { sent = PyObject_IsTrue(result) > 0; Py_DECREF(result); }
-        else if (PyErr_ExceptionMatches(PyExc_Exception)) {
-            owner::transportError(*o, describe(p::Error("projectile send failed")));
-        } else {
-            throw p::Error("projectile send interrupted");
-        }
-        owner::projectileAcknowledge(*o, std::uint64_t(p::wide(serial.get())), sent);
+        try { sent = link::send(b, row.wire); }
+        catch (const std::exception& e) { owner::transportError(*o, "projectile send failed: " + describe(e)); }
+        owner::projectileAcknowledge(*o, row.serial, sent);
         sent_count += sent ? 1 : 0;
     }
     return sent_count;
@@ -605,13 +586,17 @@ std::size_t detachedAdvance(Battle& b, double now) {
     OwnerRef o = existing(b);
     if (!o) return 0;
     auto rows = owner::detachedAdvance(*o, b, now);
-    if (rows.get() == Py_None) return 0;
-    // After the battle result no bot_state carries proposals: send_bot_state([], detached_turrets=rows).
-    auto kwargs = p::dict();
-    p::set(kwargs.get(), "detached_turrets", rows);
-    auto empty = p::list();
-    callKeywords(py::attr(client(b).get(), "send_bot_state").get(), {empty.get()}, kwargs.get());
-    return std::size_t(PyList_GET_SIZE(rows.get()));
+    if (!rows) return 0;
+    // After the battle result no bot_state carries proposals: bot_state {rows: [], detached_turrets}.
+    const std::size_t count = rows->array.size();
+    Value message;
+    message.kind = Value::Kind::Object;
+    message.object["type"].kind = Value::Kind::Text;
+    message.object["type"].text = "bot_state";
+    message.object["rows"].kind = Value::Kind::Array;
+    message.object["detached_turrets"] = std::move(*rows);
+    link::send(b, message);
+    return count;
 }
 void prewarmBots(Battle& b, double now) { prewarm(b, now); }
 std::size_t playerContacts(Battle& b, const Value& players, double now) {

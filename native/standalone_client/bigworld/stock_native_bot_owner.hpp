@@ -2,11 +2,13 @@
 // The worker's native Bot simulation owner, driven directly by the native battle's Bot authority.
 // Its cold installation reads the native round start's manifest seed (BotAuthority::seed).
 #include "stock_native_battle.hpp"
+#include "stock_native_projectile_python.hpp"
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace stock_native_bot {
 class Clock;
@@ -48,19 +50,19 @@ p::Ref humanRam(Owner& o, Battle& b);
 bool detachedQueue(Owner& o, Battle& b, const native_battle::Actor& vehicle, PyObject* entity,
                    const native_battle::Value* state, double now);
 bool detachedIngress(Owner& o, Battle& b, const native_battle::Value& message);
-// The terminal tail rows when due after the battle result, else None.
-p::Ref detachedAdvance(Owner& o, Battle& b, double now);
-p::Ref detachedRows(Owner& o);
+// The terminal tail rows when due after the battle result.
+std::optional<native_battle::Value> detachedAdvance(Owner& o, Battle& b, double now);
+native_battle::Value detachedRows(Owner& o);
 
 // Projectiles.
-bool projectileIngress(Owner& o, PyObject* message, double now);
-bool projectileObserve(Owner& o, PyObject* message, double now);
-bool projectileEvent(Owner& o, PyObject* event, double now);
-// [(serial, kind, wire kwargs)] to send through send_projectile_<kind>.
-p::Ref projectileAdvance(Owner& o, Battle& b, double now, bool force);
+bool projectileIngress(Owner& o, const native_battle::Value& message, double now);
+bool projectileObserve(Owner& o, const native_battle::Value& message, double now);
+bool projectileEvent(Owner& o, const native_battle::Value& event, double now);
+// The projectile_<kind> payloads to send; each send is acknowledged by serial.
+std::vector<stock_native_projectile::WireDispatch> projectileAdvance(Owner& o, Battle& b, double now, bool force);
 bool projectileAcknowledge(Owner& o, std::uint64_t serial, bool sent);
-// The next launch wave [(bot, sequence, args, kwargs)] for send_projectile_launch.
-p::Ref projectileLaunches(Owner& o, PyObject* message);
+// The next launch wave of an accepted bot_state message; null continues the current wave.
+std::vector<stock_native_projectile::LaunchMessage> projectileLaunches(Owner& o, const native_battle::Value* message);
 void projectileLaunchResult(Owner& o, std::int64_t bot, std::int64_t sequence, bool accepted);
 // Records one local transport failure without failing the round.
 void transportError(Owner& o, const std::string& message);

@@ -1,5 +1,6 @@
 #pragma once
 #include "stock_native_projectile_damage.hpp"
+#include "stock_native_client_state.hpp"
 struct _object;
 namespace stock_native_projectile_damage {
 struct ShotDescriptor {FrozenShot shot;std::optional<StunSpec> stun;};
@@ -22,7 +23,7 @@ bool readLaunchDescriptor(_object* shot,LaunchDescriptor&);
 bool readTargetDescriptor(_object* descriptor,_object* critical_descriptor,TargetDescriptor&,
                           _object* accepted_critical_profile=nullptr);
 bool readStunConfig(_object* config,StunConfig&);
-// Hot ingress only reads record plain dictionaries and native entity fields.
-bool readProjectileTargetState(_object* battle,_object* record,_object* entity,
- const TargetDescriptor&,Target&);
+// Hot ingress only reads the accepted actor state and native entity fields.
+bool readProjectileTargetState(_object* battle,bool human,std::int64_t network_id,
+ const stock_native_client_state::Value& state,_object* entity,const TargetDescriptor&,Target&);
 }

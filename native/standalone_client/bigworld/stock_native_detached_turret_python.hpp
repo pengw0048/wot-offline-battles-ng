@@ -2,12 +2,13 @@
 // The hidden worker's detached-turret owner over the native battle: launch proposals, accepted rows
 // (World::turrets) and rigid turret bodies. Stock entities and descriptors stay Python objects.
 #include "stock_native_bot_python.hpp"
+#include "stock_native_client_state.hpp"
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 namespace native_battle {struct Battle;}
-namespace stock_native_client_state {struct Value;struct Actor;}
 namespace stock_native_bot {class Runtime;}
 namespace stock_native_world {struct Registry;class Scene;}
 namespace stock_native_bot_geometry {class Vehicles;}
@@ -25,10 +26,10 @@ public:
         const stock_native_client_state::Value* state,double now);
     // Accepts newer server rows into World::turrets; false when the message carries none for this round.
     bool ingress(native_battle::Battle&,const stock_native_client_state::Value& message);
-    // The rows of the terminal send_bot_state([], detached_turrets=...) when it is due, else None.
-    stock_native_bot_python::Ref advance(native_battle::Battle&,double now);
+    // The rows of the terminal bot_state {rows: [], detached_turrets} when it is due.
+    std::optional<stock_native_client_state::Value> advance(native_battle::Battle&,double now);
     // Accepted rows with pending proposals over them, packed for the LAN wire.
-    stock_native_bot_python::Ref rows()const;
+    stock_native_client_state::Value rows()const;
     std::vector<std::string> takeErrors();
 };
 }

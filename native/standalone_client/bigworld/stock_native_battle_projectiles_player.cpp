@@ -13,6 +13,7 @@
 #include "stock_native_client_drive_runtime.hpp"
 #include "stock_native_client_drive_status.hpp"
 #include "stock_native_projectile_wire.hpp"
+#include "stock_native_wire_value.hpp"
 #include "stock_native_bot_vehicle_geometry.hpp"
 #include "stock_native_bot_world_adapter.hpp"
 #include "stock_native_bot_python.hpp"
@@ -26,6 +27,7 @@ namespace proj = stock_native_client_projectile;
 namespace shot = stock_native_projectile;
 namespace damage = stock_native_projectile_damage;
 namespace weapon = stock_native_client_weapon_runtime;
+namespace w = stock_native_wire_value;
 
 p::Ref field(PyObject* o, const char* n) {
     if (!o || o == Py_None) return p::retain(Py_None);
@@ -132,34 +134,24 @@ Value presentation(const proj::Frozen& f, std::int64_t epoch) {
     return out;
 }
 // The exact float wire rounding every queued projectile message carries.
-void roundWire(PyObject* value) {
-    if (PyDict_Check(value)) {
-        Py_ssize_t at = 0; PyObject *key, *child;
-        while (PyDict_Next(value, &at, &key, &child)) {
-            if (PyFloat_CheckExact(child)) {
-                auto rounded = p::number(proj::wireRound(PyFloat_AS_DOUBLE(child)));
-                if (PyDict_SetItem(value, key, rounded.get()) < 0) throw p::Error("Native projectile wire normalization failed");
-            } else roundWire(child);
-        }
-    } else if (PyList_Check(value)) {
-        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(value); ++i) {
-            auto* child = PyList_GET_ITEM(value, i);
-            if (PyFloat_CheckExact(child)) PyList_SetItem(value, i, p::number(proj::wireRound(PyFloat_AS_DOUBLE(child))).release());
-            else roundWire(child);
-        }
-    }
+void roundWire(Value& value) {
+    if (value.reference) { Value owned = value.resolved(); value = std::move(owned); }
+    if (value.kind == Value::Kind::Number) value.number = proj::wireRound(value.number);
+    else if (value.kind == Value::Kind::Object) for (auto& child : value.object) roundWire(child.second);
+    else if (value.kind == Value::Kind::Array) for (auto& child : value.array) roundWire(child);
 }
-bool parseFrozen(PyObject* raw, proj::Frozen& out) {
+bool parseFrozen(const Value& raw, proj::Frozen& out) {
     if (!shot::readPlayerLaunch(raw, out.flight)) return false;
     out.player = out.flight.shooter;
-    out.round = p::integral(raw, "round_id");
-    out.input_sequence = p::integral(raw, "fire_input_seq");
-    auto source = field(raw, "source_shot"), shell = field(source.get(), "shell");
-    out.source.speed = p::numeric(source.get(), "speed");
+    out.round = w::integral(raw, "round_id");
+    out.input_sequence = w::integral(raw, "fire_input_seq");
+    const auto& source = raw.get("source_shot").resolved();
+    const auto& shell = source.get("shell").resolved();
+    out.source.speed = w::numeric(source, "speed");
     out.source.gravity = out.flight.gravity;
     out.source.maximum = out.flight.maximum_distance;
-    out.source.raw_radius = p::numeric(shell.get(), "explosionRadius");
-    out.source.explosion_factors = PyDict_GetItemString(shell.get(), "explosionDamageFactor") != nullptr;
+    out.source.raw_radius = w::numeric(shell, "explosionRadius");
+    out.source.explosion_factors = shell.object.count("explosionDamageFactor") != 0;
     out.source.shot = out.flight.shot;
     proj::normalize(out);
     return true;
@@ -338,28 +330,23 @@ class Owner final : public PlayerProjectiles {
     }
     std::vector<Edge> dispatch(Battle& b, double now) {
         std::vector<Edge> edges;
-        p::Ref rows(shot::packDispatches(flights_.dispatches()));
-        for (Py_ssize_t i = 0; i < p::size(rows.get()); ++i) {
+        for (auto& row : shot::packDispatches(flights_.dispatches())) {
             if (!current(b)) break;
-            auto row = p::item(rows.get(), i), serial = p::item(row.get(), 0), kind = p::item(row.get(), 1), wire = p::item(row.get(), 2);
-            const auto type = p::string(kind.get());
-            auto addProof = [&](PyObject* value) {
-                auto id = field(value, "projectile_id");
-                const auto found = lifecycle_.launches().find(p::string(id.get()));
+            auto& wire = row.wire;
+            const auto& type = row.kind;
+            auto addProof = [&](Value& value) {
+                const auto found = lifecycle_.launches().find(w::string(value.get("projectile_id")));
                 if (found == lifecycle_.launches().end()) throw p::Error("Native player projectile launch proof is unavailable");
                 auto proof = launchWire(found->second, flights_.epoch().value());
                 proof.object.erase("round_id");
                 proof.object.erase("authority_epoch");
-                p::Ref packed(cs::write(proof));
-                p::set(value, "launch_proof", packed);
+                value.object["launch_proof"] = std::move(proof);
             };
             if (type == "progress") {
-                auto cursors = field(wire.get(), "cursors");
-                for (Py_ssize_t c = 0; c < p::size(cursors.get()); ++c) { auto value = p::item(cursors.get(), c); addProof(value.get()); }
+                for (auto& value : wire.object["cursors"].array) addProof(value);
             } else {
-                addProof(wire.get());
-                auto id = field(wire.get(), "projectile_id");
-                const auto key = p::string(id.get());
+                addProof(wire);
+                const auto key = w::string(wire.get("projectile_id"));
                 const auto at = flights_.flights().find(key);
                 if (at != flights_.flights().end() && terminal_presentations_.insert({key, at->second.canonical.segment}).second) {
                     Edge edge;
@@ -376,26 +363,25 @@ class Owner final : public PlayerProjectiles {
                     edges.push_back(std::move(edge));
                 }
             }
-            p::set(wire.get(), "type", p::text("projectile_" + type));
-            p::set(wire.get(), "round_id", p::integer(std::int64_t(state_->round.numeric())));
-            roundWire(wire.get());
+            wire.object["type"] = text("projectile_" + type);
+            wire.object["round_id"] = integer(std::int64_t(state_->round.numeric()));
+            roundWire(wire);
             bool sent = false;
-            try { sent = stock_native_client_input::enqueue(client_.get(), wire.get()); }
+            try { p::Ref packed(cs::write(wire)); sent = stock_native_client_input::enqueue(client_.get(), packed.get()); }
             catch (const std::exception& error) {
                 PyErr_Clear();
                 log("Native player projectile queue " + type + ": " + error.what());
             }
-            flights_.acknowledge(std::uint64_t(p::wide(serial.get())), sent, now);
+            flights_.acknowledge(row.serial, sent, now);
             if (sent && type == "ricochet") {
-                auto id = field(wire.get(), "projectile_id"), impact = field(wire.get(), "impact");
-                const auto key = p::string(id.get());
+                const auto key = w::string(wire.get("projectile_id"));
                 const auto at = flights_.flights().find(key);
                 if (at != flights_.flights().end()) {
                     const auto& l = at->second.canonical;
                     Edge edge;
                     edge.kind = Edge::Kind::Ricochet;
                     edge.id = key;
-                    edge.impact = cs::read(impact.get());
+                    edge.impact = wire.get("impact").resolved();
                     edge.segment = object();
                     auto& s = edge.segment.object;
                     s["segment_origin"] = points(l.segment_origin);
@@ -498,15 +484,14 @@ public:
                 const auto key = id.kind == Value::Kind::Text ? id.text : std::to_string(std::int64_t(id.numeric()));
                 reported.insert(key);
                 if (visual_terminals_.count(key)) continue;
-                p::Ref raw(cs::write(row));
                 shot::Launch parsed;
                 if (row.get("shooter_kind").resolved().text == "player") {
                     proj::Frozen frozen;
-                    if (!parseFrozen(raw.get(), frozen)) { PyErr_Clear(); continue; }
+                    if (!parseFrozen(row, frozen)) continue;
                     if (frozen.round == 0) frozen.round = std::int64_t(state_->round.numeric());
                     parsed = frozen.flight;
                     if (frozen.player == state_->local_player_id && lifecycle_.canonical(frozen, now, false)) accepted.push_back(parsed);
-                } else if (!shot::readLaunch(raw.get(), parsed)) { PyErr_Clear(); continue; }
+                } else if (!shot::readLaunch(row, parsed)) continue;
                 const auto visual = visuals_.find(key);
                 if (visual == visuals_.end() || visual->second < parsed.segment) {
                     visuals_[key] = parsed.segment;
@@ -534,9 +519,8 @@ public:
         if (!observe(b, raw, now)) return false;
         if (kind == "authority") return true;
         if (!world_.ingress(b, now)) throw p::Error("Native player projectile world ingress failed");
-        p::Ref packed(cs::write(raw));
         proj::Frozen frozen;
-        if (!parseFrozen(packed.get(), frozen)) { PyErr_Clear(); return false; }
+        if (!parseFrozen(raw, frozen)) return false;
         if (frozen.round == 0) frozen.round = std::int64_t(state_->round.numeric());
         if (frozen.player != state_->local_player_id) return false;
         return lifecycle_.canonical(frozen, now);

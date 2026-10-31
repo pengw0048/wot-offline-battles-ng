@@ -89,8 +89,8 @@ class DetachedSnapshot(unittest.TestCase):
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='detached-snapshot-') as directory:
             folder=Path(directory);script=folder/'fixture.py';script.write_text(FIXTURE)
-            sources=[ROOT/'bigworld/stock_native_detached_turret_snapshot.cpp',ROOT/'bigworld/stock_native_detached_turret_runtime.cpp',ROOT/'bigworld/stock_native_bot_turret_obstacles.cpp',Path(source)/'native/offline_destructible_geometry.cpp',ROOT/'tests/stock_native_detached_turret_snapshot_host.cpp']
-            result=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(Path(source)/'native'),'-I'+str(ROOT/'bigworld'),*[str(p) for p in sources],'-o',str(folder/'detached_snapshot_test.so')],capture_output=True,text=True)
+            sources=[ROOT/'bigworld/stock_native_detached_turret_snapshot.cpp',ROOT/'bigworld/stock_native_detached_turret_runtime.cpp',ROOT/'bigworld/stock_native_bot_turret_obstacles.cpp',ROOT/'bigworld/stock_native_client_state.cpp',Path(source)/'native/offline_destructible_geometry.cpp',ROOT/'tests/stock_native_detached_turret_snapshot_host.cpp']
+            result=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_CLIENT_REPLICA_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(Path(source)/'native'),'-I'+str(ROOT/'bigworld'),*[str(p) for p in sources],'-o',str(folder/'detached_snapshot_test.so')],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             result=subprocess.run([py27,'-B',str(script),source],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr);self.assertIn('detached ingress passed',result.stdout)
