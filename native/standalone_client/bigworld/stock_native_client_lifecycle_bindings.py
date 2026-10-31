@@ -71,6 +71,8 @@ PORTS = (
     ('_present_damage_sticker', 'present_damage_sticker(self, event, target_record)'),
     ('_apply_battle_result', 'battle_result(self, result)'),
     ('_present_combat_feedback', 'present_combat_feedback(self, event, target_record, attacker_record, reason_id)'),
+    ('_present_combat_hit', 'present_combat_hit(self, event, target_record, attacker_record, attacker_id, globals())'),
+    ('_show_shot', 'show_shot(self, event, update_state, globals())'),
 )
 
 

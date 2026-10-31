@@ -489,7 +489,7 @@ PyObject* applyOrderedEvent(PyObject*, PyObject* args) {
                 if (truthy(changed) && last.get() != Py_None) method(bots.get(), "apply_snapshot", last.get());
             }
         } else if (member(global(g, "_SHOT_EVENT_KINDS").get(), kind.get())) {
-            callKw(battle, "_show_shot", {event}, {{"update_state", Py_False}});
+            dispatch(battle, "_show_shot", "show_shot", {event}, {{"update_state", Py_False}}, {event, Py_False, g});
             method(battle, "_accept_projectile_event", event);
         } else if (member(global(g, "_COMBAT_EVENT_KINDS").get(), kind.get())) {
             callKw(battle, "_apply_combat_event", {event}, {{"update_state", Py_False}});
@@ -642,7 +642,7 @@ PyObject* applyCombatEvent(PyObject*, PyObject* args) {
         }
         if (textIn(source.get(), {"player_left"}) && attacker_record.get() != Py_None) raise("player_left event has an attacker");
         if (attacker_record.get() != Py_None) {
-            method(battle, "_present_combat_hit", event, r, attacker_record.get(), attacker_id.get());
+            dispatch(battle, "_present_combat_hit", "present_combat_hit", {event, r, attacker_record.get(), attacker_id.get()}, {g});
             dispatch(battle, "_present_combat_feedback", "present_combat_feedback", {event, r, attacker_record.get(), attack_reason.get()});
         } else if (textIn(source.get(), {"environment", "fire"})) {
             method(battle, "_present_environment_feedback", event, r, attack_reason.get());
@@ -1238,6 +1238,413 @@ PyObject* presentCombatFeedback(PyObject*, PyObject* args) {
     } catch (const std::exception& e) { return fail(e); }
 }
 
+p::Ref number3(PyObject* g, PyObject* event) {
+    auto convert = global(g, "_number");
+    p::Ref out(PyTuple_New(3));
+    const char* names[] = {"x", "y", "z"};
+    for (int i = 0; i < 3; ++i)
+        PyTuple_SET_ITEM(out.get(), i, p::Ref(PyObject_CallFunctionObjArgs(convert.get(), method(event, "get", p::text(names[i]).get()).get(), nullptr)).release());
+    return out;
+}
+p::Ref item(PyObject* sequence, Py_ssize_t index) { return p::Ref(PySequence_GetItem(sequence, index)); }
+p::Ref minus(PyObject* a, PyObject* b) { return p::Ref(PyNumber_Subtract(a, b)); }
+
+PyObject* presentCombatHit(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *target_record, *attacker_record, *attacker_id, *g;
+    if (!PyArg_ParseTuple(args, "OOOOOO", &battle, &event, &target_record, &attacker_record, &attacker_id, &g)) return nullptr;
+    try {
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_FALSE;
+        if (!equal(combatEventSource(event).get(), p::text("shot").get()) ||
+            !textIn(method(event, "get", p::text("kind").get()).get(), {"hit", "bot_hit", "bot_human_hit", "bot_bot_hit"}))
+            Py_RETURN_FALSE;
+        if (!truthy(method(event, "get", p::text("world_pose").get()))) raise("shot hit event has no world impact pose");
+        auto shell_pair = unpack(method(battle, "_event_shell", attacker_record, event).get(), 2);
+        PyObject *shot = shell_pair[0].get(), *shell = shell_pair[1].get();
+        auto attacker_position = method(battle, "_record_position", attacker_record);
+        auto target_position = method(battle, "_record_position", target_record);
+        auto impact = number3(g, event);
+        PyObject* origin = truthy(method(event, "get", p::text("splash").get(), Py_False)) ? impact.get() : attacker_position.get();
+        p::Ref delta(PyTuple_New(3));
+        for (int i = 0; i < 3; ++i)
+            PyTuple_SET_ITEM(delta.get(), i, minus(item(target_position.get(), i).get(), item(origin, i).get()).release());
+        auto direction = method(battle, "_vector", delta.get());
+        const int degenerate = PyObject_RichCompareBool(attr(direction.get(), "length").get(), p::number(0.001).get(), Py_LE);
+        if (degenerate < 0) throw p::Error("direction length comparison failed");
+        // A legal HE blast can damage its own shooter; use a harmless presentation normal.
+        if (degenerate) {
+            p::Ref up(Py_BuildValue("(ddd)", 0., 1., 0.));
+            replace(direction, method(battle, "_vector", up.get()));
+        }
+        method(direction.get(), "normalise");
+        auto damage = nonNegative(event, "damage");
+        const auto shot_result = std::max<std::int64_t>(0, std::min<std::int64_t>(
+            strictInt(method(event, "get", p::text("shot_result").get(), integer(2).get()).get()), 2));
+        bool same_vehicle = attacker_record == target_record;
+        if (!same_vehicle) {
+            auto identity = [](PyObject* record) {
+                return p::Ref(PyTuple_Pack(2, method(record, "get", p::text("kind").get()).get(),
+                                           method(record, "get", p::text("network_id").get()).get()));
+            };
+            same_vehicle = equal(identity(attacker_record).get(), identity(target_record).get());
+        }
+        auto rules = global(g, "combat_rules");
+        auto avatar = attr(battle, "_avatar");
+        if (truthy(method(target_record, "get", p::text("local").get())) && !same_vehicle) {
+            // The hit indicator points from the player back toward the attacker (0.8.2 convention).
+            auto east = p::Ref(PyNumber_Negative(minus(item(attacker_position.get(), 0).get(), item(target_position.get(), 0).get()).get()));
+            auto north = p::Ref(PyNumber_Negative(minus(item(attacker_position.get(), 2).get(), item(target_position.get(), 2).get()).get()));
+            auto yaw = method(module("math").get(), "atan2", east.get(), north.get());
+            auto marker = unpack(method(battle, "_hit_indicator_marker", event, shot, damage.get()).get(), 2);
+            auto show = attr(avatar.get(), "showOwnVehicleHitDirection");
+            auto attacker_int = toInt(PyObject_IsTrue(attacker_id) > 0 ? attacker_id : integer(0).get());
+            auto mask = method(battle, "_critical_hit_mask", method(event, "get", p::text("critical").get()).get());
+            auto is_he = method(rules.get(), "is_he", shot);
+            auto engine = toInt(p::Ref(PyObject_GetItem(target_record, p::text("engine_id").get())).get());
+            p::Ref(PyObject_CallFunctionObjArgs(show.get(), yaw.get(), attacker_int.get(), marker[0].get(), mask.get(),
+                                               marker[1].get(), is_he.get(), engine.get(), nullptr));
+        }
+        // An armour effect belongs to the visible world model, not to a radio-only marker.
+        if (!truthy(method(target_record, "get", p::text("local").get())) &&
+            !truthy(method(target_record, "get", p::text("spot_visible").get(), Py_True)))
+            Py_RETURN_FALSE;
+        if (!truthy(method(battle, "_projectile_cosmetic_allowed", event, attr(battle, "_projectile_visual_meta").get())))
+            Py_RETURN_FALSE;
+        auto effects_index = p::Ref(PyObject_CallFunctionObjArgs(global(g, "_field").get(), shell, p::text("effectsIndex").get(), Py_None, nullptr));
+        if (effects_index.get() == Py_None) raise("combat shell effects index is unavailable");
+        auto cache = attr(attr(attr(battle, "_runtime").get(), "vehicles").get(), "g_cache");
+        p::Ref effects_descr(PyObject_GetItem(attr(cache.get(), "shotEffects").get(), effects_index.get()));
+        // Retail rocks the hull before it spawns the armour effect.
+        p::Ref impulse_args(PyTuple_Pack(4, event, target_record, effects_descr.get(), direction.get()));
+        optionalFeature(battle, "vehicle hit impulse", attr(battle, "_present_hit_impulse").get(), impulse_args.get());
+        auto damage_factor = method(battle, "_hit_damage_factor", event, target_record);
+        if (truthy(method(event, "get", p::text("splash").get(), Py_False)))
+            return method(battle, "_present_splash_hit", target_record, effects_descr.get(), effects_index.get(), impact.get(),
+                          direction.get(), damage_factor.get()).release();
+        const bool he = truthy(method(rules.get(), "is_he", shot));
+        static const char* const by_result[] = {"armorRicochet", "armorResisted", "armorHit"};
+        const char* group = he ? (greaterThanZero(damage.get()) ? "armorHit" : "armorResisted") : by_result[shot_result];
+        auto effect_group = p::text(group);
+        auto parts = unpack(p::Ref(PyObject_GetItem(effects_descr.get(), effect_group.get())).get(), 3);
+        auto hit_position = method(battle, "_vector", impact.get());
+        auto terrain = optionalAttr(avatar.get(), "terrainEffects");
+        p::Ref add_effect = p::retain(Py_None);
+        if (!callableAttr(terrain.get(), "addNew", add_effect)) raise("#1513 terrain hit-effects boundary is unavailable");
+        if (!truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text("projectile impact presentation").get()})))
+            Py_RETURN_FALSE;
+        callKw(battle, "_report_effect", {p::text("armour_hit").get(), effect_group.get(), effects_index.get(), number3(g, event).get(),
+                                          direction.get()}, {{"event", event}});
+        try {
+            const bool local = truthy(method(target_record, "get", p::text("local").get()));
+            auto offset = method(direction.get(), "scale", p::number(0.4).get());
+            p::Ref start(PyNumber_Subtract(hit_position.get(), offset.get()));
+            auto far_offset = method(direction.get(), "scale", p::number(0.4).get());
+            p::Ref end(PyNumber_Add(hit_position.get(), far_offset.get()));
+            auto identity = method(battle, "_impact_sound_identity", target_record, attacker_id, direction.get(), damage_factor.get());
+            // f(..., k=v, **identity): the mapping is copied, then explicit keywords join it.
+            p::Ref keywords(PyDict_New());
+            if (PyDict_Update(keywords.get(), identity.get()) < 0) throw p::Error("sound identity is not a mapping");
+            const std::pair<const char*, PyObject*> named[] = {{"dir", direction.get()}, {"start", start.get()}, {"end", end.get()},
+                {"showShockWave", local ? Py_True : Py_False}, {"showFlashBang", local ? Py_True : Py_False}};
+            for (const auto& entry : named) {
+                if (PyDict_GetItemString(keywords.get(), entry.first)) {
+                    PyErr_Format(PyExc_TypeError, "%.200s%s got multiple values for keyword argument '%.200s'",
+                                 PyEval_GetFuncName(add_effect.get()), PyEval_GetFuncDesc(add_effect.get()), entry.first);
+                    throw p::Error("duplicate keyword");
+                }
+                put(keywords.get(), entry.first, p::retain(entry.second));
+            }
+            p::Ref positional(PyTuple_Pack(4, hit_position.get(), parts[1].get(), parts[0].get(), Py_None));
+            p::Ref(PyObject_Call(add_effect.get(), positional.get(), keywords.get()));
+        } catch (const std::exception& e) {
+            if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
+            auto error = caught(e);
+            method(battle, "_warn_optional_failure", p::text("projectile impact presentation").get(), error.get());
+            Py_RETURN_FALSE;
+        }
+        if (he && greaterThanZero(damage.get()))
+            method(battle, "_present_splash_hit", target_record, effects_descr.get(), effects_index.get(), impact.get(),
+                   direction.get(), damage_factor.get());
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
+// sys.stdout.write(text) through the live stream object.
+void writeStdout(PyObject* text) {
+    PyObject* stream = PySys_GetObject(const_cast<char*>("stdout"));
+    if (!stream) throw p::Error("sys.stdout is unavailable");
+    method(stream, "write", text);
+}
+// self._run_optional_feature(name, fn, args=call_args)
+void optionalFeatureArgs(PyObject* battle, const char* name, PyObject* fn, PyObject* call_args) {
+    PyObject** dict = _PyObject_GetDictPtr(battle);
+    if (dict && *dict && PyDict_GetItemString(*dict, "_run_optional_feature")) {
+        callKw(battle, "_run_optional_feature", {p::text(name).get(), fn}, {{"args", call_args}});
+        return;
+    }
+    optionalFeature(battle, name, fn, call_args);
+}
+// int(value) with `except (TypeError, ValueError[, OverflowError, IndexError])` falling back.
+p::Ref intOr(PyObject* value, std::int64_t fallback) {
+    PyObject* converted = PyNumber_Int(value);
+    if (converted) return p::Ref(converted);
+    if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError) &&
+        !PyErr_ExceptionMatches(PyExc_OverflowError)) throw p::Error("int conversion failed");
+    PyErr_Clear();
+    return integer(fallback);
+}
+void boneAngles(PyObject* battle, PyObject* entity, PyObject* angles) {
+    const char* pairs[][2] = {{"turretMatrix", "yaw"}, {"gunMatrix", "pitch"}};
+    for (const auto& pair : pairs) {
+        try {
+            auto math = attr(attr(battle, "_runtime").get(), "math");
+            auto matrix = method(math.get(), "Matrix", attr(attr(entity, "appearance").get(), pair[0]).get());
+            put(angles, pair[0], p::Ref(PyNumber_Float(attr(matrix.get(), pair[1]).get())));
+        } catch (const std::exception&) {
+            if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
+            PyErr_Clear();
+            put(angles, pair[0], p::retain(Py_None));
+        }
+    }
+}
+void botFireDiagnostic(PyObject* battle, PyObject* event, PyObject* record, PyObject* entity, PyObject* projectile_id,
+                       PyObject* sync_record) {
+    auto angles = p::dict();
+    boneAngles(battle, entity, angles.get());
+    try {
+        auto start = attr(battle, "_start_message");
+        auto row = literal(16);
+        auto from = [&](PyObject* owner, const char* key) { return method(owner, "get", p::text(key).get()); };
+        put(row.get(), "round", from(truthy(start) ? start.get() : p::dict().get(), "round_id"));
+        put(row.get(), "projectile", p::retain(projectile_id));
+        put(row.get(), "bot", from(record, "network_id"));
+        put(row.get(), "worker_launch_time_us", from(event, "bot_launch_time_us"));
+        put(row.get(), "pose_launch_time_us", from(event, "bot_presentation_time_us"));
+        put(row.get(), "presented_time_us", from(record, "presentation_time_us"));
+        put(row.get(), "matrix_angles", p::retain(angles.get()));
+        auto aim = p::Ref(PySequence_List(method(record, "get", p::text("_remote_aim_signature").get(), p::Ref(PyTuple_New(0)).get()).get()));
+        put(row.get(), "presented_aim", p::Ref(PySequence_GetSlice(aim.get(), 1, PY_SSIZE_T_MAX)));
+        put(row.get(), "presented_pose", from(record, "_remote_pose_signature"));
+        put(row.get(), "ideal_delay_us", from(sync_record, "interpolation_delay_us"));
+        put(row.get(), "display_delay_us", from(sync_record, "presentation_delay_us"));
+        put(row.get(), "observed_delay_us", from(sync_record, "observed_delay_us"));
+        put(row.get(), "consumer_resume_pending", p::boolean(truthy(from(sync_record, "consumer_resume_pending"))));
+        put(row.get(), "snapshot_interval_us", from(sync_record, "snapshot_interval_us"));
+        put(row.get(), "shot_yaw", from(event, "shot_yaw"));
+        put(row.get(), "shot_pitch", from(event, "shot_pitch"));
+        p::Ref separators(PyTuple_Pack(2, p::text(",").get(), p::text(":").get()));
+        auto encoded = callKw(module("json").get(), "dumps", {row.get()}, {{"separators", separators.get()}});
+        p::Ref line(PyNumber_Add(p::Ref(PyNumber_Add(p::text("[Offline LAN 0.9.22] BOT FIRE PRESENT ").get(), encoded.get())).get(),
+                                 p::text("\n").get()));
+        writeStdout(line.get());
+    } catch (const std::exception&) {
+        if (PyErr_Occurred() && !PyErr_ExceptionMatches(PyExc_Exception)) throw;
+        PyErr_Clear();
+    }
+}
+
+PyObject* showShot(PyObject*, PyObject* args) {
+    PyObject *battle, *event, *update_state, *g;
+    if (!PyArg_ParseTuple(args, "OOOO", &battle, &event, &update_state, &g)) return nullptr;
+    try {
+        auto key = eventEntityKey(event, true);
+        if (key.get() == Py_None) raise("ordered shot event has no attacker");
+        auto record = recordsGet(battle, key.get());
+        if (record.get() == Py_None) raise("ordered shot event attacker is unavailable: " + keyText(key.get()));
+        auto projectile_text = str(method(event, "get", p::text("projectile_id").get(), p::text("").get()).get());
+        const bool local = truthy(method(record.get(), "get", p::text("local").get()));
+        const bool replay = truthy(attr(battle, "_replay_mode"));
+        if (local && !replay) {
+            auto presented = attr(battle, "_local_projectile_presented");
+            if (member(presented.get(), projectile_text.get()) ||
+                member(attr(battle, "_local_projectile_presentations").get(), projectile_text.get()))
+                Py_RETURN_TRUE;
+            method(presented.get(), "add", projectile_text.get());
+        }
+        if (truthy(p::retain(update_state))) {
+            auto seconds = attr(global(g, "spotting").get(), "SHOT_CAMOUFLAGE_SECONDS");
+            p::Ref until(PyNumber_Add(method(battle, "_clock").get(), seconds.get()));
+            put(record.get(), "shot_penalty_until", std::move(until));
+            method(module("gui.mods.offline_lan_0922.native_client_environment").get(), "lifecycle", battle, record.get());
+        }
+        // #1513 Vehicle.showShooting owns a descriptor burst's effects through one native call.
+        p::Ref local_burst = p::retain(Py_None);
+        if (local) {
+            auto intent = attr(battle, "_local_fire_intent");
+            if (PyDict_Check(intent.get())) {
+                auto burst = method(intent.get(), "get", p::text("player_burst").get());
+                if (burst.get() != Py_None)
+                    replace(local_burst, p::Ref(PyTuple_Pack(2, p::Ref(PyObject_GetItem(burst.get(), p::text("committed").get())).get(),
+                                                             p::Ref(PyObject_GetItem(burst.get(), p::text("count").get())).get())));
+            }
+        }
+        if (truthy(attr(battle, "_worker_mode"))) Py_RETURN_TRUE;
+        auto entity = method(battle, "_server_entity", p::Ref(PyObject_GetItem(record.get(), p::text("engine_id").get())).get());
+        if (entity.get() == Py_None) raise("ordered shot event attacker has no native entity: " + keyText(key.get()));
+        if (equal(method(record.get(), "get", p::text("kind").get()).get(), p::text("bot").get())) {
+            auto sync = attr(battle, "_sync");
+            p::Ref sync_record = p::dict();
+            if (sync.get() != Py_None) {
+                PyObject* entities = PyObject_GetAttrString(sync.get(), "_entities");
+                if (!entities) {
+                    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("sync entities lookup failed");
+                    PyErr_Clear(); entities = PyDict_New();
+                }
+                p::Ref held(entities);
+                replace(sync_record, method(held.get(), "get", key.get(), p::dict().get()));
+            }
+            botFireDiagnostic(battle, event, record.get(), entity.get(), projectile_text.get(), sync_record.get());
+        }
+        auto transient = p::list();
+        p::Ref deferred = p::retain(Py_None);
+        try {
+            p::Ref normalized = p::retain(Py_None);
+            bool visual_admitted = true;
+            auto burst_index = intOr(method(event, "get", p::text("burst_index").get(), integer(0).get()).get(), 0);
+            setAttr(entity.get(), "_offlineLANShotIndex", nonNegative(event, "shell_index").get());
+            auto number = global(g, "_number");
+            if (member(event, p::text("shot_yaw").get()) && member(event, p::text("shot_pitch").get()) &&
+                truthy(optionalAttr(entity.get(), "_offlineLANPresentation"))) {
+                setAttr(entity.get(), "_offlineLANShotYaw",
+                        p::Ref(PyObject_CallFunctionObjArgs(number.get(), method(event, "get", p::text("shot_yaw").get()).get(), nullptr)).get());
+                setAttr(entity.get(), "_offlineLANShotPitch",
+                        p::Ref(PyObject_CallFunctionObjArgs(number.get(), method(event, "get", p::text("shot_pitch").get()).get(), nullptr)).get());
+                p::append(transient.get(), p::text("_offlineLANShotYaw"));
+                p::append(transient.get(), p::text("_offlineLANShotPitch"));
+            }
+            bool canonical = true;
+            for (const char* name : {"origin", "velocity", "gravity", "maxDistance"}) canonical = canonical && member(event, p::text(name).get());
+            if (canonical && !member(attr(battle, "_projectile_visual_terminals").get(), projectile_text.get())) {
+                replace(normalized, method(battle, "_projectile_wire_meta", event));
+                if (normalized.get() != Py_None) {
+                    p::Ref launch_visual(PyDict_Copy(normalized.get()));
+                    put(normalized.get(), "source_descriptor", attr(entity.get(), "typeDescriptor"));
+                    auto current = method(attr(battle, "_projectile_meta").get(), "get", projectile_text.get());
+                    if (current.get() != Py_None) {
+                        // The delayed muzzle presents the immutable launch, not a new authority cursor.
+                        p::Ref iterator(PyObject_GetIter(global(g, "_PROJECTILE_IMMUTABLE_FIELDS").get()));
+                        while (PyObject* raw = PyIter_Next(iterator.get())) {
+                            p::Ref field(raw);
+                            auto a = method(current.get(), "get", field.get());
+                            auto b = method(normalized.get(), "get", field.get());
+                            const int differ = PyObject_RichCompareBool(a.get(), b.get(), Py_NE);
+                            if (differ < 0) throw p::Error("immutable field comparison failed");
+                            if (differ) raise("canonical projectile launch changed");
+                        }
+                        if (PyErr_Occurred()) throw p::Error("immutable fields iteration failed");
+                        replace(normalized, std::move(current));
+                    } else {
+                        replace(normalized, method(battle, "_install_projectile_meta", normalized.get()));
+                    }
+                    put(normalized.get(), "source_descriptor", attr(entity.get(), "typeDescriptor"));
+                    put(normalized.get(), "muzzle_presented", p::retain(Py_True));
+                    if (method(normalized.get(), "get", p::text("bot_presentation_time_us").get()).get() != Py_None) {
+                        put(normalized.get(), "presented_ricochet_count", integer(0));
+                        p::Ref rendered(PyDict_Copy(normalized.get()));
+                        for (const char* field : {"segment_origin", "segment_velocity", "segment_start_time_ms", "ricochet_count"})
+                            put(rendered.get(), field, p::Ref(PyObject_GetItem(launch_visual.get(), p::text(field).get())));
+                        replace(normalized, std::move(rendered));
+                    }
+                    replace(burst_index, p::Ref(PyObject_GetItem(normalized.get(), p::text("burst_index").get())));
+                }
+                auto projectile_id = method(event, "get", p::text("projectile_id").get());
+                auto origin = method(event, "get", p::text("origin").get());
+                auto velocity = method(event, "get", p::text("velocity").get());
+                p::Ref gravity(PyObject_CallFunctionObjArgs(number.get(), method(event, "get", p::text("gravity").get()).get(), nullptr));
+                if (normalized.get() != Py_None) {
+                    auto visual_start = method(battle, "_projectile_visual_start", entity.get(), normalized.get());
+                    if (method(normalized.get(), "get", p::text("bot_presentation_time_us").get()).get() != Py_None)
+                        replace(deferred, p::Ref(PyTuple_Pack(2, normalized.get(), visual_start.get())));
+                    else
+                        callKw(battle, "_ensure_projectile_visual", {normalized.get(), method(battle, "_clock").get()},
+                               {{"visual_start", visual_start.get()}});
+                    auto visual = method(attr(battle, "_projectile_visual_meta").get(), "get",
+                                         p::Ref(PyObject_GetItem(normalized.get(), p::text("projectile_id").get())).get());
+                    visual_admitted = visual.get() == Py_None || truthy(method(visual.get(), "get", p::text("admitted").get(), Py_True));
+                }
+                auto max_distance = method(event, "get", p::text("maxDistance").get());
+                // RemoteVehicle.showShooting owns muzzle and recoil; the native tracer owns the flight.
+                const std::pair<const char*, PyObject*> values[] = {
+                    {"_offlineLANShotOrigin", origin.get()}, {"_offlineLANShotVelocity", velocity.get()},
+                    {"_offlineLANShotGravity", gravity.get()}, {"_offlineLANShotMaxDistance", max_distance.get()},
+                    {"_offlineLANProjectileID", projectile_id.get()}, {"_offlineLANCanonicalTracerOwned", Py_True}};
+                for (const auto& value : values) {
+                    setAttr(entity.get(), value.first, value.second);
+                    p::append(transient.get(), p::text(value.first));
+                }
+            }
+            if (local_burst.get() != Py_None) replace(burst_index, p::retain(PyTuple_GET_ITEM(local_burst.get(), 0)));
+            if (equal(burst_index.get(), integer(0).get())) {
+                auto gun = attr(attr(entity.get(), "typeDescriptor").get(), "gun");
+                p::Ref one_tuple(Py_BuildValue("(i)", 1));
+                auto burst = p::Ref(PyObject_CallFunctionObjArgs(global(g, "_field").get(), gun.get(), p::text("burst").get(), one_tuple.get(), nullptr));
+                p::Ref descriptor_count = integer(1);
+                PyObject* first = PyObject_GetItem(burst.get(), integer(0).get());
+                if (first) {
+                    p::Ref held(first);
+                    replace(descriptor_count, intOr(held.get(), 1));
+                } else if (PyErr_ExceptionMatches(PyExc_TypeError) || PyErr_ExceptionMatches(PyExc_IndexError)) {
+                    PyErr_Clear();
+                } else throw p::Error("burst lookup failed");
+                auto burst_count = normalized.get() != Py_None ? method(normalized.get(), "get", p::text("burst_count").get()) :
+                    method(event, "get", p::text("burst_count").get(), descriptor_count.get());
+                replace(burst_count, intOr(burst_count.get(), 1));
+                const int above = PyObject_RichCompareBool(burst_count.get(), integer(1).get(), Py_GT);
+                if (above < 0) throw p::Error("burst count comparison failed");
+                if (!above) replace(burst_count, integer(1));
+                if (local_burst.get() != Py_None) replace(burst_count, p::retain(PyTuple_GET_ITEM(local_burst.get(), 1)));
+                if (visual_admitted &&
+                    truthy(dispatch(battle, "_optional_feature_enabled", "optional_feature_enabled", {p::text("shot muzzle presentation").get()})) &&
+                    truthy(method(battle, "_shot_muzzle_drawn", record.get()))) {
+                    if (replay && local) {
+                        p::Ref call_args(PyTuple_Pack(2, entity.get(), burst_count.get()));
+                        optionalFeatureArgs(battle, "shot muzzle presentation", attr(battle, "_show_replay_local_muzzle").get(), call_args.get());
+                    } else {
+                        p::Ref call_args(PyTuple_Pack(2, burst_count.get(), Py_False));
+                        optionalFeatureArgs(battle, "shot muzzle presentation", attr(entity.get(), "showShooting").get(), call_args.get());
+                    }
+                } else if (local && !replay) {
+                    p::Ref call_args(PyTuple_Pack(2, entity.get(), burst_count.get()));
+                    optionalFeatureArgs(battle, "local shot convergence", attr(battle, "_show_local_shot_without_extra").get(), call_args.get());
+                }
+            }
+            if (deferred.get() != Py_None)
+                callKw(battle, "_ensure_projectile_visual", {PyTuple_GET_ITEM(deferred.get(), 0), method(battle, "_clock").get()},
+                       {{"visual_start", PyTuple_GET_ITEM(deferred.get(), 1)}});
+        } catch (const std::exception&) {
+            // finally: remove the transient attributes and keep the original error.
+            PyObject *type, *value, *trace;
+            PyErr_Fetch(&type, &value, &trace);
+            for (Py_ssize_t i = 0; i < PyList_GET_SIZE(transient.get()); ++i)
+                if (PyObject_DelAttr(entity.get(), PyList_GET_ITEM(transient.get(), i)) < 0) PyErr_Clear();
+            PyErr_Restore(type, value, trace);
+            throw;
+        }
+        for (Py_ssize_t i = 0; i < PyList_GET_SIZE(transient.get()); ++i)
+            if (PyObject_DelAttr(entity.get(), PyList_GET_ITEM(transient.get(), i)) < 0) {
+                if (!PyErr_ExceptionMatches(PyExc_Exception)) throw p::Error("transient attribute cleanup failed");
+                PyErr_Clear();
+            }
+        auto projectile_id = method(event, "get", p::text("projectile_id").get());
+        auto timeline = method(attr(battle, "_fire_timeline").get(), "get", str(projectile_id.get()).get());
+        if (timeline.get() != Py_None && method(timeline.get(), "get", p::text("shown").get()).get() == Py_None) {
+            p::Ref shown(PyObject_CallObject(global(g, "_PROFILE_CLOCK").get(), nullptr));
+            put(timeline.get(), "shown", p::retain(shown.get()));
+            auto seq = [&](const char* name) {
+                auto raw = method(event, "get", p::text(name).get(), integer(0).get());
+                return toInt(truthy(raw) ? raw.get() : integer(0).get());
+            };
+            p::Ref elapsed(PyNumber_Subtract(shown.get(), p::Ref(PyObject_GetItem(timeline.get(), p::text("trigger").get())).get()));
+            const int positive_elapsed = PyObject_RichCompareBool(elapsed.get(), p::number(0.).get(), Py_GT);
+            if (positive_elapsed < 0) throw p::Error("fire timeline comparison failed");
+            p::Ref since(PyNumber_Multiply(positive_elapsed ? elapsed.get() : p::number(0.).get(), p::number(1000.).get()));
+            p::Ref values(PyTuple_Pack(4, seq("fire_intent_seq").get(), seq("shot_seq").get(), projectile_id.get(), since.get()));
+            writeStdout(p::Ref(PyString_Format(p::text("[Offline LAN 0.9.22] FIRE SHOWN intent=%d shot_seq=%d "
+                                                       "projectile=%s since_trigger_ms=%.0f\n").get(), values.get())).get());
+        }
+        Py_RETURN_TRUE;
+    } catch (const std::exception& e) { return fail(e); }
+}
+
 PyObject* presentDamageSticker(PyObject*, PyObject* args) {
     PyObject *battle, *event, *target_record;
     if (!PyArg_ParseTuple(args, "OOO", &battle, &event, &target_record)) return nullptr;
@@ -1366,6 +1773,8 @@ PyMethodDef event_methods[] = {
     {"present_damage_sticker", presentDamageSticker, METH_VARARGS, "Add one admitted direct hit to the sticker owner."},
     {"battle_result", battleResult, METH_VARARGS, "Publish the round result to the stock avatar."},
     {"present_combat_feedback", presentCombatFeedback, METH_VARARGS, "Feed accepted combat through stock feedback RPCs."},
+    {"present_combat_hit", presentCombatHit, METH_VARARGS, "Present one shot hit through the #1513 hit APIs."},
+    {"show_shot", showShot, METH_VARARGS, "Present one ordered shot: muzzle, burst and canonical tracer."},
     {nullptr, nullptr, 0, nullptr}};
 }
 

@@ -26,9 +26,9 @@ METHODS = ('_pending_combat_for_record', '_apply_vehicle_statistics', '_death_at
            '_attack_reason', '_is_blind_local_attack', '_apply_vehicle_statistics_event', '_present_direct_spot',
            '_apply_detection_event', '_apply_assist_event', '_apply_environment_critical_feedback',
            '_apply_destructible_event', '_feedback_entity_key', '_combat_record_team', '_combat_target_is_spotted',
-           '_present_damage_sticker', '_apply_battle_result', '_present_combat_feedback')
+           '_present_damage_sticker', '_apply_battle_result', '_present_combat_feedback', '_present_combat_hit', '_show_shot')
 CLASS_ATTRIBUTES = ('_ASSIST_EVENT_TYPES',)
-GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS')
+GLOBALS = ('_number', '_COMBAT_EVENT_KINDS', '_SHOT_EVENT_KINDS', '_SIMPLE_EVENT_KINDS', '_field', '_PROJECTILE_IMMUTABLE_FIELDS')
 
 FIXTURE = r'''
 METHOD_NAMES = %r
@@ -201,6 +201,8 @@ NATIVE = {
     '_present_damage_sticker': native.present_damage_sticker,
     '_apply_battle_result': native.battle_result,
     '_present_combat_feedback': lambda b, e, t, a, reason_id=None: native.present_combat_feedback(b, e, t, a, reason_id),
+    '_present_combat_hit': lambda b, e, t, a, attacker_id: native.present_combat_hit(b, e, t, a, attacker_id, globals()),
+    '_show_shot': lambda b, e, update_state=True: native.show_shot(b, e, update_state, globals()),
 }
 SPACE_VISIBILITY_CHECK_SECONDS = 0.5
 class _LiveSpaceVisibilityPending(Exception):
@@ -1431,6 +1433,164 @@ for variant in range(30):
                 target, attacker = roles
                 return b, (event, b._records[target], b._records[attacker]) + ((None,) if v % 2 else (v,))
             run('_present_combat_feedback', make, (variant, event_index, roles)); cases += 1
+# Shot hit presentation.
+class Vec(object):
+    def __init__(self, xyz): self.xyz = tuple(float(v) for v in xyz)
+    def __repr__(self): return 'Vec(%.4f,%.4f,%.4f)' % self.xyz
+    @property
+    def length(self): return math.sqrt(sum(v * v for v in self.xyz))
+    def normalise(self):
+        n = self.length
+        if n > 0: self.xyz = tuple(v / n for v in self.xyz)
+    def scale(self, f): return Vec([v * f for v in self.xyz])
+    def __sub__(self, o): return Vec([a - b for a, b in zip(self.xyz, o.xyz)])
+    def __add__(self, o): return Vec([a + b for a, b in zip(self.xyz, o.xyz)])
+class Rules(object):
+    @staticmethod
+    def is_he(shot): return shot == 'he'
+combat_rules = Rules()
+HIT_EVENTS = [
+    {'kind': 'hit', 'source': 'shot', 'world_pose': True, 'x': 3, 'y': 1, 'z': 4, 'damage': 50, 'shot_result': 2, 'critical': {'events': []}},
+    {'kind': 'bot_hit', 'source': 'shot', 'world_pose': 1, 'x': '2', 'y': None, 'z': 9, 'damage': 0, 'shot_result': 0},
+    {'kind': 'bot_bot_hit', 'source': 'shot', 'world_pose': True, 'x': 1, 'y': 1, 'z': 1, 'damage': 20, 'splash': True},
+    {'kind': 'hit', 'source': 'shot', 'world_pose': True, 'x': 0, 'y': 0, 'z': 0, 'damage': 0, 'shot_result': '1'},
+    {'kind': 'hit', 'source': 'shot', 'world_pose': None, 'damage': 5},
+    {'kind': 'hit', 'source': 'ram', 'world_pose': True},
+    {'kind': 'health', 'source': 'shot', 'world_pose': True},
+    {'kind': 'hit', 'source': 'shot', 'world_pose': True, 'x': float('nan'), 'y': 2, 'z': 2, 'damage': 7, 'shot_result': 9},
+]
+for variant in range(36):
+    for event_index, base in enumerate(HIT_EVENTS):
+        for roles in (('player:3', 'bot:7'), ('bot:7', 'player:3'), ('bot:7', 'bot:7'), ('bot:8', 'bot:9')):
+            def make(log, v=variant, e=base, roles=roles):
+                b = feedback_battle(log, v, worker=v % 17 == 16)
+                b._records['bot:7']['spot_visible'] = v % 5 != 4
+                b._records['bot:7']['network_id'] = 7
+                positions = {'player:3': (0.0, 0.0, 0.0), 'bot:7': (3.0, 1.0, 4.0) if v % 6 else (0.0, 0.0, 0.0),
+                             'bot:8': (1.0, 2.0, 3.0), 'bot:9': (-2.0, 0.0, 5.0)}
+                stub(b, log, '_event_shell', ('he' if v % 3 == 0 else 'ap', {'effectsIndex': None if v % 19 == 18 else v % 2}))
+                stub(b, log, '_record_position', lambda r: positions[[k for k, x in b._records.items() if x is r][0]])
+                b._vector = lambda xyz: (log.append(('battle', '_vector', repr(tuple(xyz)))), Vec(xyz))[1]
+                stub(b, log, '_hit_indicator_marker', lambda e, shot, damage: (damage * 2, v % 2 == 0))
+                stub(b, log, '_critical_hit_mask', 5)
+                stub(b, log, '_projectile_cosmetic_allowed', v % 13 != 12)
+                b._projectile_visual_meta = {'meta': v}
+                effects = {'armorHit': ('stagesH', 'effectsH', 0), 'armorResisted': ('stagesR', 'effectsR', 0),
+                           'armorRicochet': ('stagesC', 'effectsC', 0)}
+                b._runtime.vehicles = Log(log, 'vehicles', g_cache=Log(log, 'cache', shotEffects=[effects, effects]))
+                stub(b, log, '_present_hit_impulse')
+                stub(b, log, '_hit_damage_factor', 0.5)
+                stub(b, log, '_present_splash_hit', 'splash')
+                stub(b, log, '_optional_feature_enabled', v % 11 != 10)
+                stub(b, log, '_report_effect')
+                stub(b, log, '_impact_sound_identity', {'sound': v} if v % 7 else {'dir': 1})
+                stub(b, log, '_warn_optional_failure')
+                terrain = Log(log, 'terrain', missing=('addNew',) if v % 23 == 22 else ())
+                b._avatar = Log(log, 'avatar', terrainEffects=terrain)
+                target, attacker = roles
+                return b, (copy.deepcopy(e), b._records[target], b._records[attacker], v % 4 and 70 + v)
+            run('_present_combat_hit', make, (variant, event_index, roles)); cases += 1
+# Ordered shot presentation.
+class Recorder(object):
+    def __init__(self, log): self.log = log
+    def write(self, text): self.log.append(('stdout', text))
+class Gun(object):
+    def __init__(self, burst): self.burst = burst
+class Descriptor(object):
+    def __init__(self, burst): self.gun = Gun(burst)
+    def __repr__(self): return '<descriptor>'
+class Entity(object):
+    def __init__(self, log, v):
+        object.__setattr__(self, '_log', log)
+        object.__setattr__(self, 'typeDescriptor', Descriptor((3, 0.1) if v % 4 == 1 else ('x',) if v % 4 == 2 else () if v % 4 == 3 else (1,)))
+        object.__setattr__(self, 'appearance', Log(log, 'appearance', turretMatrix=0.5, gunMatrix=None if v % 3 else 0.25))
+        if v % 2: object.__setattr__(self, '_offlineLANPresentation', True)
+    def __repr__(self): return '<entity>'
+    def __setattr__(self, name, value):
+        self._log.append(('entity', 'set', name, rep(value)))
+        object.__setattr__(self, name, value)
+    def __delattr__(self, name):
+        self._log.append(('entity', 'del', name))
+        object.__delattr__(self, name)
+    def showShooting(self, *args): self._log.append(('entity', 'showShooting') + args)
+class Mat(object):
+    def __init__(self, value):
+        if value is None: raise TypeError('no matrix')
+        self.yaw, self.pitch = value, value / 2
+SHOT_EVENTS = [
+    {'kind': 'shot', 'attacker_bot': 7, 'projectile_id': 'p7', 'origin': (1, 2, 3), 'velocity': (0, 0, 9), 'gravity': '9.8',
+     'maxDistance': 500, 'shot_yaw': 0.2, 'shot_pitch': -0.1, 'burst_index': 0, 'shell_index': 2, 'bot_launch_time_us': 5},
+    {'kind': 'shot', 'attacker': 3, 'projectile_id': 'p3', 'burst_index': '1', 'shell_index': None, 'fire_intent_seq': 4, 'shot_seq': 2},
+    {'kind': 'shot', 'attacker': 3, 'projectile_id': 'p4', 'origin': (0, 0, 0), 'velocity': (1, 0, 0), 'gravity': None,
+     'maxDistance': 1, 'burst_index': 'x', 'burst_count': '4'},
+    {'kind': 'shot', 'attacker_bot': 8, 'projectile_id': 'p8', 'shot_yaw': 1},
+    {'kind': 'shot', 'projectile_id': 'p0'},
+    {'kind': 'shot', 'attacker_bot': 99, 'projectile_id': 'p9'},
+    {'kind': 'shot', 'attacker_bot': 7, 'projectile_id': 'done', 'origin': 1, 'velocity': 2, 'gravity': 3, 'maxDistance': 4},
+]
+for variant in range(40):
+    for event_index, base in enumerate(SHOT_EVENTS):
+        for update in (True, False):
+            log_holder = []
+            def make(log, v=variant, e=base, update=update):
+                log_holder.append(log)
+                sys.stdout = Recorder(log)
+                b = feedback_battle(log, v, worker=v % 19 == 18)
+                b._records['bot:7']['kind'] = 'bot'
+                b._records['bot:7']['_remote_aim_signature'] = (1, 2, 3) if v % 5 else 7
+                b._records['bot:8']['kind'] = 'bot'
+                b._replay_mode = v % 7 == 6
+                b._local_projectile_presented = set(['p3'] if v % 9 == 8 or v % 7 == 6 else [])
+                b._local_projectile_presentations = {'p4': 1} if v % 10 == 9 else {}
+                stub(b, log, '_clock', 2.5)
+                fake_module('native_client_environment', Log(log, 'environment'))
+                b._local_fire_intent = ({'player_burst': {'committed': (v // 6) % 2, 'count': 5}} if v % 6 == 1 else
+                                        {'other': 1} if v % 6 == 2 else None)
+                entity = Entity(log, v)
+                stub(b, log, '_server_entity', None if v % 23 == 22 else entity)
+                b._sync = None if v % 8 == 0 else Log(log, 'sync', _entities={'bot:7': {'interpolation_delay_us': 9, 'consumer_resume_pending': 1}})
+                b._runtime = Log(log, 'runtime', math=Log(log, 'math', {'Matrix': Mat}))
+                b._start_message = {'round_id': 3} if v % 2 else None
+                b._fire_timeline = {'p3': {'trigger': 4.0}, 'p7': {'trigger': 6.0, 'shown': None}} if v % 4 else {}
+                b._projectile_visual_terminals = set(['done'])
+                meta = {'projectile_id': e.get('projectile_id'), 'burst_index': v % 2,
+                        'burst_count': ('3', None, '-2')[v % 3], 'is_he': False,
+                        'segment_origin': 1, 'segment_velocity': 2, 'segment_start_time_ms': 3, 'ricochet_count': 0,
+                        'bot_presentation_time_us': 11 if v % 5 == 1 else None, 'shell': 'ap'}
+                stub(b, log, '_projectile_wire_meta', None if v % 11 == 10 else (lambda ev: dict(meta)))
+                b._projectile_meta = {'p7': dict(meta, is_he=v % 13 == 12)} if v % 2 else {}
+                stub(b, log, '_install_projectile_meta', lambda m: dict(m, installed=True))
+                stub(b, log, '_projectile_visual_start', 'start')
+                def ensure(*args, **kwargs):
+                    log.append(('battle', '_ensure_projectile_visual', len(args), sorted(kwargs)))
+                    if v % 17 == 16: raise ValueError('visual failed')
+                b._ensure_projectile_visual = ensure
+                b._projectile_visual_meta = {'p7': {'admitted': v % 4 != 3}} if v % 3 else {}
+                stub(b, log, '_optional_feature_enabled', v % 12 != 11)
+                stub(b, log, '_shot_muzzle_drawn', v % 14 != 13)
+                stub(b, log, '_run_optional_feature')
+                stub(b, log, '_show_replay_local_muzzle')
+                stub(b, log, '_show_local_shot_without_extra')
+                return b, (copy.deepcopy(e), update)
+            try:
+                run('_show_shot', make, (variant, event_index, update)); cases += 1
+            finally:
+                sys.stdout = sys.__stdout__
+# A failure after the transient entity attributes were set still removes them (try/finally).
+for impl in ('pinned', 'native'):
+    log = []
+    b, values = make(log, v=16, e=SHOT_EVENTS[0], update=False)
+    sys.stdout = sys.__stdout__
+    entity = b._server_entity()
+    try:
+        (Pinned.__dict__['_show_shot'].__get__(b) if impl == 'pinned' else lambda *a: NATIVE['_show_shot'](b, *a))(*values)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('visual failure did not propagate')
+    left = sorted(k for k in entity.__dict__ if k != '_offlineLANShotIndex' and k.startswith('_offlineLANShot') or k.startswith('_offlineLANProjectile') or k == '_offlineLANCanonicalTracerOwned')
+    assert left == [], (impl, left)
+cases += 2
 print('lifecycle differential ok %d' % cases)
 for name, (errors, quiet, effects) in sorted(TALLY.items()):
     print('%s errors=%d no_calls=%d with_calls=%d' % (name, errors, quiet, effects))
@@ -1450,7 +1610,7 @@ def pinned_source(fork):
     source = prepare.ADAPTERS[Path(RUNTIME)]((Path(fork) / RUNTIME).read_text())
     tree = ast.parse(source)
     lines = source.splitlines()
-    chunks = ['import math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):',
+    chunks = ['import json, math', '_INTEGER_TYPES = (int, long)', 'class Pinned(object):',
               "    def __repr__(self):\n        return '<battle>'"]
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) in GLOBALS for t in node.targets):
