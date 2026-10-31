@@ -1,4 +1,5 @@
 #include "stock_native_client_drive_presentation.hpp"
+#include "stock_native_battle_local_laws.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -28,8 +29,8 @@ EngineMode engineMode(bool alive,double forward,double turn,double speed){
     if(turn<0.)flags|=4;else if(turn>0.)flags|=8;return {flags||std::abs(speed)>.05?2:1,flags};
 }
 Vec trackScroll(const PlayerDescriptor&d,const PlayerState&s,double minimum,double maximum){
-    double speed=s.speed+pivot_offset(d,s.speed,s.turn_speed,s.airborne,s.drive_throttle)*s.turn_speed;
-    const double cap=d.motion.drive.forward*.995;return {clamp(clamp(speed+s.turn_speed*d.motion.track_center,-cap,cap),minimum,maximum),clamp(clamp(speed-s.turn_speed*d.motion.track_center,-cap,cap),minimum,maximum)};
+    const auto belts=native_battle::local::trackScroll(d.rotation_around_center,d.motion.track_center,d.motion.drive.forward,s.speed,s.turn_speed,s.airborne,s.drive_throttle);
+    return {clamp(belts[0],minimum,maximum),clamp(belts[1],minimum,maximum)};
 }
 std::optional<SwingEdge>accelerationSwing(int flags,int previous,double move,double rotate){
     if((flags&3)^(previous&3))return SwingEdge{move,flags&1?-1.:flags&2?1.:0.};

@@ -9,7 +9,7 @@
 #include "stock_native_client_weapon_runtime.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_client_critical.hpp"
-#include "stock_native_battle.hpp"
+#include "stock_native_battle_local.hpp"
 namespace stock_native_client_weapon_runtime {
 // Provided by the projectiles/gun subsystem: the gun advanced to `now` (optionally along a frozen motion sample).
 Gun* advanceWeapon(native_battle::Battle&,double now);
@@ -67,6 +67,8 @@ bool publishInput(native_battle::Battle&battle,double now,std::optional<bool>sie
     if(gun){auto checkpoint=p::dict();p::set(checkpoint.get(),"reload_time",p::number(gun->reload_time));p::set(checkpoint.get(),"reload_duration",p::number(gun->reload_duration));p::set(checkpoint.get(),"clip",p::integer(gun->clip));p::set(checkpoint.get(),"clip_size",p::integer(gun->config.clip_size));p::set(checkpoint.get(),"dispersion",p::number(gun->dispersion));p::set(kwargs.get(),"gun_checkpoint",checkpoint);p::set(kwargs.get(),"shell_index",p::integer(gun->shot));p::set(kwargs.get(),"next_shell_index",p::integer(gun->pending.value_or(gun->shot)));p::set(kwargs.get(),"shell_change_pending",p::boolean(gun->pending.has_value()));}
     if(const auto anchor=native_battle::vehicles::poseMotionAnchor(battle)){const double elapsed=std::max(0.,now-anchor->second);const auto sample=static_cast<std::int64_t>(double(anchor->first)+elapsed*1000000.);p::set(kwargs.get(),"pose_time_us",p::integer(sample));}
     if(siege)p::set(kwargs.get(),"siege_enabled",p::boolean(*siege));p::Ref accepted(sendInput(nullptr,args.get(),kwargs.get()));if(!p::flag(accepted.get()))return false;
+    // The transport owns the round's counter; the local vehicle keeps the sequence it just admitted.
+    if(battle.local)battle.local->input_seq=p::integral(client.get(),"_input_seq");
     if(!hasCapability(client.get(),"ram_contact_ledger_v2"))throw p::Error("Server lost the RAM contact ledger contract");
     if(!ledger.destructible_contacts.array.empty()&&!hasCapability(client.get(),"human_ram_timeline_v1"))throw p::Error("Server lost the player pose timeline contract");
     trackRepair(client.get(),battle);return true;
