@@ -7,10 +7,7 @@
 namespace native_battle {
 namespace vehicles {
 // The player's own vehicle entered presentation (BattleRuntime installs its record as local, not ready).
-void installLocal(Battle& b, std::int64_t engine_id, const Value& local_state);
-void markLocalReady(Battle& b);
 // Teardown: stop every remote marker, destroy every remote entity, forget the table.
-void quiesce(Battle& b);
 }
 namespace remote {
 // Creates the remote factory for this round's space (native presentation on the visible client).
@@ -20,9 +17,6 @@ std::size_t wreckPrewarmPending(Battle& b);
 void abandonWreckPrewarm(Battle& b);
 }
 namespace events {
-void applyRules(Battle& b, const Value& rules);
-void applyBattleResult(Battle& b, const Value& result);
-bool hasPendingPresentation(const Battle& b);
 }
 namespace projectiles {
 void start(Battle& b);
@@ -133,7 +127,6 @@ void disableExpertPresentation(Battle& b);
 }
 namespace vehicles {
 // The raw LAN snapshot: the replica reads its receive-thread `_native_snapshot` capsule.
-void receiveSnapshotMessage(Battle& b, PyObject* message, double now);
 }
 // Integration glue (stock_native_battle_glue.cpp).
 namespace local { void start(Battle& b); }

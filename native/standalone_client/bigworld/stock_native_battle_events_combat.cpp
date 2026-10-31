@@ -138,6 +138,36 @@ void applyStatisticsEvent(Battle& b, const Value& event) {
     vehicles::applyStatistics(b, *v, v->presented.state);
 }
 
+// BattleRuntime._apply_rules: team base capture through the stock arena callback.
+bool applyRules(Battle& b, const Value& rules) {
+    const auto& incoming = field(rules, "bases").resolved();
+    auto arena = py::optional(b.engine.avatar.get(), "arena");
+    auto callback = py::optional(arena.get(), "onTeamBasePointsUpdate");
+    if (!b.worker && !py::callable(callback)) return false;
+    bool changed = false;
+    for (int team = 1; team <= 2; ++team) {
+        const std::string key = std::to_string(team);
+        const Value& raw = incoming.kind == Value::Kind::Object && incoming.object.count(key) ? incoming.get(key) : Value();
+        BaseCapture current;
+        current.points = std::max<std::int64_t>(0, std::min<std::int64_t>(integer(field(raw, "points")), 100));
+        current.time_left = std::max(0., field(raw, "time_left").numeric());
+        current.invaders = std::max<std::int64_t>(0, std::int64_t(field(raw, "invaders").numeric()));
+        current.stopped = field(raw, "stopped").truth();
+        auto stored = b.events->bases.find(team);
+        if (stored != b.events->bases.end() && !(stored->second != current)) continue;
+        b.events->bases[team] = current;
+        if (!b.worker)
+            p::Ref(PyObject_CallFunction(callback.get(), const_cast<char*>("iiLdLO"), team, 0, (long long)current.points, current.time_left,
+                                         (long long)current.invaders, current.stopped ? Py_True : Py_False));
+        changed = true;
+    }
+    return changed;
+}
+
+void applyBattleResult(Battle& b, const Value& result) { feedback::battleResult(b, result); }
+
+bool hasPendingPresentation(const Battle& b) { return b.events && !b.events->journal.empty(); }
+
 void showShot(Battle& b, const Value& event, bool update_state) { feedback::showShot(b, event, update_state); }
 void environmentCriticalFeedback(Battle& b, const Value& event) { feedback::environmentCritical(b, event); }
 void assist(Battle& b, const Value& event) { feedback::assist(b, event); }

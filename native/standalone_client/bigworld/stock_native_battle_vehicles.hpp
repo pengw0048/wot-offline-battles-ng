@@ -22,6 +22,12 @@ void advance(Battle& b, double now);
 void flushPendingBotCreate(Battle& b, double now);
 void flushPendingEntities(Battle& b, double now);
 
+// The local vehicle, teardown and the raw LAN snapshot.
+void installLocal(Battle& b, std::int64_t engine_id, const Value& local_state);
+void markLocalReady(Battle& b);
+void quiesce(Battle& b);
+void receiveSnapshotMessage(Battle& b, PyObject* message, double now);
+
 // Queries every subsystem may use.
 bool alive(const Battle& b, const Actor& vehicle, PyObject* entity);   // the pinned _record_alive
 p::Ref entity(const Battle& b, const Actor& vehicle);                  // stock entity or None

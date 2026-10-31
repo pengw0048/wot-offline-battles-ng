@@ -17,8 +17,17 @@ public:
     std::size_t size() const { return ids_.size(); }
 };
 
+// One team base's capture state as last shown through Arena.onTeamBasePointsUpdate.
+struct BaseCapture {
+    std::int64_t points = 0, invaders = 0;
+    double time_left = 0.;
+    bool stopped = false;
+    bool operator!=(const BaseCapture& o) const { return points != o.points || invaders != o.invaders || time_left != o.time_left || stopped != o.stopped; }
+};
+
 struct Events {
     std::vector<Value> journal;
+    std::map<int, BaseCapture> bases;
     EventIds accepted, applied;
     std::optional<std::int64_t> local_last_attacker;
     std::size_t effect_reports = 0, hit_impulse_reports = 0;
@@ -31,6 +40,11 @@ bool receive(Battle& b, const Value& message);
 bool drain(Battle& b);
 // Whether a journaled combat event still targets this vehicle.
 bool pendingCombatFor(const Battle& b, const Actor& vehicle);
+// The snapshot's capture rules (team base points) and battle result.
+bool applyRules(Battle& b, const Value& rules);
+void applyBattleResult(Battle& b, const Value& result);
+// Combat already received but not yet presented: account settlement waits behind it.
+bool hasPendingPresentation(const Battle& b);
 // Whether any journaled event names this vehicle key.
 bool references(const Battle& b, const std::string& key);
 // A local kill reached the stock arena: the kill contract diagnostics and session statistics.

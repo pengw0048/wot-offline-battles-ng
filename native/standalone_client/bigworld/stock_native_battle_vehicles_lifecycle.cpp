@@ -285,5 +285,51 @@ void flushPendingEntities(Battle& b, double now) {
             throw p::Error("Vehicle " + std::to_string(v.engine_id) + " did not enter world before timeout");
     }
 }
+// The player's own vehicle entered the arena (the pinned local record: local, not ready).
+void installLocal(Battle& b, std::int64_t engine_id, const Value& local_state) {
+    const std::string key = "player:" + std::to_string(b.local_player);
+    auto& entry = b.vehicles->actors[key];
+    if (!entry) {
+        entry = std::make_shared<Actor>();
+        entry->key = key;
+        entry->kind = "player";
+        entry->id = b.local_player;
+    }
+    entry->local = true;
+    entry->engine_id = engine_id;
+    entry->ready = false;
+    entry->presented = cs::Presentation();
+    entry->presented.state = local_state;
+    entry->presented.network_id = b.local_player;
+    ++b.roster->revision;
+}
+
+void markLocalReady(Battle& b) {
+    if (Actor* own = b.localVehicle()) own->ready = true;
+}
+
+// Teardown: every remote entity leaves, then the table is forgotten.
+void quiesce(Battle& b) {
+    if (b.remote) remote::destroyAll(b);
+    for (auto& entry : b.vehicles->actors) {
+        entry.second->engine_id = 0;
+        entry.second->ready = false;
+        entry.second->presented = cs::Presentation();
+    }
+    b.vehicles->actors.clear();
+    if (b.roster) {
+        b.roster->pending_bot_creates.clear();
+        b.roster->pending_order.clear();
+        ++b.roster->revision;
+    }
+}
+
+void receiveManifest(Battle& b, const Value& message) { remote::receiveManifest(b, message); }
+void receiveSnapshot(Battle& b, const Value& message, double now) { remote::receiveSnapshot(b, message, now); }
+// The raw LAN snapshot: the replica also consumes its receive-thread `_native_snapshot` capsule.
+void receiveSnapshotMessage(Battle& b, PyObject* message, double now) {
+    remote::receiveSnapshot(b, remote::readMessage(b, message, false), now);
+}
+void advance(Battle& b, double now) { remote::advance(b, now); }
 }
 }
