@@ -1,4 +1,4 @@
-"""The Hybrid client compiles out the profiler, memory debug and BW_GUARD stack tracker like #1513's consumer build."""
+"""The Hybrid client compiles out the profiler and memory debug like #1513's consumer build and keeps BW_GUARD."""
 import importlib.util
 import os
 from pathlib import Path
@@ -48,7 +48,7 @@ class ConsumerInstrumentationTests(unittest.TestCase):
         self.assertEqual(restored, self.original)
         self.assertEqual(patcher.patch_text(self.patched), self.patched)
         mutations = [self.original.replace(patcher.SEAMS[0][0], patcher.SEAMS[0][1], 1),
-                     self.original.replace(patcher.SEAMS[2][0], 'changed', 1),
+                     self.original.replace(patcher.SEAMS[1][0], 'changed', 1),
                      self.original + '\n' + patcher.SEAMS[1][0]]
         for text in mutations:
             with self.assertRaises(ValueError):
@@ -58,12 +58,15 @@ class ConsumerInstrumentationTests(unittest.TestCase):
     def test_hybrid_matches_consumer_and_keeps_force_switches(self):
         before, after = resolved(self.original), resolved(self.patched)
         self.assertEqual([before[name] for name in FEATURES[:3]], [1, 1, 1])
-        self.assertEqual([after[name] for name in FEATURES[:3]], [0, 0, 0])
+        # BW_GUARD keeps the guard trace in crash reports while the port is under development.
+        self.assertEqual([after[name] for name in FEATURES[:3]], [0, 0, 1])
         # Watchers, minidumps, logging and allocator statistics keep their Hybrid values.
         self.assertEqual(dict((name, after[name]) for name in FEATURES[3:]),
                          dict((name, before[name]) for name in FEATURES[3:]))
-        forced = resolved(re.sub(r'(#define FORCE_ENABLE_(PROFILER|STACK_TRACKER)\s+)0', r'\g<1>1', self.patched))
-        self.assertEqual((forced['ENABLE_PROFILER'], forced['ENABLE_STACK_TRACKER'], forced['ENABLE_MEMORY_DEBUG']), (1, 1, 0))
+        # The profiler has its own force switch; memory debug opts in through the engine's ENABLE_MEMTRACKER.
+        forced = resolved('#define ENABLE_MEMTRACKER\n' + re.sub(
+            r'(#define FORCE_ENABLE_PROFILER\s+)0', r'\g<1>1', self.patched))
+        self.assertEqual((forced['ENABLE_PROFILER'], forced['ENABLE_MEMORY_DEBUG']), (1, 1))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile out the profiler, memory debug and BW_GUARD stack tracker as #1513's consumer build does."""
+"""Compile out the profiler and memory debug as #1513's consumer build does; BW_GUARD stays for crash guard traces."""
 import argparse
 from pathlib import Path
 
@@ -8,17 +8,15 @@ PATH = 'lib/cstdmf/config.hpp'
 SEAMS = (
     ('(!CONSUMER_CLIENT_BUILD || FORCE_ENABLE_PROFILER)', '(0 || FORCE_ENABLE_PROFILER)'),
     ('((!defined(MF_SERVER) && !CONSUMER_CLIENT_BUILD) || FORCE_ENABLE_MEMORY_DEBUG)', '(0 || FORCE_ENABLE_MEMORY_DEBUG)'),
-    ('(!CONSUMER_CLIENT_BUILD || ENABLE_MEMORY_DEBUG || FORCE_ENABLE_STACK_TRACKER)',
-     '(ENABLE_MEMORY_DEBUG || FORCE_ENABLE_STACK_TRACKER)'),
 )
 
 
 def patch_text(text):
     old = [text.count(before) for before, _ in SEAMS]
     new = [text.count(after) for _, after in SEAMS]
-    if old == [0, 0, 0] and new == [1, 1, 1]:
+    if old == [0, 0] and new == [1, 1]:
         return text
-    if old != [1, 1, 1] or new != [0, 0, 0]:
+    if old != [1, 1] or new != [0, 0]:
         raise ValueError('Consumer instrumentation seams are partial, duplicated, or changed')
     for before, after in SEAMS:
         text = text.replace(before, after, 1)
