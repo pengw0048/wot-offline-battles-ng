@@ -3,6 +3,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_remote_internal.hpp"
+#include "stock_native_battle_startup.hpp"
 #include <algorithm>
 #include <sstream>
 
