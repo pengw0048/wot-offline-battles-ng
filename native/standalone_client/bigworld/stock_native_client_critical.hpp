@@ -36,6 +36,8 @@ public:
     // The supplied current state is canonical except for this owner's two
     // track fields. All other module, fire and physical crew updates survive.
     bool accept(std::int64_t revision,std::int64_t base,std::int64_t ack,Critical&);
+    // Without a pending track checkpoint the client stops owning its tracks (local death).
+    void release(){if(state_.report.resolved().kind==shared::Value::Kind::Null)state_.owned=false;}
     void reconcile(const shared::Actor&,Critical&)override;
     Effects advance(Critical,double dt,double now,bool eligible,double repair_factor,
         const std::set<std::string>&casualties);

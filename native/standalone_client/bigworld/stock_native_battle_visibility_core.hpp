@@ -9,12 +9,6 @@
 
 namespace native_battle {
 // Calls into other subsystems.
-namespace local {
-// The visible native scene: world registry, pipeline and destructible backend.
-stock_native_client_drive::SceneAccess scene(Battle& b);
-// Refreshes the native critical status before vision factors are read.
-void synchronizeStatus(Battle& b, double now);
-}
 namespace world {
 // Current fallen/standing foliage for camouflage, or null without foliage.
 const native_visibility::FoliageSnapshot* foliageSnapshot(const Battle& b);

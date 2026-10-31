@@ -36,6 +36,7 @@ std::pair<Actor*, p::Ref> spectator(Battle& b, std::int64_t engine_id, bool allo
 }
 }
 
+p::Ref spectatorEntity(Battle& b, std::int64_t engine_id) { return spectator(b, engine_id, false).second; }
 std::optional<std::int64_t> spectated(const Battle& b) { return b.feedback->spectated_engine_id; }
 void setSpectated(Battle& b, std::optional<std::int64_t> engine_id) { b.feedback->spectated_engine_id = engine_id; }
 

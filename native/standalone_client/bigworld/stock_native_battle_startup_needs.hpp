@@ -33,30 +33,10 @@ void publishReload(Battle& b, bool force);
 p::Ref replayState(Battle& b);
 void applyReplayLocal(Battle& b, PyObject* message);
 }
-namespace local {
-// The stock local Vehicle entered (server bridge prepareVehicleEnter): publish the canonical pose first.
-void prepare(Battle& b, PyObject* entity);
-// Bind the prepared pose to the stock model/providers, swinging and engine audio.
-void attach(Battle& b);
-void detach(Battle& b);
-void publishRpm(Battle& b, double now, bool force);
-// LAN relay of one stock movement/aim/shoot mailbox; false when a shot was rejected locally.
-p::Ref sendAvatarInput(Battle& b, std::int64_t vehicle_id, const char* kind, PyObject* payload);
-bool changeVehicleSetting(Battle& b, std::int64_t vehicle_id, PyObject* code, PyObject* value);
-bool switchViewpoint(Battle& b, bool is_viewpoint, std::int64_t id);
-void releasePostmortemVisibility(Battle& b);
-void controlModeChanged(Battle& b, PyObject* mode);
-// The local scalars a replay records (yaw, pitch, roll, speeds, flying flags, Siege aim pitch, drive turn/throttle).
-p::Ref replayState(Battle& b);
-void enableSiegeHints(Battle& b);
-}
 namespace visibility {
 void start(Battle& b);
 void enableExpert(Battle& b);
 bool monitorDamagedDevices(Battle& b, std::int64_t vehicle_id);
-}
-namespace local {
-void ackRamContacts(Battle& b, const Value& snapshot);
 }
 namespace bots {
 // Bot lineup: (team, slot) -> vehicle type, derived identically on every process.
@@ -90,9 +70,6 @@ namespace params {
 Value canonical(Battle& b, const Value& raw);
 std::int64_t livingSkillCount(Battle& b, const Value& snapshot, const char* skill, PyObject* crew_critical);
 double boosterSkillValue(Battle& b, const Value& snapshot, const char* name, double fallback);
-}
-namespace local {
-void applyPhysicsTuning(Battle& b, const Value& tuning);
 }
 namespace projectiles {
 void applyHeTuning(Battle& b, const Value& tuning);

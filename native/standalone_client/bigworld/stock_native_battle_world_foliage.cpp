@@ -191,7 +191,6 @@ void refreshFallenFoliage(Battle& b, double now, bool force) {
 void foliage(Battle& b, double now) {
     spaceFrame(b, now);
     if (!b.worker) {
-        local::driveFrame(b, now);
         try {
             refreshFallenFoliage(b, now, false);
         } catch (const std::exception& e) {

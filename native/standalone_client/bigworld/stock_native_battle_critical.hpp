@@ -56,6 +56,8 @@ double clampVisionFactor(double factor);
 // `canonical` so the owning client's tracks survive while its repair checkpoint is unacknowledged.
 bool reconcileAuthority(Battle& b, Actor& vehicle, const Value& source, Value* canonical);
 bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::int64_t ack_seq, std::int64_t server_revision);
+// The local vehicle died: a lineage without a pending track checkpoint returns track ownership to the server.
+void localDeath(Battle& b);
 // Repair timers, owner-CAS track repair and the stock repair HUD of the local vehicle.
 void tick(Battle& b, double dt);
 void retire(Battle& b);

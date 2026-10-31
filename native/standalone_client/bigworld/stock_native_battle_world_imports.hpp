@@ -8,7 +8,6 @@ namespace native_battle {
 namespace local {
 // The visible client's native drive step over world::sceneAccess (native_client_drive.frame without its own
 // remapping/body update/ledger sync, which the world space now owns); the worker has none.
-void driveFrame(Battle& b, double now);
 // Rolls one rejected local destructible prediction back; server_pose is (position, yaw) when the worker sent one.
 bool destructibleRejection(Battle& b, std::int64_t sequence, const std::optional<std::pair<Point, double>>& server_pose);
 }

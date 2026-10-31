@@ -63,6 +63,8 @@ bool switchPostmortemViewpoint(Battle& b, bool is_viewpoint, std::int64_t engine
 bool fallbackPostmortemViewpoint(Battle& b, std::int64_t excluded_engine_id);
 bool releasePostmortemVisibility(Battle& b);
 std::optional<std::int64_t> spectated(const Battle& b);
+// The entity of a server-valid allied postmortem target other than the player (_spectator_record), or None.
+p::Ref spectatorEntity(Battle& b, std::int64_t engine_id);
 void setSpectated(Battle& b, std::optional<std::int64_t> engine_id);
 }
 }

@@ -116,7 +116,7 @@ bool sight(Battle& b, VisibilityCore& c, const env::ActorView& observer, const e
     static const native_visibility::FoliageSnapshot no_foliage;
     const auto* foliage = world::foliageSnapshot(b);
     auto prepared = native_visibility::prepare_visibility(pair, foliage ? *foliage : no_foliage);
-    auto scene = local::scene(b);
+    auto scene = stock_native_client_drive::sceneAccess(b);
     if (!scene.pipeline || !scene.registry) throw p::Error("Native local sight scene is unavailable");
     std::set<world_query::Key> broken;
     for (const auto& id : scene.registry->skin.destroyed) broken.insert({std::get<0>(id), std::get<1>(id)});
@@ -232,7 +232,7 @@ bool apply(Battle& b, VisibilityCore& c, const env::Output& output) {
 
 // One spotting pass; radio_only re-evaluates enemy memory after a team observation.
 bool runSpotting(Battle& b, VisibilityCore& c, double now, bool hud_only, bool radio_only) {
-    local::synchronizeStatus(b, now);
+    stock_native_client_drive::synchronizeStatus(b, now);
     if (!current(b, &c)) return false;
     env::Frame input;
     input.now = now;

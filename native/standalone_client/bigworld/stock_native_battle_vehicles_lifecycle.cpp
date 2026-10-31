@@ -157,7 +157,7 @@ void destroy(Battle& b, const std::string& key, const Value& event) {
     }
     Actor& v = *found;
     auto& d = v.presented;
-    if (!b.worker) local::fallbackPostmortemViewpoint(b, v.engine_id);
+    if (!b.worker) feedback::fallbackPostmortemViewpoint(b, v.engine_id);
     if (field(event, "keep_corpse").truth()) {
         d.state = deadState(d.state, event);
         materialize(b, v);

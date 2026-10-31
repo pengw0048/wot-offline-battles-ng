@@ -3,11 +3,16 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_local.hpp"
+#include "stock_native_battle_feedback.hpp"
+#include "stock_native_battle_visibility.hpp"
+#include "stock_native_battle_vehicles_internal.hpp"
 #include "stock_native_client_survival_python.hpp"
 #include "stock_native_client_critical.hpp"
 #include "stock_native_client_input_runtime.hpp"
 #include "stock_native_client_drive_python.hpp"
 #include "stock_native_client_drive_runtime.hpp"
+#include "stock_native_client_drive_publication.hpp"
+#include "stock_native_world_pipeline.hpp"
 #include <cmath>
 
 namespace native_battle {
@@ -23,6 +28,10 @@ bool changeSetting(Battle&, int code, PyObject* value);
 namespace vehicles {
 // Provided by the vehicles subsystem: publishes the native rotator angle as the server gun echo.
 bool echoLocalGunAngles(Battle&, std::optional<double> turret_yaw, std::optional<double> gun_pitch);
+}
+namespace visibility {
+// Provided by the visibility subsystem: re-evaluate spotting on the next frame.
+void resetSpottingTimer(Battle& b);
 }
 namespace local {
 namespace dr = stock_native_client_drive;
@@ -268,8 +277,15 @@ void preparePresentation(Battle& b, PyObject* entity) {
     auto& l = *b.local;
     if (l.matrix) throw p::Error("player pose was prepared more than once");
     auto native_attribute = py::attr(b.engine.compatibility.get(), "native_vehicle_attribute");
+    auto native_matrix = py::invoke(native_attribute.get(), entity, p::text("matrix").get());
     auto filter = py::invoke(native_attribute.get(), entity, p::text("filter").get());
-    (void)filter;
+    PyObject* raw_stabilised = PyObject_GetAttrString(filter.get(), "stabilisedMatrix");
+    if (!raw_stabilised) {
+        if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("native Vehicle filter stabilisedMatrix");
+        PyErr_Clear();
+    }
+    l.native_matrix = own(std::move(native_matrix));
+    l.native_stabilised_matrix = raw_stabilised ? Object(raw_stabilised) : l.native_matrix;
     auto matrix = construct(b, "Matrix");
     p::Ref ypr(Py_BuildValue("(ddd)", l.yaw, 0., 0.));
     py::call(matrix.get(), "setRotateYPR", ypr.get());
@@ -299,6 +315,9 @@ void attachPresentation(Battle& b) {
     if (entity.get() == Py_None) throw p::Error("player Vehicle is unavailable for presentation");
     if (!l.matrix) preparePresentation(b, entity.get());
     if (hasSiege(py::optional(entity.get(), "typeDescriptor").get()) && !l.siege_body_matrix) {
+        auto native_attribute = py::attr(b.engine.compatibility.get(), "native_vehicle_attribute");
+        auto filter = py::invoke(native_attribute.get(), entity.get(), p::text("filter").get());
+        l.native_stabilised_matrix = own(py::optional(filter.get(), "stabilisedMatrix"));
         prepareSiegePose(b, entity.get());
         auto motion = vector(b, l.camera_velocity);
         poseOverlay(b, entity.get(), motion.get());
@@ -509,5 +528,178 @@ std::optional<bool> reconcileCritical(Battle& b, Actor& vehicle, const Value& so
 const Value& damageReport(const Battle& b) { return stock_native_client_critical::report(b); }
 double vehicleSpeed(const Battle& b) { return b.local ? b.local->speed : 0.; }
 double vehicleRotationSpeed(const Battle& b) { return b.local ? b.local->turn_speed : 0.; }
+
+namespace {
+// Siege edges read the player driver; it is installed by the first live drive slice.
+bool driving(const Battle& b) { return !b.worker && !b.replay && b.live && b.local && b.local->drive; }
+p::Ref wire(const Value& value) { return p::Ref(cs::write(value.resolved())); }
+std::int64_t localEngineId(const Battle& b) {
+    if (!b.engine.server) return 0;
+    auto id = py::optional(b.engine.server.get(), "vehicle_id");
+    return id.get() == Py_None ? 0 : p::wide(id.get());
+}
+// BattleRuntime._assert_postmortem_control_sources: every death-camera provider stock selected is the copied pose.
+bool assertPostmortemSources(Battle& b, PyObject* handler) {
+    const auto& l = *b.local;
+    auto matrices = py::optional(b.engine.avatar.get(), "consistentMatrices");
+    auto attached = py::optional(matrices.get(), "attachedVehicleMatrix");
+    if (attached.get() == Py_None) throw p::Error("#1513 attached vehicle matrix provider is unavailable");
+    auto attached_target = py::optional(attached.get(), "target");
+    p::Ref expected_target = obj(bodyPose(l));
+    const auto spectated = feedback::spectated(b);
+    if (spectated && *spectated != localEngineId(b)) {
+        auto vehicle = feedback::spectatorEntity(b, *spectated);
+        if (vehicle.get() != Py_None) replace(expected_target, py::attr(vehicle.get(), "matrix"));
+    }
+    if (attached_target.get() != expected_target.get()) throw p::Error("#1513 postmortem attached provider captured a stale vehicle pose");
+    auto control = py::optional(handler, "_AvatarInputHandler__curCtrl");
+    auto camera = py::optional(control.get(), "_PostMortemControlMode__cam");
+    if (camera.get() == Py_None) throw p::Error("#1513 postmortem camera is unavailable");
+    p::Ref expected_camera = p::retain(attached.get());
+    if (py::optional(control.get(), "curPostmortemDelay").get() != Py_None) {
+        auto lookup = py::optional(b.engine.bigworld.get(), "entity");
+        if (!py::callable(lookup)) throw p::Error("#1513 postmortem vehicle lookup is unavailable");
+        auto vehicle = py::invoke(lookup.get(), py::attr(b.engine.avatar.get(), "playerVehicleID").get());
+        if (vehicle.get() != Py_None) {
+            replace(expected_camera, py::optional(vehicle.get(), "matrix"));
+            if (expected_camera.get() != bodyPose(l).get()) throw p::Error("#1513 postmortem vehicle captured a stale vehicle pose");
+        } else {
+            auto calculator = py::optional(handler, "steadyVehicleMatrixCalculator");
+            replace(expected_camera, py::optional(calculator.get(), "outputMProv"));
+            if (expected_camera.get() == Py_None) throw p::Error("#1513 postmortem delay matrix provider is unavailable");
+            if (py::optional(expected_camera.get(), "rotationSrc").get() != steadyRotation(l).get() ||
+                py::optional(expected_camera.get(), "translationSrc").get() != stabilisedPose(l).get())
+                throw p::Error("#1513 postmortem delay captured a stale vehicle pose");
+        }
+    }
+    PyObject* camera_matrix = PyObject_GetAttrString(camera.get(), "vehicleMProv");
+    if (!camera_matrix) {
+        if (PyErr_ExceptionMatches(PyExc_AttributeError)) PyErr_Clear();
+        throw p::Error("#1513 postmortem camera has no vehicle matrix provider");
+    }
+    p::Ref held(camera_matrix);
+    if (camera_matrix != expected_camera.get()) throw p::Error("#1513 postmortem camera captured a stale vehicle pose");
+    return true;
+}
+// BattleRuntime._restore_local_body_swinging: the animator gets back the stock providers the rebind replaced.
+bool restoreSwinging(Battle& b, PyObject* entity) {
+    auto& l = *b.local;
+    if (!l.swinging_restore) return false;
+    PyObject* restore = l.swinging_restore.get();
+    if (!PyTuple_Check(restore) || PyTuple_GET_SIZE(restore) != 3) throw p::Error("local swinging restore record is invalid");
+    PyObject* swinging = PyTuple_GET_ITEM(restore, 0);
+    l.swinging_probe = Object();
+    l.swinging_move_flags = 0;
+    auto appearance = py::optional(entity, "appearance");
+    if (!p::flag(py::optional(entity, "isStarted").get()) || py::optional(appearance.get(), "swingingAnimator").get() != swinging) {
+        // A stock appearance refresh retired this animator; its replacement owns the model now.
+        l.swinging_animator = l.swinging_restore = Object();
+        return false;
+    }
+    try {
+        py::set(swinging, "accelSwingingPeriod", p::number(0.).get());
+        py::set(swinging, "accelSwingingDirection", p::number(0.).get());
+    } catch (const std::exception& e) {
+        log("PRESENTATION local_body_swinging=False error=" + describe(e));
+    }
+    py::set(swinging, "placingCompensationMatrix", PyTuple_GET_ITEM(restore, 1));
+    py::set(swinging, "worldMatrix", PyTuple_GET_ITEM(restore, 2));
+    l.swinging_animator = l.swinging_restore = Object();
+    return true;
+}
+}
+
+void siegeAcknowledged(Battle& b, std::int64_t siege, std::int64_t left_ms, const Value& input_seq, bool switching) {
+    // A switching echo keeps the pending edge latched.
+    if (switching || !driving(b)) return;
+    auto access = dr::driverAccess(b);
+    auto& state = access.driver->state();
+    if (!state.siege_pending) return;
+    const auto& sequence = input_seq.resolved();
+    access.driver->acknowledge_siege(siege, sequence.kind == Value::Kind::Integer ? std::optional<std::int64_t>(sequence.integer) : std::nullopt);
+    if (state.siege_pending) return;
+    reportSiegeEdge(b, "ack", p::integer(siege).get(), p::integer(left_ms).get(), wire(sequence).get());
+}
+
+void siegeReported(Battle& b, const char* stage, std::int64_t siege, std::int64_t left_ms, const Value& input_seq) {
+    if (!driving(b)) return;
+    reportSiegeEdge(b, stage, p::integer(siege).get(), p::integer(left_ms).get(), wire(input_seq).get());
+}
+
+bool controlModeChanged(Battle& b, PyObject* handler, PyObject* mode) {
+    // onControlModeChanged recreated the targeting device, which cleared BigWorld.target.
+    visibility::clearOutline(b);
+    if (!b.running() || !b.local || !b.local->matrix) return false;
+    auto modes = py::optional(py::attr(b.engine.modules.get(), "avatar_input_handler").get(), "_CTRL_MODE");
+    if (modes.get() == Py_None) throw p::Error("#1513 control-mode constants are unavailable");
+    const int postmortem = PyObject_RichCompareBool(mode, py::attr(modes.get(), "POSTMORTEM").get(), Py_EQ);
+    if (postmortem < 0) throw p::Error("control mode comparison failed");
+    if (postmortem) {
+        const bool result = assertPostmortemSources(b, handler);
+        if (b.engine.server) feedback::setSpectated(b, localEngineId(b));
+        return result;
+    }
+    bindControlSources(b, handler, mode);
+    // Strategic view may draw team-spotted targets beyond the vehicle AOI: re-evaluate on the next frame.
+    visibility::resetSpottingTimer(b);
+    return true;
+}
+
+bool detachPresentation(Battle& b) {
+    if (!b.local || !b.engine.server || (!b.local->matrix && !b.local->model)) return false;
+    auto& l = *b.local;
+    auto entity = playerEntity(b);
+    if (entity.get() == Py_None) return false;
+    vehicles::syncFireEffect(b, entity.get(), false);
+    restoreSwinging(b, entity.get());
+    if (l.model && l.native_matrix) py::set(l.model.get(), "matrix", l.native_matrix.get());
+    auto clear = py::optional(b.engine.compatibility.get(), "clear_vehicle_pose_overlay");
+    if (!py::callable(clear) || !p::flag(py::invoke(clear.get(), entity.get()).get())) throw p::Error("player pose overlay did not clear");
+    py::call(b.engine.compatibility.get(), "restore_vehicle_pose_sources", b.engine.avatar.get(), entity.get(), obj(l.native_matrix).get(),
+             obj(l.native_stabilised_matrix).get());
+    l.matrix = l.pose_matrix = l.stabilised_matrix = l.stabilised_snapshot = l.steady_rotation_matrix = Object();
+    l.siege_body_matrix = l.siege_stabilised_matrix = l.siege_ground_matrix = l.siege_flat_body_matrix = Object();
+    l.siege_aim_matrix = l.siege_aim_world_matrix = Object();
+    l.siege_aim_pitch = l.siege_aim_center_z = 0.;
+    l.model = l.swinging_animator = l.swinging_restore = l.placing_compensation = l.swinging_probe = Object();
+    l.swinging_move_flags = l.swinging_event_seq = l.swinging_events_reported = 0;
+    l.native_matrix = l.native_stabilised_matrix = Object();
+    l.camera_velocity = {};
+    l.engine_mode = l.engine_state = Object();
+    l.engine_audio_report_at = 0.;
+    return true;
+}
+
+bool destructibleRejection(Battle& b, std::int64_t sequence, const std::optional<std::pair<Point, double>>&) {
+    // The visible endpoint already committed its exact crush; a late disagreement never resurrects collision or rewinds.
+    if (!driving(b)) return false;
+    auto access = dr::driverAccess(b);
+    const Value* pending = access.publication->pendingDestructible(sequence);
+    if (!pending || !b.local->destructible_rejected.insert(sequence).second) return false;
+    auto scene = dr::sceneAccess(b);
+    std::string requested;
+    bool changed = false;
+    for (const auto& raw : pending->get("token").resolved().array) {
+        const auto& fields = raw.resolved().array;
+        if (fields.size() != 3) continue;
+        const auto& material = fields[2].resolved();
+        const std::int64_t chunk = std::int64_t(fields[0].numeric()), item = std::int64_t(fields[1].numeric());
+        const std::int64_t kind = material.kind == Value::Kind::Null ? -1 : std::int64_t(material.numeric());
+        changed |= scene.registry->skin.speculative.erase({std::uint32_t(chunk), std::uint32_t(item), kind}) > 0;
+        requested += (requested.empty() ? "(" : ", ") + std::string("(") + std::to_string(chunk) + ", " + std::to_string(item) + ", " +
+                     (kind < 0 ? std::string("None") : std::to_string(kind)) + ")";
+    }
+    if (changed) ++scene.registry->generation;
+    if (b.local->destructible_verdict_reports < 24) {
+        ++b.local->destructible_verdict_reports;
+        log("DESTRUCTIBLE stage=visible_kept seq=" + std::to_string(sequence) + " accepted=0 requested=" +
+            (requested.empty() ? std::string("None") : requested + (requested.find("), (") == std::string::npos ? ",)" : ")")) +
+            " actual=None world=- commit=-");
+    }
+    return true;
+}
+
+p::Ref bodyPose(Battle& b) { return b.local ? obj(bodyPose(*b.local)) : p::retain(Py_None); }
+p::Ref swingingAnimator(Battle& b) { return b.local ? obj(b.local->swinging_animator) : p::retain(Py_None); }
 }
 }

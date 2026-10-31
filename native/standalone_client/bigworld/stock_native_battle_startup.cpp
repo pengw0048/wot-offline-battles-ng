@@ -156,7 +156,6 @@ bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObjec
     install(std::move(battle));
     try {
         compat::install(b);
-        local::applyPhysicsTuning(b, field(b.config, "physics_tuning"));
         projectiles::applyHeTuning(b, field(b.config, "he_tuning"));
         projectiles::start(b);
         b.startup->deadline = b.clock() + configNumber(b, "startupTimeoutSeconds", 30.);
@@ -644,15 +643,15 @@ void finishEntityStartup(Battle& b) {
         // #1513 reapplies ClientVisibilityFlags late in PlayerAvatar.__onInitStepCompleted; cross it first.
         configureSpaceVisibility(b);
         vehicles::markLocalReady(b);
-        local::attach(b);
-        b.feature("persistent Siege mode hint", [&] { local::enableSiegeHints(b); });
+        local::attachPresentation(b);
         b.feature("initial Siege mode indicator", [&] { if (Actor* own = b.localVehicle()) local::seedSiegeHud(b, *own); });
         PyObject* descriptor = b.startup->local_descriptor.get();
         if (!b.worker) {
             std::uint64_t generation = b.generation;
             auto listener = native([generation](PyObject* args, PyObject*) -> PyObject* {
                 Battle* battle = current();
-                if (battle && battle->generation == generation) local::controlModeChanged(*battle, PyTuple_GET_SIZE(args) ? PyTuple_GET_ITEM(args, 0) : Py_None);
+                if (battle && battle->generation == generation && PyTuple_GET_SIZE(args) == 2)
+                    local::controlModeChanged(*battle, PyTuple_GET_ITEM(args, 0), PyTuple_GET_ITEM(args, 1));
                 Py_RETURN_NONE;
             });
             compat::setControlModeListener(b, listener.get());
@@ -689,8 +688,6 @@ void finishEntityStartup(Battle& b) {
         if (!b.worker) {
             startTeamChatWhenRosterReady(b);
             local::bindArcadeCamera(b);
-            const double now = b.clock();
-            b.feature("engine RPM presentation", [&] { local::publishRpm(b, now, true); });
         }
         b.last_frame = b.clock();
         if (!b.worker) gun::ensureTicking(b);
@@ -1054,8 +1051,8 @@ void cleanup(Battle& b) {
     step(first, [&] { closeTeamChat(b); });
     // BigWorld.target.clear() reaches stock targetBlur; run it before any owner retires.
     step(first, [&] { compat::clearTargetFocus(b); });
-    step(first, [&] { local::releasePostmortemVisibility(b); });
-    step(first, [&] { local::detach(b); });
+    step(first, [&] { feedback::releasePostmortemVisibility(b); });
+    step(first, [&] { local::detachPresentation(b); });
     step(first, [&] { vehicles::quiesce(b); });
     s.descriptors.clear();
     s.prepared_names.clear();

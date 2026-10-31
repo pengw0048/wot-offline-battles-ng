@@ -59,7 +59,7 @@ bool bindOnce(Battle& b, Server* s, std::int64_t vehicle_id) {
 p::Ref sendInput(Server* s, const char* kind, PyObject* payload) {
     Battle& b = live(s);
     if (!s->vehicle_id || !s->client_ready) throw p::Error("Vehicle is not ready");
-    return local::sendAvatarInput(b, s->vehicle_id, kind, payload);
+    return p::boolean(local::control(b, kind, payload));
 }
 p::Ref payload(std::initializer_list<std::pair<const char*, PyObject*>> items) {
     auto out = p::dict();
@@ -87,7 +87,7 @@ PyObject* prepareVehicleEnter(PyObject* o, PyObject* args) {
         if (!b || s->destroyed) return ok(false);
         const std::int64_t id = asInt(py::attr(vehicle, "id").get());
         if (s->vehicle_id && id != s->vehicle_id) return ok(false);
-        local::prepare(*b, vehicle);
+        local::preparePresentation(*b, vehicle);
         return ok(true);
     });
 }
@@ -184,7 +184,7 @@ PyObject* switchViewPointOrBindToVehicle(PyObject* o, PyObject* args) {
         auto* s = self(o);
         Battle* b = owner(s);
         if (!b || s->destroyed) return ok(false);
-        return ok(local::switchViewpoint(*b, p::flag(viewpoint), asInt(id)));
+        return ok(feedback::switchPostmortemViewpoint(*b, p::flag(viewpoint), asInt(id)));
     });
 }
 // Vehicle.onEnterWorld calls this before its engine callback returns: record the request only.
@@ -228,7 +228,7 @@ PyObject* vehicleChangeSetting(PyObject* o, PyObject* args) {
     return guarded([&] {
         auto* s = self(o);
         Battle& b = live(s);
-        if (local::changeVehicleSetting(b, s->vehicle_id, code, value)) return none();
+        if (local::changeVehicleSetting(b, int(asInt(code)), value)) return none();
         py::invoke(need(b.engine.avatar.get(), "updateVehicleSetting").get(), p::integer(s->vehicle_id).get(), code, value);
         return none();
     });

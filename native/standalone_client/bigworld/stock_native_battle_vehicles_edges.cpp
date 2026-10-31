@@ -373,7 +373,7 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
             d.critical = canonical;
             d.state = state;
             if (!b.worker && !suppress) syncFireEffect(b, entity.get());
-            if (local) local::damageReported(b);
+            if (local) critical::localDeath(b);
         }
     }
     p::Ref fn(p::retain(Py_None));
@@ -434,7 +434,7 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
                 }
             }
         }
-        if (!local) local::fallbackPostmortemViewpoint(b, v.engine_id);
+        if (!local) feedback::fallbackPostmortemViewpoint(b, v.engine_id);
     }
     if (!previous_dead && dead && d.remote) {
         if (!b.feature("dead wreck replacement", [&] { remote::requestWreck(b, v.engine_id); }, false)) {}

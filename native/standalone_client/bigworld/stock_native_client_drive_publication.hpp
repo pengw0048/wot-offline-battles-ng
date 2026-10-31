@@ -30,6 +30,8 @@ public:
     // speculative skin. An old worker disagreement never rewinds the pose.
     std::vector<Value> acknowledgeDestructible(ID admitted,ID resolved,
         const std::vector<ID>&exact,const std::vector<ID>&rejected);
+    // The queued destructible receipt awaiting a worker verdict, or null.
+    const Value* pendingDestructible(ID sequence)const{const auto at=destructible_.find(sequence);return at==destructible_.end()?nullptr:&at->second;}
     void queueLanding(Value observation,std::size_t maximum);
     bool landingAdmitted();
     void refresh();

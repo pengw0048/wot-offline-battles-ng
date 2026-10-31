@@ -74,8 +74,10 @@ void snapshot(Battle& b, PyObject* message) {
         s.last_snapshot = fromPython(PyDict_Check(message) ? message : p::dict().get());
         const Value& last = s.last_snapshot;
         if (!b.worker) gun::restoreEquipment(b, last, true);
-        local::ackRamContacts(b, last);
-        if (b.local) local::acknowledgeContacts(b, last, true);
+        if (b.local) {
+            local::acknowledgeContacts(b, last, false);
+            local::acknowledgeContacts(b, last, true);
+        }
         observeDestructiblesDisabled(b, last);
         projectiles::observe(b, last);
         projectiles::reconcile(b, last);

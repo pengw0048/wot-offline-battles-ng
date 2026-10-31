@@ -13,12 +13,6 @@ struct FrameTiming {
     std::vector<std::pair<const char*, double>> stages;
 };
 
-namespace local {
-void fallbackPostmortemViewpoint(Battle& b, std::int64_t excluded_engine_id);
-void siegeAcknowledged(Battle& b, std::int64_t siege, std::int64_t left_ms, const Value& input_seq, bool switching);
-void siegeReported(Battle& b, const char* stage, std::int64_t siege, std::int64_t left_ms, const Value& input_seq);
-void damageReported(Battle& b);
-}
 namespace gun {
 void descriptorChanged(Battle& b, PyObject* entity);
 void stunChanged(Battle& b, PyObject* entity);
@@ -36,10 +30,6 @@ void observeMessage(Battle& b, const Value& message);
 }
 namespace startup {
 double serverClock(Battle& b);
-}
-namespace local {
-// The replay's recorded local presentation for this frame (the pinned _present_replay_local).
-void presentReplay(Battle& b, double dt);
 }
 namespace world {
 bool refreshDetachedWreck(Battle& b, PyObject* entity);

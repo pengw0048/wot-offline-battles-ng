@@ -5,12 +5,12 @@
 #include "stock_native_battle_critical.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_client_critical.hpp"
+#include "stock_native_client_drive_python.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace native_battle {
 // Provided by other subsystems.
-namespace local { void synchronizeStatus(Battle& b, double now); }
 namespace gun {
 double activeRepairBonus(Battle& b);
 void publishEquipment(Battle& b, double now);
@@ -168,7 +168,7 @@ LocalCriticalOwner& ensure(Battle& b) {
     owner->epoch = state->epoch;
     owner->entity = own(b.entity(at->second->engine_id));
     if (owner->entity.get() == Py_None) throw p::Error("Native local critical entity retired");
-    local::synchronizeStatus(b, b.clock());
+    drive::synchronizeStatus(b, b.clock());
     owner->status = drive::localStatus(*owner->actor);
     if (!owner->status) throw p::Error("Native local critical status is unavailable");
     c.local = std::move(owner);
@@ -281,7 +281,7 @@ bool reconcileNative(Battle& b, Actor& vehicle, const V& source, V* canonical) {
     for (const char* key : {"critical_revision", "critical_base_revision", "critical_ack_seq"})
         if (!has(source, key)) throw p::Error("Native player critical state has no revision contract");
     if (o.actor.get() != &vehicle) return false;
-    local::synchronizeStatus(b, b.clock());
+    drive::synchronizeStatus(b, b.clock());
     metadata(b, o);
     const auto& s = source.resolved();
     const auto revision = std::int64_t(s.get("critical_revision").numeric()), base = std::int64_t(s.get("critical_base_revision").numeric()),
@@ -352,6 +352,16 @@ bool acknowledgeLocalDamageReport(Battle& b, std::int64_t base_revision, std::in
     return true;
 }
 
+// BattleRuntime._queue_local_damage_report at the local death edge.
+void localDeath(Battle& b) {
+    if (!b.critical) return;
+    auto& c = *b.critical;
+    if (c.report.resolved().get("tracks").truth()) return;
+    c.report = V();
+    c.owned = false;
+    if (c.local && c.local->model) c.local->model->release();
+}
+
 bool reconcileAuthority(Battle& b, Actor& vehicle, const V& source, V* canonical) {
     if (nativeOwner(b, vehicle)) return reconcileNative(b, vehicle, source, canonical);
     if (vehicle.kind != "player") return true;
@@ -417,7 +427,7 @@ void tick(Battle& b, double dt) {
         if (o.busy) return;
         Busy guard(o);
         const double now = b.clock();
-        local::synchronizeStatus(b, now);
+        drive::synchronizeStatus(b, now);
         if (!active(b, o)) throw p::Error("Native critical owner retired during status ingress");
         metadata(b, o);
         const auto& state = o.actor->state.resolved();

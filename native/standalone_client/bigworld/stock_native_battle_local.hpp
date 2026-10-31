@@ -15,6 +15,8 @@ struct LocalVehicle {
 
     // Native owners: drive and world scene, survival warnings, self presentation, local critical tracks.
     std::shared_ptr<void> drive, survival, presentation, critical;
+    // The stock Vehicle.matrix and filter stabilisedMatrix the copied pose replaced; detach restores them.
+    Object native_matrix, native_stabilised_matrix;
 
     // Stock Math providers the camera, gun rotator, markers and HUD read.
     Object model, matrix, pose_matrix, stabilised_matrix, steady_rotation_matrix, stabilised_snapshot;
@@ -57,6 +59,18 @@ struct LocalVehicle {
     // The last ordered input the LAN transport admitted this round (0 before the first).
     std::int64_t input_seq = 0;
 
+    // Destructible receipts whose late worker rejection already retired the local prediction, and the bounded audit.
+    std::set<std::int64_t> destructible_rejected;
+    std::int64_t destructible_verdict_reports = 0;
+
+    // Replay presentation: the recorded row last presented and the gun pose it forced.
+    std::optional<Value> replay_applied;
+    std::optional<std::array<double, 3>> replay_gun_signature;
+
+    // Bot belt laws: the drive parameters derived once per Bot descriptor.
+    struct BeltParams { Object descriptor; std::uint64_t revision = 0; local::DriveParams params; };
+    std::map<std::string, BeltParams> belt_params;
+
     // LAN input controls; the drive owns them once the player driver exists.
     struct Controls {
         double forward = 0., turn = 0., aim_yaw = 0., gun_pitch = 0., aim_pitch = 0.;
@@ -87,6 +101,10 @@ void tickDrowning(Battle& b, double dt, double now);
 void tickOverturn(Battle& b, double dt, double now);
 // A Siege state change of the local vehicle reached presentation.
 void siegeChanged(Battle& b, PyObject* entity, bool raised);
+// The server's Siege echo for the local vehicle: a stable echo at or past the request releases the pending lock.
+void siegeAcknowledged(Battle& b, std::int64_t siege, std::int64_t left_ms, const Value& input_seq, bool switching);
+// The local vehicle's presented Siege transition (the SIEGE edge diagnostic).
+void siegeReported(Battle& b, const char* stage, std::int64_t siege, std::int64_t left_ms, const Value& input_seq);
 // The local vehicle died.
 void died(Battle& b);
 
@@ -100,6 +118,13 @@ void attachPresentation(Battle& b);
 void bindArcadeCamera(Battle& b);
 // Re-points the arcade/sniper providers at the copied pose after a stock control-mode change.
 void bindControlSources(Battle& b, PyObject* handler, PyObject* mode);
+// AvatarInputHandler.onControlModeChanged(handler, mode) for the player's copied pose.
+bool controlModeChanged(Battle& b, PyObject* handler, PyObject* mode);
+// Returns the stock providers, swinging and fire effect the local presentation replaced (teardown).
+bool detachPresentation(Battle& b);
+// The copied body pose provider (the Siege pose when bound) and the rebound stock swinging animator, or None.
+p::Ref bodyPose(Battle& b);
+p::Ref swingingAnimator(Battle& b);
 // Wraps PlayerAvatar.handleVehicleCollidedVehicle so native contact proofs observe every stock callback.
 bool installRamContactHook(Battle& b);
 void restoreRamContactHook(Battle& b);
@@ -111,6 +136,8 @@ const wot::offline_bot_step::SuspensionDescriptor* ensureSuspensionParams(Battle
 void closeSiegeHints(Battle& b);
 // Accepted canonical destruction for the visible world owner.
 bool ingress(Battle& b, const Value& event, double now);
+// A late worker rejection of one local destructible receipt: retire its speculative skin without rewinding the pose.
+bool destructibleRejection(Battle& b, std::int64_t sequence, const std::optional<std::pair<Point, double>>& server_pose);
 // Snapshot acknowledgements of the local ram and destructible contact receipts.
 bool acknowledgeContacts(Battle& b, const Value& snapshot, bool destructible);
 // Stock vehicle-pair contact callbacks observed after the native Avatar hook.
@@ -135,6 +162,15 @@ bool changeVehicleSetting(Battle& b, int code, PyObject* value);
 bool sendTeamCommand(Battle& b, PyObject* request);
 bool sendTeamChat(Battle& b, PyObject* request);
 bool rejectNativeShotWait(Battle& b);
+
+// Replay: the local scalars a recording row carries (offline_replay.LOCAL_SCALARS), and one frame of the recorded
+// local presentation (the pinned _present_replay_local).
+p::Ref replayState(Battle& b);
+bool presentReplay(Battle& b, double dt);
+
+// vehicle_physics.track_scroll(derive_params(descriptor), ...) for a Bot: belt speeds before the remote clamp.
+std::array<double, 2> trackScroll(Battle& b, Actor& vehicle, PyObject* descriptor, double speed, double turn, bool airborne,
+                                  double direction);
 
 // The float links #1513 VehicleSpeedProvider and rotation readers poll.
 double vehicleSpeed(const Battle& b);
