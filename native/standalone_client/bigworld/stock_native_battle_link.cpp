@@ -29,6 +29,7 @@ constexpr std::size_t MAX_TURRETS = 12, MAX_COMPACT_BYTES = 64u * 1024u, MAX_OUT
 double clock() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 // ---- value helpers -------------------------------------------------------------------------
+const Value none;
 const Value& at(const Value& v, const char* name) { return v.resolved().get(name); }
 bool has(const Value& v, const char* name) { const Value& r = v.resolved(); return r.kind == K::Object && r.object.count(name) != 0; }
 Value integer(std::int64_t v) { Value x; x.kind = K::Integer; x.integer = v; return x; }
@@ -284,7 +285,7 @@ void restoreEquipment(Value& state, const Value& contracts, const Value* previou
     writable(items);
     bool same = previous != nullptr;
     for (const char* k : {"id", "vehicle", "team", "slot"}) same = same && at(state, k) == at(*previous, k);
-    const Value& old = previous ? at(*previous, "equipment_states") : Value();
+    const Value& old = previous ? at(*previous, "equipment_states") : none;
     const auto& table = contracts.resolved();
     for (std::size_t i = 0; i < items.array.size(); ++i) {
         Value& item = writable(items.array[i]);
@@ -378,7 +379,7 @@ std::pair<Value, long> canonicalRows(Value incoming, const char* field, const Va
             if (const auto id = exact(at(row, "id"))) indexed[*id] = &row.resolved();
     Value out = array();
     long retained = 0;
-    const Value& contracts = message ? at(*message, "bot_equipment_contracts") : Value();
+    const Value& contracts = message ? at(*message, "bot_equipment_contracts") : none;
     for (auto& raw : writable(incoming).array) {
         const auto id = exact(at(raw, "id"));
         const auto prior = id ? indexed.find(*id) : indexed.end();
@@ -806,7 +807,7 @@ void snapshot(Value m) {
     const bool valid_projectiles = server_time && epoch && projectile_revision &&
                                    (!link->s.authority_epoch || *epoch >= *link->s.authority_epoch) &&
                                    projectiles(at(m, "projectiles"), *epoch, *server_time);
-    const Value& retained_manifest = prior ? at(*prior, "bot_manifest") : Value();
+    const Value& retained_manifest = prior ? at(*prior, "bot_manifest") : none;
     const bool lean = !has(m, "bot_manifest") && link->s.server_capabilities.count("lean_snapshot_manifest_v1") &&
                       retained_manifest.resolved().kind == K::Array;
     // The worker's carrier row joins the real players before the actor rows are admitted.
