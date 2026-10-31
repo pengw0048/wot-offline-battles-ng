@@ -16,7 +16,7 @@ p::Ref replayRow(Battle& b) {
 }
 // lan_protocol._canonical_vehicle_compact_descr(raw) decoded to bytes, or None.
 p::Ref decodedCompact(PyObject* raw, std::string& encoded) {
-    auto protocol = module("gui.mods.offline_lan_0922.lan_protocol");
+    auto protocol = module("gui.mods.offline_lan_0922.lan_client");
     auto canonical = py::call(protocol.get(), "_canonical_vehicle_compact_descr", raw);
     if (canonical.get() == Py_None) return p::retain(Py_None);
     encoded = p::string(canonical.get());
@@ -271,7 +271,7 @@ p::Ref descriptorFor(Battle& b, const std::string& vehicle_name) {
 p::Ref playerDescriptor(Battle& b, const Value& state) {
     std::string encoded;
     p::Ref raw_value(toPython(field(state, "vehicle_compact_descr")));
-    auto protocol = module("gui.mods.offline_lan_0922.lan_protocol");
+    auto protocol = module("gui.mods.offline_lan_0922.lan_client");
     auto canonical = py::call(protocol.get(), "_canonical_vehicle_compact_descr", raw_value.get());
     if (canonical.get() == Py_None) throw p::Error("player mounted vehicle descriptor is unavailable");
     encoded = p::string(canonical.get());

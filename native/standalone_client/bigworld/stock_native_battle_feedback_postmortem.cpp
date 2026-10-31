@@ -138,9 +138,10 @@ bool fallbackPostmortemViewpoint(Battle& b, std::int64_t excluded) {
 
 // BattleRuntime._release_postmortem_visibility
 bool releasePostmortemVisibility(Battle& b) {
+    if (b.compat) compat::clearPostmortemVehicle(b);
+    if (!b.feedback) return false;
     const auto engine_id = b.feedback->spectated_engine_id;
     b.feedback->spectated_engine_id.reset();
-    py::call(b.engine.compatibility.get(), "clear_postmortem_vehicle");
     if (!engine_id) return false;
     auto entity = b.entity(*engine_id);
     if (entity.get() == Py_None || !p::flag(py::optional(entity.get(), "_offlineLANPresentation").get())) return false;

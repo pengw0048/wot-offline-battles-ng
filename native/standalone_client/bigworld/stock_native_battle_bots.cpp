@@ -227,7 +227,7 @@ bool enqueueManifest(Battle& b, const Value& message, double now) {
 // The worker's Bot start carries human_ram_timeline when both ends speak it.
 void markHumanRamTimeline(Battle& b, Value& start) {
     auto lan = client(b);
-    auto protocol = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.lan_protocol"));
+    auto protocol = p::Ref(PyImport_ImportModule("gui.mods.offline_lan_0922.lan_client"));
     auto capability = py::attr(protocol.get(), "HUMAN_RAM_TIMELINE_CAPABILITY");
     auto mine = py::optional(lan.get(), "capabilities"), server = py::optional(lan.get(), "server_capabilities");
     if (mine.get() != Py_None && server.get() != Py_None && PySequence_Contains(mine.get(), capability.get()) == 1 &&
