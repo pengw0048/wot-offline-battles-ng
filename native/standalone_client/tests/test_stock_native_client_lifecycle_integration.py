@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = r'''
 import ast,imp,os,sys,types
 base=sys.argv[1];events=[];fail_at=[None]
+sys.path.insert(0,sys.argv[3]);import offline_client_lifecycle_native
 class Box(object):
  def __init__(self,**kw):self.__dict__.update(kw)
 class Handle(Box):
@@ -73,6 +74,7 @@ def weapon_advance(b,e,now):
 def weapon_close(b):close(b._native_client_weapon_runtime)
 module('offline_client_weapon_runtime_native',advance=weapon_advance,close=weapon_close)
 module('offline_client_critical_native',close=lambda b:None)
+pkg.native_bot_runtime=module(pkg.__name__+'.native_bot_runtime',enabled=lambda bots:False)
 facades={}
 for name,file in [('replica','replica'),('drive','drive_facade'),('query','query'),('environment','environment'),('weapon_runtime','weapon_runtime'),('projectile','projectile'),('critical','critical')]:
  full=pkg.__name__+'.native_client_'+name
@@ -101,7 +103,7 @@ class Bots(object):
  def battle_start(self,msg):return []
  def apply_snapshot(self,msg):pass
 current_battle=[None]
-env=dict(__name__=pkg.__name__+'.battle_runtime',SnapshotSync=Sync,BotRuntime=Bots,reset_pose_animation_writes=lambda:None,track_damage=Box(reset_diagnostics=lambda:None),FRAME_SECONDS=.016,AMMO_SECONDS=.1)
+env=dict(__name__=pkg.__name__+'.battle_runtime',SnapshotSync=Sync,BotRuntime=Bots,reset_pose_animation_writes=lambda:None,_offline_lifecycle_native=offline_client_lifecycle_native,track_damage=Box(reset_diagnostics=lambda:None),FRAME_SECONDS=.016,AMMO_SECONDS=.1)
 exec compile(ast.Module(nodes),'composed-client-startup','exec') in env
 class Battle(object):
  def __getattr__(self,name):
@@ -186,8 +188,14 @@ class NativeClientLifecycleIntegration(unittest.TestCase):
         source=(fork/preparation.NATIVE_MATH_PATH.with_name('battle_runtime.py')).read_text()
         staged=preparation.ADAPTERS[preparation.NATIVE_MATH_PATH.with_name('battle_runtime.py')](source)
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
+        prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='native-client-lifecycle-') as directory:
             folder=Path(directory);(folder/'battle.py').write_text(staged);(folder/'fixture.py').write_text(SCRIPT)
-            subprocess.run([py27,'-B',str(folder/'fixture.py'),str(ROOT/'bigworld'),str(folder/'battle.py')],check=True)
+            # Routed methods call the real lifecycle ports.
+            subprocess.run(['c++','-std=c++17','-O1','-Wno-unused-parameter','-Wno-register','-Wno-missing-field-initializers',
+                            '-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),
+                            '-I'+str(ROOT/'bigworld'),str(ROOT/'tests/stock_native_client_lifecycle_host.cpp'),
+                            '-o',str(folder/'offline_client_lifecycle_native.so')],check=True)
+            subprocess.run([py27,'-B',str(folder/'fixture.py'),str(ROOT/'bigworld'),str(folder/'battle.py'),str(folder)],check=True)
 
 if __name__=='__main__':unittest.main()
