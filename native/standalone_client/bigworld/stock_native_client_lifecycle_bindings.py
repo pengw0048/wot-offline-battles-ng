@@ -126,6 +126,8 @@ PORTS = (
     ('_defer_local_projectile_presentation', 'defer_local_projectile_presentation(self, event, globals())'),
     ('_reconcile_projectile_snapshot',
      'reconcile_projectile_snapshot(self, message, native_client_projectile, native_bot_runtime, globals())'),
+    ('_report_local_compound', 'report_local_compound(self, now, globals())'),
+    ('_report_local_decals', 'report_local_decals(self, globals())'),
 )
 
 
@@ -156,5 +158,13 @@ def battle(source):
             'native_client_query', 'native_client_environment', 'native_client_drive',
             'native_client_replica', 'native_client_projectile', 'native_bot_runtime') if module in call)
         source = (source[:index] + imports + '        return _offline_lifecycle_native.' + call + '\n' + source[index:])
-    # One module-level import; each routed method only reads the global.
-    return source + '\nimport offline_client_lifecycle_native as _offline_lifecycle_native\n'
+    seam = '            _FrameDiagnostics(\n                initial_window_seconds='
+    if source.count(seam) != 1:
+        raise ValueError('The pinned frame diagnostics seam changed')
+    source = source.replace(seam, '            _offline_lifecycle_native.FrameDiagnostics(globals(),\n'
+                                  '                initial_window_seconds=')
+    # One module-level import ahead of the module's own g_battle_runtime = BattleRuntime().
+    future = 'from __future__ import print_function\n'
+    if not source.startswith(future):
+        raise ValueError('The pinned lifecycle import seam changed')
+    return future + 'import offline_client_lifecycle_native as _offline_lifecycle_native\n' + source[len(future):]
