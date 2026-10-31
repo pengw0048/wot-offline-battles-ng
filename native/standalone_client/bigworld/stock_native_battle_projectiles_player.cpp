@@ -192,7 +192,8 @@ class Owner final : public PlayerProjectiles {
     std::map<std::string, std::int64_t> visuals_;
     std::set<std::string> visual_terminals_;
     std::set<std::pair<std::string, std::int64_t>> terminal_presentations_;
-    double shot_camouflage_ = 0.;
+    // Seconds a shot keeps its camouflage penalty (spotting.SHOT_CAMOUFLAGE_SECONDS).
+    static constexpr double shot_camouflage_ = .75;
     std::int64_t current_setting_ = 0, next_setting_ = 0, partial_setting_ = 0;
 
     PyObject* shell(const Battle& b) const { return b.engine.shell.get(); }
@@ -426,8 +427,6 @@ public:
           world_(state_, scene_, stock_native_client_query::projectileTurrets(b.engine.shell.get())), flights_(world_), lifecycle_(flights_) {
         if (!scene_.registry || !scene_.scene || !scene_.pipeline) throw p::Error("Native player projectile scene is unavailable");
         if (!world_.install(b)) throw p::Error("Native player projectile world installation failed");
-        p::Ref spotting(PyImport_ImportModule("gui.mods.offline_lan_0922.spotting"));
-        shot_camouflage_ = p::numeric(spotting.get(), "SHOT_CAMOUFLAGE_SECONDS");
         lifecycle_.sequence(sequence);
         auto settings = field(b.engine.constants.get(), "VEHICLE_SETTING");
         current_setting_ = p::integral(settings.get(), "CURRENT_SHELLS");

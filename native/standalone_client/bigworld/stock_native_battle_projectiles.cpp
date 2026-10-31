@@ -162,35 +162,35 @@ p::Ref unitDirection(const Battle& b, const Point& value) {
     return direction;
 }
 
-// (effectsDescr, effectMaterial, direction) for a world hit, or None when the verdict is not ours to present.
-p::Ref explosion(Battle& b, const std::string& id, PyObject* impact, const std::string& outcome) {
+// (effectsDescr, effectMaterial, direction) for a world hit, or nullopt when the verdict is not ours to present.
+std::optional<tracers::Explosion> explosion(Battle& b, const std::string& id, PyObject* impact, const std::string& outcome) {
     auto& s = *b.projectiles;
-    if (outcome != "impact") return p::retain(Py_None);
+    if (outcome != "impact") return std::nullopt;
     const auto found = s.metas.find(id);
-    if (found == s.metas.end() || found->second.hit_vehicle != std::optional<bool>(false)) return p::retain(Py_None);
-    if (!admittedVisual(s, id)) return p::retain(Py_None);
+    if (found == s.metas.end() || found->second.hit_vehicle != std::optional<bool>(false)) return std::nullopt;
+    if (!admittedVisual(s, id)) return std::nullopt;
     auto& meta = found->second;
     auto index = effectsIndex(b, meta);
-    if (index.get() == Py_None) return p::retain(Py_None);
+    if (index.get() == Py_None) return std::nullopt;
     PyObject* effects = nullptr;
     try { effects = shotEffects(b, index.get()).release(); }
-    catch (const std::exception&) { if (!PyErr_Occurred() || !lookupError()) throw; PyErr_Clear(); return p::retain(Py_None); }
+    catch (const std::exception&) { if (!PyErr_Occurred() || !lookupError()) throw; PyErr_Clear(); return std::nullopt; }
     p::Ref held(effects);
     auto material = needs::surfaceEffectMaterial(b, impact);
-    if (material.get() == Py_None) return p::retain(Py_None);
+    if (material.get() == Py_None) return std::nullopt;
     std::optional<Point> velocity = meta.terminal_velocity;
     if (!velocity) {
         const auto visual = s.visuals.find(id);
         if (visual != s.visuals.end()) velocity = visual->second.velocity;
     }
-    if (!velocity) return p::retain(Py_None);
+    if (!velocity) return std::nullopt;
     // __addExplosionEffect keys the effect at position +/- velocityDir; use a unit direction.
     auto direction = unitDirection(b, *velocity);
-    if (direction.get() == Py_None) return p::retain(Py_None);
+    if (direction.get() == Py_None) return std::nullopt;
     auto event = object();
     event.object["projectile_id"] = text(id);
     needs::reportEffect(b, "world_explosion", material.get(), index.get(), impact, direction.get(), &event);
-    return p::Ref(PyTuple_Pack(3, held.get(), material.get(), direction.get()));
+    return tracers::Explosion{borrow(held.get()), borrow(material.get()), borrow(direction.get())};
 }
 
 // Plays the stock armour-hit family on one visible retained wreck.
@@ -291,11 +291,8 @@ bool wreckHit(Battle& b, const std::string& id, const Value& event) {
 void resetVisuals(Battle& b) {
     auto& s = *b.projectiles;
     s.visuals.clear();
-    if (!b.engine.remote_factory) return;
-    auto reset = py::optional(b.engine.remote_factory.get(), "reset_projectile_visuals");
-    if (!py::callable(reset)) return;
     try {
-        if (!p::flag(py::invoke(reset.get()).get())) b.warn("projectile visual epoch reset", "presenter retained old-epoch visual owners", false);
+        if (!tracers::reset(b)) b.warn("projectile visual epoch reset", "presenter retained old-epoch visual owners", false);
     } catch (const std::exception& e) { b.warn("projectile visual epoch reset", current(e), false); }
 }
 void epochChanged(Battle& b) {
@@ -432,7 +429,7 @@ bool presentVisual(Battle& b, const std::string& id, double now, const std::opti
 // Starts one native visual per segment, independent of cursor cadence.
 bool visual(Battle& b, const std::string& id, double now, const std::optional<Point>& visual_start_argument) {
     auto& s = *b.projectiles;
-    if (b.worker || !b.engine.remote_factory) return false;
+    if (b.worker || !b.engine.avatar) return false;
     if (s.visual_terminals.contains(id)) return false;
     const auto meta_found = s.metas.find(id);
     if (meta_found == s.metas.end()) return false;
@@ -494,15 +491,11 @@ bool visual(Battle& b, const std::string& id, double now, const std::optional<Po
         auto* shooter = b.vehicle(meta.shooter_kind + ":" + std::to_string(meta.shooter_id));
         fresh_visual.attacker_id = shooter && shooter->engine_id > 0 ? shooter->engine_id : meta.shooter_id;
         // Ask the presenter for cosmetic capacity, never authority capacity.
-        auto admit = py::optional(b.engine.remote_factory.get(), "admit_projectile_visual");
-        if (py::callable(admit)) {
-            try {
-                fresh_visual.admitted = p::flag(py::invoke(admit.get(), p::integer(fresh_visual.attacker_id).release(), p::text(id).release(),
-                                                           p::number(now).release()).get());
-            } catch (const std::exception& e) {
-                b.warn("projectile visual admission", current(e));
-                fresh_visual.admitted = false;
-            }
+        try {
+            fresh_visual.admitted = tracers::admit(b, fresh_visual.attacker_id, id, now);
+        } catch (const std::exception& e) {
+            b.warn("projectile visual admission", current(e));
+            fresh_visual.admitted = false;
         }
         visual_found = s.visuals.emplace(id, fresh_visual).first;
     }
@@ -521,17 +514,8 @@ bool visual(Battle& b, const std::string& id, double now, const std::optional<Po
             const double spent = ricochets == 0 ? 0. : meta.visual_segment_distance.value_or(launch.get("checked_distance").numeric());
             remaining = std::max(0.001, launch.get("max_distance").numeric() - spent);
         }
-        auto play = py::attr(b.engine.remote_factory.get(), "play_projectile_tracer");
-        auto origin_tuple = tuple(*origin), velocity_tuple = tuple(*velocity), reference_tuple = tuple(reference_origin),
-             reference_velocity_tuple = tuple(reference_velocity);
-        p::Ref positional(PyTuple_Pack(10, descriptor.get(), p::integer(whole(launch.get("shell_index")).value_or(0)).get(), origin_tuple.get(),
-                                       velocity_tuple.get(), p::number(gravity).get(), p::number(remaining).get(),
-                                       p::integer(visual_state.attacker_id).get(), p::text(id).get(), reference_tuple.get(),
-                                       reference_velocity_tuple.get()));
-        p::Ref keywords(PyDict_New());
-        p::set(keywords.get(), "is_ricochet", p::boolean(ricochets != 0));
-        p::set(keywords.get(), "visual_start", visual_start ? tuple(*visual_start) : p::retain(Py_None));
-        active = p::flag(p::Ref(PyObject_Call(play.get(), positional.get(), keywords.get())).get());
+        active = tracers::play(b, descriptor.get(), whole(launch.get("shell_index")).value_or(0), reference_origin, reference_velocity, gravity,
+                               remaining, visual_state.attacker_id, id, ricochets != 0, visual_start);
     });
     visual_state.active = launched && active;
     return visual_state.active;
@@ -988,7 +972,7 @@ std::optional<Point> visualStart(Battle& b, PyObject* entity, const Value& norma
         double offset = 0.;
         for (int i = 0; i < 3; ++i) offset += (point[i] - (*reference)[i]) * (point[i] - (*reference)[i]);
         // Mirror ProjectileMover.add so the frontier bridge records the start the presenter accepts.
-        constexpr double limit = 2.;   // PROJECTILE_VISUAL_START_MAX_DIFF
+        constexpr double limit = tracers::visual_start_max_diff;
         if (offset > limit * limit) return std::nullopt;
         return point;
     } catch (const std::exception&) {
@@ -1000,7 +984,7 @@ std::optional<Point> visualStart(Battle& b, PyObject* entity, const Value& norma
 
 bool stopVisual(Battle& b, const std::string& id, const Value& event) {
     auto& s = *b.projectiles;
-    if (b.worker || !b.engine.remote_factory) { s.visuals.erase(id); return false; }
+    if (b.worker || !b.engine.avatar) { s.visuals.erase(id); return false; }
     std::optional<Point> impact = pointOf(event.get("impact"));
     const auto visual_found = s.visuals.find(id);
     if (!impact && visual_found != s.visuals.end()) {
@@ -1017,12 +1001,7 @@ bool stopVisual(Battle& b, const std::string& id, const Value& event) {
         auto blast = explosion(b, id, impact_tuple.get(), event.get("outcome").resolved().text);
         const auto& hit = event.get("hit_vehicle").resolved();
         const bool missed = hit.kind == Value::Kind::Boolean && !hit.boolean;
-        auto stop = py::attr(b.engine.remote_factory.get(), "stop_projectile_tracer");
-        p::Ref positional(PyTuple_Pack(2, p::text(id).get(), impact_tuple.get()));
-        p::Ref keywords(PyDict_New());
-        p::set(keywords.get(), "explosion", blast);
-        p::set(keywords.get(), "missed", p::boolean(missed));
-        stopped = p::flag(p::Ref(PyObject_Call(stop.get(), positional.get(), keywords.get())).get());
+        stopped = tracers::stop(b, id, *impact, blast, missed);
     } catch (const std::exception& e) {
         // Terminal authority has already been applied; a cosmetic retirement failure must not poison the journal.
         b.warn("projectile visual retirement", current(e), false);
@@ -1252,6 +1231,8 @@ void retire(Battle& b) {
     if (!b.projectiles) return;
     auto& s = *b.projectiles;
     if (s.player) { s.player->close(); s.player.reset(); }
+    // The stock mover unregisters its camera handler and deletes its models while the Avatar still exists.
+    try { tracers::destroy(b); } catch (const std::exception& e) { b.warn("projectile visual teardown", describe(e), false); }
     if (b.gun) {
         gun::retireSound(b);
         weapon::closeWeapon(b);
