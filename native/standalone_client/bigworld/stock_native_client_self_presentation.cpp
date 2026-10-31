@@ -11,6 +11,8 @@ struct StockAuxVehiclePhysicsData {float yaw,pitch,roll,leftScroll,rightScroll,n
 StockAuxVehiclePhysicsData unpackStockAuxVehiclePhysicsData(std::uint64_t);}
 #endif
 #include "stock_native_client_self_presentation.hpp"
+#include "stock_native_battle_remote.hpp"
+#include "stock_native_battle_compat.hpp"
 #include "stock_native_client_drive_presentation.hpp"
 #include "stock_native_client_drive_presentation_python.hpp"
 #include "stock_native_client_drive_python.hpp"
@@ -219,15 +221,12 @@ void sniper(Owner&o,Battle&b,PyObject*e,double previous_yaw,double yaw) {
     pitch=std::min(maximum,std::max(minimum,pitch));put(aiming.get(),"_SniperAimingSystem__idealTurretYaw",p::number(turret));put(aiming.get(),"_SniperAimingSystem__idealGunPitch",p::number(pitch));
 }
 void overlay(Owner&o,Battle&b,const PlayerState&s,PyObject*position,PyObject*velocity,PyObject*acceleration) {
-    auto runtime=obj(b.engine.modules),compat=field(runtime.get(),"compatibility"),overlays=field(compat.get(),"_vehicle_property_overlays");
-    if(!truth(compat.get(),"_battle_active")||!PyDict_Check(overlays.get()))throw p::Error("Native self overlay requires an active battle");
-    p::Ref key(PyLong_FromVoidPtr(o.entity.get()));auto*raw=PyDict_GetItem(overlays.get(),key.get());
-    if(!raw||!PyDict_Check(raw))throw p::Error("Native self overlay was not cold installed");
+    if(!native_battle::compat::active()||!native_battle::remote::overlay(o.entity.get()))throw p::Error("Native self overlay requires an active battle and a cold-installed overlay");
     auto body=poseProvider(b,"_local_pose_matrix");
-    auto steady=[&]{auto value=obj(b.local->steady_rotation_matrix);return value.get()==Py_None?p::retain(body.get()):std::move(value);}();
-    auto stabilised=[&]{auto value=obj(b.local->stabilised_snapshot);return value.get()==Py_None?p::retain(body.get()):std::move(value);}();
-    p::set(raw,"_pose_active",p::boolean(true));p::set(raw,"position",p::retain(position));p::set(raw,"yaw",p::number(s.yaw));p::set(raw,"matrix",body);p::set(raw,"steady_rotation_matrix",steady);p::set(raw,"stabilised_matrix",stabilised);
-    p::set(raw,"speed",p::number(s.speed));p::set(raw,"turn_speed",p::number(s.turn_speed));p::set(raw,"velocity",p::retain(velocity));p::set(raw,"acceleration",p::retain(acceleration));
+    auto steady=obj(b.local->steady_rotation_matrix),stabilised=obj(b.local->stabilised_snapshot);
+    native_battle::remote::OverlayPose pose{position,s.yaw,body.get(),s.speed,s.turn_speed,velocity,acceleration,
+        steady.get()==Py_None?nullptr:steady.get(),stabilised.get()==Py_None?nullptr:stabilised.get()};
+    native_battle::remote::publishOverlay(o.entity.get(),pose);
 }
 void bindSwing(Owner&o,Battle&b,PyObject*appearance,PyObject*model) {
     auto swinging=field(appearance,"swingingAnimator");

@@ -6,6 +6,8 @@
 #include "stock_native_battle_feedback.hpp"
 #include "stock_native_battle_visibility.hpp"
 #include "stock_native_battle_vehicles_internal.hpp"
+#include "stock_native_battle_remote.hpp"
+#include "stock_native_battle_compat.hpp"
 #include "stock_native_client_survival_python.hpp"
 #include "stock_native_client_critical.hpp"
 #include "stock_native_client_input_runtime.hpp"
@@ -61,16 +63,14 @@ p::Ref playerEntity(Battle& b) {
     if (!b.engine.server) return p::retain(Py_None);
     return b.entity(p::wide(py::attr(b.engine.server.get(), "vehicle_id").get()));
 }
-// compatibility.set_vehicle_pose_overlay with the copied pose and its matrix providers.
+// The copied pose and its matrix providers as the player Vehicle's native pose overlay.
 void poseOverlay(Battle& b, PyObject* entity, PyObject* motion) {
     const auto& l = *b.local;
     auto position = vector(b, l.position);
-    p::Ref args(Py_BuildValue("(OOdOddOO)", entity, position.get(), l.yaw, bodyPose(l).get(), l.speed, l.turn_speed, motion, motion));
-    auto kwargs = p::dict();
-    p::set(kwargs.get(), "steady_rotation_matrix", obj(steadyRotation(l)));
-    p::set(kwargs.get(), "stabilised_matrix", obj(stabilisedPose(l)));
-    auto overlay = py::attr(b.engine.compatibility.get(), "set_vehicle_pose_overlay");
-    p::Ref done(PyObject_Call(overlay.get(), args.get(), kwargs.get()));
+    auto matrix = bodyPose(l), steady = obj(steadyRotation(l)), stabilised = obj(stabilisedPose(l));
+    remote::OverlayPose pose{position.get(), l.yaw, matrix.get(), l.speed, l.turn_speed, motion, motion,
+                             steady.get() == Py_None ? nullptr : steady.get(), stabilised.get() == Py_None ? nullptr : stabilised.get()};
+    remote::publishOverlay(entity, pose);
 }
 void resetSuspension(LocalVehicle& l, bool disabled) {
     l.suspension_params.reset();
@@ -326,7 +326,7 @@ void attachPresentation(Battle& b) {
     if (model.get() == Py_None) throw p::Error("player compound model is unavailable");
     py::set(model.get(), "matrix", bodyPose(l).get());
     // Body swinging and engine audio motion bind natively on the first drive slice (self presentation).
-    py::call(b.engine.compatibility.get(), "bind_vehicle_pose_sources", b.engine.avatar.get(), entity.get());
+    compat::bindVehiclePoseSources(b, b.engine.avatar.get(), entity.get());
     l.model = own(std::move(model));
     b.feature("persistent Siege mode hint", [&] { enableSiegeHints(b); });
 }
@@ -653,10 +653,8 @@ bool detachPresentation(Battle& b) {
     vehicles::syncFireEffect(b, entity.get(), false);
     restoreSwinging(b, entity.get());
     if (l.model && l.native_matrix) py::set(l.model.get(), "matrix", l.native_matrix.get());
-    auto clear = py::optional(b.engine.compatibility.get(), "clear_vehicle_pose_overlay");
-    if (!py::callable(clear) || !p::flag(py::invoke(clear.get(), entity.get()).get())) throw p::Error("player pose overlay did not clear");
-    py::call(b.engine.compatibility.get(), "restore_vehicle_pose_sources", b.engine.avatar.get(), entity.get(), obj(l.native_matrix).get(),
-             obj(l.native_stabilised_matrix).get());
+    remote::clearOverlay(entity.get());
+    compat::restoreVehiclePoseSources(b, b.engine.avatar.get(), entity.get(), obj(l.native_matrix).get(), obj(l.native_stabilised_matrix).get());
     l.matrix = l.pose_matrix = l.stabilised_matrix = l.stabilised_snapshot = l.steady_rotation_matrix = Object();
     l.siege_body_matrix = l.siege_stabilised_matrix = l.siege_ground_matrix = l.siege_flat_body_matrix = Object();
     l.siege_aim_matrix = l.siege_aim_world_matrix = Object();

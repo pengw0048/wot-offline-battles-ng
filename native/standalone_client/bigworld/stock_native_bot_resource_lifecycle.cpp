@@ -9,6 +9,7 @@
 #endif
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "stock_native_battle.hpp"
+#include "stock_native_battle_remote.hpp"
 #include <stdexcept>
 #include <limits>
 #include <cstring>
@@ -78,9 +79,7 @@ PyObject* readNativeEntityField(PyObject* battle,PyObject* entity,const char* na
     auto* current=native_battle::current();
     if(current&&current->engine.compatibility&&entity&&entity!=Py_None&&(!std::strcmp(name,"health")||!std::strcmp(name,"isCrewActive")||
         !std::strcmp(name,"position")||!std::strcmp(name,"yaw")||!std::strcmp(name,"matrix")||!std::strcmp(name,"speedInfo"))){
-        Ref overlays(value(current->engine.compatibility.get(),"_vehicle_property_overlays"));
-        if(PyDict_Check(overlays.p)){Ref key(PyLong_FromVoidPtr(entity));auto* overlay=PyDict_GetItem(overlays.p,key.p);
-            if(overlay&&PyDict_Check(overlay)){auto* result=PyDict_GetItemString(overlay,name);if(result){Py_INCREF(result);return result;}}}
+        if(const auto* overlay=native_battle::remote::overlay(entity))if(auto* result=overlay->field(name)){Py_INCREF(result);return result;}
     }
     return nativeField(entity,name);
 }catch(const std::exception& error){if(!PyErr_Occurred())PyErr_SetString(PyExc_RuntimeError,error.what());return nullptr;}}
