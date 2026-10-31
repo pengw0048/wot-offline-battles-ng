@@ -207,8 +207,11 @@ Staged prepare(Value& players, bool allow_lean) {
                 const Value& source = at(entry, name);
                 std::optional<Value> canonical;
                 if (staged != updates.end() && staged->second.source == source) canonical = staged->second.canonical;
-                else if (cached != published.end() && cached->second.source == source) canonical = cached->second.canonical;
-                else {
+                else if (cached != published.end() && cached->second.source == source) {
+                    // The published version is unchanged: reference it without staging another copy.
+                    entry.object[name] = cached->second.canonical;
+                    continue;
+                } else {
                     // One shared version per accepted source, so every later row references it.
                     canonical = kind ? params::canonicalEffectiveParams(source) : outfits(source);
                     if (canonical) canonical = shared(std::make_shared<const Value>(std::move(*canonical)));
@@ -379,7 +382,12 @@ std::pair<Value, long> canonicalRows(Value incoming, const char* field, const Va
             if (const auto id = exact(at(row, "id"))) indexed[*id] = &row.resolved();
     Value out = array();
     long retained = 0;
-    const Value& contracts = message ? at(*message, "bot_equipment_contracts") : none;
+    // Each contract is shared once per message; every equipment row references it.
+    Value contracts = array();
+    if (message && at(*message, "bot_equipment_contracts").resolved().kind == K::Array)
+        for (const auto& contract : at(*message, "bot_equipment_contracts").resolved().array)
+            contracts.array.push_back(contract.reference ? contract : shared(std::make_shared<const Value>(contract)));
+    else if (message && has(*message, "bot_equipment_contracts")) contracts = at(*message, "bot_equipment_contracts");
     for (auto& raw : writable(incoming).array) {
         const auto id = exact(at(raw, "id"));
         const auto prior = id ? indexed.find(*id) : indexed.end();
