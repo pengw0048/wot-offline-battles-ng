@@ -371,11 +371,11 @@ VisibilityCore::Space contract(Battle& b) {
     VisibilityCore::Space out;
     try {
         auto client = py::attr(flags.get(), "CLIENT_MASK"), server = py::attr(flags.get(), "SERVER_MASK");
-        out.client = PyLong_AsUnsignedLongLongMask(client.get());
-        out.server = PyLong_AsUnsignedLongLongMask(server.get());
+        out.client = py::bits(client.get());
+        out.server = py::bits(server.get());
         auto gameplay = py::attr(b.visibility->local.arena_type.get(), "gameplayID");
         auto selected = py::invoke(mask.get(), gameplay.get());
-        out.selected = PyLong_AsUnsignedLongLongMask(selected.get());
+        out.selected = py::bits(selected.get());
         if (PyErr_Occurred()) throw p::Error("mask");
     } catch (const std::exception&) {
         PyErr_Clear();
@@ -399,7 +399,7 @@ p::Ref liveSpace(Battle& b, std::int64_t space_id) {
 }
 std::uint64_t itemsMask(PyObject* space) {
     auto mask = py::attr(space, "itemsVisibilityMask");
-    const auto value = PyLong_AsUnsignedLongLongMask(mask.get());
+    const auto value = py::bits(mask.get());
     if (PyErr_Occurred()) throw p::Error("#1513 space visibility mask is unreadable");
     return value;
 }

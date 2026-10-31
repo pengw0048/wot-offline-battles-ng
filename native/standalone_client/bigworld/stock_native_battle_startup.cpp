@@ -443,8 +443,8 @@ std::pair<std::int64_t, std::int64_t> visibilityContract(Battle& b) {
     auto flags = py::optional(modules(b), "client_visibility_flags");
     auto gameplay_mask = py::optional(modules(b), "arena_visibility_mask");
     if (flags.get() == Py_None || !py::callable(gameplay_mask)) throw p::Error("#1513 space visibility boundary is unavailable");
-    const std::uint64_t client_bits = PyLong_AsUnsignedLongLongMask(py::attr(flags.get(), "CLIENT_MASK").get());
-    const std::uint64_t server_bits = PyLong_AsUnsignedLongLongMask(py::attr(flags.get(), "SERVER_MASK").get());
+    const std::uint64_t client_bits = py::bits(py::attr(flags.get(), "CLIENT_MASK").get());
+    const std::uint64_t server_bits = py::bits(py::attr(flags.get(), "SERVER_MASK").get());
     const std::int64_t gameplay = asInt(py::attr(b.startup->arena_type.get(), "gameplayID").get());
     const std::int64_t selected = asInt(py::invoke(gameplay_mask.get(), p::integer(gameplay).get()).get());
     if (PyErr_Occurred()) throw p::Error("#1513 space visibility contract is invalid");
@@ -497,12 +497,12 @@ void maintainSpaceVisibility(Battle& b, double now) {
             throw p::Error("live space");
         }
         p::Ref space(raw);
-        const std::uint64_t current_mask = PyLong_AsUnsignedLongLongMask(py::attr(space.get(), "itemsVisibilityMask").get());
+        const std::uint64_t current_mask = py::bits(py::attr(space.get(), "itemsVisibilityMask").get());
         const std::uint64_t server_bits = std::uint64_t(contract.second);
         if ((current_mask & server_bits) == std::uint64_t(selected)) return;
         const std::uint64_t corrected = (current_mask & ~server_bits & 0xffffffffu) | std::uint64_t(selected);
         py::set(space.get(), "itemsVisibilityMask", p::Ref(PyLong_FromUnsignedLongLong(corrected)).get());
-        const std::uint64_t actual = PyLong_AsUnsignedLongLongMask(py::attr(space.get(), "itemsVisibilityMask").get());
+        const std::uint64_t actual = py::bits(py::attr(space.get(), "itemsVisibilityMask").get());
         if (actual != corrected) throw p::Error("#1513 typed gameplay visibility mask was not applied");
     } catch (const std::exception& e) {
         s.space_visibility.reset();

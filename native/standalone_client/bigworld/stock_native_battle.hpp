@@ -50,6 +50,13 @@ inline void set(PyObject* o, const char* name, PyObject* v) {
     if (PyObject_SetAttrString(o, name, v) < 0) throw p::Error(name);
 }
 inline bool truth(PyObject* v) { return p::flag(v); }
+// The low 64 bits of a Python int or long (2.7's PyLong_AsUnsignedLongLongMask rejects a plain int).
+inline std::uint64_t bits(PyObject* v) {
+    p::Ref n(PyNumber_Long(v));
+    const auto out = PyLong_AsUnsignedLongLongMask(n.get());
+    if (PyErr_Occurred()) throw p::Error("integer mask is invalid");
+    return out;
+}
 }
 
 enum class Phase { Idle, Loading, Running, Finished, Failed, Stopped, Leaving };
