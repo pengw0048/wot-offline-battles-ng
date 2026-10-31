@@ -13,7 +13,7 @@ import zipfile
 from unittest import mock
 
 import core
-import preferences_overlay
+import ng_client
 import server_imports
 import stage_payload
 
@@ -97,25 +97,6 @@ class GameRootTest(unittest.TestCase):
         self._write(
             "mods/0.9.22.0.1/legacy.offline_lan_0922_0.6.1.wotmod")
         self.assertIsNone(core.detect_port(self.root))
-
-    def test_an_installed_0_9_22_package_is_a_trusted_version_fallback(self):
-        self._write(
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_0.6.1.wotmod")
-        self.assertIsNone(core.detect_port(self.root))
-        status = core.inspect_game_root(self.root)
-        self.assertEqual(core.PORT_0_9_22, status["client"])
-        self.assertTrue(status["mod_installed"])
-
-    def test_an_installed_package_recovers_an_unparseable_version_file(self):
-        self._write(
-            "version.xml",
-            "<broken><version>v.0.9.22.0.1 #1513</version>")
-        self._write(
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_0.6.1.wotmod")
-        self.assertIsNone(core.detect_port(self.root))
-        status = core.inspect_game_root(self.root)
-        self.assertEqual(core.PORT_0_9_22, status["client"])
-        self.assertTrue(status["mod_installed"])
 
     def test_an_empty_stock_mod_directory_is_not_an_install_marker(self):
         os.makedirs(os.path.join(self.root, "mods", "0.9.22.0.1"))
@@ -519,6 +500,15 @@ class ProcDumpDownloadTest(unittest.TestCase):
 
 class ServerPayloadTest(unittest.TestCase):
 
+    def setUp(self):
+        self.work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.work, True)
+        environment = mock.patch.dict(os.environ, {
+            ng_client.DATA_ROOT_ENV: os.path.join(self.work, "ng")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.game = os.path.join(self.work, "ng", "instances", "player")
+
     def test_launcher_log_lives_beside_settings(self):
         settings = os.path.join(tempfile.gettempdir(), "state", "launcher.json")
         with mock.patch.object(core, "settings_path", return_value=settings):
@@ -582,9 +572,9 @@ class ServerPayloadTest(unittest.TestCase):
             environments = (
                 core.server_environment(
                     core.PORT_0_9_22, "/game", {}),
-                core.worker_environment("/game", environment={}),
+                core.worker_environment(self.game, environment={}),
                 core.visible_client_environment(
-                    core.PORT_0_9_22, environment={}),
+                    self.game, core.PORT_0_9_22, environment={}),
             )
 
         for environment in environments:
@@ -636,24 +626,33 @@ class ServerPayloadTest(unittest.TestCase):
         self.assertNotIn(core.SERVER_LOOPBACK_ONLY_ENV_0922, lan_environment)
 
     def test_hidden_worker_inherits_the_selected_server_endpoint(self):
+        worker = os.path.join(self.work, "ng", "instances", "worker")
         environment = core.worker_environment(
-            "/game", "10.0.0.5", 1234, team_size=7, environment={})
+            self.game, "10.0.0.5", 1234, team_size=7, environment={
+                core.CLIENT_MODE_ENV_0922: "player",
+                "BW_RES_PATH": "stale",
+                "WOT_OFFLINE_REPLAY_FILE": "stale",
+            })
         self.assertEqual(
             "10.0.0.5", environment[core.CLIENT_SERVER_HOST_ENV_0922])
         self.assertEqual(
             "1234", environment[core.CLIENT_SERVER_PORT_ENV_0922])
         self.assertEqual("7", environment[core.SERVER_TEAM_SIZE_ENV_0922])
         self.assertEqual(
-            [os.path.join("/game", core.WORKER_STARTER_FILENAME_0922),
-             core.WORKER_ONLY_ARGUMENT_0922],
-            core.worker_child_command("/game"))
+            ng_client.SIMULATION_WORKER_MODE,
+            environment[core.CLIENT_MODE_ENV_0922])
         self.assertEqual(
-            [os.path.join("/game", core.WORKER_STARTER_FILENAME_0922),
-             core.STOP_STARTER_ARGUMENT_0922, "42"],
-            core.starter_stop_command("/game", 42))
-        with self.assertRaisesRegex(
-                core.LauncherError, "process identifier is invalid"):
-            core.starter_stop_command("/game", 0)
+            os.path.join(worker, ng_client.WORKER_READY_MARKER),
+            environment[ng_client.WORKER_INTERNAL_READY_ENV])
+        self.assertEqual(
+            ng_client.user_data_paths(ng_client.WORKER),
+            (environment["APPDATA"], environment["LOCALAPPDATA"]))
+        for name in ("BW_RES_PATH", "WOT_OFFLINE_REPLAY_FILE"):
+            self.assertNotIn(name, environment)
+        self.assertEqual(
+            [os.path.join(worker, ng_client.EXECUTABLE),
+             "-noConversion", "-unattended"],
+            core.worker_child_command(self.game))
 
     def test_hidden_worker_inherits_independent_team_sizes(self):
         environment = core.worker_environment(
@@ -662,22 +661,14 @@ class ServerPayloadTest(unittest.TestCase):
         self.assertEqual("8", environment[core.SERVER_TEAM2_SIZE_ENV_0922])
 
     def test_visible_0_9_22_client_uses_isolated_config_and_endpoint(self):
-        command = core.visible_client_command("/game", core.PORT_0_9_22)
         self.assertEqual(
-            [os.path.join("/game", core.WORKER_STARTER_FILENAME_0922),
-             core.PLAYER_ARGUMENT_0922],
-            command)
-        self.assertEqual(
-            [os.path.join("/game", core.WORKER_STARTER_FILENAME_0922),
-             core.PAIRED_PLAYER_ARGUMENT_0922],
-            core.visible_client_command(
-                "/game", core.PORT_0_9_22, paired_worker=True))
+            [os.path.join(self.game, ng_client.EXECUTABLE), "-noConversion"],
+            core.visible_client_command(self.game, core.PORT_0_9_22))
         environment = core.visible_client_environment(
-            core.PORT_0_9_22, "10.0.0.5", 1234, paired_worker=True,
+            self.game, core.PORT_0_9_22, "10.0.0.5", 1234,
             environment={
                 core.CLIENT_MODE_ENV_0922: "simulation_worker",
-                core.HIDDEN_DESKTOP_ENV_0922: "1",
-                core.WORKER_READY_MARKER_ENV_0922: "stale",
+                ng_client.WORKER_INTERNAL_READY_ENV: "stale",
             })
         self.assertEqual(
             "10.0.0.5", environment[core.CLIENT_SERVER_HOST_ENV_0922])
@@ -688,22 +679,27 @@ class ServerPayloadTest(unittest.TestCase):
         self.assertEqual(
             core.PLAYER_MODE_0922,
             environment[core.CLIENT_MODE_ENV_0922])
-        for name in (core.HIDDEN_DESKTOP_ENV_0922,
-                     core.WORKER_READY_MARKER_ENV_0922):
-            self.assertNotIn(name, environment)
+        self.assertNotIn(ng_client.WORKER_INTERNAL_READY_ENV, environment)
+        self.assertEqual(
+            os.path.join(self.game, ng_client.PLAYER_READY_MARKER),
+            environment[ng_client.PLAYER_READY_ENV])
+        self.assertEqual(
+            ng_client.user_data_paths(ng_client.PLAYER),
+            (environment["APPDATA"], environment["LOCALAPPDATA"]))
 
     def test_visible_client_language_overrides_inherited_selection(self):
         for language, expected in (("zh", "zh"), ("en", "en"),
                                    ("invalid", "en")):
             inherited = {"WOT_OFFLINE_UI_LANGUAGE": "zh"}
             environment = core.visible_client_environment(
-                core.PORT_0_9_22, environment=inherited, language=language)
+                self.game, core.PORT_0_9_22, environment=inherited,
+                language=language)
             self.assertEqual(expected, environment["WOT_OFFLINE_UI_LANGUAGE"])
             self.assertEqual({"WOT_OFFLINE_UI_LANGUAGE": "zh"}, inherited)
 
     def test_visible_client_carries_the_preferred_team(self):
         environment = core.visible_client_environment(
-            core.PORT_0_9_22, environment={}, preferred_team=2)
+            self.game, core.PORT_0_9_22, environment={}, preferred_team=2)
         self.assertEqual(
             "2", environment[core.CLIENT_PREFERRED_TEAM_ENV_0922])
 
@@ -713,6 +709,8 @@ class ServerPayloadTest(unittest.TestCase):
 
 
 class ClientInstallTest(unittest.TestCase):
+    """The launcher refreshes NG instances and keeps every user-owned file."""
+
     def setUp(self):
         self.work = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.work, True)
@@ -720,12 +718,18 @@ class ClientInstallTest(unittest.TestCase):
         # The fallback-path cases deliberately run without APPDATA; tests of
         # external saves provide their own temporary APPDATA explicitly.
         environment = mock.patch.dict(os.environ, {
-            "APPDATA": "", "LOCALAPPDATA": os.path.join(self.work, "local")})
+            "APPDATA": "", "LOCALAPPDATA": os.path.join(self.work, "local"),
+            ng_client.DATA_ROOT_ENV: os.path.join(self.work, "ng"),
+            ng_client.PACKAGE_ENV: os.path.join(
+                self.work, "payload", ng_client.PACKAGE_PAYLOAD_DIR)})
         environment.start()
         self.addCleanup(environment.stop)
-        self.game = os.path.join(self.work, "game")
+        self.original = os.path.join(self.work, "game")
         self.payload = os.path.join(self.work, "payload")
-        os.makedirs(self.game)
+        self.package = os.path.join(self.payload, ng_client.PACKAGE_PAYLOAD_DIR)
+        self._make_0_9_22_target()
+        self.game = ng_client.player_instance(self.original)
+        self.worker = core.worker_root(self.game)
 
     def _write(self, root, relative_path, text="x"):
         path = os.path.join(root, *relative_path.split("/"))
@@ -736,93 +740,105 @@ class ClientInstallTest(unittest.TestCase):
             stream.write(text)
         return path
 
-    def _read(self, relative_path):
-        with open(os.path.join(self.game, *relative_path.split("/"))) as stream:
+    def _read(self, relative_path, root=None):
+        with open(os.path.join(root or self.game,
+                               *relative_path.split("/"))) as stream:
             return stream.read()
 
-    def _archive(self, port_version, members):
-        directory = os.path.join(self.payload, core.CLIENT_PAYLOAD_DIR)
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
-        path = os.path.join(directory, "%s.zip" % port_version)
-        with zipfile.ZipFile(path, "w") as archive:
-            for member, content in members.items():
-                archive.writestr(member, content)
-        return path
-
-    def _stage_0_9_22(self, content="new", build_identity="test-build-a"):
-        members = {
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_9.9.9.wotmod": content,
-            "mods/0.9.22.0.1/offline_instance_guard_native.pyd": content,
-            "mods/0.9.22.0.1/offline_math_batch_native.pyd": content,
-            "mods/configs/offline_lan_0922/config.json": content,
-            core.BUILD_IDENTITY_RELATIVE_PATH_0922: json.dumps({
-                "schema": 1,
-                "semanticVersion": "0.6.1",
-                "buildIdentity": build_identity,
-            }),
-            "offline_worker_starter.exe": content,
-            "res_mods/0.9.22.0.1/engine_config.offline-player.xml": content,
-            "res_mods/0.9.22.0.1/engine_config.offline-worker.xml": content,
-        }
-        for name in ("navgraphs", "foliage", "destructibles"):
-            records = []
-            for index in range(41):
-                filename = "map-%02d.json" % index
-                records.append({"file": filename})
-                members[
-                    "mods/configs/offline_lan_0922/%s/%s" %
-                    (name, filename)
-                ] = content
-            members[
-                "mods/configs/offline_lan_0922/%s/manifest.json" % name
-            ] = json.dumps({"maps": records})
-        return self._archive("0.9.22", members)
+    def _stage_0_9_22(self, content="new", build_identity="test-build-a",
+                      extra=None):
+        if os.path.isdir(self.package):
+            shutil.rmtree(self.package)
+        self._write(self.package, ng_client.EXECUTABLE, content)
+        self._write(self.package, "offline-res.json",
+                    json.dumps({"revision": "pinned"}))
+        self._write(
+            self.package, "tools/prepare_native_client.py",
+            "import os\n"
+            "def prepare(client, package, overlays=()):\n"
+            "    lines = [str(path) for path in overlays] + [str(client)]\n"
+            "    with open(os.path.join(str(package), 'paths.xml'), 'w') "
+            "as stream:\n"
+            "        stream.write('\\n'.join(lines))\n")
+        self._write(self.package, ng_client.CONFIG_RELATIVE, content)
+        self._write(
+            self.package, "mods/configs/offline_lan_0922/navgraphs/"
+            "manifest.json", json.dumps({"maps": []}))
+        if build_identity is not None:
+            self._write(
+                self.package, core.BUILD_IDENTITY_RELATIVE_PATH_0922,
+                json.dumps({
+                    "schema": 1,
+                    "semanticVersion": "0.6.1",
+                    "buildIdentity": build_identity,
+                }))
+        for relative, text in (extra or {}).items():
+            self._write(self.package, relative, text)
+        return self.package
 
     def _make_0_9_22_target(self):
-        self._write(self.game, core.GAME_EXECUTABLE, "")
+        self._write(self.original, core.GAME_EXECUTABLE, "")
         self._write(
-            self.game, "version.xml",
+            self.original, "version.xml",
             "<version> v.0.9.22.0.1 #1513 </version>")
-        engine_config = preferences_overlay.packed_xml.PackedElement(children=[
-            (b"preferences", preferences_overlay.packed_xml.PackedValue(
-                preferences_overlay.packed_xml.TYPE_STRING,
-                b"preferences.xml")),
-        ])
-        path = os.path.join(self.game, "res", "engine_config.xml")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as stream:
-            stream.write(preferences_overlay.packed_xml.write_packed_xml(
-                engine_config))
 
-    def test_0_9_22_install_replaces_old_packages_and_data(self):
+    def test_install_prepares_both_instances_from_the_package(self):
         self._stage_0_9_22()
-        self._write(self.game,
-                    "mods/0.9.22.0.1/legacy.offline_lan_0922_0.1.0.wotmod",
-                    "stale")
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        self.assertFalse(os.path.exists(os.path.join(
-            self.game, "mods", "0.9.22.0.1",
-            "legacy.offline_lan_0922_0.1.0.wotmod")))
-        self.assertEqual("new", self._read(
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_9.9.9.wotmod"))
 
-    def test_0_9_22_install_removes_stale_baked_data(self):
-        self._stage_0_9_22()
-        self._write(self.game,
-                    "mods/configs/offline_lan_0922/navgraphs/stale.json",
-                    "stale")
         core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        self.assertFalse(os.path.exists(os.path.join(
+
+        for instance in (self.game, self.worker):
+            self.assertEqual(
+                "new", self._read(ng_client.EXECUTABLE, instance))
+            self.assertEqual(self.original,
+                             ng_client.original_client_root(instance))
+            paths = self._read("paths.xml", instance).splitlines()
+            self.assertEqual(ng_client.overlay_root(self.game), paths[0])
+            self.assertEqual(self.original, paths[-1])
+        status = core.inspect_game_root(self.game)
+        self.assertEqual(core.PORT_0_9_22, status["client"])
+        self.assertTrue(status["mod_installed"])
+        self.assertEqual(self.game, status["path"])
+        self.assertEqual(self.original, status["original_path"])
+
+    def test_install_needs_the_original_client_binding(self):
+        self._stage_0_9_22()
+        unbound = os.path.join(self.work, "unbound")
+        os.makedirs(unbound)
+
+        with self.assertRaises(core.LauncherError):
+            core.install_client_mod(unbound, core.PORT_0_9_22, self.payload)
+
+    def test_install_removes_files_the_package_no_longer_carries(self):
+        self._stage_0_9_22(extra={"tools/retired.py": "old"})
+        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
+        self._write(self.game, "mods/configs/offline_lan_0922/notes.json",
+                    "keep")
+        self._write(self.game, "replays/offline/one.wotlanreplay", "keep")
+        self._write(self.game, "preferences.xml", "keep")
+        self._stage_0_9_22(content="newer")
+
+        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
+
+        self.assertFalse(os.path.exists(
+            os.path.join(self.game, "tools", "retired.py")))
+        self.assertEqual("newer", self._read(ng_client.EXECUTABLE))
+        for relative in ("mods/configs/offline_lan_0922/notes.json",
+                         "replays/offline/one.wotlanreplay",
+                         "preferences.xml"):
+            self.assertEqual("keep", self._read(relative))
+
+    def test_a_deleted_package_file_is_restored(self):
+        self._stage_0_9_22()
+        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
+        manifest = os.path.join(
             self.game, "mods", "configs", "offline_lan_0922", "navgraphs",
-            "stale.json")))
+            "manifest.json")
+        os.unlink(manifest)
 
-    def test_0_9_22_install_keeps_another_authors_mod(self):
-        self._stage_0_9_22()
-        self._write(self.game, "mods/0.9.22.0.1/com.other.mod.wotmod", "theirs")
         core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        self.assertEqual("theirs",
-                         self._read("mods/0.9.22.0.1/com.other.mod.wotmod"))
+
+        self.assertTrue(os.path.isfile(manifest))
 
     def test_0_9_22_install_keeps_the_saved_settings(self):
         self._stage_0_9_22()
@@ -836,6 +852,22 @@ class ClientInstallTest(unittest.TestCase):
         self.assertEqual("mine", self._read(
             "mods/configs/offline_lan_0922/config.json"))
 
+    def test_0_9_22_install_writes_a_missing_configuration(self):
+        self._stage_0_9_22()
+        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
+        self.assertEqual("new", self._read(
+            "mods/configs/offline_lan_0922/config.json"))
+
+    def test_a_package_without_configuration_seeds_the_client_schema(self):
+        self._stage_0_9_22()
+        os.unlink(os.path.join(self.package,
+                               *ng_client.CONFIG_RELATIVE.split("/")))
+
+        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
+
+        self.assertEqual({"schema": 3}, json.loads(self._read(
+            ng_client.CONFIG_RELATIVE, self.worker)))
+
     def test_the_selected_save_reaches_the_client_configuration(self):
         self._stage_0_9_22()
         self._write(self.game, "mods/configs/offline_lan_0922/config.json",
@@ -844,7 +876,7 @@ class ClientInstallTest(unittest.TestCase):
 
         core.write_settings(
             self.game, core.PORT_0_9_22, core.MODE_SINGLE, "127.0.0.1",
-            28782, "PlayerOne", "career-2")
+            28792, "PlayerOne", "career-2")
 
         config = json.loads(
             self._read("mods/configs/offline_lan_0922/config.json"))
@@ -857,7 +889,7 @@ class ClientInstallTest(unittest.TestCase):
                     json.dumps({"schema": 3, "save_slot": "career-2"}))
 
         core.write_settings(
-            self.game, core.PORT_0_9_22, core.MODE_SINGLE, "127.0.0.1", 28782)
+            self.game, core.PORT_0_9_22, core.MODE_SINGLE, "127.0.0.1", 28792)
 
         config = json.loads(
             self._read("mods/configs/offline_lan_0922/config.json"))
@@ -871,17 +903,11 @@ class ClientInstallTest(unittest.TestCase):
         with self.assertRaises(core.LauncherError):
             core.write_settings(
                 self.game, core.PORT_0_9_22, core.MODE_SINGLE, "127.0.0.1",
-                28782, "PlayerOne", "../escape")
+                28792, "PlayerOne", "../escape")
 
         config = json.loads(
             self._read("mods/configs/offline_lan_0922/config.json"))
         self.assertEqual("default", config["save_slot"])
-
-    def test_0_9_22_install_writes_a_missing_configuration(self):
-        self._stage_0_9_22()
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        self.assertEqual("new", self._read(
-            "mods/configs/offline_lan_0922/config.json"))
 
     def test_startup_repair_quarantines_only_an_invalid_config(self):
         default_config = json.dumps({
@@ -892,7 +918,6 @@ class ClientInstallTest(unittest.TestCase):
             "perfect_accuracy": False,
         })
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         self._write(
             self.game, "mods/configs/offline_lan_0922/config.json",
             "{broken")
@@ -912,8 +937,6 @@ class ClientInstallTest(unittest.TestCase):
             self.game,
             "mods/configs/offline_lan_0922/postbattle_state.json",
             postbattle)
-        self._write(
-            self.game, "mods/0.9.22.0.1/com.other.mod.wotmod", "theirs")
 
         actions = core.repair_0_9_22_startup(
             self.game, self.payload, is_running=lambda: False)
@@ -928,15 +951,12 @@ class ClientInstallTest(unittest.TestCase):
                 "mods/configs/offline_lan_0922/" + name))
         self.assertEqual(postbattle, self._read(
             "mods/configs/offline_lan_0922/postbattle_state.json"))
-        self.assertEqual("theirs", self._read(
-            "mods/0.9.22.0.1/com.other.mod.wotmod"))
         self.assertIn("kept the saved endpoint", " ".join(actions))
 
     def test_startup_repair_quarantines_an_unusable_save_id(self):
         """The client refuses to start on it, so repair has to notice it too."""
         default_config = json.dumps({"enabled": True, "save_slot": "default"})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         broken = json.dumps({"enabled": True, "save_slot": "../escape"})
         self._write(
             self.game, "mods/configs/offline_lan_0922/config.json", broken)
@@ -952,7 +972,6 @@ class ClientInstallTest(unittest.TestCase):
     def test_startup_repair_keeps_a_named_save(self):
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         saved_config = json.dumps({"enabled": True, "save_slot": "career-2"})
         self._write(
             self.game, "mods/configs/offline_lan_0922/config.json",
@@ -966,7 +985,6 @@ class ClientInstallTest(unittest.TestCase):
 
     def test_updates_and_startup_repair_preserve_all_external_save_slots(self):
         self._stage_0_9_22(json.dumps({"enabled": True}))
-        self._make_0_9_22_target()
         app_data = os.path.join(self.work, "app-data")
         relative_root = "Wargaming.net/WorldOfTanks/offline_lan_0922"
         saved_files = {}
@@ -993,7 +1011,6 @@ class ClientInstallTest(unittest.TestCase):
     def test_startup_repair_keeps_a_valid_config(self):
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         saved_config = json.dumps({
             "enabled": False, "startupTimeoutSeconds": 45.0})
         self._write(
@@ -1011,12 +1028,12 @@ class ClientInstallTest(unittest.TestCase):
 
     def test_startup_repair_refuses_to_touch_a_running_game(self):
         self._stage_0_9_22(json.dumps({"enabled": True}))
-        self._make_0_9_22_target()
         self._write(
             self.game, "mods/configs/offline_lan_0922/config.json",
             "{broken")
 
-        with self.assertRaisesRegex(core.LauncherError, "Close World of Tanks"):
+        with self.assertRaisesRegex(core.LauncherError,
+                                    "Close the NG client"):
             core.repair_0_9_22_startup(
                 self.game, self.payload, is_running=lambda: True)
 
@@ -1024,7 +1041,6 @@ class ClientInstallTest(unittest.TestCase):
             "mods/configs/offline_lan_0922/config.json"))
 
     def test_failed_startup_repair_restores_the_invalid_config(self):
-        self._make_0_9_22_target()
         self._write(
             self.game, "mods/configs/offline_lan_0922/config.json",
             "{broken")
@@ -1047,75 +1063,9 @@ class ClientInstallTest(unittest.TestCase):
             self.game, "mods", "configs", "offline_lan_0922",
             "config.json.invalid")))
 
-    def test_normal_client_preferences_are_moved_to_a_recoverable_backup(self):
-        self._make_0_9_22_target()
-        app_data = os.path.join(self.work, "app-data")
-        preferences = os.path.join(
-            app_data,
-            *preferences_overlay.NORMAL_PROFILE_RELATIVE_PATH.split("/"))
-        os.makedirs(os.path.dirname(preferences))
-        preferences = preferences_overlay.normal_profile_path(
-            {"APPDATA": app_data})
-        self.assertIsNotNone(preferences)
-        with open(preferences, "w") as stream:
-            stream.write("normal client settings")
-        first_backup = preferences + ".wot-offline-backup-20260822-120000"
-        with open(first_backup, "w") as stream:
-            stream.write("older backup")
-
-        actions = core.backup_normal_client_preferences(
-            self.game, is_running=lambda: False,
-            environment={"APPDATA": app_data},
-            timestamp="20260822-120000")
-
-        backup = first_backup + "-1"
-        self.assertFalse(os.path.lexists(preferences))
-        with open(first_backup) as stream:
-            self.assertEqual("older backup", stream.read())
-        with open(backup) as stream:
-            self.assertEqual("normal client settings", stream.read())
-        self.assertIn(backup, actions[0])
-
-    def test_normal_client_preferences_cleanup_is_idempotent(self):
-        self._make_0_9_22_target()
-        app_data = os.path.join(self.work, "empty-app-data")
-
-        actions = core.backup_normal_client_preferences(
-            self.game, is_running=lambda: False,
-            environment={"APPDATA": app_data},
-            timestamp="20260822-120000")
-
-        self.assertIn("already absent", actions[0])
-
-    def test_normal_client_preferences_cleanup_refuses_a_file_link(self):
-        self._make_0_9_22_target()
-        app_data = os.path.join(self.work, "linked-app-data")
-        preferences = os.path.join(
-            app_data,
-            *preferences_overlay.NORMAL_PROFILE_RELATIVE_PATH.split("/"))
-        os.makedirs(os.path.dirname(preferences))
-        target = os.path.join(self.work, "outside-preferences.xml")
-        with open(target, "w") as stream:
-            stream.write("outside")
-        try:
-            os.symlink(target, preferences)
-        except (AttributeError, NotImplementedError, OSError):
-            self.skipTest("symlinks are unavailable")
-
-        with self.assertRaisesRegex(core.LauncherError, "regular file"):
-            core.backup_normal_client_preferences(
-                self.game, is_running=lambda: False,
-                environment={"APPDATA": app_data},
-                timestamp="20260822-120000")
-
-        self.assertTrue(os.path.islink(preferences))
-        with open(target) as stream:
-            self.assertEqual("outside", stream.read())
-
     def test_reset_deletes_only_known_offline_state_after_confirmation(self):
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         state_root = "mods/configs/offline_lan_0922/"
         for name in ("config.json", "config.json.invalid",
                      "server_endpoint.json", "server_endpoint.json.tmp",
@@ -1125,8 +1075,6 @@ class ClientInstallTest(unittest.TestCase):
         self._write(self.game, state_root + "notes.json", "keep")
         self._write(
             self.game, state_root + "vehicle_profiles.json", "profiles")
-        self._write(
-            self.game, "mods/0.9.22.0.1/com.other.mod.wotmod", "theirs")
 
         actions = core.reset_0_9_22_state(
             self.game, self.payload, is_running=lambda: False)
@@ -1140,8 +1088,6 @@ class ClientInstallTest(unittest.TestCase):
         self.assertEqual("keep", self._read(state_root + "notes.json"))
         self.assertEqual(
             "profiles", self._read(state_root + "vehicle_profiles.json"))
-        self.assertEqual("theirs", self._read(
-            "mods/0.9.22.0.1/com.other.mod.wotmod"))
         self.assertIn("Deleted 7 offline saved-data file(s).", actions)
 
     def test_reset_deletes_the_save_slots_of_an_installation_without_appdata(
@@ -1153,7 +1099,6 @@ class ClientInstallTest(unittest.TestCase):
         """
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         state_root = "mods/configs/offline_lan_0922/"
         saves_root = state_root + core.SAVES_DIR_NAME_0_9_22 + "/"
         self._write(self.game, saves_root + "default/garage_state.json", "a")
@@ -1170,7 +1115,6 @@ class ClientInstallTest(unittest.TestCase):
     def test_reset_deletes_save_slots_from_appdata(self):
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
         appdata = os.path.join(self.work, "appdata")
         saves_root = os.path.join(
             appdata, "Wargaming.net", "WorldOfTanks", "offline_lan_0922",
@@ -1194,7 +1138,6 @@ class ClientInstallTest(unittest.TestCase):
             self.assertEqual("keep", stream.read())
 
     def test_failed_reset_restores_appdata_saves_and_legacy_state(self):
-        self._make_0_9_22_target()
         appdata = os.path.join(self.work, "appdata")
         saves_root = os.path.join(
             appdata, "Wargaming.net", "WorldOfTanks", "offline_lan_0922",
@@ -1218,40 +1161,28 @@ class ClientInstallTest(unittest.TestCase):
         with open(os.path.join(state_root, "garage_state.json")) as stream:
             self.assertEqual("legacy garage", stream.read())
 
-    def test_reset_also_deletes_only_the_isolated_client_preferences(self):
+    def test_reset_also_deletes_both_instance_preferences(self):
         default_config = json.dumps({"enabled": True})
         self._stage_0_9_22(default_config)
-        self._make_0_9_22_target()
-        preferences = os.path.join(
-            self.work, "local-app-data",
-            *preferences_overlay.PROFILE_RELATIVE_PATH.split("/"))
-        os.makedirs(os.path.dirname(preferences))
-        with open(preferences, "w") as stream:
-            stream.write("offline graphics and input settings")
+        player = self._write(self.game, "preferences.xml", "player settings")
+        worker = self._write(self.worker, "preferences.xml", "worker settings")
+        original = self._write(self.original, "preferences.xml", "retail")
+
+        actions = core.reset_0_9_22_state(
+            self.game, self.payload, is_running=lambda: False)
+
+        self.assertFalse(os.path.exists(player))
+        self.assertFalse(os.path.exists(worker))
+        with open(original) as stream:
+            self.assertEqual("retail", stream.read())
+        self.assertIn("Deleted 2 offline saved-data file(s).", actions)
+
+    def test_failed_reset_restores_the_instance_preferences(self):
+        preferences = self._write(self.game, "preferences.xml", "keep me")
 
         with mock.patch.object(
-                core, "_isolated_0_9_22_preferences_path",
-                return_value=preferences):
-            actions = core.reset_0_9_22_state(
-                self.game, self.payload, is_running=lambda: False)
-
-        self.assertFalse(os.path.exists(preferences))
-        self.assertIn("Deleted 1 offline saved-data file(s).", actions)
-
-    def test_failed_reset_restores_the_isolated_client_preferences(self):
-        self._make_0_9_22_target()
-        preferences = os.path.join(
-            self.work, "local-app-data",
-            *preferences_overlay.PROFILE_RELATIVE_PATH.split("/"))
-        os.makedirs(os.path.dirname(preferences))
-        with open(preferences, "w") as stream:
-            stream.write("keep me")
-
-        with mock.patch.object(
-                core, "_isolated_0_9_22_preferences_path",
-                return_value=preferences), mock.patch.object(
-                    core, "install_client_mod",
-                    side_effect=core.LauncherError("install failed")):
+                core, "install_client_mod",
+                side_effect=core.LauncherError("install failed")):
             with self.assertRaisesRegex(core.LauncherError, "install failed"):
                 core.reset_0_9_22_state(
                     self.game, self.payload, is_running=lambda: False)
@@ -1260,7 +1191,6 @@ class ClientInstallTest(unittest.TestCase):
             self.assertEqual("keep me", stream.read())
 
     def test_failed_reset_restores_every_saved_file(self):
-        self._make_0_9_22_target()
         state_root = "mods/configs/offline_lan_0922/"
         for name in ("config.json", "server_endpoint.json",
                      "garage_state.json", "postbattle_state.json"):
@@ -1278,9 +1208,7 @@ class ClientInstallTest(unittest.TestCase):
             self.assertEqual("saved-" + name,
                              self._read(state_root + name))
 
-    def test_same_semantic_version_with_a_new_build_identity_reinstalls(self):
-        package = (
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_9.9.9.wotmod")
+    def test_a_new_build_identity_refreshes_the_instances(self):
         self._stage_0_9_22(content="first", build_identity="test-build-a")
         core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
         self._stage_0_9_22(content="second", build_identity="test-build-b")
@@ -1288,216 +1216,34 @@ class ClientInstallTest(unittest.TestCase):
         actions = core.install_client_mod(
             self.game, core.PORT_0_9_22, self.payload)
 
-        self.assertEqual("second", self._read(package))
-        self.assertIn("build=test-build-a", " ".join(actions))
+        self.assertEqual("second", self._read(ng_client.EXECUTABLE))
         self.assertIn("build=test-build-b", " ".join(actions))
-        self.assertIn("Install decision: reinstall", " ".join(actions))
-
-    def test_same_build_identity_keeps_the_complete_0_9_22_install(self):
-        self._stage_0_9_22(build_identity="test-build-a")
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-
-        actions = core.install_client_mod(
-            self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertIn("Install decision: keep", " ".join(actions))
         self.assertEqual({
             "schema": 1,
             "semanticVersion": "0.6.1",
-            "buildIdentity": "test-build-a",
-        }, core.installed_payload_identity(
-            self.game, core.PORT_0_9_22))
+            "buildIdentity": "test-build-b",
+        }, core.installed_payload_identity(self.game, core.PORT_0_9_22))
 
-    def test_a_missing_required_file_forces_a_reinstall(self):
-        self._stage_0_9_22()
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        manifest = os.path.join(
-            self.game, "mods", "configs", "offline_lan_0922", "destructibles",
-            "manifest.json")
-        os.unlink(manifest)
+    def test_a_missing_build_identity_is_soft(self):
+        self._stage_0_9_22(build_identity=None)
 
         actions = core.install_client_mod(
             self.game, core.PORT_0_9_22, self.payload)
 
-        self.assertTrue(os.path.isfile(manifest))
-        self.assertNotIn("already up to date", " ".join(actions))
-
-    def test_a_missing_manifest_referenced_map_forces_a_reinstall(self):
-        self._stage_0_9_22()
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        map_path = os.path.join(
-            self.game, "mods", "configs", "offline_lan_0922", "destructibles",
-            "map-17.json")
-        os.unlink(map_path)
-
-        actions = core.install_client_mod(
-            self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertTrue(os.path.isfile(map_path))
-        self.assertNotIn("already up to date", " ".join(actions))
-
-    def test_an_archive_missing_a_manifest_referenced_map_is_rejected(self):
-        archive_path = self._stage_0_9_22()
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {
-                name: archive.read(name) for name in archive.namelist()
-                if name != ("mods/configs/offline_lan_0922/destructibles/"
-                            "map-17.json")
-            }
-        self._archive(core.PORT_0_9_22, members)
-        self._write(
-            self.game,
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_old.wotmod",
-            "previous")
-
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertEqual("previous", self._read(
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_old.wotmod"))
-
-    def test_a_malformed_0_9_22_manifest_archive_is_rejected(self):
-        archive_path = self._stage_0_9_22()
-        manifest_name = (
-            "mods/configs/offline_lan_0922/destructibles/manifest.json")
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {name: archive.read(name)
-                       for name in archive.namelist()}
-        members[manifest_name] = "not json"
-        self._archive(core.PORT_0_9_22, members)
-
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-    def test_a_malformed_build_identity_is_soft_and_forces_reinstall(self):
-        package = (
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_9.9.9.wotmod")
-        self._stage_0_9_22(content="first", build_identity="test-build-a")
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        archive_path = self._stage_0_9_22()
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {name: archive.read(name)
-                       for name in archive.namelist()}
-        members[package] = "second"
-        members[core.BUILD_IDENTITY_RELATIVE_PATH_0922] = json.dumps({
-            "schema": 1,
-            "semanticVersion": "0.6.1",
-            "buildIdentity": "not a valid identity",
-        })
-        self._archive(core.PORT_0_9_22, members)
-
-        actions = core.install_client_mod(
-            self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertEqual("second", self._read(package))
         self.assertIsNone(core.installed_payload_identity(
             self.game, core.PORT_0_9_22))
-        self.assertIn("build identity is unavailable", " ".join(actions))
-        self.assertIn("Install decision: reinstall", " ".join(actions))
+        self.assertIn("version=unknown build=unknown", " ".join(actions))
 
-    def test_a_missing_build_identity_is_soft_and_removes_the_stale_one(self):
-        self._stage_0_9_22(content="first", build_identity="test-build-a")
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        archive_path = self._stage_0_9_22(content="second")
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {
-                name: archive.read(name) for name in archive.namelist()
-                if name != core.BUILD_IDENTITY_RELATIVE_PATH_0922
-            }
-        self._archive(core.PORT_0_9_22, members)
+    def test_a_launcher_without_the_ng_client_reports_it(self):
+        self.assertRaises(core.LauncherError, core.install_client_mod,
+                          self.game, core.PORT_0_9_22, self.payload)
 
-        actions = core.install_client_mod(
-            self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertFalse(os.path.exists(os.path.join(
-            self.game, *core.BUILD_IDENTITY_RELATIVE_PATH_0922.split("/"))))
-        self.assertIsNone(core.installed_payload_identity(
-            self.game, core.PORT_0_9_22))
-        self.assertIn("build identity is unavailable", " ".join(actions))
-        self.assertIn("Install decision: reinstall", " ".join(actions))
-
-    def test_a_forced_install_ignores_the_marker(self):
+    def test_an_incomplete_ng_client_package_is_refused(self):
         self._stage_0_9_22()
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload)
-        stale = "mods/configs/offline_lan_0922/navgraphs/stale.json"
-        self._write(self.game, stale, "stale")
-
-        core.install_client_mod(self.game, core.PORT_0_9_22, self.payload,
-                                force=True)
-
-        self.assertFalse(os.path.exists(os.path.join(
-            self.game, *stale.split("/"))))
-
-    def test_a_launcher_without_mod_files_reports_it(self):
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-    def test_a_member_outside_the_game_folder_is_refused(self):
-        self._archive(core.PORT_0_9_22, {"../escape.txt": "no"})
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-    def test_an_unexpected_payload_file_type_is_refused(self):
-        archive_path = self._stage_0_9_22()
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {name: archive.read(name)
-                       for name in archive.namelist()}
-        members["mods/configs/offline_lan_0922/development.py"] = "no"
-        self._archive(core.PORT_0_9_22, members)
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-    def test_an_unrelated_0_9_22_mod_is_not_installed_from_the_payload(self):
-        archive_path = self._stage_0_9_22()
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            members = {name: archive.read(name)
-                       for name in archive.namelist()}
-        members["mods/0.9.22.0.1/com.other.mod.wotmod"] = "no"
-        self._archive(core.PORT_0_9_22, members)
-        self.assertRaises(core.LauncherError, core.install_client_mod,
-                          self.game, core.PORT_0_9_22, self.payload)
-
-    def test_an_invalid_archive_does_not_remove_the_previous_mod(self):
-        self._archive(core.PORT_0_9_22, {"../escape.txt": "no"})
-        previous = (
-            "mods/0.9.22.0.1/legacy.offline_lan_0922_old.wotmod")
-        self._write(self.game, previous, "previous")
+        os.unlink(os.path.join(self.package, ng_client.EXECUTABLE))
 
         self.assertRaises(core.LauncherError, core.install_client_mod,
                           self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertEqual("previous", self._read(previous))
-
-    def test_a_failed_atomic_swap_restores_the_previous_mod(self):
-        self._stage_0_9_22()
-        previous = (
-            "mods/configs/offline_lan_0922/navgraphs/previous.txt")
-        self._write(self.game, previous, "previous")
-        original_replace = os.replace
-
-        def replace(source, target):
-            normalized = source.replace("\\", "/")
-            if ("/.wot-offline-install-" in normalized and
-                    "/new/mods/configs/offline_lan_0922/navgraphs" in
-                    normalized):
-                raise OSError("synthetic install failure")
-            return original_replace(source, target)
-
-        with mock.patch("core.os.replace", side_effect=replace):
-            self.assertRaises(core.LauncherError, core.install_client_mod,
-                              self.game, core.PORT_0_9_22, self.payload)
-
-        self.assertEqual("previous", self._read(previous))
-
-    def test_an_unwritable_game_folder_reports_a_permission_remedy(self):
-        self._stage_0_9_22()
-        with mock.patch("tempfile.mkdtemp",
-                        side_effect=PermissionError("access denied")):
-            with self.assertRaises(core.LauncherError) as caught:
-                core.install_client_mod(
-                    self.game, core.PORT_0_9_22, self.payload)
-        self.assertIn("not writable", str(caught.exception))
-        self.assertIn("permission", str(caught.exception))
 
 
 class PayloadStagingTest(unittest.TestCase):
@@ -1508,39 +1254,19 @@ class PayloadStagingTest(unittest.TestCase):
         self.target = os.path.join(self.root, stage_payload.SERVER_DIR)
 
     @staticmethod
-    def _write_0_9_22_data(overlay):
-        runtime_files = (
-            "offline_worker_starter.exe",
-            "mods/0.9.22.0.1/offline_instance_guard_native.pyd",
-            "mods/0.9.22.0.1/offline_math_batch_native.pyd",
-            "res_mods/0.9.22.0.1/engine_config.offline-player.xml",
-            "res_mods/0.9.22.0.1/engine_config.offline-worker.xml",
-        )
-        for relative in runtime_files:
-            path = os.path.join(overlay, *relative.split("/"))
+    def _write_ng_client(package):
+        for relative in stage_payload.NG_CLIENT_REQUIRED + (
+                "offline-res/scripts/client/gui/mods/mod_offline.pyc",
+                "mods/configs/offline_lan_0922/navgraphs/manifest.json"):
+            path = os.path.join(package, *relative.split("/"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as stream:
-                stream.write("runtime")
-        data_root = os.path.join(
-            overlay, "mods", "configs", "offline_lan_0922")
-        for dataset in ("navgraphs", "foliage", "destructibles"):
-            dataset_root = os.path.join(data_root, dataset)
-            os.makedirs(dataset_root)
-            records = []
-            for index in range(41):
-                filename = "map-%02d.json" % index
-                records.append({"file": filename})
-                with open(os.path.join(dataset_root, filename), "w") as stream:
-                    stream.write("{}")
-            with open(os.path.join(dataset_root, "manifest.json"), "w") as stream:
-                json.dump({"maps": records}, stream)
+                stream.write("x")
 
     def test_supported_server_entry_points_are_staged(self):
         expected_ports = {core.PORT_0_9_22}
         self.assertEqual(expected_ports, set(stage_payload.PAYLOAD_FILES))
         self.assertEqual(expected_ports, set(stage_payload.PAYLOAD_TREES))
-        self.assertEqual(expected_ports, set(stage_payload.CLIENT_TREES))
-        self.assertEqual(expected_ports, set(stage_payload.CLIENT_FILES))
         for port_version in core.SUPPORTED_PORTS:
             self.assertTrue(
                 os.path.isfile(core.server_script(port_version, self.target)),
@@ -1601,69 +1327,45 @@ class PayloadStagingTest(unittest.TestCase):
             os.path.sep + "navgraphs" + os.path.sep in path
             for path in self.written))
 
-    def test_client_staging_carries_only_the_0_9_22_mod(self):
-        source = os.path.join(tempfile.mkdtemp(), "repo")
-        self.addCleanup(shutil.rmtree, os.path.dirname(source), True)
-        overlay = os.path.join(source, "dist",
-                               "WoT-0.9.22-LAN-Client-abc1234")
-        relative_paths = [
-            os.path.join(overlay, "mods", "0.9.22.0.1",
-                         "legacy.offline_lan_0922_0.6.1.wotmod"),
-            os.path.join(overlay, "mods", "configs", "offline_lan_0922",
-                         "config.json"),
-            os.path.join(overlay, "mods", "configs", "offline_lan_0922",
-                         core.BUILD_IDENTITY_FILENAME_0922),
-            os.path.join(overlay, "map_studio", "editor.py"),
-        ]
-        for relative in relative_paths:
-            path = os.path.join(source, relative)
-            if not os.path.isdir(os.path.dirname(path)):
-                os.makedirs(os.path.dirname(path))
-            with open(path, "w") as stream:
-                stream.write("x")
-        identity_path = os.path.join(
-            overlay, *core.BUILD_IDENTITY_RELATIVE_PATH_0922.split("/"))
-        with open(identity_path, "w") as stream:
-            json.dump({
-                "schema": 1,
-                "semanticVersion": "0.6.1",
-                "buildIdentity": "test-staging",
-            }, stream)
-        self._write_0_9_22_data(overlay)
-        target = os.path.join(source, "staged")
-        stage_payload.stage_clients(target, source)
-        expected = {
-            "0.9.22": ("mods/0.9.22.0.1/"
-                       "legacy.offline_lan_0922_0.6.1.wotmod",
-                       "mods/configs/offline_lan_0922/config.json",
-                       core.BUILD_IDENTITY_RELATIVE_PATH_0922,
-                       "offline_worker_starter.exe",
-                       "mods/0.9.22.0.1/offline_instance_guard_native.pyd",
-                       "mods/0.9.22.0.1/offline_math_batch_native.pyd",
-                       "res_mods/0.9.22.0.1/"
-                       "engine_config.offline-player.xml",
-                       "res_mods/0.9.22.0.1/"
-                       "engine_config.offline-worker.xml"),
-        }
-        for port_version, members in expected.items():
-            archive = zipfile.ZipFile(
-                os.path.join(target, "%s.zip" % port_version))
-            try:
-                names = set(archive.namelist())
-            finally:
-                archive.close()
-            for member in members:
-                self.assertIn(member, names)
-            self.assertFalse(any(
-                "mapstudio" in name.replace("_", "").lower()
-                for name in names))
-        self.assertEqual(["0.9.22.zip"], sorted(os.listdir(target)))
+    def test_the_server_stages_its_binary_wire_modules(self):
+        for name in ("battle_wire_codec.py", "battle_wire_schema.py",
+                     "battle_wire_replica.py"):
+            self.assertTrue(os.path.isfile(os.path.join(
+                self.target, "0.9.22", "server", name)), name)
 
-    def test_client_staging_without_a_built_package_reports_it(self):
+    def test_ng_client_staging_carries_the_package_and_its_identity(self):
         source = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, source, True)
-        self.assertRaises(ValueError, stage_payload.stage_clients,
-                          os.path.join(source, "staged"), source)
+        package = os.path.join(source, "bigworld-client-win32")
+        self._write_ng_client(package)
+        target = os.path.join(source, "staged")
+
+        stage_payload.stage_ng_client(
+            target, package, identity="test-staging")
+
+        for relative in stage_payload.NG_CLIENT_REQUIRED + (
+                "offline-res/scripts/client/gui/mods/mod_offline.pyc",):
+            self.assertTrue(os.path.isfile(
+                os.path.join(target, *relative.split("/"))), relative)
+        with open(os.path.join(target, *core.BUILD_IDENTITY_RELATIVE_PATH_0922
+                               .split("/"))) as stream:
+            identity = json.load(stream)
+        self.assertEqual("test-staging", identity["buildIdentity"])
+        self.assertEqual(
+            stage_payload.launcher_version(), identity["semanticVersion"])
+        self.assertIsNotNone(core._normalize_payload_identity(identity))
+
+    def test_an_incomplete_ng_client_package_is_rejected(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "bigworld-client-win32")
+        self._write_ng_client(package)
+        os.unlink(os.path.join(package, "bwclient_h.exe"))
+
+        self.assertRaises(ValueError, stage_payload.stage_ng_client,
+                          os.path.join(source, "staged"), package)
+        self.assertRaises(ValueError, stage_payload.stage_ng_client,
+                          os.path.join(source, "staged"), None)
 
     def test_staging_replaces_an_earlier_payload(self):
         stale = os.path.join(self.root, "stale.txt")
@@ -1672,66 +1374,6 @@ class PayloadStagingTest(unittest.TestCase):
         stage_payload.stage(self.root, include_clients=False)
         self.assertFalse(os.path.exists(stale))
 
-    def test_staging_excludes_development_junk(self):
-        source = os.path.join(tempfile.mkdtemp(), "repo")
-        self.addCleanup(shutil.rmtree, os.path.dirname(source), True)
-        overlay = os.path.join(source, "dist",
-                               "WoT-0.9.22-LAN-Client-abc1234")
-        paths = {}
-        for prefix in stage_payload.SKIPPED_CLIENT_PREFIXES:
-            paths[os.path.join(
-                overlay, "mods", "configs", "offline_lan_0922",
-                "%shelper.json" % prefix)] = "secret"
-        paths[os.path.join(
-            overlay, "mods/0.9.22.0.1",
-            "legacy.offline_lan_0922_0.6.1.wotmod")] = "x"
-        paths[os.path.join(
-            overlay, "mods/0.9.22.0.1",
-            "legacy.offline_lan_0922_0.6.1.wotmod.sha256")] = "secret"
-        paths[os.path.join(
-            overlay, "mods/configs/offline_lan_0922/config.json")] = "x"
-        paths[os.path.join(
-            overlay,
-            core.BUILD_IDENTITY_RELATIVE_PATH_0922)] = json.dumps({
-                "schema": 1,
-                "semanticVersion": "0.6.1",
-                "buildIdentity": "test-staging",
-            })
-        paths[os.path.join(
-            overlay, "mods/configs/offline_lan_0922/debug.log")] = "secret"
-        for relative, content in paths.items():
-            path = (relative if os.path.isabs(relative) else
-                    os.path.join(source, *relative.split("/")))
-            if not os.path.isdir(os.path.dirname(path)):
-                os.makedirs(os.path.dirname(path))
-            with open(path, "w") as stream:
-                stream.write(content)
-        self._write_0_9_22_data(overlay)
-
-        target = os.path.join(source, "staged")
-        stage_payload.stage_clients(target, source)
-
-        for port_version in core.SUPPORTED_PORTS:
-            with zipfile.ZipFile(os.path.join(
-                    target, "%s.zip" % port_version)) as archive:
-                self.assertFalse(any(name.endswith("debug.log")
-                                     for name in archive.namelist()))
-                self.assertFalse(any(
-                    name.rsplit("/", 1)[-1].startswith(
-                        stage_payload.SKIPPED_CLIENT_PREFIXES)
-                    for name in archive.namelist()))
-                self.assertFalse(any(name.endswith(".sha256")
-                                     for name in archive.namelist()))
-
-    def test_multiple_0_9_22_overlays_are_rejected(self):
-        source = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, source, True)
-        for suffix in ("aaaaaaa", "bbbbbbb"):
-            os.makedirs(os.path.join(
-                source, "dist",
-                "WoT-0.9.22-LAN-Client-" + suffix))
-        self.assertRaises(ValueError, stage_payload.client_source,
-                          "0.9.22", source)
 
 
 class ServerImportTest(unittest.TestCase):
@@ -1818,15 +1460,18 @@ class ServerImportTest(unittest.TestCase):
 class ListenerTest(unittest.TestCase):
     class _ProtocolConnection(object):
         def __init__(self, reply_overrides=None):
+            self.schema = core._battle_wire_schema()
             self.reply_overrides = dict(reply_overrides or {})
             self.reply = b""
             self.hello = None
+            self.sent = []
 
         def settimeout(self, unused):
             pass
 
         def sendall(self, payload):
-            hello = json.loads(payload.decode("utf-8"))
+            hello = self.schema.decode(payload)
+            self.sent.append(hello)
             if hello.get("type") == "leave":
                 self.reply = b""
                 return
@@ -1843,10 +1488,10 @@ class ListenerTest(unittest.TestCase):
                     "ricochet_continuation_v1"],
             }
             reply.update(self.reply_overrides)
-            self.reply = (json.dumps(reply) + "\n").encode("utf-8")
+            self.reply = self.schema.encode(reply)
 
-        def recv(self, unused):
-            reply, self.reply = self.reply, b""
+        def recv(self, size):
+            reply, self.reply = self.reply[:size], self.reply[size:]
             return reply
 
         def close(self):
@@ -1912,6 +1557,18 @@ class ListenerTest(unittest.TestCase):
             connect=lambda address, timeout: connection))
         self.assertEqual("probe", connection.hello["role"])
         self.assertEqual("AA==", connection.hello["vehicle_compact_descr"])
+        self.assertEqual("leave", connection.sent[-1]["type"])
+
+    def test_protocol_probe_rejects_a_line_json_reply(self):
+        class LineServer(self._ProtocolConnection):
+            def sendall(self, payload):
+                super(LineServer, self).sendall(payload)
+                if self.reply:
+                    self.reply = b'{"type": "welcome"}\n'
+
+        self.assertFalse(core.probe_server_protocol(
+            core.PORT_0_9_22, "127.0.0.1", 28792,
+            connect=lambda address, timeout: LineServer()))
 
     def test_listener_status_distinguishes_protocol_from_raw_tcp(self):
         endpoint = lambda host, port, timeout=None: True
@@ -2062,9 +1719,11 @@ class GameProcessTest(unittest.TestCase):
             self.killed = True
 
     def test_native_process_enumerator_matches_the_image_name(self):
-        names = ["explorer.exe", "WorldOfTanks.exe"]
+        names = ["explorer.exe", "WorldOfTanks.exe", "bwclient_h.exe"]
 
         self.assertTrue(core.game_is_running(enumerator=lambda: names))
+        self.assertFalse(core.game_is_running(
+            enumerator=lambda: ["WorldOfTanks.exe"]))
         self.assertFalse(core.game_is_running(
             executable="OtherGame.exe", enumerator=lambda: names))
 
@@ -2073,15 +1732,6 @@ class GameProcessTest(unittest.TestCase):
             raise OSError("process snapshot is unavailable")
 
         self.assertFalse(core.game_is_running(enumerator=fail))
-
-    def test_visible_game_window_matches_the_selected_client_path(self):
-        selected = core.game_executable("/selected-game")
-
-        self.assertTrue(core.game_window_is_visible(
-            "/selected-game", enumerator=lambda: [selected]))
-        self.assertFalse(core.game_window_is_visible(
-            "/selected-game",
-            enumerator=lambda: [core.game_executable("/other-game")]))
 
     def test_missing_window_does_not_latch_paired_player_as_closed(self):
         process = self._Process([None, None, 0])
@@ -2168,69 +1818,48 @@ class GameProcessTest(unittest.TestCase):
         for code in (None, 0, 3, 1):
             self.assertEqual("", core.worker_startup_exit_hint(code))
 
-    def test_launcher_ready_deadline_allows_starter_to_record_timeout(self):
-        native = os.path.join(os.path.dirname(__file__), "..", "..",
-                              "native", "offline_worker_starter.c")
-        with open(native) as stream:
-            definitions = dict(
-                (parts[1], int(parts[2]))
-                for line in stream
-                for parts in [line.split()]
-                if len(parts) == 3 and parts[0] == "#define"
-                and parts[2].isdigit())
-        starter_seconds = (definitions["WORKER_READY_TIMEOUT_MS"] +
-                           definitions["PROCDUMP_ATTACH_TIMEOUT_MS"]) / 1000.0
-        self.assertGreater(core.WORKER_READY_TIMEOUT_SECONDS_0922,
-                           starter_seconds + 5.0)
-
-    def test_worker_ready_requires_a_live_process_and_marker(self):
-        game_root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, game_root, True)
-        marker = core.worker_ready_marker(game_root)
+    def test_worker_ready_needs_its_marker_and_the_server_admission(self):
+        instance = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, instance, True)
+        marker = ng_client.worker_ready_marker(instance)
+        joined = []
         attempts = []
 
         def sleep(unused):
             attempts.append(1)
-            with open(marker, "w") as stream:
-                stream.write("ready")
+            if len(attempts) == 1:
+                with open(marker, "w") as stream:
+                    stream.write("ready")
+            else:
+                joined.append(True)
 
-        process = self._Process([None])
-        self.assertTrue(core.wait_for_worker_ready(
-            process, game_root, timeout=1.0, interval=0.1,
-            clock=lambda: 0.0, sleep=sleep))
-        self.assertEqual([1], attempts)
+        self.assertTrue(ng_client.wait_for_worker_ready(
+            self._Process([None]), instance, lambda: bool(joined),
+            timeout=1.0, interval=0.1, clock=lambda: 0.0, sleep=sleep))
+        self.assertEqual([1, 1], attempts)
 
-    def test_worker_ready_rejects_an_unchanged_stale_marker(self):
-        game_root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, game_root, True)
-        marker = core.worker_ready_marker(game_root)
-        with open(marker, "w") as stream:
-            stream.write("stale")
-        previous = core.worker_ready_marker_token(game_root)
-        attempts = []
+    def test_a_previous_worker_marker_is_cleared_before_a_start(self):
+        instance = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, instance, True)
+        with open(ng_client.worker_ready_marker(instance), "w") as stream:
+            stream.write("ready")
 
-        def sleep(unused):
-            attempts.append(1)
-            with open(marker, "w") as stream:
-                stream.write("new-ready-marker")
+        ng_client.clear_markers(instance)
 
-        self.assertTrue(core.wait_for_worker_ready(
-            self._Process([None]), game_root,
-            previous_marker_token=previous, timeout=1.0, interval=0.1,
-            clock=lambda: 0.0, sleep=sleep))
-        self.assertEqual([1], attempts)
+        self.assertFalse(ng_client.worker_is_ready(instance, lambda: True))
 
     def test_worker_exit_or_cancellation_rejects_readiness(self):
-        game_root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, game_root, True)
-        with open(core.worker_ready_marker(game_root), "w") as stream:
-            stream.write("stale")
-        self.assertFalse(core.wait_for_worker_ready(
-            self._Process([9]), game_root, clock=lambda: 0.0,
+        instance = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, instance, True)
+        with open(ng_client.worker_ready_marker(instance), "w") as stream:
+            stream.write("ready")
+        self.assertFalse(ng_client.wait_for_worker_ready(
+            self._Process([9]), instance, lambda: True, clock=lambda: 0.0,
             sleep=lambda unused: None))
-        self.assertFalse(core.wait_for_worker_ready(
-            self._Process([None]), game_root, cancelled=lambda: True,
-            clock=lambda: 0.0, sleep=lambda unused: None))
+        self.assertFalse(ng_client.wait_for_worker_ready(
+            self._Process([None]), instance, lambda: True,
+            cancelled=lambda: True, clock=lambda: 0.0,
+            sleep=lambda unused: None))
 
 
 class KnownFolderTest(unittest.TestCase):
@@ -2298,224 +1927,9 @@ class LauncherSettingsTest(unittest.TestCase):
 
 
 class VehicleOverlayFetchTest(unittest.TestCase):
-    """core.fetch_vehicle_overlay speaks the launcher probe + overlay exchange."""
-
-    MEMBER = "scripts/item_defs/vehicles/ussr/R11_MS-1.xml"
-    MEMBER_DATA = b"member-data"
-
-    @staticmethod
-    def _manifest():
-        return {
-            "schema": 1,
-            "targetVersion": "0.9.22.0.1",
-            "targetBuild": "1513",
-            "sourcePackage": "res/packages/scripts.pkg",
-            "createdAt": "2026-08-23T12:00:00Z",
-            "updatedAt": "2026-08-23T12:00:00Z",
-            "activeProfile": "Fast MS-1",
-            "members": [{
-                "sourceMember": VehicleOverlayFetchTest.MEMBER,
-                "sourcePackage": "res/packages/scripts.pkg",
-                "overlayRelativePath": VehicleOverlayFetchTest.MEMBER,
-                "overlaySha256": hashlib.sha256(
-                    VehicleOverlayFetchTest.MEMBER_DATA).hexdigest(),
-                "edits": [{
-                    "fieldPath": "speedLimits/forward",
-                    "originalPackedType": "integer",
-                    "originalValue": 32,
-                    "replacementValue": 40,
-                }],
-            }],
-        }
-
-    @staticmethod
-    def _manifest_with_member_count(count):
-        manifest = VehicleOverlayFetchTest._manifest()
-        manifest["members"] = []
-        checksum = hashlib.sha256(
-            VehicleOverlayFetchTest.MEMBER_DATA).hexdigest()
-        for index in range(count):
-            member = (
-                "scripts/item_defs/vehicles/ussr/Capacity_%04d.xml" %
-                index)
-            manifest["members"].append({
-                "sourceMember": member,
-                "sourcePackage": "res/packages/scripts.pkg",
-                "overlayRelativePath": member,
-                "overlaySha256": checksum,
-                "edits": [{
-                    "fieldPath": "speedLimits/forward",
-                    "originalPackedType": "integer",
-                    "originalValue": 32,
-                    "replacementValue": 40,
-                }],
-            })
-        return manifest
-
-    class _OverlayConnection(object):
-        def __init__(self, manifest=None, present=True, capability=True,
-                     member_reply=None):
-            self.manifest = manifest
-            self.present = present
-            self.capability = capability
-            self.member_reply = member_reply
-            self.reply = b""
-            self.sent = []
-            self.closed = False
-
-        def settimeout(self, unused):
-            pass
-
-        def sendall(self, payload):
-            message = json.loads(payload.decode("utf-8"))
-            self.sent.append(message)
-            message_type = message.get("type")
-            if message_type == "hello":
-                reply = {
-                    "type": "welcome",
-                    "protocol": 5,
-                    "client_build": "wot-0.9.22.0.1-cn-1513",
-                    "capabilities": message.get("capabilities", []),
-                    "server_capabilities": (
-                        ["vehicle_overlay_v1"] if self.capability else []),
-                }
-            elif message_type == "vehicle_overlay_query":
-                if not self.present:
-                    reply = {
-                        "type": "vehicle_overlay_manifest",
-                        "present": False,
-                        "digest": "",
-                        "profile": "",
-                        "manifest": None,
-                        "members": [],
-                    }
-                else:
-                    digest = hashlib.sha256(json.dumps(
-                        self.manifest, sort_keys=True).encode("utf-8"))
-                    reply = {
-                        "type": "vehicle_overlay_manifest",
-                        "present": True,
-                        "digest": digest.hexdigest(),
-                        "profile": "Fast MS-1",
-                        "manifest": self.manifest,
-                        "members": [{
-                            "sourceMember": entry["sourceMember"],
-                            "overlaySha256": entry["overlaySha256"],
-                            "size": len(VehicleOverlayFetchTest.MEMBER_DATA),
-                        } for entry in self.manifest["members"]],
-                    }
-            elif message_type == "vehicle_overlay_member":
-                reply = self.member_reply
-                if reply is None:
-                    reply = {
-                        "type": "vehicle_overlay_member_data",
-                        "sourceMember": message["sourceMember"],
-                        "size": len(VehicleOverlayFetchTest.MEMBER_DATA),
-                        "sha256": hashlib.sha256(
-                            VehicleOverlayFetchTest.MEMBER_DATA).hexdigest(),
-                        "data_b64": base64.b64encode(
-                            VehicleOverlayFetchTest.MEMBER_DATA).decode(
-                            "ascii"),
-                    }
-            else:
-                reply = {"type": "error", "code": "unexpected"}
-            self.reply = (json.dumps(reply) + "\n").encode("utf-8")
-
-        def recv(self, unused):
-            reply, self.reply = self.reply, b""
-            return reply
-
-        def close(self):
-            self.closed = True
-
-    def _fetch(self, **kwargs):
-        connection = self._OverlayConnection(**kwargs)
-        result = core.fetch_vehicle_overlay(
-            "127.0.0.1", 28782, connect=lambda address, timeout: connection)
-        return result, connection
-
-    def test_fetch_returns_the_host_overlay(self):
-        result, connection = self._fetch(manifest=self._manifest())
-
-        self.assertTrue(result["supported"])
-        self.assertTrue(result["present"])
-        self.assertEqual("Fast MS-1", result["profile"])
-        self.assertEqual(64, len(result["digest"]))
-        self.assertEqual(
-            {self.MEMBER: self.MEMBER_DATA}, result["payload"])
-        self.assertEqual(self.MEMBER, result["manifest"]["members"][0][
-            "sourceMember"])
-        self.assertEqual(
-            ["hello", "vehicle_overlay_query", "vehicle_overlay_member"],
-            [message["type"] for message in connection.sent])
-        self.assertTrue(connection.closed)
-
-    def test_fetch_accepts_max_members_above_the_old_manifest_line_cap(self):
-        manifest = self._manifest_with_member_count(
-            core.MAX_OVERLAY_MEMBERS)
-        encoded = json.dumps({
-            "type": "vehicle_overlay_manifest",
-            "present": True,
-            "digest": "0" * 64,
-            "profile": "Capacity",
-            "manifest": manifest,
-            "members": manifest["members"],
-        }).encode("utf-8")
-
-        result, unused_connection = self._fetch(manifest=manifest)
-
-        self.assertGreater(len(encoded), 256 * 1024)
-        self.assertEqual(core.MAX_OVERLAY_MEMBERS, len(result["payload"]))
-
-    def test_fetch_rejects_one_member_over_the_supported_count(self):
-        manifest = self._manifest_with_member_count(
-            core.MAX_OVERLAY_MEMBERS + 1)
-
-        with self.assertRaisesRegex(
-                core.LauncherError, "more than 1024 members"):
-            self._fetch(manifest=manifest)
-
-    def test_fetch_reports_a_server_without_the_capability(self):
-        result, connection = self._fetch(
-            manifest=self._manifest(), capability=False)
-
-        self.assertFalse(result["supported"])
-        self.assertEqual(
-            ["hello"], [message["type"] for message in connection.sent])
-
-    def test_fetch_reports_a_room_without_an_overlay(self):
-        result, connection = self._fetch(manifest=None, present=False)
-
-        self.assertTrue(result["supported"])
-        self.assertFalse(result["present"])
-        self.assertEqual("", result["digest"])
-        self.assertEqual({}, result["payload"])
-
-    def test_fetch_rejects_corrupt_member_data(self):
-        reply = {
-            "type": "vehicle_overlay_member_data",
-            "sourceMember": self.MEMBER,
-            "size": 4,
-            "sha256": "0" * 64,
-            "data_b64": "not base64!",
-        }
-        with self.assertRaises(core.LauncherError):
-            self._fetch(manifest=self._manifest(), member_reply=reply)
-
-    def test_fetch_rejects_a_member_reply_for_another_member(self):
-        reply = {
-            "type": "vehicle_overlay_member_data",
-            "sourceMember": "scripts/item_defs/vehicles/ussr/R12_Test.xml",
-            "size": 4,
-            "sha256": "0" * 64,
-            "data_b64": "bWVtYmVy",
-        }
-        with self.assertRaises(core.LauncherError):
-            self._fetch(manifest=self._manifest(), member_reply=reply)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_joining_another_rooms_vehicle_data_is_unsupported(self):
+        with self.assertRaisesRegex(core.LauncherError, "not supported"):
+            core.fetch_vehicle_overlay("127.0.0.1", 28792)
 
 
 class ResetStateNameTests(unittest.TestCase):
@@ -2536,13 +1950,22 @@ class ResetStateNameTests(unittest.TestCase):
 
 
 class WorkerClientPathsTest(unittest.TestCase):
-    """A hidden worker starts on paths.xml without an isolated-path retry."""
+    """A hidden worker starts from its own instance and user data."""
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.work, True)
+        environment = mock.patch.dict(os.environ, {
+            ng_client.DATA_ROOT_ENV: os.path.join(self.work, "ng")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.game = os.path.join(self.work, "ng", "instances", "player")
 
     def test_worker_clears_inherited_resource_overrides(self):
         inherited = {"BW_RES_PATH": "old-worker-res",
                      "WOT_OFFLINE_WORKER_RES_PATH": "old-worker-res"}
         environment = core.worker_environment(
-            "/game", "192.168.1.3", 28783, environment=inherited)
+            self.game, "192.168.1.3", 28783, environment=inherited)
         self.assertNotIn("BW_RES_PATH", environment)
         self.assertNotIn("WOT_OFFLINE_WORKER_RES_PATH", environment)
         self.assertEqual("192.168.1.3",
@@ -2551,33 +1974,39 @@ class WorkerClientPathsTest(unittest.TestCase):
                          environment[core.CLIENT_SERVER_PORT_ENV_0922])
         self.assertEqual("old-worker-res", inherited["BW_RES_PATH"])
 
-    def test_worker_success_or_failure_never_starts_an_isolation_retry(self):
+    def test_worker_starts_once_from_its_instance(self):
+        import threading
         import wot_launcher
 
+        worker_root = core.worker_root(self.game)
         for ready in (True, False):
             with self.subTest(ready=ready):
                 window = object.__new__(wot_launcher.LauncherWindow)
                 window._active_report_session = None
                 window._stop_requested = False
                 window._stop_requested_roles = set()
+                window._worker_joined = threading.Event()
                 window._log = mock.Mock()
                 window._log_worker_failure = mock.Mock()
                 window._observe_process_exit = mock.Mock(return_value=None)
                 window._stop_worker = mock.Mock()
+                window._start_dump_monitor = mock.Mock()
                 window._crash_capture_environment = lambda value, role: value
-                with mock.patch.dict(wot_launcher.os.environ, {}, clear=True), \
-                        mock.patch.object(wot_launcher.os.path, "isfile", return_value=True), \
-                        mock.patch.object(core, "worker_ready_marker_token", return_value=None), \
-                        mock.patch.object(core, "wait_for_worker_ready", return_value=ready), \
-                        mock.patch.object(core, "prepare_worker_resource_root", create=True, return_value=[]), \
-                        mock.patch.object(core, "worker_resource_path_list", create=True, return_value=["old-worker-res"]), \
+                with mock.patch.object(wot_launcher.os.path, "isfile", return_value=True), \
+                        mock.patch.object(ng_client, "clear_markers") as clear, \
+                        mock.patch.object(ng_client, "wait_for_worker_ready", return_value=ready) as wait, \
                         mock.patch.object(wot_launcher.subprocess, "Popen") as spawn:
                     self.assertEqual(ready, window._start_worker(
-                        "/game", "127.0.0.1", 28782))
+                        self.game, "127.0.0.1", 28792))
                 self.assertEqual(1, spawn.call_count)
-                environment = spawn.call_args.kwargs["env"]
-                self.assertNotIn("BW_RES_PATH", environment)
-                self.assertNotIn("WOT_OFFLINE_WORKER_RES_PATH", environment)
+                self.assertEqual(worker_root, spawn.call_args.kwargs["cwd"])
+                self.assertEqual(
+                    core.worker_child_command(self.game),
+                    spawn.call_args.args[0])
+                clear.assert_called_once_with(worker_root)
+                self.assertEqual(worker_root, wait.call_args.args[1])
+                self.assertEqual(window._worker_joined.is_set,
+                                 wait.call_args.args[2])
                 if ready:
                     window._stop_worker.assert_not_called()
                 else:
@@ -2600,38 +2029,3 @@ class ExitCodeDescriptionTest(unittest.TestCase):
     def test_an_unlisted_windows_status_is_still_named_as_one(self):
         self.assertIn("Windows fatal status",
                       core.describe_exit_code(0xC0000409))
-
-
-class WorkerReadyTimeoutMarginTest(unittest.TestCase):
-    """Report 20260909-234646 arrived with no hidden-worker log at all.
-
-    The launcher and the native starter both waited 60 s for the ready
-    marker, so whichever noticed first was a race and the starter's own
-    explanation could be cut off before it was ever written.
-    """
-
-    def test_the_launcher_outwaits_the_starter(self):
-        self.assertGreater(
-            core.WORKER_READY_TIMEOUT_SECONDS_0922,
-            core.WORKER_STARTER_READY_TIMEOUT_SECONDS_0922)
-        self.assertGreaterEqual(
-            core.WORKER_READY_TIMEOUT_SECONDS_0922 -
-            core.WORKER_STARTER_READY_TIMEOUT_SECONDS_0922, 5.0)
-
-    def test_the_starter_still_gets_its_full_original_budget(self):
-        # Extending the launcher's side rather than shortening this one is
-        # what keeps a slow machine's existing 60 s to become ready.
-        self.assertEqual(
-            60.0, core.WORKER_STARTER_READY_TIMEOUT_SECONDS_0922)
-
-    def test_the_constant_matches_the_native_starter(self):
-        source = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))),
-            'native', 'offline_worker_starter.c')
-        with io.open(source, encoding='utf-8') as stream:
-            text = stream.read()
-        expected = int(
-            core.WORKER_STARTER_READY_TIMEOUT_SECONDS_0922 * 1000)
-        self.assertIn(
-            '#define WORKER_READY_TIMEOUT_MS %d' % expected, text)

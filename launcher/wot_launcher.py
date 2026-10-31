@@ -20,6 +20,7 @@ if __package__ in (None, ""):
     import bot_tactics_store
     import core
     import error_reports
+    import ng_client
     import i18n
     import gold_shop
     import save_ledger
@@ -35,8 +36,9 @@ else:
     from . import customizations_ui
     from . import (
         bot_lineup_profiles, bot_lineup_ui, bot_tactics_store, core, error_reports, gold_shop,
-        i18n, save_ledger, save_slots, vehicle_editor_ui, vehicle_overlays,
-        save_personal_missions, personal_missions_ui, replay_launch)
+        i18n, ng_client, save_ledger, save_slots, vehicle_editor_ui,
+        vehicle_overlays, save_personal_missions, personal_missions_ui,
+        replay_launch)
     from . import window_diagnostics
 
 
@@ -54,9 +56,16 @@ _SHOP_HELP = (
     "Close the game before adding vehicles.")
 
 LAUNCHER_VERSION = "0.10.1"
-WINDOW_TITLE = "wot-0.9.22-offline-battles v%s" % LAUNCHER_VERSION
+WINDOW_TITLE = "wot-0.9.22-offline-battles NG v%s" % LAUNCHER_VERSION
+NG_LAN_UNSUPPORTED = (
+    "LAN rooms and joining another room are not supported by the NG client "
+    "yet.")
+NG_BOT_TACTICS_UNSUPPORTED = (
+    "Bot tactics editing is not supported by the NG client yet.")
 
 _CHINESE = {
+    NG_LAN_UNSUPPORTED: 'NG 客户端暂不支持局域网房间和加入其他房间。',
+    NG_BOT_TACTICS_UNSUPPORTED: 'NG 客户端暂不支持 Bot 战术配置。',
     'Coatings': '涂装',
     'Edit preset style inventory...': '编辑预设风格库存…',
     'All compatible vehicles': '全部适用车辆',
@@ -468,10 +477,8 @@ _CHINESE = {
 COLLECT_CRASH_REPORTS_SETTING = "collect_crash_reports"
 FULL_CRASH_DUMPS_SETTING = "full_crash_dumps"
 PROCDUMP_CONSENT_SETTING = "procdump_download_consent"
-PROCDUMP_PATH_ENV = "WOT_OFFLINE_PROCDUMP_PATH"
-CRASH_DUMP_PATH_ENV = "WOT_OFFLINE_CRASH_DUMP_PATH"
 EXCEPTION_TRAIL_PATH_ENV = "WOT_OFFLINE_EXCEPTION_TRAIL_PATH"
-CRASH_DUMP_MODE_ENV = "WOT_OFFLINE_CRASH_DUMP_MODE"
+WORKER_FAILURE_LOG_LINES = 20
 _LAUNCHER_LOG_LOCK = error_reports.LAUNCHER_LOG_LOCK
 
 
@@ -635,17 +642,17 @@ class LauncherWindow(object):
         self._server_persistent = False
         self._server_context = None
         self._worker = None
-        self._worker_starter_root = None
+        self._worker_joined = threading.Event()
+        self._dump_monitors = {}
+        self._dump_monitor_lock = threading.Lock()
         self._worker_stop_lock = threading.Lock()
         # A LAN room owns its simulation worker independently of any visible
         # player client.  Do not reuse the per-session worker slot here: the
         # latter is deliberately torn down when its visible client exits.
         self._room_worker = None
-        self._room_worker_starter_root = None
         self._room_worker_stop_lock = threading.Lock()
         self._room_vehicle_overlay_root = None
         self._game = None
-        self._game_starter_root = None
         self._busy = False
         self._maintenance_busy = False
         self._report_busy = False
@@ -1093,11 +1100,6 @@ class LauncherWindow(object):
             self.repair_panel, text="",
             command=self._reset_all_state)
         self.reset_button.grid(row=0, column=1, sticky="we", padx=(6, 0))
-        self.normal_preferences_button = tk.Button(
-            self.repair_panel, text="",
-            command=self._clean_normal_client_preferences)
-        self.normal_preferences_button.grid(
-            row=1, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.repair_panel.grid_columnconfigure(0, weight=1)
         self.repair_panel.grid_columnconfigure(1, weight=1)
 
@@ -1166,9 +1168,7 @@ class LauncherWindow(object):
             "client automatically."))
         self.server_address_label.config(text=self._t("Server address"))
         self.test_button.config(text=self._t("Test connection"))
-        self.network_help_label.config(text=self._t(
-            "To host: start the server, then join the game. Other players use "
-            "a LAN address shown in the log."))
+        self.network_help_label.config(text=self._t(NG_LAN_UNSUPPORTED))
         self.tools_tabs.tab(self.save_panel, text=self._t("Saves"))
         self.save_slot_label.config(text=self._t("Save"))
         self.customize_save_button.config(text=self._t("Customize save..."))
@@ -1211,7 +1211,7 @@ class LauncherWindow(object):
             self.bot_lineup_panel, text=self._t("Exact lineup"))
         self.tools_tabs.tab(self.bot_tactics_panel, text=self._t("Bot tactics"))
         self.bot_tactics_button.config(text=self._t("Edit behavior, routes and artillery positions..."))
-        self.bot_tactics_help.config(text=self._t("Tactics are saved outside the application folder. Applied changes take effect when the host starts the next battle; the current battle is unchanged. Joining another host uses that host's settings."))
+        self.bot_tactics_help.config(text=self._t(NG_BOT_TACTICS_UNSUPPORTED))
         self.tools_tabs.tab(self.repair_panel, text=self._t("Repair"))
         self.vehicle_profile_label.config(text=self._t("Vehicle data profile"))
         self.new_profile_button.config(text=self._t("New profile..."))
@@ -1227,8 +1227,6 @@ class LauncherWindow(object):
             text=self._t("Delete Bot lineup profile..."))
         self.repair_button.config(
             text=self._t("Repair startup (keep saved data)"))
-        self.normal_preferences_button.config(text=self._t(
-            "Normal client stuck loading? Clean preferences..."))
         self.reset_button.config(text=self._t("Reset all offline data..."))
         self.report_button.config(text=self._t("Create error report..."))
         self.log_panel.config(text=self._t("Activity log"))
@@ -1278,6 +1276,9 @@ class LauncherWindow(object):
         return self._start()
 
     def _start_network(self):
+        if not self._busy:
+            self._log(self._t(NG_LAN_UNSUPPORTED))
+            return False
         self._replay_tab = False
         self.mode.set(core.MODE_JOIN)
         self._refresh_mode()
@@ -1291,7 +1292,7 @@ class LauncherWindow(object):
     def _browse_replay(self):
         if self._busy or self._maintenance_busy:
             return
-        initial = os.path.join(self.game_root.get().strip(), 'replays', 'offline')
+        initial = os.path.join(self._client_root(), 'replays', 'offline')
         path = self._filedialog.askopenfilename(
             title=self._t('Select replay...'), parent=self.root,
             initialdir=initial if os.path.isdir(initial) else None,
@@ -1334,8 +1335,12 @@ class LauncherWindow(object):
         self._save_settings()
         return True
 
+    def _client_root(self):
+        """Return the NG player instance for the selected original folder."""
+        return ng_client.player_instance(self.game_root.get().strip())
+
     def _refresh_client(self):
-        status = core.inspect_game_root(self.game_root.get())
+        status = core.inspect_game_root(self._client_root())
         if not self.game_root.get().strip():
             text = self._t("Select the folder that contains %s.") % (
                 core.GAME_EXECUTABLE,)
@@ -1415,12 +1420,16 @@ class LauncherWindow(object):
                 not self._maintenance_busy else "disabled")
             self.server_button.config(
                 state=server_state, text=self._t("Start LAN room"))
+        if not server_running:
+            self.server_button.config(state="disabled")
+        if self.start_button is not self.network_start_button or not self._busy:
+            self.network_start_button.config(state="disabled")
+        self.bot_tactics_button.config(state="disabled")
         maintenance_state = (
             "normal" if self._selected_client == core.PORT_0_9_22 and
             not self._busy and not self._maintenance_busy and
             not server_running else "disabled")
         self.repair_button.config(state=maintenance_state)
-        self.normal_preferences_button.config(state=maintenance_state)
         self.reset_button.config(state=maintenance_state)
         self.report_button.config(
             state="disabled" if self._report_busy else "normal")
@@ -1465,7 +1474,7 @@ class LauncherWindow(object):
         self.delete_bot_lineup_profile_button.config(state=lineup_edit_state)
 
     def _refresh_profiles(self, status=None):
-        status = status or core.inspect_game_root(self.game_root.get())
+        status = status or core.inspect_game_root(self._client_root())
         names = []
         if status.get("client") == core.PORT_0_9_22:
             try:
@@ -1509,7 +1518,7 @@ class LauncherWindow(object):
             else "Fully unlocked"))
 
     def _refresh_save_slots(self, status=None):
-        game_root = (status or {}).get("path") or self.game_root.get().strip()
+        game_root = (status or {}).get("path") or self._client_root()
         try:
             records = save_slots.list_slots(game_root or None)
         except save_slots.SaveSlotError as error:
@@ -1611,7 +1620,7 @@ class LauncherWindow(object):
         Before the first game these are the save's initial balances. Once a
         garage exists the same controls edit its actual persisted wallet.
         """
-        game_root = (status or {}).get("path") or self.game_root.get().strip()
+        game_root = (status or {}).get("path") or self._client_root()
         try:
             balances = save_ledger.read_balances(
                 self._save_slot_id, game_root or None)
@@ -1685,7 +1694,7 @@ class LauncherWindow(object):
                 return False
         if not wanted:
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         try:
             balances = save_ledger.write_balances(
                 self._save_slot_id, wanted, game_root or None)
@@ -1738,7 +1747,7 @@ class LauncherWindow(object):
         return catalogue
 
     def _refresh_gold_shop(self, status=None):
-        game_root = (status or {}).get("path") or self.game_root.get().strip()
+        game_root = (status or {}).get("path") or self._client_root()
         try:
             offers = gold_shop.list_offers(
                 self._save_slot_id, game_root or None,
@@ -1805,7 +1814,7 @@ class LauncherWindow(object):
         if name is None:
             self._log("Select a vehicle to buy.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         try:
             bought = gold_shop.add_vehicle(
                 self._save_slot_id, name, game_root or None)
@@ -1861,7 +1870,7 @@ class LauncherWindow(object):
         if self._busy or self._maintenance_busy:
             self._log("Wait for the current launcher operation to finish.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         raw_name = self._ask_save_slot_name("New save")
         if raw_name is None:
             return False
@@ -1888,7 +1897,7 @@ class LauncherWindow(object):
         if record is None:
             self._log("Select a save before renaming it.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         current = ("" if record["name"] == record["id"] else record["name"])
         raw_name = self._ask_save_slot_name("Rename save", current)
         if raw_name is None:
@@ -1919,7 +1928,7 @@ class LauncherWindow(object):
         if not self._confirm_delete_save_slot(label):
             self._log("Save deletion was cancelled.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         try:
             save_slots.delete_slot(record["id"], game_root or None)
         except save_slots.SaveSlotError as error:
@@ -1936,7 +1945,7 @@ class LauncherWindow(object):
         if record is None:
             self._log("Select a save before opening its folder.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         try:
             directory = save_slots.open_slot_folder(
                 record["id"], game_root or None)
@@ -1952,7 +1961,7 @@ class LauncherWindow(object):
         if record is None:
             self._log("Select a save before backing it up.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         suggested = "wot-offline-save-%s-%s.zip" % (
             record["id"], time.strftime("%Y%m%d-%H%M%S"))
         chosen = self._filedialog.asksaveasfilename(
@@ -1986,7 +1995,7 @@ class LauncherWindow(object):
         if not chosen:
             self._log("Save restore was cancelled.")
             return False
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         try:
             backup = save_slots.read_backup(chosen)
         except save_slots.SaveSlotError as error:
@@ -2040,7 +2049,7 @@ class LauncherWindow(object):
         self._save_settings()
 
     def _recover_stale_vehicle_profile(self):
-        game_root = self.game_root.get().strip()
+        game_root = self._client_root()
         if self._selected_client != core.PORT_0_9_22:
             return 0
         try:
@@ -2304,22 +2313,64 @@ class LauncherWindow(object):
                 self._active_report_session is None):
             return environment
         try:
-            dump_path = error_reports.session_dump_path(
-                self._active_report_session, role)
             trail_path = error_reports.session_trail_path(
                 self._active_report_session, role)
         except core.LauncherError as error:
             self._log("Crash report collection could not start: %s" % error)
             return environment
-        environment[PROCDUMP_PATH_ENV] = self._procdump_path
-        environment[CRASH_DUMP_PATH_ENV] = dump_path
-        environment[CRASH_DUMP_MODE_ENV] = (
-            "full" if self._full_crash_dump_enabled else "mini")
         # The engine consumes its own unhandled exceptions, so a termination
         # dump often has no faulting thread left. The native sidecar records
         # the fault itself; this path is where it appends.
         environment[EXCEPTION_TRAIL_PATH_ENV] = trail_path
         return environment
+
+    def _start_dump_monitor(self, process, role):
+        """Attach ProcDump to one started NG process for this session."""
+        if (not self._crash_capture_enabled or self._procdump_path is None or
+                self._active_report_session is None):
+            return
+        try:
+            dump_path = error_reports.session_dump_path(
+                self._active_report_session, role)
+            monitor = subprocess.Popen(
+                ng_client.procdump_monitor_command(
+                    self._procdump_path, process.pid, dump_path,
+                    full_memory=self._full_crash_dump_enabled),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                **ng_client.hidden_startup_options())
+        except (OSError, ValueError, core.LauncherError) as error:
+            self._log("Crash dump monitor could not start: %s" % error)
+            return
+        with self._dump_monitor_lock:
+            self._dump_monitors[process.pid] = monitor
+
+    def _release_dump_monitor(self, process):
+        """Detach ProcDump so an intentional stop does not look like a crash.
+
+        Returns True when ``process`` has already exited.
+        """
+        if process is None:
+            return True
+        with self._dump_monitor_lock:
+            monitor = self._dump_monitors.pop(process.pid, None)
+        if monitor is not None and monitor.poll() is None:
+            try:
+                subprocess.run(
+                    ng_client.procdump_cancel_command(
+                        self._procdump_path, process.pid),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=ng_client.PROCDUMP_ATTACH_SECONDS,
+                    **ng_client.hidden_startup_options())
+                monitor.wait(timeout=ng_client.PROCDUMP_ATTACH_SECONDS)
+            except (OSError, TypeError, ValueError,
+                    subprocess.TimeoutExpired) as error:
+                self._log("Could not detach the crash dump monitor: %s" %
+                          error)
+                try:
+                    monitor.kill()
+                except OSError:
+                    pass
+        return process.poll() is not None
 
     def _confirm_crash_report(self):
         from tkinter import messagebox
@@ -2425,12 +2476,10 @@ class LauncherWindow(object):
         self._observe_process_exit(
             worker, error_reports.ROLE_HIDDEN_WORKER)
         self._stop_requested = True
-        self._log("Closing every %s process..." % core.GAME_EXECUTABLE)
-        starter_root = self._game_starter_root
-        force_cleanup = starter_root is None
+        self._log("Closing every %s process..." % core.RUNNING_EXECUTABLE)
+        force_cleanup = game is None
         if game is not None and game_exit_code is None:
-            stopped = (starter_root is not None and
-                       self._request_starter_stop(game, starter_root))
+            stopped = self._release_dump_monitor(game)
             if not stopped:
                 game_exit_code = self._observe_process_exit(
                     game, error_reports.ROLE_VISIBLE_CLIENT)
@@ -2450,28 +2499,6 @@ class LauncherWindow(object):
             self._stop_lan_room()
         else:
             self._stop_server()
-        return True
-
-    def _request_starter_stop(self, process, game_root):
-        """Ask one 0.9.22 starter to finish its clients and dump monitors."""
-        if process is None or process.poll() is not None:
-            return True
-        try:
-            result = subprocess.run(
-                core.starter_stop_command(game_root, process.pid),
-                cwd=game_root, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=core.STARTER_CONTROL_TIMEOUT_SECONDS_0922,
-                creationflags=_no_console_flags())
-        except (AttributeError, OSError, subprocess.TimeoutExpired,
-                core.LauncherError) as error:
-            self._log("Could not stop the 0.9.22 starter cleanly: %s" % error)
-            return False
-        if result.returncode != 0:
-            self._log(
-                "The 0.9.22 starter stop helper returned exit code %s." %
-                result.returncode)
-            return False
         return True
 
     def _save_settings(self):
@@ -2528,35 +2555,6 @@ class LauncherWindow(object):
     def _repair_startup(self):
         return self._start_maintenance(core.repair_0_9_22_startup)
 
-    def _confirm_normal_preferences_cleanup(self):
-        from tkinter import messagebox
-
-        return messagebox.askyesno(
-            self._t("Clean normal client preferences?"),
-            self._t(
-                "This moves the normal World of Tanks preferences.xml aside "
-                "as a backup. Graphics, window, and input settings will reset "
-                "the next time the normal client starts. Offline saved data "
-                "is not changed. Continue?"),
-            icon="warning")
-
-    def _clean_normal_client_preferences(self):
-        if self._busy or self._maintenance_busy:
-            self._log("Wait for the current launcher operation to finish.")
-            return False
-        if self._refresh_client().get("client") != core.PORT_0_9_22:
-            self._log("Select the supported 0.9.22 game folder first.")
-            return False
-        if core.game_is_running():
-            self._log(
-                "Close World of Tanks before cleaning normal client "
-                "preferences.")
-            return False
-        if not self._confirm_normal_preferences_cleanup():
-            self._log("Normal client preferences cleanup was cancelled.")
-            return False
-        return self._start_maintenance(core.backup_normal_client_preferences)
-
     def _ask_profile_name(self):
         from tkinter import simpledialog
 
@@ -2607,6 +2605,10 @@ class LauncherWindow(object):
         return self._open_bot_lineup_editor()
 
     def _open_bot_tactics_editor(self):
+        self._log(self._t(NG_BOT_TACTICS_UNSUPPORTED))
+        return False
+
+    def _open_pinned_bot_tactics_editor(self):
         # Draft editing is safe while a game runs: only the next host start
         # reads active.json, not the current battle or simulation tick.
         if self._maintenance_busy:
@@ -2779,6 +2781,9 @@ class LauncherWindow(object):
         return self._start_maintenance(core.reset_0_9_22_state)
 
     def _toggle_lan_server(self):
+        if not (self._server_is_running() or self._room_worker_is_running()):
+            self._log(self._t(NG_LAN_UNSUPPORTED))
+            return False
         if self._busy or self._maintenance_busy:
             self._log("Wait for the current launcher operation to finish.")
             return False
@@ -2883,6 +2888,9 @@ class LauncherWindow(object):
             return
         if self._busy:
             self._kill_game()
+            return
+        if not replay_path and self.mode.get() != core.MODE_SINGLE:
+            self._log(self._t(NG_LAN_UNSUPPORTED))
             return
         status = self._refresh_client()
         selected_profile = self.vehicle_profile.get().strip()
@@ -3010,7 +3018,6 @@ class LauncherWindow(object):
                             prepared["profile"],
                             prepared["installedMembers"],
                             "" if prepared["installedMembers"] == 1 else "s"))
-                self._log(core.ensure_0_9_22_preferences_isolation(game_root))
             for path in core.write_settings(
                     game_root, session["client"], session["mode"], host, port,
                     name, self._save_slot_id):
@@ -3374,7 +3381,10 @@ class LauncherWindow(object):
         if server is None or server.stdout is None:
             return
         for line in iter(server.stdout.readline, b""):
-            self._log("[server] " + line.decode("utf-8", "replace").rstrip())
+            text = line.decode("utf-8", "replace").rstrip()
+            if ng_client.WORKER_JOIN_LOG in text:
+                self._worker_joined.set()
+            self._log("[server] " + text)
         if server is self._server:
             exit_code = server.poll()
             if self._room_worker_is_running():
@@ -3387,43 +3397,34 @@ class LauncherWindow(object):
         self.root.after(0, self._update_action_controls)
 
     def _start_worker(self, game_root, host, port, room_owned=False):
-        """Start once against the client's normal resource and mod paths."""
+        """Start the hidden NG worker from its own instance and user data."""
         self._worker_exited_unexpectedly = False
-        starter = core.worker_starter_executable(game_root)
-        if not os.path.isfile(starter):
+        worker_root = core.worker_root(game_root)
+        if not os.path.isfile(ng_client.executable(worker_root)):
             raise core.LauncherError(
-                "The hidden simulation worker starter is missing: %s" %
-                starter)
-        previous_marker_token = core.worker_ready_marker_token(game_root)
+                "The hidden simulation worker client is missing: %s" %
+                ng_client.executable(worker_root))
+        ng_client.clear_markers(worker_root)
+        self._worker_joined.clear()
         self._log("Starting the hidden simulation worker...")
-        if self._active_report_session is not None:
-            try:
-                error_reports.expect_worker_starter_reset(
-                    self._active_report_session)
-            except Exception as error:
-                self._log(
-                    "The worker starter log boundary could not be recorded: "
-                    "%s" % error)
         environment = core.worker_environment(game_root, host, port)
         environment = self._crash_capture_environment(
             environment, error_reports.ROLE_HIDDEN_WORKER)
-        self._log("Hidden worker resources: the client's own paths.xml.")
+        self._log("Hidden worker instance: %s" % worker_root)
         # Stop intent belongs to the previous worker, not its replacement.
         self._stop_requested_roles.discard(error_reports.ROLE_HIDDEN_WORKER)
         worker = subprocess.Popen(
-            core.worker_child_command(game_root), cwd=game_root,
-            env=environment,
-            creationflags=_no_console_flags())
+            core.worker_child_command(game_root), cwd=worker_root,
+            env=environment, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, **ng_client.hidden_startup_options())
+        self._start_dump_monitor(worker, error_reports.ROLE_HIDDEN_WORKER)
         if room_owned:
             self._room_worker = worker
-            self._room_worker_starter_root = game_root
         else:
             self._worker = worker
-            self._worker_starter_root = game_root
-        if core.wait_for_worker_ready(
-                worker, game_root,
-                cancelled=lambda: self._stop_requested,
-                previous_marker_token=previous_marker_token):
+        if ng_client.wait_for_worker_ready(
+                worker, worker_root, self._worker_joined.is_set,
+                cancelled=lambda: self._stop_requested):
             self._log("The hidden simulation worker is ready.")
             if room_owned:
                 watcher = threading.Thread(
@@ -3457,7 +3458,7 @@ class LauncherWindow(object):
         if worker is not self._room_worker:
             return
         self._room_worker = None
-        self._room_worker_starter_root = None
+        self._release_dump_monitor(worker)
         self._observe_process_exit(worker, error_reports.ROLE_HIDDEN_WORKER)
         self._log(
             "The LAN room simulation worker stopped with exit code %s. "
@@ -3466,12 +3467,13 @@ class LauncherWindow(object):
         self.root.after(0, self._update_action_controls)
 
     def _log_worker_failure(self, game_root):
+        path = os.path.join(core.worker_root(game_root), ng_client.PYTHON_LOG)
         try:
-            with open(core.worker_failure_log(game_root), "r",
-                      encoding="utf-8", errors="replace") as stream:
-                detail = stream.read().strip()
+            with open(path, "r", encoding="utf-8", errors="replace") as stream:
+                tail = stream.readlines()[-WORKER_FAILURE_LOG_LINES:]
         except (IOError, OSError):
             return
+        detail = "".join(tail).strip()
         if detail:
             self._log("[worker] %s" % detail.replace("\n", " | "))
 
@@ -3484,29 +3486,23 @@ class LauncherWindow(object):
     def _stop_worker_locked(self, room_owned=False):
         if room_owned:
             worker = self._room_worker
-            starter_root = self._room_worker_starter_root
             self._room_worker = None
-            self._room_worker_starter_root = None
         else:
             worker = self._worker
-            starter_root = self._worker_starter_root
             self._worker = None
-            self._worker_starter_root = None
         if worker is None:
             return None
         exit_code = self._observe_process_exit(
             worker, error_reports.ROLE_HIDDEN_WORKER)
         if exit_code is not None:
+            self._release_dump_monitor(worker)
             return exit_code
         self._log("Stopping the hidden simulation worker...")
         self._stop_requested_roles.add(error_reports.ROLE_HIDDEN_WORKER)
-        stopped = (starter_root is not None and
-                   self._request_starter_stop(worker, starter_root))
+        # The worker has no graceful stop channel. Detach its dump monitor,
+        # then terminate it as the pinned native starter did.
+        stopped = self._release_dump_monitor(worker)
         if not stopped:
-            exit_code = self._observe_process_exit(
-                worker, error_reports.ROLE_HIDDEN_WORKER)
-            if exit_code is not None:
-                return exit_code
             self._forced_stop_roles.add(
                 error_reports.ROLE_HIDDEN_WORKER)
             try:
@@ -3515,8 +3511,7 @@ class LauncherWindow(object):
                 pass
         try:
             exit_code = worker.wait(
-                timeout=(core.STARTER_SHUTDOWN_TIMEOUT_SECONDS_0922
-                         if stopped else 10))
+                timeout=core.WORKER_SHUTDOWN_TIMEOUT_SECONDS_0922)
         except subprocess.TimeoutExpired:
             self._log("The hidden simulation worker did not stop in time.")
             self._forced_stop_roles.add(
@@ -3540,7 +3535,7 @@ class LauncherWindow(object):
         return None
 
     def _stop_visible_starter(self, process, game_root, forced):
-        if self._request_starter_stop(process, game_root):
+        if self._release_dump_monitor(process):
             return
         if process.poll() is not None:
             return
@@ -3554,11 +3549,11 @@ class LauncherWindow(object):
     def _run_game(self, game_root, port_version, host, port,
                   paired_worker=False,
                   preferred_team=core.DEFAULT_PREFERRED_TEAM, replay_path=None):
-        self._log("Starting %s..." % core.GAME_EXECUTABLE)
-        command = core.visible_client_command(
-            game_root, port_version, paired_worker=paired_worker)
+        self._log("Starting %s..." % core.RUNNING_EXECUTABLE)
+        command = core.visible_client_command(game_root, port_version)
+        ng_client.clear_markers(game_root)
         environment = core.visible_client_environment(
-            port_version, host, port, paired_worker=paired_worker,
+            game_root, port_version, host, port,
             preferred_team=preferred_team, language=self.language)
         if port_version == core.PORT_0_9_22:
             environment = self._crash_capture_environment(
@@ -3569,8 +3564,8 @@ class LauncherWindow(object):
         game_process = subprocess.Popen(
             command, cwd=game_root, env=environment)
         self._game = game_process
-        self._game_starter_root = (
-            game_root if port_version == core.PORT_0_9_22 else None)
+        self._start_dump_monitor(
+            game_process, error_reports.ROLE_VISIBLE_CLIENT)
         closed_for_required_process = False
         focus_stop = threading.Event()
         focus_thread = None
@@ -3578,7 +3573,7 @@ class LauncherWindow(object):
                 os.environ.get('WOT_OFFLINE_SPIKE_PROFILE') == '1'):
             focus_thread = threading.Thread(
                 target=window_diagnostics.monitor_focus,
-                args=(focus_stop, core.game_executable(game_root), _append_launcher_log),
+                args=(focus_stop, ng_client.executable(game_root), _append_launcher_log),
                 name='game-focus-evidence', daemon=True)
             focus_thread.start()
         try:
@@ -3594,7 +3589,7 @@ class LauncherWindow(object):
             if focus_thread is not None:
                 focus_thread.join(timeout=1.0)
             self._game = None
-            self._game_starter_root = None
+            self._release_dump_monitor(game_process)
         worker_exit = (self._worker.poll()
                        if paired_worker and self._worker is not None
                        else None)
@@ -3802,6 +3797,7 @@ def _serve(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    ng_client.isolate_environment()
     if '--verify-style-editor' in argv:
         index = argv.index('--verify-style-editor')
         if index + 2 >= len(argv):

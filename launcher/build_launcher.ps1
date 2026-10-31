@@ -1,3 +1,9 @@
+param(
+    # The bigworld-client-win32 package: bwclient_h.exe, offline-res, tools.
+    [Parameter(Mandatory = $true)]
+    [string]$NgClient
+)
+
 $ErrorActionPreference = "Stop"
 
 $LauncherRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -8,7 +14,7 @@ $WorkRoot = Join-Path $BuildRoot "pyinstaller"
 $SpecRoot = Join-Path $BuildRoot "spec"
 # PyInstaller owns its work directory, so the payload is staged beside it.
 $PayloadRoot = Join-Path $BuildRoot "payload"
-$AppName = "wot-0.9.22-offline-battles"
+$AppName = "wot-0.9.22-offline-battles-ng"
 $PackedXmlModule = Join-Path $RepoRoot "tools\packed_xml.py"
 
 if (-not (Test-Path -LiteralPath $PackedXmlModule)) {
@@ -26,13 +32,16 @@ New-Item -ItemType Directory -Force -Path $SpecRoot | Out-Null
 
 python (Join-Path $LauncherRoot "stage_payload.py") `
     --output $PayloadRoot `
-    --source $RepoRoot
+    --source $RepoRoot `
+    --ng-client $NgClient
 if ($LASTEXITCODE -ne 0) {
     throw "Payload staging failed with exit code $LASTEXITCODE"
 }
 
 foreach ($entry in @("servers\0.9.22\server\windows_server.py",
-                     "client\0.9.22.zip")) {
+                     "ng-client\bwclient_h.exe",
+                     "ng-client\offline-res.json",
+                     "ng-client\mods\configs\offline_lan_0922\build_identity.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $PayloadRoot $entry))) {
         throw "Payload is incomplete: $entry"
     }
@@ -62,7 +71,7 @@ python -m PyInstaller `
     --hidden-import packed_xml `
     --hidden-import vehicle_prices `
     --add-data "$PayloadRoot\servers;servers" `
-    --add-data "$PayloadRoot\client;client" `
+    --add-data "$PayloadRoot\ng-client;ng-client" `
     (Join-Path $LauncherRoot "wot_launcher.py")
 
 if ($LASTEXITCODE -ne 0) {
@@ -70,15 +79,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $AppRoot = Join-Path $DistRoot $AppName
-$ClientPayloadRoot = Join-Path $AppRoot "_internal\client"
 $ServerPayloadRoot = Join-Path $AppRoot "_internal\servers"
-$ClientPayloads = @(
-    Get-ChildItem -LiteralPath $ClientPayloadRoot -File -Force)
 $ServerPayloads = @(
     Get-ChildItem -LiteralPath $ServerPayloadRoot -Directory -Force)
-if ($ClientPayloads.Count -ne 1 -or
-        $ClientPayloads[0].Name -ne "0.9.22.zip") {
-    throw "Launcher must carry only the 0.9.22 client payload"
+if (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\client")) {
+    throw "The NG launcher must not carry the original-mod client payload"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\ng-client\bwclient_h.exe"))) {
+    throw "The NG launcher is missing its NG client package"
 }
 if ($ServerPayloads.Count -ne 1 -or
         $ServerPayloads[0].Name -ne "0.9.22") {

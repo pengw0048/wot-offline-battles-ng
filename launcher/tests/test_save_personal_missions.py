@@ -135,7 +135,7 @@ class PersonalMissionEditingTests(unittest.TestCase):
     def test_ui_honors_dependency_and_switching_keep_unsaved_edits(self):
         owner = SimpleNamespace(_tk=_FakeTk, _ttk=_FakeTtk, _t=lambda text: text,
             _save_slot_id="career", game_root=_StringVar(""), save_dialog=_Root(),
-            _busy=False, _maintenance_busy=False)
+            _busy=False, _maintenance_busy=False, _client_root=lambda: "")
         with mock.patch.object(missions, "read_progress", return_value={}), mock.patch.object(
                 missions, "read_edit_status", return_value={"pending": False, "error": ""}):
             dialog = personal_missions_ui.PersonalMissionsDialog(owner)

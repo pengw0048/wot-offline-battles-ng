@@ -6,8 +6,10 @@ in progress: a complete playable battle has not yet passed Windows acceptance.
 See [Independent client development](#independent-client-development) for the
 source layout, build instructions, runtime requirements and current boundaries.
 
-The original mod, LAN server and launcher are retained below as the foundation
-for this work. Their player instructions describe the existing mod-based game.
+The original mod and LAN server are retained below as the foundation for this
+work. Their player instructions describe the existing mod-based game. This
+repository's launcher starts only the independent client; see
+[NG launcher](#ng-launcher).
 
 ## Original mod and launcher
 
@@ -250,8 +252,8 @@ builds without BigWorld or Python. It reads #1513 compiled-space metadata,
 implements recovered rigid-body, contact and impulse kernels, and includes
 the mod's driving, ballistic, trajectory and armour/HE rules. The graphical
 prototype connects terrain, vehicle driving, projectiles and stationary targets;
-its build and resource preparation are described below. The existing launcher
-still runs the mod.
+its build and resource preparation are described below. The NG launcher runs
+it with the hidden worker.
 
 The gameplay integration target is
 [the colorfulmeans fork's v0.10.1 release](https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v0.10.1),
@@ -330,31 +332,42 @@ map rendering or a playable offline battle. Those require a Windows run with
 the owned installation. Preserve `standalone.log`, `python.log`, any dump and
 the matching executable/PDB when reporting a failure.
 
-## Build it yourself
+## NG launcher
 
-The `Build Windows launcher` GitHub Actions workflow builds the server, client
-package and x64 launcher together and publishes the complete ZIP as one
-artifact. For a local build, use this order from the repository root:
+The NG launcher is the original launcher with the same saves, shop, vehicle
+editor, account and replay tools, but it starts `bwclient_h.exe` instead of the
+mod. Select the original #1513 folder; the launcher never writes to it. It
+copies the bundled client into two instances, mounts the original packages
+read-only, and starts the visible player and the hidden worker from their own
+instance with their own `preferences.xml` and user data. All of it lives in
+`%LOCALAPPDATA%\WoT-Offline-NG`: launcher settings, new saves, both
+instances and their logs. The room server listens on TCP 28792, so an NG room
+and an original-mod room can run on the same PC without answering each other.
 
-```bash
-# Windows server, with x64 Python 3.11 and the pinned packager
-python -m pip install -r server/requirements-windows-build.txt
-pwsh -NoProfile -File server/build_windows_server.ps1
-# Client package, with CPython 2.7
-python2.7 build_wotmod.py
-# Windows launcher, after the client package exists
-pwsh -NoProfile -File launcher/build_launcher.ps1
+Only single player and replays are available. Hosting or joining a LAN room
+and the Bot tactics editor report that the NG client does not support them yet.
+
+Build it on Windows with x64 Python 3.11 from the `bigworld-client-win32`
+artifact of the `Build standalone BigWorld client` workflow. The launcher, its
+tests and its build read the pinned v0.10.1 server and tools, so compose that
+source tree first:
+
+```powershell
+python -m pip install -r server/requirements-windows-build.txt Pillow==12.3.0
+python tools/stage_ng_launcher_source.py --output "$env:TEMP\ng-launcher-source"
+pwsh -NoProfile -File "$env:TEMP\ng-launcher-source\launcher\build_launcher.ps1" `
+  -NgClient C:\path\to\bigworld-client-win32
 ```
 
-The launcher carries the matching LAN server and client mod. It writes the
-server address into the client configuration, installs the mod, starts the
-game and stops the server when the game closes.
+The `Build Windows launcher` workflow does the same for a selected client
+build run and publishes the ZIP as one artifact.
 
 Tests:
 
 ```bash
 python3 -m unittest discover -s tests
-cd launcher && python3 -m unittest discover -s tests
+python3 tools/stage_ng_launcher_source.py --output /tmp/ng-launcher-source
+cd /tmp/ng-launcher-source/launcher && python3 -m unittest discover -s tests
 ```
 
 Project code is distributed under [`GPL-3.0`](LICENSE). World of Tanks and its

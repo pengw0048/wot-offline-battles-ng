@@ -6,7 +6,6 @@ settings files that the port already reads at client startup.
 
 from __future__ import annotations
 
-import base64
 import fnmatch
 import glob
 import json
@@ -17,6 +16,11 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ElementTree
 
+try:
+    from . import ng_client
+except ImportError:
+    import ng_client
+
 PORT_0_9_22 = "0.9.22"
 SUPPORTED_PORTS = (PORT_0_9_22,)
 
@@ -24,13 +28,16 @@ MODE_SINGLE = "single"
 MODE_JOIN = "join"
 MODES = (MODE_SINGLE, MODE_JOIN)
 
-DEFAULT_SERVER_PORT = 28782
+# The original-mod launcher's room uses 28782; both rooms may run at once.
+DEFAULT_SERVER_PORT = 28792
 DEFAULT_TEAM_SIZE = 15
 DEFAULT_PREFERRED_TEAM = 0
 MIN_TEAM_SIZE = 1
 MAX_TEAM_SIZE = 15
 LOCAL_HOST = "127.0.0.1"
+# Identifies the owned original installation; it is never started.
 GAME_EXECUTABLE = "WorldOfTanks.exe"
+RUNNING_EXECUTABLE = ng_client.EXECUTABLE
 # The client can close its first process and start another one while it
 # starts up. The launcher waits this long after the last one before it
 # stops the LAN server.
@@ -53,9 +60,6 @@ _SEMANTIC_VERSION_PATTERN = re.compile(
     r"^[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?$")
 _BUILD_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 
-_MOD_MARKER_0_9_22 = os.path.join(
-    "mods", "0.9.22.0.1", "*offline_lan_0922*.wotmod")
-
 SERVER_TEAM_SIZE_ENV_0922 = "WOT_0922_TEAM_SIZE"
 SERVER_TEAM1_SIZE_ENV_0922 = "WOT_0922_TEAM1_SIZE"
 SERVER_TEAM2_SIZE_ENV_0922 = "WOT_0922_TEAM2_SIZE"
@@ -70,11 +74,6 @@ CLIENT_MODE_ENV_0922 = "OFFLINE_LAN_0922_CLIENT_MODE"
 PLAYER_MODE_0922 = "player"
 CLIENT_PREFERRED_TEAM_ENV_0922 = "OFFLINE_LAN_0922_PREFERRED_TEAM"
 ALLOW_MULTIPLE_CLIENTS_ENV_0922 = "OFFLINE_LAN_0922_ALLOW_MULTIPLE_CLIENTS"
-HIDDEN_DESKTOP_ENV_0922 = "OFFLINE_LAN_0922_HIDDEN_DESKTOP"
-WORKER_READY_MARKER_ENV_0922 = "OFFLINE_LAN_0922_WORKER_READY_MARKER"
-WORKER_STARTER_FILENAME_0922 = "offline_worker_starter.exe"
-WORKER_READY_MARKER_FILENAME_0922 = "offline-worker.ready"
-WORKER_FAILURE_LOG_FILENAME_0922 = "offline-worker-starter.log"
 SERVER_LOG_FILENAME = "server.log"
 LAUNCHER_LOG_FILENAME = "launcher.log"
 BUILD_IDENTITY_FILENAME_0922 = "build_identity.json"
@@ -82,31 +81,10 @@ BUILD_IDENTITY_RELATIVE_PATH_0922 = (
     "mods/configs/offline_lan_0922/" + BUILD_IDENTITY_FILENAME_0922)
 BUILD_SEMANTIC_VERSION_ENV = "WOT_OFFLINE_SEMANTIC_VERSION"
 BUILD_IDENTITY_ENV = "WOT_OFFLINE_BUILD_IDENTITY"
-PLAYER_ENGINE_CONFIG_0922 = "engine_config.offline-player.xml"
-WORKER_ENGINE_CONFIG_0922 = "engine_config.offline-worker.xml"
-PLAYER_ARGUMENT_0922 = "--player"
-WORKER_ONLY_ARGUMENT_0922 = "--worker-only"
-PAIRED_PLAYER_ARGUMENT_0922 = "--paired-player"
-STOP_STARTER_ARGUMENT_0922 = "--stop-starter"
-# The starter waits up to 60 seconds for readiness, then can spend another
-# 10 seconds attaching ProcDump. Keep the launcher's 90-second budget so the
-# starter can record its own failure before launcher cancellation.
-WORKER_STARTER_READY_TIMEOUT_SECONDS_0922 = 60.0
-WORKER_READY_TIMEOUT_MARGIN_SECONDS_0922 = 30.0
-WORKER_READY_TIMEOUT_SECONDS_0922 = (
-    WORKER_STARTER_READY_TIMEOUT_SECONDS_0922 +
-    WORKER_READY_TIMEOUT_MARGIN_SECONDS_0922)
 WORKER_FAILURE_DRAIN_SECONDS_0922 = 0.5
-STARTER_CONTROL_TIMEOUT_SECONDS_0922 = 5.0
-STARTER_SHUTDOWN_TIMEOUT_SECONDS_0922 = 45.0
-
-_CLIENT_RUNTIME_FILES_0_9_22 = (
-    WORKER_STARTER_FILENAME_0922,
-    "mods/0.9.22.0.1/offline_instance_guard_native.pyd",
-    "mods/0.9.22.0.1/offline_math_batch_native.pyd",
-    "res_mods/0.9.22.0.1/engine_config.offline-player.xml",
-    "res_mods/0.9.22.0.1/engine_config.offline-worker.xml",
-)
+# The NG worker loads its first space and joins the room before it is ready.
+WORKER_READY_TIMEOUT_SECONDS_0922 = ng_client.WORKER_READY_TIMEOUT_SECONDS
+WORKER_SHUTDOWN_TIMEOUT_SECONDS_0922 = 10.0
 
 _BUNDLED_SERVER_ENTRY_0_9_22 = os.path.join(
     "0.9.22", "server", "windows_server.py")
@@ -134,13 +112,6 @@ LISTENER_FREE = "free"
 LISTENER_COMPATIBLE = "compatible"
 LISTENER_OCCUPIED = "occupied"
 
-_DATASETS_0_9_22 = ("navgraphs", "foliage", "destructibles")
-_DATA_INVENTORIES = {
-    PORT_0_9_22: tuple((
-        "mods/configs/offline_lan_0922/%s" % dataset, 41)
-        for dataset in _DATASETS_0_9_22),
-}
-
 
 class LauncherError(Exception):
     """A user-correctable launcher failure."""
@@ -148,35 +119,6 @@ class LauncherError(Exception):
 
 def game_executable(game_root):
     return os.path.join(game_root, GAME_EXECUTABLE)
-
-
-def worker_starter_executable(game_root):
-    return os.path.join(game_root, WORKER_STARTER_FILENAME_0922)
-
-
-def worker_ready_marker(game_root):
-    return os.path.join(game_root, WORKER_READY_MARKER_FILENAME_0922)
-
-
-def worker_ready_marker_token(game_root):
-    """Identify one regular ready marker without following a symlink."""
-    import stat
-
-    try:
-        value = os.lstat(worker_ready_marker(game_root))
-    except (IOError, OSError):
-        return None
-    if not stat.S_ISREG(value.st_mode):
-        return None
-    mtime_ns = getattr(
-        value, "st_mtime_ns", int(value.st_mtime * 1000000000))
-    ctime_ns = getattr(
-        value, "st_ctime_ns", int(value.st_ctime * 1000000000))
-    return (value.st_dev, value.st_ino, value.st_size, mtime_ns, ctime_ns)
-
-
-def worker_failure_log(game_root):
-    return os.path.join(game_root, WORKER_FAILURE_LOG_FILENAME_0922)
 
 
 def launcher_directory(executable=None, frozen=None):
@@ -202,54 +144,36 @@ def launcher_log_path():
         LAUNCHER_LOG_FILENAME)
 
 
-def visible_client_command(game_root, port_version, paired_worker=False):
-    """Build the visible client command for one supported port."""
+def worker_root(game_root):
+    """Return the hidden worker's instance beside the player instance."""
+    return ng_client.sibling_instance(game_root, ng_client.WORKER)
+
+
+def visible_client_command(game_root, port_version):
+    """Build the visible NG client command for one supported port."""
     if port_version != PORT_0_9_22:
         raise LauncherError("This client version is not supported.")
-    argument = (PAIRED_PLAYER_ARGUMENT_0922 if paired_worker
-                else PLAYER_ARGUMENT_0922)
-    return [worker_starter_executable(game_root), argument]
+    return ng_client.player_command(game_root)
 
 
-def visible_client_environment(port_version, host=LOCAL_HOST,
-                               port=DEFAULT_SERVER_PORT,
-                               paired_worker=False, environment=None,
-                               preferred_team=DEFAULT_PREFERRED_TEAM, language="en"):
-    """Keep worker-only state out of the visible game process."""
-    environment = dict(os.environ if environment is None else environment)
+def visible_client_environment(game_root, port_version, host=LOCAL_HOST,
+                               port=DEFAULT_SERVER_PORT, environment=None,
+                               preferred_team=DEFAULT_PREFERRED_TEAM,
+                               language="en"):
+    """Give the visible client only its own role, endpoint and user data."""
     if port_version != PORT_0_9_22:
-        return environment
+        raise LauncherError("This client version is not supported.")
+    environment = ng_client.player_environment(
+        game_root, host, port, environment,
+        preferred_team=parse_preferred_team(preferred_team))
     _apply_payload_identity_environment(
         environment, bundled_payload_identity(port_version))
-    for name in (HIDDEN_DESKTOP_ENV_0922, WORKER_READY_MARKER_ENV_0922,
-                 "BW_RES_PATH", "WOT_OFFLINE_WORKER_RES_PATH"):
-        environment.pop(name, None)
     environment["WOT_OFFLINE_UI_LANGUAGE"] = ("zh" if language == "zh" else "en")
-    environment[CLIENT_MODE_ENV_0922] = PLAYER_MODE_0922
-    environment[CLIENT_SERVER_HOST_ENV_0922] = str(host)
-    environment[CLIENT_SERVER_PORT_ENV_0922] = str(int(port))
-    environment[CLIENT_PREFERRED_TEAM_ENV_0922] = str(
-        parse_preferred_team(preferred_team))
-    if paired_worker:
-        environment[ALLOW_MULTIPLE_CLIENTS_ENV_0922] = "1"
-    else:
-        environment.pop(ALLOW_MULTIPLE_CLIENTS_ENV_0922, None)
     return environment
 
 
 def worker_child_command(game_root):
-    return [worker_starter_executable(game_root), WORKER_ONLY_ARGUMENT_0922]
-
-
-def starter_stop_command(game_root, process_id):
-    try:
-        process_id = int(process_id)
-    except (TypeError, ValueError):
-        raise LauncherError("The starter process identifier is invalid.")
-    if process_id <= 0:
-        raise LauncherError("The starter process identifier is invalid.")
-    return [worker_starter_executable(game_root),
-            STOP_STARTER_ARGUMENT_0922, str(process_id)]
+    return ng_client.worker_command(worker_root(game_root))
 
 
 def worker_environment(game_root, host=LOCAL_HOST,
@@ -257,16 +181,11 @@ def worker_environment(game_root, host=LOCAL_HOST,
                        team_size=DEFAULT_TEAM_SIZE, environment=None,
                        team1_size=None, team2_size=None):
     """Build the endpoint inherited by the hidden simulation client."""
-    environment = server_environment(
+    environment = ng_client.worker_environment(
+        worker_root(game_root), host, port, environment)
+    return server_environment(
         PORT_0_9_22, game_root, environment, team_size=team_size,
         team1_size=team1_size, team2_size=team2_size)
-    environment[CLIENT_SERVER_HOST_ENV_0922] = str(host)
-    environment[CLIENT_SERVER_PORT_ENV_0922] = str(int(port))
-    # Both clients use the installed paths.xml, including its mod roots.
-    # Discard an inherited override left by an older launcher session.
-    environment.pop("BW_RES_PATH", None)
-    environment.pop("WOT_OFFLINE_WORKER_RES_PATH", None)
-    return environment
 
 
 def read_client_identity(game_root):
@@ -304,11 +223,19 @@ def port_for_version(version, build=None):
     return None
 
 
+def original_root(status):
+    """Return the original installation an inspected client root reads."""
+    return status.get("original_path") or status["path"]
+
+
 def installed_port(game_root):
-    """Return the port whose client mod is installed in this game folder."""
-    marker = os.path.join(game_root, _MOD_MARKER_0_9_22)
-    if any(os.path.isfile(candidate) for candidate in glob.glob(marker)):
-        return PORT_0_9_22
+    """Return the port whose client is installed in this folder."""
+    if ng_client.is_instance(game_root):
+        package = ng_client.package_root()
+        if (package is not None and
+                ng_client.instance_current(game_root, package)):
+            return PORT_0_9_22
+        return None
     return None
 
 
@@ -320,9 +247,15 @@ def detect_port(game_root):
 
 
 def inspect_game_root(game_root):
-    """Describe one game folder for the launcher window."""
+    """Describe one game folder for the launcher window.
+
+    ``path`` is where launcher-owned state is written. For an NG instance it
+    is the instance; ``original_path`` is the original installation that the
+    instance mounts and that identifies the client.
+    """
     game_root = os.path.abspath(game_root or "")
-    identity = read_client_identity(game_root)
+    original_root = os.path.abspath(ng_client.original_client_root(game_root))
+    identity = read_client_identity(original_root)
     version, build = identity if identity is not None else (None, None)
     installed = installed_port(game_root)
     port_version = (port_for_version(version, build)
@@ -330,7 +263,8 @@ def inspect_game_root(game_root):
                     (installed if installed == PORT_0_9_22 else None))
     return {
         "path": game_root,
-        "has_executable": os.path.isfile(game_executable(game_root)),
+        "original_path": original_root,
+        "has_executable": os.path.isfile(game_executable(original_root)),
         "version": version,
         "build": build,
         "client": port_version,
@@ -528,7 +462,6 @@ def write_settings(game_root, port_version, mode, host, port, name=None,
 
 
 SERVER_PAYLOAD_DIR = "servers"
-CLIENT_PAYLOAD_DIR = "client"
 PROCDUMP_FILENAME = "procdump.exe"
 PROCDUMP_RUNTIME_DIR = "tools"
 PROCDUMP_DOWNLOAD_URL = (
@@ -538,14 +471,6 @@ PROCDUMP_LICENSE_URL = (
 PROCDUMP_DOWNLOAD_TIMEOUT_SECONDS = 30
 PROCDUMP_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024
 PROCDUMP_EXECUTABLE_MAX_BYTES = 8 * 1024 * 1024
-INSTALL_MARKER_NAME = "launcher_install.json"
-
-# Where each port keeps the files the launcher must not delete, and the
-# marker that records which package is installed.
-_USER_DIRS = {
-    PORT_0_9_22: "mods/configs/offline_lan_0922",
-}
-
 _MUTABLE_STATE_0_9_22 = (
     "config.json",
     "server_endpoint.json",
@@ -558,42 +483,6 @@ _MUTABLE_STATE_0_9_22 = (
 # ``config.SAVES_DIR_NAME`` and only ever appears inside the game folder when
 # the installation has no APPDATA to use instead.
 SAVES_DIR_NAME_0_9_22 = "saves"
-
-# Directories the launcher replaces as one unit, the files of its own package
-# it removes from a shared directory, and the members it writes only when they
-# are absent.  The replacement roots keep stale baked data out of a new server
-# run without touching the user's endpoint, account state, or configuration.
-_CLIENT_INSTALL = {
-    PORT_0_9_22: {
-        "replace": tuple(
-            "mods/configs/offline_lan_0922/%s" % name
-            for name in _DATASETS_0_9_22),
-        "prune": (
-            ("mods/0.9.22.0.1", "*offline_lan_0922*"),
-            ("mods/configs/offline_lan_0922",
-             BUILD_IDENTITY_FILENAME_0922),
-        ),
-        "keep": ("mods/configs/offline_lan_0922/config.json",),
-        "allowed": (
-            "mods/0.9.22.0.1/",
-            "mods/configs/offline_lan_0922/",
-            "res_mods/0.9.22.0.1/",
-            WORKER_STARTER_FILENAME_0922,
-        ),
-        "suffixes": (".exe", ".json", ".pyd", ".wotmod", ".xml"),
-        "required": tuple(
-            "mods/configs/offline_lan_0922/%s/manifest.json" % name
-            for name in _DATASETS_0_9_22) + (
-            "mods/configs/offline_lan_0922/config.json",
-        ) + _CLIENT_RUNTIME_FILES_0_9_22,
-        "owned_files": (
-            (BUILD_IDENTITY_RELATIVE_PATH_0922,) +
-            _CLIENT_RUNTIME_FILES_0_9_22),
-        "package_pattern": (
-            "mods/0.9.22.0.1/*offline_lan_0922*.wotmod"),
-    },
-}
-
 
 def repository_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -840,16 +729,6 @@ def server_root(base_dir=None):
     return repository_root()
 
 
-def client_archive(port_version, base_dir=None):
-    """Return the bundled client archive for one port, when it exists."""
-    if base_dir is None:
-        bundle_dir = getattr(sys, "_MEIPASS", None)
-        base_dir = bundle_dir or repository_root()
-    path = os.path.join(base_dir, CLIENT_PAYLOAD_DIR,
-                        "%s.zip" % port_version)
-    return path if os.path.isfile(path) else None
-
-
 def _normalize_payload_identity(value):
     """Return one diagnostic build identity, never a compatibility gate."""
     if not isinstance(value, dict) or value.get("schema") != 1:
@@ -876,23 +755,17 @@ def _decode_payload_identity(payload):
     return _normalize_payload_identity(value)
 
 
-def _archive_payload_identity(path, port_version):
-    if port_version != PORT_0_9_22 or path is None:
-        return None
-    import zipfile
-
-    try:
-        with zipfile.ZipFile(path, "r") as archive:
-            payload = archive.read(BUILD_IDENTITY_RELATIVE_PATH_0922)
-    except (IOError, KeyError, OSError, ValueError, zipfile.BadZipFile):
-        return None
-    return _decode_payload_identity(payload)
-
-
 def bundled_payload_identity(port_version, base_dir=None):
-    """Read the identity generated into this launcher's trusted payload."""
-    return _archive_payload_identity(
-        client_archive(port_version, base_dir), port_version)
+    """Read the identity generated into this launcher's NG client package."""
+    package = ng_client.package_root(base_dir)
+    if port_version != PORT_0_9_22 or package is None:
+        return None
+    try:
+        with open(_relative_path(
+                package, BUILD_IDENTITY_RELATIVE_PATH_0922), "rb") as stream:
+            return _decode_payload_identity(stream.read())
+    except (IOError, OSError, LauncherError):
+        return None
 
 
 def installed_payload_identity(game_root, port_version):
@@ -924,42 +797,6 @@ def _apply_payload_identity_environment(environment, identity):
     return environment
 
 
-def _payload_release(path, port_version):
-    """Return a stable package label without hashing the trusted payload."""
-    import zipfile
-
-    if port_version == PORT_0_9_22:
-        identity = _archive_payload_identity(path, port_version)
-        if identity is not None:
-            return "%s:%s:%s" % (
-                port_version, identity["semanticVersion"],
-                identity["buildIdentity"])
-
-    with zipfile.ZipFile(path, "r") as archive:
-        packages = sorted(
-            os.path.basename(name) for name in archive.namelist()
-            if name.lower().endswith(".wotmod") and
-            "offline_lan_0922" in os.path.basename(name))
-    if packages:
-        return "%s:%s" % (port_version, ",".join(packages))
-    stat_result = os.stat(path)
-    modified_ns = getattr(
-        stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1000000000))
-    return "%s:%s:%d:%d" % (
-        port_version, os.path.basename(path), stat_result.st_size, modified_ns)
-
-
-def install_marker_path(game_root, port_version):
-    return os.path.join(game_root,
-                        *(_USER_DIRS[port_version].split("/") +
-                          [INSTALL_MARKER_NAME]))
-
-
-def installed_release(game_root, port_version):
-    marker = _read_json(install_marker_path(game_root, port_version))
-    return (marker or {}).get("release")
-
-
 def _inside(root, path):
     root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
     path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
@@ -976,238 +813,6 @@ def _relative_path(root, relative):
     return path
 
 
-def _path_is_covered(path, roots):
-    path = os.path.normcase(os.path.abspath(path))
-    for root in roots:
-        root = os.path.normcase(os.path.abspath(root))
-        if path == root or _inside(root, path):
-            return True
-    return False
-
-
-def _data_inventory(port_version, read_member, has_member):
-    """Return the complete baked-data member set, or None when incomplete."""
-    expected = set()
-    try:
-        for data_root, map_count in _DATA_INVENTORIES[port_version]:
-            manifest_member = "%s/manifest.json" % data_root
-            expected.add(manifest_member)
-            manifest = json.loads(read_member(manifest_member).decode("utf-8"))
-            records = manifest.get("maps") if isinstance(manifest, dict) else None
-            if not isinstance(records, list) or len(records) != map_count:
-                return None
-            filenames = set()
-            for record in records:
-                filename = record.get("file") if isinstance(record, dict) else None
-                if (not isinstance(filename, str) or not filename or
-                        filename in (".", "..") or "/" in filename or
-                        "\\" in filename or not filename.endswith(".json") or
-                        filename in filenames):
-                    return None
-                filenames.add(filename)
-                data_member = "%s/%s" % (data_root, filename)
-                if not has_member(data_member):
-                    return None
-                expected.add(data_member)
-    except Exception:
-        return None
-    return expected
-
-
-def _validate_archive(archive, game_root, port_version, layout):
-    """Return safe file members after validating the complete client ZIP."""
-    import stat
-
-    members = []
-    seen = set()
-    for info in archive.infolist():
-        member = info.filename
-        if member.endswith("/"):
-            continue
-        parts = member.split("/")
-        if (not member or "\\" in member or
-                any(not part or part in (".", "..") for part in parts) or
-                not any(member.startswith(prefix)
-                        for prefix in layout["allowed"]) or
-                not member.lower().endswith(layout["suffixes"])):
-            raise LauncherError(
-                "The bundled %s mod contains an invalid path." % port_version)
-        target = os.path.join(game_root, *parts)
-        if not _inside(game_root, target):
-            raise LauncherError(
-                "Refusing to write outside the game folder.")
-        key = member.casefold()
-        if key in seen:
-            raise LauncherError(
-                "The bundled %s mod contains duplicate paths." % port_version)
-        seen.add(key)
-        mode = int(info.external_attr) >> 16
-        if mode and stat.S_ISLNK(mode):
-            raise LauncherError(
-                "The bundled %s mod contains a symbolic link." % port_version)
-        members.append((info, member))
-    names = set(member for unused, member in members)
-    missing = [name for name in layout["required"] if name not in names]
-    pattern = layout["package_pattern"]
-    packages = [name for name in names if pattern and
-                fnmatch.fnmatch(name, pattern)]
-    if missing or (pattern and len(packages) != 1):
-        raise LauncherError(
-            "The bundled %s mod is incomplete." % port_version)
-    inventory = _data_inventory(
-        port_version, archive.read, lambda member: member in names)
-    if inventory is None:
-        raise LauncherError(
-            "The bundled %s baked data is incomplete." % port_version)
-    owned_files = set(layout["owned_files"])
-    if BUILD_IDENTITY_RELATIVE_PATH_0922 not in names:
-        owned_files.discard(BUILD_IDENTITY_RELATIVE_PATH_0922)
-    expected = (inventory | set(layout["keep"]) | set(packages) |
-                owned_files)
-    if names != expected:
-        raise LauncherError(
-            "The bundled 0.9.22 mod contains unexpected files.")
-    bad_member = archive.testzip()
-    if bad_member is not None:
-        raise LauncherError(
-            "The bundled %s mod is corrupt: %s" %
-            (port_version, bad_member))
-    return members
-
-
-def _installation_complete(game_root, port_version, layout):
-    if any(not os.path.isfile(_relative_path(game_root, relative))
-           for relative in layout["required"]):
-        return False
-    pattern = layout["package_pattern"]
-    if pattern is not None:
-        matches = glob.glob(_relative_path(game_root, pattern))
-        if len([path for path in matches if os.path.isfile(path)]) != 1:
-            return False
-    def read_member(member):
-        with open(_relative_path(game_root, member), "rb") as stream:
-            return stream.read()
-
-    if _data_inventory(
-            port_version, read_member,
-            lambda member: os.path.isfile(
-                _relative_path(game_root, member))) is None:
-        return False
-    return True
-
-
-def _stage_archive(archive, members, game_root, transaction_root):
-    import shutil
-
-    staged_root = os.path.join(transaction_root, "new")
-    os.makedirs(staged_root)
-    for info, member in members:
-        target = os.path.join(staged_root, *member.split("/"))
-        if not _inside(staged_root, target):
-            raise LauncherError(
-                "Refusing to stage outside the installer workspace.")
-        directory = os.path.dirname(target)
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
-        with archive.open(info) as source:
-            with open(target, "wb") as stream:
-                shutil.copyfileobj(source, stream)
-    return staged_root
-
-
-def _transactional_install(game_root, staged_root, members, layout):
-    """Swap staged package-owned paths in, restoring every old path on error."""
-    transaction_root = os.path.dirname(staged_root)
-    backup_root = os.path.join(transaction_root, "backup")
-    failed_root = os.path.join(transaction_root, "failed")
-    os.makedirs(backup_root)
-    os.makedirs(failed_root)
-
-    replace_targets = [
-        _relative_path(game_root, relative) for relative in layout["replace"]]
-    operations = []
-    for relative, target in zip(layout["replace"], replace_targets):
-        source = os.path.join(staged_root, *relative.split("/"))
-        if not os.path.isdir(source):
-            raise LauncherError(
-                "The bundled mod is missing %s." % relative)
-        operations.append((source, target))
-    for unused, member in members:
-        source = os.path.join(staged_root, *member.split("/"))
-        target = _relative_path(game_root, member)
-        if _path_is_covered(target, replace_targets):
-            continue
-        if member in layout["keep"] and os.path.isfile(target):
-            continue
-        operations.append((source, target))
-
-    operation_targets = [target for unused, target in operations]
-    prune_targets = []
-    for relative, pattern in layout["prune"]:
-        directory = _relative_path(game_root, relative)
-        for path in sorted(glob.glob(os.path.join(directory, pattern))):
-            if (os.path.isfile(path) and
-                    not _path_is_covered(path, operation_targets)):
-                prune_targets.append(path)
-
-    for unused, target in operations:
-        parent = os.path.dirname(target)
-        if not os.path.isdir(parent):
-            os.makedirs(parent)
-
-    backup_targets = []
-    for target in operation_targets + prune_targets:
-        if os.path.lexists(target) and target not in backup_targets:
-            backup_targets.append(target)
-    backups = []
-    installed = []
-    try:
-        for index, target in enumerate(backup_targets):
-            backup = os.path.join(backup_root, str(index))
-            os.replace(target, backup)
-            backups.append((target, backup))
-        for source, target in operations:
-            os.replace(source, target)
-            installed.append(target)
-    except Exception as error:
-        rollback_errors = []
-        for index, target in enumerate(reversed(installed)):
-            if not os.path.lexists(target):
-                continue
-            try:
-                os.replace(target, os.path.join(failed_root, str(index)))
-            except Exception as rollback_error:
-                rollback_errors.append(rollback_error)
-        for target, backup in reversed(backups):
-            if not os.path.lexists(backup):
-                continue
-            try:
-                parent = os.path.dirname(target)
-                if not os.path.isdir(parent):
-                    os.makedirs(parent)
-                os.replace(backup, target)
-            except Exception as rollback_error:
-                rollback_errors.append(rollback_error)
-        if rollback_errors:
-            failure = LauncherError(
-                "Installation failed and could not be fully restored. "
-                "Recovery files remain in %s." % transaction_root)
-            failure.preserve_install_staging = True
-            raise failure
-        raise LauncherError(
-            "Installation failed; the previous mod was restored: %s" % error)
-
-    actions = []
-    for target in backup_targets:
-        relative = os.path.relpath(target, game_root)
-        actions.append("Replaced the old %s" % relative)
-    return actions, len(operations)
-
-
-# Exit codes a field report actually produced.  A raw decimal tells a player
-# nothing, and the two that matter are not even crashes of ours: 0xC0000135 is
-# Windows refusing to start the client because a runtime DLL is missing, and 3
-# is the client's own abort() after its fatal-error handler ran.
 _EXIT_CODE_NOTES = {
     3: ("the client stopped itself (abort); its own fatal-error message is "
         "in the game log of that session"),
@@ -1235,111 +840,33 @@ def describe_exit_code(code):
 
 
 def install_client_mod(game_root, port_version, base_dir=None, force=False):
-    """Install the bundled mod and report what changed.
+    """Refresh the NG player and worker instances and report what changed.
 
-    The user's own files stay: this only clears the directories the package
-    owns, removes its own older package files from a shared directory, and
-    never overwrites a configuration that is already there.
+    ``game_root`` is the player instance. Only package-owned files are
+    written; preferences, saves, logs, replays and config.json stay.
+    ``force`` is accepted for the repair path: every refresh compares the
+    complete package, so there is no faster stale path to bypass.
     """
-    import shutil
-    import tempfile
-    import zipfile
-
-    layout = _CLIENT_INSTALL.get(port_version)
-    if layout is None:
+    if port_version != PORT_0_9_22:
         raise LauncherError("This game folder is not a supported client.")
-    archive_path = client_archive(port_version, base_dir)
-    if archive_path is None:
+    original = ng_client.original_client_root(game_root)
+    if os.path.normcase(os.path.abspath(original)) == os.path.normcase(
+            os.path.abspath(game_root)):
         raise LauncherError(
-            "This launcher carries no %s mod files." % port_version)
-    try:
-        release = _payload_release(archive_path, port_version)
-    except (IOError, OSError, ValueError, zipfile.BadZipFile) as error:
-        raise LauncherError(
-            "The bundled %s mod cannot be read: %s" %
-            (port_version, error))
+            "Select the original World of Tanks folder before starting the "
+            "NG client.")
     payload_identity = bundled_payload_identity(port_version, base_dir)
-    installed_identity = installed_payload_identity(game_root, port_version)
-    identity_actions = [
-        "Bundled 0.9.22 payload: %s." %
-        payload_identity_text(payload_identity),
-        "Installed 0.9.22 payload before installation: %s." %
-        payload_identity_text(installed_identity),
-    ]
-    if payload_identity is None:
-        identity_actions.append(
-            "The bundled diagnostic build identity is unavailable; "
-            "installation will continue and will not be treated as "
-            "current on the next launch.")
-    identity_current = (
-        payload_identity is not None and
-        installed_identity == payload_identity)
-    if (not force and installed_release(game_root, port_version) == release
-            and identity_current
-            and _installation_complete(game_root, port_version, layout)):
-        identity_actions.append(
-            "Install decision: keep the installed 0.9.22 payload; "
-            "the build identity and package-owned files are current.")
-        return identity_actions
-    if force:
-        decision = "forced reinstall"
-    elif installed_port(game_root) == port_version:
-        decision = "reinstall"
-    else:
-        decision = "install"
-    identity_actions.append(
-        "Install decision: %s the bundled 0.9.22 payload." % decision)
-    transaction_root = None
-    preserve_transaction = False
+    actions = ["Bundled 0.9.22 payload: %s." %
+               payload_identity_text(payload_identity)]
     try:
-        try:
-            transaction_root = tempfile.mkdtemp(
-                prefix=".wot-offline-install-", dir=game_root)
-        except (IOError, OSError) as error:
-            raise LauncherError(
-                "The game folder is not writable. Move the game to a writable "
-                "folder or run the launcher with permission to update it: %s" %
-                error)
-        try:
-            archive = zipfile.ZipFile(archive_path)
-        except (IOError, OSError, zipfile.BadZipFile) as error:
-            raise LauncherError(
-                "The bundled %s mod cannot be opened: %s" %
-                (port_version, error))
-        try:
-            members = _validate_archive(
-                archive, game_root, port_version, layout)
-            staged_root = _stage_archive(
-                archive, members, game_root, transaction_root)
-        finally:
-            archive.close()
-        actions, written = _transactional_install(
-            game_root, staged_root, members, layout)
-        actions[0:0] = identity_actions
-        actions.append("Installed %d %s mod paths" % (written, port_version))
-        try:
-            marker = {"release": release}
-            if payload_identity is not None:
-                marker.update({
-                    "semanticVersion": payload_identity["semanticVersion"],
-                    "buildIdentity": payload_identity["buildIdentity"],
-                })
-            _write_json(install_marker_path(game_root, port_version), marker)
-        except (IOError, OSError):
-            actions.append(
-                "The mod was installed, but its update marker could not be saved.")
-        actions.append(
-            "Installed 0.9.22 payload after installation: %s." %
-            payload_identity_text(installed_payload_identity(
-                game_root, port_version)))
-        return actions
-    except LauncherError as error:
-        preserve_transaction = bool(getattr(
-            error, "preserve_install_staging", False))
-        raise
-    finally:
-        if transaction_root is not None and not preserve_transaction:
-            shutil.rmtree(transaction_root, ignore_errors=True)
+        actions.extend(ng_client.install(original, game_root, base_dir))
+    except (IOError, OSError, ng_client.NGClientError) as error:
+        raise LauncherError("The NG client could not be prepared: %s" % error)
+    actions.append(
+        "Installed 0.9.22 payload after installation: %s." %
+        payload_identity_text(installed_payload_identity(
+            game_root, port_version)))
+    return actions
 
 
 def _valid_0_9_22_config(path):
@@ -1419,74 +946,14 @@ def _require_0_9_22_maintenance_target(game_root, is_running=None):
     is_running = game_is_running if is_running is None else is_running
     if is_running():
         raise LauncherError(
-            "Close World of Tanks before repairing or resetting offline data.")
+            "Close the NG client before repairing or resetting offline data.")
     return status
 
 
-def ensure_0_9_22_preferences_isolation(game_root):
-    """Redirect the exact 0.9.22 client to its launcher-owned profile."""
-    try:
-        from . import preferences_overlay
-    except ImportError:
-        import preferences_overlay
-
-    return preferences_overlay.ensure_preferences_overlay(game_root)
-
-
-def _isolated_0_9_22_preferences_path(environment=None):
-    try:
-        from . import preferences_overlay
-    except ImportError:
-        import preferences_overlay
-
-    return preferences_overlay.profile_path(environment)
-
-
-def _normal_client_preferences_path(environment=None):
-    try:
-        from . import preferences_overlay
-    except ImportError:
-        import preferences_overlay
-
-    return preferences_overlay.normal_profile_path(environment)
-
-
-def backup_normal_client_preferences(game_root, is_running=None,
-                                     environment=None, timestamp=None):
-    """Move the stock client's preferences aside as a recoverable backup."""
-    import time
-
-    _require_0_9_22_maintenance_target(game_root, is_running)
-    path = _normal_client_preferences_path(environment)
-    if path is None:
-        raise LauncherError(
-            "The normal World of Tanks preferences path could not be "
-            "resolved from APPDATA.")
-    if not os.path.lexists(path):
-        return [
-            "The normal World of Tanks preferences.xml is already absent."
-        ]
-    if os.path.islink(path) or not os.path.isfile(path):
-        raise LauncherError(
-            "The normal World of Tanks preferences path is not a regular "
-            "file; it was left unchanged.")
-
-    stamp = str(timestamp or time.strftime("%Y%m%d-%H%M%S"))
-    backup = "%s.wot-offline-backup-%s" % (path, stamp)
-    suffix = 1
-    while os.path.lexists(backup):
-        backup = "%s.wot-offline-backup-%s-%d" % (path, stamp, suffix)
-        suffix += 1
-    try:
-        os.replace(path, backup)
-    except (IOError, OSError) as error:
-        raise LauncherError(
-            "The normal World of Tanks preferences could not be backed up: "
-            "%s" % error)
-    return [
-        "Moved the normal World of Tanks preferences.xml to backup: %s" %
-        backup
-    ]
+def _instance_preferences_paths(game_root):
+    """The NG client keeps one preferences.xml beside each instance's EXE."""
+    return [os.path.join(root, "preferences.xml") for root in (
+        game_root, worker_root(game_root))]
 
 
 def repair_0_9_22_startup(game_root, base_dir=None, is_running=None):
@@ -1500,7 +967,6 @@ def repair_0_9_22_startup(game_root, base_dir=None, is_running=None):
     try:
         actions = install_client_mod(
             game_root, PORT_0_9_22, base_dir, force=True)
-        actions.append(ensure_0_9_22_preferences_isolation(game_root))
     except Exception:
         if quarantined is not None and os.path.exists(quarantined):
             if os.path.exists(config_path):
@@ -1512,7 +978,7 @@ def repair_0_9_22_startup(game_root, base_dir=None, is_running=None):
                        os.path.basename(quarantined))
     actions.append(
         "Startup repair kept the saved endpoint, account, garage, "
-        "post-battle results, and isolated client preferences.")
+        "post-battle results, and the NG client preferences.")
     return actions
 
 
@@ -1585,12 +1051,13 @@ def reset_0_9_22_state(game_root, base_dir=None, is_running=None):
                     "The offline saves path is not a regular directory; it "
                     "was left unchanged.")
             targets.append(active_saves_root)
-    preferences_path = _isolated_0_9_22_preferences_path()
-    if preferences_path is not None and os.path.lexists(preferences_path):
+    for preferences_path in _instance_preferences_paths(game_root):
+        if not os.path.lexists(preferences_path):
+            continue
         if (os.path.islink(preferences_path) or
                 not os.path.isfile(preferences_path)):
             raise LauncherError(
-                "The isolated client preferences path is not a regular file; "
+                "The NG client preferences path is not a regular file; "
                 "it was left unchanged.")
         targets.append(preferences_path)
 
@@ -1624,7 +1091,6 @@ def reset_0_9_22_state(game_root, base_dir=None, is_running=None):
             moved.append((target, backup))
         actions = install_client_mod(
             game_root, PORT_0_9_22, base_dir, force=True)
-        actions.append(ensure_0_9_22_preferences_isolation(game_root))
     except Exception as error:
         for target, backup in reversed(moved):
             if os.path.exists(backup):
@@ -1764,7 +1230,55 @@ def probe_endpoint(host, port, timeout=1.5, connect=None):
     return True
 
 
-def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
+_WIRE_FRAME_HEADER_BYTES = 8
+_WIRE_PROBE_REPLY_BYTES = 256 * 1024
+
+
+def _battle_wire_schema():
+    """Load the bundled server's battle wire schema.
+
+    The staged server speaks this framing from its first byte, including
+    the launcher probe; the schema and codec are stdlib-only server files.
+    """
+    import importlib
+
+    script = server_script(PORT_0_9_22)
+    directory = os.path.dirname(script) if script else ""
+    if not os.path.isfile(os.path.join(directory, "battle_wire_schema.py")):
+        raise LauncherError("The bundled battle wire schema is missing.")
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    return importlib.import_module("battle_wire_schema").SCHEMA
+
+
+def encode_wire_message(message, schema=None):
+    return (schema or _battle_wire_schema()).encode(message)
+
+
+def read_wire_message(connection, cap, schema=None):
+    """Read one length-prefixed battle wire frame, bounded by ``cap`` bytes."""
+    payload = b""
+    size = None
+    while size is None or len(payload) < size:
+        chunk = connection.recv(4096 if size is None else
+                                min(65536, size - len(payload)))
+        if not chunk:
+            raise LauncherError("The server closed the connection.")
+        payload += chunk
+        if size is None and len(payload) >= _WIRE_FRAME_HEADER_BYTES:
+            size = (_WIRE_FRAME_HEADER_BYTES +
+                    int.from_bytes(payload[:4], "little"))
+            if size > cap:
+                raise LauncherError("The server reply is too large.")
+    frame, unused = payload[:size], payload[size:]
+    try:
+        return (schema or _battle_wire_schema()).decode(frame)
+    except Exception as error:
+        raise LauncherError("The server reply is invalid: %s" % error)
+
+
+def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None,
+                          schema=None):
     """Report whether the endpoint speaks the selected client's LAN protocol."""
     contract = _SERVER_PROBES.get(port_version)
     if contract is None:
@@ -1772,6 +1286,7 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
     connect = connect or socket.create_connection
     connection = None
     try:
+        schema = schema or _battle_wire_schema()
         connection = connect((host, int(port)), timeout)
         settimeout = getattr(connection, "settimeout", None)
         if callable(settimeout):
@@ -1788,19 +1303,8 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
         hello["vehicle_compact_descr"] = "AA=="
         if contract["capabilities"] is not None:
             hello["capabilities"] = list(contract["capabilities"])
-        connection.sendall(
-            (json.dumps(hello, separators=(",", ":")) + "\n").encode(
-                "utf-8"))
-        payload = b""
-        while b"\n" not in payload and len(payload) < 256 * 1024:
-            chunk = connection.recv(4096)
-            if not chunk:
-                break
-            payload += chunk
-        line, separator, unused = payload.partition(b"\n")
-        if not separator:
-            return False
-        reply = json.loads(line.decode("utf-8"))
+        connection.sendall(encode_wire_message(hello, schema))
+        reply = read_wire_message(connection, _WIRE_PROBE_REPLY_BYTES, schema)
         if (not isinstance(reply, dict) or reply.get("type") != "welcome" or
                 int(reply.get("protocol", -1)) != contract["protocol"] or
                 reply.get("client_build") != contract["client_build"]):
@@ -1814,7 +1318,7 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
                 set(reply.get("server_capabilities") or ()))))
         if compatible:
             try:
-                connection.sendall(b'{"type":"leave"}\n')
+                connection.sendall(encode_wire_message({"type": "leave"}, schema))
                 shutdown = getattr(connection, "shutdown", None)
                 if callable(shutdown):
                     shutdown(socket.SHUT_WR)
@@ -1823,7 +1327,8 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
             except (IOError, OSError, socket.error):
                 pass
         return compatible
-    except (IOError, OSError, TypeError, ValueError, socket.error):
+    except (IOError, OSError, TypeError, ValueError, socket.error,
+            LauncherError):
         return False
     finally:
         if connection is not None:
@@ -1833,159 +1338,15 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None):
                 pass
 
 
-_OVERLAY_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-MAX_OVERLAY_MEMBERS = 1024
-MAX_OVERLAY_MANIFEST_BYTES = 32 * 1024 * 1024
-MAX_OVERLAY_MANIFEST_LINE_BYTES = (
-    MAX_OVERLAY_MANIFEST_BYTES + 1024 * 1024)
-MAX_OVERLAY_MEMBER_BYTES = 8 * 1024 * 1024
-MAX_OVERLAY_TOTAL_BYTES = 64 * 1024 * 1024
-MAX_OVERLAY_LINE_BYTES = MAX_OVERLAY_MEMBER_BYTES * 4 // 3 + 1024 * 1024
-
-
-def _read_json_line(connection, cap):
-    """Read one JSON line from a socket, bounded by ``cap`` bytes."""
-    payload = b""
-    while b"\n" not in payload:
-        chunk = connection.recv(4096)
-        if not chunk:
-            raise LauncherError("The server closed the connection.")
-        payload += chunk
-        if len(payload) > cap:
-            raise LauncherError("The server reply is too large.")
-    line, separator, unused = payload.partition(b"\n")
-    if not separator:
-        raise LauncherError("The server reply is invalid.")
-    try:
-        value = json.loads(line.decode("utf-8"))
-    except (TypeError, ValueError) as error:
-        raise LauncherError("The server reply is invalid: %s" % error)
-    return value
-
-
 def fetch_vehicle_overlay(host, port, timeout=5.0, connect=None):
-    """Fetch the vehicle-data overlay a 0.9.22 room host shares.
+    """Fetch the vehicle-data overlay a room host shares.
 
-    Returns one dict:
-
-    - ``{"supported": False, "present": False, ...}`` when the server
-      predates vehicle-data sharing (its room cannot share data);
-    - ``{"supported": True, "present": False, ...}`` when the room runs stock
-      vehicle data;
-    - ``{"supported": True, "present": True, "manifest": ..., "payload": ...}``
-      with the host overlay ready to install.
+    The NG battle wire carries no vehicle-data exchange messages, and the NG
+    launcher hosts only its own single-player room.
     """
-    contract = _SERVER_PROBES.get(PORT_0_9_22)
-    if contract is None:
-        raise LauncherError("The 0.9.22 vehicle-data probe is unavailable.")
-    connect = connect or socket.create_connection
-    connection = connect((host, int(port)), timeout)
-    try:
-        settimeout = getattr(connection, "settimeout", None)
-        if callable(settimeout):
-            settimeout(timeout)
-        hello = {
-            "type": "hello",
-            "protocol": contract["protocol"],
-            "client_build": contract["client_build"],
-            "name": "Launcher-Probe",
-            "vehicle": contract["vehicle"],
-            "max_health": 1,
-            "role": "probe",
-            "vehicle_compact_descr": "AA==",
-            "capabilities": list(contract["capabilities"]),
-        }
-        connection.sendall(
-            (json.dumps(hello, separators=(",", ":")) + "\n").encode(
-                "utf-8"))
-        welcome = _read_json_line(connection, 256 * 1024)
-        if (not isinstance(welcome, dict) or
-                welcome.get("type") != "welcome" or
-                int(welcome.get("protocol", -1)) != contract["protocol"] or
-                welcome.get("client_build") != contract["client_build"]):
-            raise LauncherError("The server is not a compatible 0.9.22 room.")
-        if VEHICLE_OVERLAY_CAPABILITY not in set(
-                welcome.get("server_capabilities") or ()):
-            return {"supported": False, "present": False, "digest": "",
-                    "profile": "", "manifest": None, "payload": {}}
-        connection.sendall(b'{"type":"vehicle_overlay_query"}\n')
-        reply = _read_json_line(connection, MAX_OVERLAY_MANIFEST_LINE_BYTES)
-        if (not isinstance(reply, dict) or
-                reply.get("type") != "vehicle_overlay_manifest"):
-            raise LauncherError("The host vehicle-data reply is invalid.")
-        if not reply.get("present"):
-            digest = str(reply.get("digest") or "")
-            if digest and not _OVERLAY_DIGEST.fullmatch(digest):
-                raise LauncherError("The host vehicle-data digest is invalid.")
-            return {"supported": True, "present": False, "digest": digest,
-                    "profile": str(reply.get("profile") or ""),
-                    "manifest": None, "payload": {}}
-        manifest = reply.get("manifest")
-        if not isinstance(manifest, dict):
-            raise LauncherError("The host vehicle-data manifest is invalid.")
-        digest = str(reply.get("digest") or "")
-        if not _OVERLAY_DIGEST.fullmatch(digest):
-            raise LauncherError("The host vehicle-data digest is invalid.")
-        members = manifest.get("members")
-        if not isinstance(members, list) or not members:
-            raise LauncherError("The host vehicle-data manifest is empty.")
-        if len(members) > MAX_OVERLAY_MEMBERS:
-            raise LauncherError(
-                "The host vehicle-data manifest contains more than %d "
-                "members." % MAX_OVERLAY_MEMBERS)
-        manifest_bytes = (json.dumps(
-            manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        if len(manifest_bytes) > MAX_OVERLAY_MANIFEST_BYTES:
-            raise LauncherError(
-                "The host vehicle-data manifest is larger than %d MiB." %
-                (MAX_OVERLAY_MANIFEST_BYTES // (1024 * 1024)))
-        payload = {}
-        total = 0
-        for entry in members:
-            if not isinstance(entry, dict):
-                raise LauncherError(
-                    "The host vehicle-data manifest is invalid.")
-            member = entry.get("sourceMember")
-            if not isinstance(member, str) or not member:
-                raise LauncherError(
-                    "The host vehicle-data manifest is invalid.")
-            connection.sendall((json.dumps(
-                {"type": "vehicle_overlay_member", "sourceMember": member},
-                separators=(",", ":")) + "\n").encode("utf-8"))
-            data_reply = _read_json_line(connection, MAX_OVERLAY_LINE_BYTES)
-            if (not isinstance(data_reply, dict) or
-                    data_reply.get("type") != "vehicle_overlay_member_data" or
-                    data_reply.get("sourceMember") != member):
-                raise LauncherError(
-                    "The host vehicle-data member reply is invalid.")
-            try:
-                raw = base64.b64decode(
-                    str(data_reply.get("data_b64") or ""), validate=True)
-            except (TypeError, ValueError):
-                raise LauncherError(
-                    "The host vehicle-data member is corrupt: %s" % member)
-            if not raw or len(raw) > MAX_OVERLAY_MEMBER_BYTES:
-                raise LauncherError(
-                    "The host vehicle-data member size is invalid: %s" %
-                    member)
-            total += len(raw)
-            if total > MAX_OVERLAY_TOTAL_BYTES:
-                raise LauncherError(
-                    "The host vehicle-data overlay is too large.")
-            payload[member] = raw
-        return {"supported": True, "present": True, "digest": digest,
-                "profile": str(reply.get("profile") or ""),
-                "manifest": manifest, "payload": payload}
-    except LauncherError:
-        raise
-    except (IOError, OSError, socket.error, ValueError) as error:
-        raise LauncherError(
-            "The host vehicle data could not be fetched: %s" % error)
-    finally:
-        try:
-            connection.close()
-        except (IOError, OSError, socket.error):
-            pass
+    raise LauncherError(
+        "Joining another room's vehicle data is not supported by the NG "
+        "client yet.")
 
 
 def listener_status(port_version, host, port, timeout=1.5,
@@ -2043,35 +1404,6 @@ def worker_startup_exit_hint(exit_code):
                 "runtime and Visual C++ x86 runtime. The exit code alone "
                 "does not identify the missing DLL.")
     return ""
-
-
-def wait_for_worker_ready(process, game_root,
-                          timeout=WORKER_READY_TIMEOUT_SECONDS_0922,
-                          interval=0.05, clock=None, sleep=None,
-                          cancelled=None, previous_marker_token=None):
-    """Wait for a live hidden client to publish its ready marker."""
-    import time as time_module
-
-    clock = clock or time_module.monotonic
-    sleep = sleep or time_module.sleep
-    deadline = clock() + float(timeout)
-    previous_marker_disappeared = False
-    while True:
-        if callable(cancelled) and cancelled():
-            return False
-        if process.poll() is not None:
-            return False
-        current_marker_token = worker_ready_marker_token(game_root)
-        if current_marker_token is None:
-            if previous_marker_token is not None:
-                previous_marker_disappeared = True
-        elif (previous_marker_token is None or
-              previous_marker_disappeared or
-              current_marker_token != previous_marker_token):
-            return process.poll() is None
-        if clock() >= deadline:
-            return False
-        sleep(interval)
 
 
 def local_addresses(resolver=None):
@@ -2141,7 +1473,7 @@ def _running_process_names():
     return names
 
 
-def game_is_running(executable=GAME_EXECUTABLE, enumerator=None):
+def game_is_running(executable=RUNNING_EXECUTABLE, enumerator=None):
     """Report whether a game process runs without opening a console window."""
     if enumerator is None:
         if os.name != "nt":
@@ -2159,106 +1491,21 @@ def game_is_running(executable=GAME_EXECUTABLE, enumerator=None):
         for name in names)
 
 
-def _visible_window_process_paths():
-    """Return executable paths owning visible windows on this desktop."""
-    if os.name != "nt":
-        return None
-
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    process_ids = set()
-    callback_type = ctypes.WINFUNCTYPE(
-        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user32.IsWindowVisible.argtypes = [wintypes.HWND]
-    user32.IsWindowVisible.restype = wintypes.BOOL
-    user32.GetWindowThreadProcessId.argtypes = [
-        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
-    user32.EnumWindows.restype = wintypes.BOOL
-    kernel32.OpenProcess.argtypes = [
-        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.QueryFullProcessImageNameW.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD)]
-    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    @callback_type
-    def collect(window, unused):
-        if user32.IsWindowVisible(window):
-            process_id = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(
-                window, ctypes.byref(process_id))
-            if process_id.value:
-                process_ids.add(process_id.value)
-        return True
-
-    if not user32.EnumWindows(collect, 0):
-        raise ctypes.WinError()
-
-    query_limited_information = 0x1000
-    paths = []
-    for process_id in process_ids:
-        process = kernel32.OpenProcess(
-            query_limited_information, False, process_id)
-        if not process:
-            continue
-        try:
-            path = ctypes.create_unicode_buffer(32768)
-            path_length = wintypes.DWORD(len(path))
-            if kernel32.QueryFullProcessImageNameW(
-                    process, 0, path, ctypes.byref(path_length)):
-                paths.append(path.value)
-        finally:
-            kernel32.CloseHandle(process)
-    return paths
-
-
-def game_window_is_visible(game_root, enumerator=None):
-    """Report whether this game's visible client window still exists.
-
-    ``None`` means the Windows window lookup was unavailable. The hidden
-    simulation client lives on a private desktop, so it is deliberately absent
-    from this lookup.
-    """
-    try:
-        paths = (_visible_window_process_paths() if enumerator is None
-                 else enumerator())
-    except Exception:
-        return None
-    if paths is None:
-        return None
-    target = os.path.normcase(os.path.realpath(game_executable(game_root)))
-    return any(
-        os.path.normcase(os.path.realpath(path)) == target
-        for path in paths)
-
-
 def wait_for_paired_player_exit(
         process, game_root, window_visible=None, required_process=None,
         close_grace=PAIRED_PLAYER_WINDOW_CLOSE_GRACE_SECONDS,
         poll=PAIRED_PLAYER_WINDOW_POLL_SECONDS, sleep=None, clock=None,
         stop_process=None,
         shutdown_timeout=GAME_SHUTDOWN_TIMEOUT_SECONDS):
-    """Wait for the paired player's native starter process to exit.
+    """Wait for the visible NG client process to exit.
 
-    The starter owns the complete visible-client job and follows process
-    handoffs. Its process handle is therefore the lifecycle authority. The
-    #1513 client destroys and recreates its top-level window while loading a
-    map, so window visibility must never terminate a still-live player job.
+    The process handle is the lifecycle authority: the #1513 client destroys
+    and recreates its top-level window while loading a map. The unused window
+    arguments remain for older launcher integrations.
 
-    The unused compatibility arguments remain for older launcher integrations;
-    they no longer participate in the shutdown decision.
-
-    If the required hidden worker exits, retire the paired player job instead
-    of leaving a visible client running without its simulation authority. The
-    second return value records whether that authority loss caused the close.
+    If the required hidden worker exits, close the player instead of leaving
+    a visible client running without its simulation authority. The second
+    return value records whether that authority loss caused the close.
     """
     import time as time_module
 
@@ -2283,7 +1530,7 @@ def wait_for_paired_player_exit(
         sleep(max(0.001, float(poll)))
 
 
-def kill_game(runner=None, executable=GAME_EXECUTABLE):
+def kill_game(runner=None, executable=RUNNING_EXECUTABLE):
     """Force every game process to close."""
     if runner is None:
         if os.name != "nt":

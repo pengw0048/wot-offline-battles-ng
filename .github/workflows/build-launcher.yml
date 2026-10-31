@@ -2,75 +2,20 @@ name: Build Windows launcher
 
 on:
   workflow_dispatch:
+    inputs:
+      client_build_run:
+        description: 'Run of "Build standalone BigWorld client" whose bigworld-client-win32 artifact to package'
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  windows-server:
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11.9"
-          architecture: "x64"
-      - name: Install pinned Windows server packager
-        run: >-
-          python -m pip install
-          -r server/requirements-windows-build.txt
-      - name: Build Windows LAN server for the manual client overlay
-        shell: pwsh
-        run: >-
-          pwsh -NoProfile -File
-          server/build_windows_server.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: launcher-manual-server-input
-          path: dist/server/WoT-0.9.22-LAN-Server.exe
-          if-no-files-found: error
-          retention-days: 1
-
-  client-payload:
-    needs: windows-server
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      - name: Test launcher and payload staging
-        working-directory: launcher
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python -m unittest discover -s tests -p "test_*.py" -v
-      - uses: actions/download-artifact@v4
-        with:
-          name: launcher-manual-server-input
-          path: dist/server
-      - name: Build Python 2.7 0.9.22 client package
-        run: >-
-          docker run --rm --platform linux/amd64 -v "$PWD:/work"
-          -e WOT_OFFLINE_BUILD_IDENTITY="github-${{ github.run_id }}-${{ github.run_attempt }}"
-          -w /work python:2.7.18
-          python build_wotmod.py
-      - name: Validate 0.9.22 client package
-        run: >-
-          python tools/validate_wotmod.py
-          dist/org.peng.offline_lan_0922_*.wotmod
-      - uses: actions/upload-artifact@v4
-        with:
-          name: launcher-build-input
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 1
-
   windows-launcher:
     runs-on: windows-latest
-    needs: client-payload
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -80,124 +25,116 @@ jobs:
       - name: Install pinned Windows packager
         run: >-
           python -m pip install
-          -r server/requirements-windows-build.txt
-      - uses: actions/download-artifact@v4
-        with:
-          name: launcher-build-input
-          path: dist
+          -r server/requirements-windows-build.txt Pillow==12.3.0
+      - name: Take the selected NG client package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLIENT_BUILD_RUN: ${{ inputs.client_build_run }}
+        run: |
+          $client = Join-Path $env:RUNNER_TEMP "ng-client"
+          gh run download $env:CLIENT_BUILD_RUN --repo $env:GITHUB_REPOSITORY `
+            -n bigworld-client-win32 -D $client
+          if ($LASTEXITCODE -ne 0) { throw "Unable to retrieve the selected NG client build" }
+      - name: Compose the NG launcher source tree
+        run: >-
+          python tools/stage_ng_launcher_source.py
+          --output "${{ runner.temp }}\ng-launcher-source"
       - name: Test launcher on Windows
-        working-directory: launcher
+        working-directory: ${{ runner.temp }}\ng-launcher-source\launcher
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Build launcher distribution
         shell: pwsh
-        run: pwsh -NoProfile -File launcher/build_launcher.ps1
-      - name: Verify payload, fake-client install, and bundled servers
+        env:
+          WOT_OFFLINE_BUILD_IDENTITY: github-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          pwsh -NoProfile -File
+          "$env:RUNNER_TEMP\ng-launcher-source\launcher\build_launcher.ps1"
+          -NgClient "$env:RUNNER_TEMP\ng-client"
+      - name: Verify the NG payload and the bundled server
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $appName = "WoT-Offline-Battles-Launcher"
-          $appRoot = Join-Path $PWD "launcher\dist\$appName"
+          $tree = Join-Path $env:RUNNER_TEMP "ng-launcher-source"
+          $appName = "wot-0.9.22-offline-battles-ng"
+          $appRoot = Join-Path $tree "launcher\dist\$appName"
           $launcher = Join-Path $appRoot "$appName.exe"
           $payload = Join-Path $appRoot "_internal"
-          $fakeRoot = Join-Path $env:RUNNER_TEMP "WoT 假客户端"
-          $fake082 = Join-Path $fakeRoot "0.8.2"
-          $fake0922 = Join-Path $fakeRoot "0.9.22 #1513"
-          New-Item -ItemType Directory -Force -Path $fake082,$fake0922 | Out-Null
-          Set-Content -LiteralPath (Join-Path $fake082 "WorldOfTanks.exe") -Value ""
-          Set-Content -LiteralPath (Join-Path $fake082 "version.xml") `
-              -Value "<version> v.0.8.2 #335 </version>"
-          Set-Content -LiteralPath (Join-Path $fake0922 "WorldOfTanks.exe") -Value ""
-          Set-Content -LiteralPath (Join-Path $fake0922 "version.xml") `
-              -Value "<version> v.0.9.22.0.1 #1513 </version>"
 
           @'
-          import json
           import os
+          import struct
           import sys
-          import zipfile
 
-          sys.path.insert(0, os.path.join(os.getcwd(), 'launcher'))
+          sys.path.insert(0, os.path.join(sys.argv[1], 'launcher'))
           import core
+          import ng_client
 
-          payload, fake082, fake0922 = sys.argv[1:4]
-          for port in core.SUPPORTED_PORTS:
-              archive_path = os.path.join(payload, 'client', port + '.zip')
-              with zipfile.ZipFile(archive_path) as archive:
-                  names = archive.namelist()
-              assert not any('__pycache__' in name or name.endswith('.sha256')
-                             for name in names), port
-          assert core.inspect_game_root(fake082)['client'] is None
-          cases = ((core.PORT_0_9_22, fake0922),)
-          for port, game_root in cases:
-              status = core.inspect_game_root(game_root)
-              assert status['client'] == port, status
-              core.install_client_mod(game_root, port, base_dir=payload)
-              assert core._installation_complete(
-                  game_root, port, core._CLIENT_INSTALL[port])
-
-          data_root_0922 = os.path.join(
-              fake0922, 'mods', 'configs', 'offline_lan_0922')
-          inventories = [(os.path.join(data_root_0922, name), 41)
-              for name in
-              ('navgraphs', 'foliage', 'destructibles')]
-          for data_root, expected_count in inventories:
-              manifest_path = os.path.join(data_root, 'manifest.json')
-              with open(manifest_path, 'rb') as stream:
-                  manifest = json.load(stream)
-              records = manifest.get('maps')
-              assert (isinstance(records, list) and
-                      len(records) == expected_count), data_root
-              for record in records:
-                  assert os.path.isfile(os.path.join(
-                      data_root, record['file'])), (data_root, record)
-          '@ | python - $payload $fake082 $fake0922
+          launcher, payload, expected = sys.argv[2:5]
+          with open(launcher, 'rb') as stream:
+              stream.seek(0x3c)
+              pe_offset = struct.unpack('<I', stream.read(4))[0]
+              stream.seek(pe_offset + 4)
+              machine = struct.unpack('<H', stream.read(2))[0]
+          assert machine == 0x8664, 'expected an x64 launcher, got 0x%04x' % machine
+          package = ng_client.package_root(payload)
+          assert package is not None, payload
+          identity = core.bundled_payload_identity(core.PORT_0_9_22, payload)
+          assert identity['buildIdentity'] == expected, identity
+          assert not os.path.exists(os.path.join(payload, 'client'))
+          assert os.path.isfile(ng_client.executable(package))
+          '@ | python - $tree $launcher $payload "github-${{ github.run_id }}-${{ github.run_attempt }}"
           if ($LASTEXITCODE -ne 0) {
-              throw "Bundled client installation verification failed"
+              throw "NG payload verification failed"
           }
 
           $ProtocolProbe = @'
           import os
           import sys
-          sys.path.insert(0, os.path.join(os.getcwd(), 'launcher'))
+          sys.path.insert(0, os.path.join(sys.argv[1], 'launcher'))
           import core
           raise SystemExit(0 if core.probe_server_protocol(
-              sys.argv[1], '127.0.0.1', 28782, timeout=1.0) else 1)
+              core.PORT_0_9_22, '127.0.0.1', core.DEFAULT_SERVER_PORT,
+              timeout=1.0) else 1)
           '@
-          foreach ($port in @("0.9.22")) {
-              $process = Start-Process -FilePath $launcher `
-                  -ArgumentList "--serve", $port -PassThru
-              try {
-                  $deadline = (Get-Date).AddSeconds(60)
-                  $compatible = $false
-                  while ((Get-Date) -lt $deadline) {
-                      if ($process.HasExited) {
-                          throw "$port server exited before its protocol answered"
-                      }
-                      $ProtocolProbe | python - $port
-                      if ($LASTEXITCODE -eq 0) {
-                          $compatible = $true
-                          break
-                      }
-                      Start-Sleep -Milliseconds 250
+          $process = Start-Process -FilePath $launcher `
+              -ArgumentList "--serve", "0.9.22" -PassThru
+          try {
+              $deadline = (Get-Date).AddSeconds(60)
+              $compatible = $false
+              while ((Get-Date) -lt $deadline) {
+                  if ($process.HasExited) {
+                      throw "The bundled server exited before its protocol answered"
                   }
-                  if (-not $compatible) {
-                      throw "$port server did not answer its bundled protocol"
+                  $ProtocolProbe | python - $tree
+                  if ($LASTEXITCODE -eq 0) {
+                      $compatible = $true
+                      break
                   }
+                  Start-Sleep -Milliseconds 250
               }
-              finally {
-                  if (-not $process.HasExited) {
-                      & taskkill.exe /PID $process.Id /T /F | Out-Null
-                      $global:LASTEXITCODE = 0
-                  }
-                  Start-Sleep -Seconds 2
+              if (-not $compatible) {
+                  throw "The bundled server did not answer the battle wire protocol"
               }
+          }
+          finally {
+              if (-not $process.HasExited) {
+                  & taskkill.exe /PID $process.Id /T /F | Out-Null
+                  $global:LASTEXITCODE = 0
+              }
+              $log = Join-Path $appRoot "server.log"
+              if (Test-Path $log) {
+                  Write-Host "--- launcher server log ---"
+                  Get-Content $log -Tail 60
+              }
+              Start-Sleep -Seconds 2
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: wot-offline-battles-launcher-windows-${{ github.run_number }}
-          path: launcher/dist/WoT-Offline-Battles-Launcher-Windows.zip
+          name: wot-offline-battles-ng-launcher-windows-${{ github.run_number }}
+          path: ${{ runner.temp }}\ng-launcher-source\launcher\dist\wot-0.9.22-offline-battles-ng-Windows.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

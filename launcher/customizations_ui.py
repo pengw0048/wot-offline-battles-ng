@@ -9,7 +9,7 @@ class CustomizationsDialog(object):
     def __init__(self, owner):
         self.owner = owner
         self.slot = owner._save_slot_id
-        self.game_root = owner.game_root.get().strip()
+        self.game_root = owner._client_root()
         self.styles, self.vehicles = store.catalogue(self.game_root)
         self.inventory = store.read_inventory(self.slot, self.game_root, self.styles, self.vehicles)
         tk, ttk, tr = owner._tk, owner._ttk, owner._t

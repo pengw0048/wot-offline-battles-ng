@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 import core
+import ng_client
 import wot_launcher
 
 
@@ -225,7 +226,7 @@ class _StoppableProcess(_Process):
         _Process.__init__(self, exit_code=None, pid=pid)
         self._stop_exit_code = exit_code
 
-    def request_stop(self, unused_process, unused_root):
+    def request_stop(self, unused_process):
         self.exit_code = self._stop_exit_code
         return True
 
@@ -240,6 +241,10 @@ class WindowTest(unittest.TestCase):
         core.settings_path = lambda: os.path.join(self.settings_dir,
                                                   "launcher.json")
         core.discover_game_folders = lambda *unused, **unused_options: []
+        environment = mock.patch.dict(os.environ, {
+            ng_client.DATA_ROOT_ENV: os.path.join(self.settings_dir, "ng")})
+        environment.start()
+        self.addCleanup(environment.stop)
         language_patch = mock.patch.object(
             wot_launcher.i18n, "detect_system_language", return_value="en")
         language_patch.start()
@@ -258,7 +263,8 @@ class WindowTest(unittest.TestCase):
         with open(os.path.join(game_root, "version.xml"), "w") as stream:
             stream.write("<version> v.%s #%s </version>" % (version, build))
         self.window.game_root.set(game_root)
-        return game_root
+        # Everything the launcher writes lives in the NG player instance.
+        return ng_client.player_instance(game_root)
 
     def test_custom_save_restores_original_vehicle_labels_and_exposes_progress_editors(self):
         self.assertEqual("Garage vehicles", self.window.shop_panel.cget("text"))
@@ -292,9 +298,7 @@ class WindowTest(unittest.TestCase):
             self.window.bot_lineup_profile_box.master,
             self.window.bot_lineup_panel)
         self.assertIs(self.window.repair_button.master, self.window.repair_panel)
-        self.assertIs(
-            self.window.normal_preferences_button.master,
-            self.window.repair_panel)
+        self.assertFalse(hasattr(self.window, "normal_preferences_button"))
         self.assertIs(self.window.report_button.master, self.window.game_panel)
         self.assertEqual(
             "Create error report...",
@@ -631,45 +635,6 @@ class WindowTest(unittest.TestCase):
         self.assertIn("Microsoft's official site", message)
         self.assertNotIn("password", message)
 
-    def test_network_start_always_plans_a_join_session(self):
-        self._game()
-        self.window.join_address.set("10.0.0.5:1234")
-        session = {
-            "client": core.PORT_0_9_22,
-            "mode": core.MODE_JOIN,
-            "host": "10.0.0.5",
-            "tcp_port": 1234,
-            "needs_server": False,
-            "vehicle_profile": None,
-        }
-        with mock.patch("core.plan_session", return_value=session) as plan, \
-                mock.patch("wot_launcher.threading.Thread") as thread:
-            self.window._start_network()
-
-        self.assertEqual(core.MODE_JOIN, plan.call_args.args[1])
-        thread.return_value.start.assert_called_once_with()
-
-    def test_local_room_owner_still_plans_a_join_session(self):
-        self._game()
-        self.window.join_address.set(
-            "%s:%d" % (core.LOCAL_HOST, core.DEFAULT_SERVER_PORT))
-        self.window._server = _Process(exit_code=None)
-        self.window._server_persistent = True
-        session = {
-            "client": core.PORT_0_9_22,
-            "mode": core.MODE_JOIN,
-            "host": core.LOCAL_HOST,
-            "tcp_port": core.DEFAULT_SERVER_PORT,
-            "needs_server": False,
-            "vehicle_profile": None,
-        }
-        with mock.patch("core.plan_session", return_value=session) as plan, \
-                mock.patch("wot_launcher.threading.Thread") as thread:
-            self.window._start_network()
-
-        self.assertEqual(core.MODE_JOIN, plan.call_args.args[1])
-        thread.return_value.start.assert_called_once_with()
-
     def test_the_address_field_and_test_button_follow_the_mode(self):
         self.window.mode.set(core.MODE_JOIN)
         self.window._refresh_mode()
@@ -691,177 +656,6 @@ class WindowTest(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "preferred_team"))
         self.assertFalse(hasattr(self.window, "single_preferred_team_box"))
         self.assertFalse(hasattr(self.window, "network_preferred_team_box"))
-
-    def test_server_button_is_an_explicit_online_action(self):
-        self._game("0.9.22.0.1", "1513")
-        self.assertEqual("disabled", self.window.server_button.cget("state"))
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        self.assertEqual("normal", self.window.server_button.cget("state"))
-        self.assertEqual(
-            "Start LAN room", self.window.server_button.cget("text"))
-        self.window.mode.set(core.MODE_SINGLE)
-        self.window._refresh_mode()
-        self.assertEqual("disabled", self.window.server_button.cget("state"))
-
-    def test_lan_room_button_starts_persistent_server_and_worker(self):
-        game_root = self._game("0.9.22.0.1", "1513")
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        with mock.patch(
-                "core.install_client_mod", return_value=["installed"]) \
-                as install, mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}) as prepare, \
-                mock.patch.object(
-                    self.window, "_start_server", return_value=True) \
-                as start_server, mock.patch.object(
-                    self.window, "_start_worker", return_value=True) \
-                as start_worker:
-            self.assertTrue(self.window._toggle_lan_server())
-            for unused in range(200):
-                if not self.window._maintenance_busy:
-                    break
-                time.sleep(0.01)
-
-        install.assert_called_once_with(game_root, core.PORT_0_9_22)
-        prepare.assert_called_once_with(game_root, None)
-        start_server.assert_called_once_with(
-            game_root, core.PORT_0_9_22, persistent=True, require_owned=True)
-        start_worker.assert_called_once_with(
-            game_root, core.LOCAL_HOST, core.DEFAULT_SERVER_PORT,
-            room_owned=True)
-        self.assertEqual(
-            "%s:%d" % (core.LOCAL_HOST, core.DEFAULT_SERVER_PORT),
-            self.window.join_address.get())
-
-    def test_lan_room_button_pins_the_selected_vehicle_profile(self):
-        game_root = self._game("0.9.22.0.1", "1513")
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        with mock.patch(
-                "core.install_client_mod", return_value=["installed"]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.list_vehicle_profiles",
-                    return_value=["Fast MS-1"]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": "Fast MS-1",
-                                  "installedMembers": 2,
-                                  "removedMembers": 0,
-                                  "botExcludedVehicles": ["ussr:R11_MS-1"]}) as prepare, \
-                mock.patch.object(
-                    self.window, "_start_server", return_value=True) as start_server, \
-                mock.patch.object(
-                    self.window, "_start_worker", return_value=True):
-            self.window.vehicle_profile.set("Fast MS-1")
-            self.assertTrue(self.window._toggle_lan_server())
-            for unused in range(200):
-                if not self.window._maintenance_busy:
-                    break
-                time.sleep(0.01)
-
-        prepare.assert_called_once_with(game_root, "Fast MS-1")
-        start_server.assert_called_once_with(
-            game_root, core.PORT_0_9_22, persistent=True, require_owned=True,
-            bot_excluded_vehicles=["ussr:R11_MS-1"])
-        self.assertIn("pins vehicle profile", self._log_text())
-        self.assertIn("Fast MS-1", self._log_text())
-
-    def test_lan_room_server_start_failure_restores_vehicle_data(self):
-        game_root = self._game("0.9.22.0.1", "1513")
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        order = []
-        with mock.patch("core.install_client_mod", return_value=[]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    side_effect=lambda *unused: (
-                        order.append("profile") or {
-                            "profile": "Fast MS-1",
-                            "installedMembers": 1,
-                            "removedMembers": 0,
-                        })), \
-                mock.patch.object(
-                    self.window, "_start_server",
-                    side_effect=lambda *args, **kwargs: (
-                        order.append("server") or False)), \
-                mock.patch.object(
-                    self.window, "_start_worker") as start_worker, \
-                mock.patch.object(
-                    self.window, "_stop_worker",
-                    side_effect=lambda *args, **kwargs:
-                    order.append("worker_stop")), \
-                mock.patch.object(
-                    self.window, "_stop_server",
-                    side_effect=lambda *args, **kwargs: (
-                        order.append("server_stop") or False)), \
-                mock.patch(
-                    "core.wait_for_game_shutdown",
-                    side_effect=lambda: order.append("shutdown_wait") or True), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    side_effect=lambda *unused:
-                    order.append("profile_cleanup") or 1) as cleanup:
-            self.window.vehicle_profile.set("Fast MS-1")
-            self.assertTrue(self.window._toggle_lan_server())
-            for unused in range(200):
-                if not self.window._maintenance_busy:
-                    break
-                time.sleep(0.01)
-
-        start_worker.assert_not_called()
-        cleanup.assert_called_once_with(game_root)
-        self.assertEqual(
-            ["profile", "server", "worker_stop", "server_stop",
-             "shutdown_wait", "profile_cleanup"], order)
-        self.assertIsNone(self.window._room_vehicle_overlay_root)
-
-    def test_lan_room_worker_start_failure_restores_vehicle_data(self):
-        game_root = self._game("0.9.22.0.1", "1513")
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        order = []
-        with mock.patch("core.install_client_mod", return_value=[]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": "Fast MS-1",
-                                  "installedMembers": 1,
-                                  "removedMembers": 0}), \
-                mock.patch.object(
-                    self.window, "_start_server", return_value=True), \
-                mock.patch.object(
-                    self.window, "_start_worker", return_value=False), \
-                mock.patch.object(
-                    self.window, "_stop_worker",
-                    side_effect=lambda *args, **kwargs:
-                    order.append("worker_stop")), \
-                mock.patch.object(
-                    self.window, "_stop_server",
-                    side_effect=lambda *args, **kwargs: (
-                        order.append("server_stop") or True)), \
-                mock.patch(
-                    "core.wait_for_game_shutdown",
-                    side_effect=lambda: order.append("shutdown_wait") or True), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    side_effect=lambda *unused:
-                    order.append("profile_cleanup") or 1) as cleanup:
-            self.window.vehicle_profile.set("Fast MS-1")
-            self.assertTrue(self.window._toggle_lan_server())
-            for unused in range(200):
-                if not self.window._maintenance_busy:
-                    break
-                time.sleep(0.01)
-
-        cleanup.assert_called_once_with(game_root)
-        self.assertEqual(
-            ["worker_stop", "server_stop", "shutdown_wait",
-             "profile_cleanup"], order)
-        self.assertIsNone(self.window._room_vehicle_overlay_root)
-        self.assertIn("hidden simulation worker is unavailable",
-                      self._log_text())
 
     def test_stopping_lan_room_restores_vehicle_data_after_processes(self):
         game_root = self._game("0.9.22.0.1", "1513")
@@ -892,16 +686,6 @@ class WindowTest(unittest.TestCase):
              "profile_cleanup"], order)
         self.assertIsNone(self.window._room_vehicle_overlay_root)
 
-    def test_an_unsupported_folder_cannot_start_a_server(self):
-        self._game("1.0.0", "1")
-        self.window.mode.set(core.MODE_JOIN)
-        self.window._refresh_mode()
-        with mock.patch.object(self.window, "_start_server") as start_server:
-            self.assertFalse(self.window._toggle_lan_server())
-
-        start_server.assert_not_called()
-        self.assertIn("supported game folder", self._log_text())
-
     def test_hidden_server_entry_rejects_an_unsupported_client(self):
         with mock.patch("builtins.print") as output:
             self.assertEqual(
@@ -929,14 +713,6 @@ class WindowTest(unittest.TestCase):
         self.window.game_root.set(self.settings_dir)
         self.window._start()
         self.assertIn(core.GAME_EXECUTABLE, self._log_text())
-        self.assertFalse(self.window._busy)
-
-    def test_start_reports_an_invalid_join_address(self):
-        game_root = self._game()
-        self.window.mode.set(core.MODE_JOIN)
-        self.window.join_address.set("")
-        self.window._start()
-        self.assertIn("Enter the address", self._log_text())
         self.assertFalse(self.window._busy)
 
     def test_settings_survive_a_new_window(self):
@@ -1024,6 +800,28 @@ class WindowTest(unittest.TestCase):
         self.window._browse()
         self.assertEqual([], self.window._folders)
 
+    def test_ng_launcher_refuses_lan_rooms_joining_and_bot_tactics(self):
+        self._game("0.9.22.0.1", "1513")
+        self.window.mode.set(core.MODE_JOIN)
+        self.window._update_action_controls()
+        self.assertEqual("disabled", self.window.server_button.cget("state"))
+        self.assertEqual(
+            "disabled", self.window.network_start_button.cget("state"))
+        self.assertEqual(
+            "disabled", self.window.bot_tactics_button.cget("state"))
+        with mock.patch("core.plan_session") as plan, \
+                mock.patch("core.start_server", create=True) as start:
+            self.assertFalse(self.window._toggle_lan_server())
+            self.assertFalse(self.window._start_network())
+            self.window._start()
+            self.assertFalse(self.window._open_bot_tactics_editor())
+        plan.assert_not_called()
+        start.assert_not_called()
+        self.assertFalse(self.window._busy)
+        self.assertIn(wot_launcher.NG_LAN_UNSUPPORTED, self._log_text())
+        self.assertIn(
+            wot_launcher.NG_BOT_TACTICS_UNSUPPORTED, self._log_text())
+
     def test_maintenance_buttons_are_only_enabled_for_the_supported_client(self):
         self._game("1.0.0", "1")
         self.assertEqual("disabled",
@@ -1032,8 +830,6 @@ class WindowTest(unittest.TestCase):
                          self.window.vehicle_editor_button.cget("state"))
         self._game("0.9.22.0.1", "1513")
         self.assertEqual("normal", self.window.repair_button.cget("state"))
-        self.assertEqual(
-            "normal", self.window.normal_preferences_button.cget("state"))
         self.assertEqual("normal", self.window.reset_button.cget("state"))
         self.assertEqual(
             "readonly", self.window.vehicle_profile_box.cget("state"))
@@ -1695,9 +1491,6 @@ class WindowTest(unittest.TestCase):
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=1) as cleanup, \
                 mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
-                mock.patch(
                     "core.wait_for_game_shutdown",
                     return_value=True), \
                 mock.patch("core.write_settings", return_value=[]), \
@@ -1745,9 +1538,6 @@ class WindowTest(unittest.TestCase):
                     return_value={"supported": True, "present": False,
                                   "digest": "", "profile": "",
                                   "manifest": None, "payload": {}}), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
@@ -1806,9 +1596,6 @@ class WindowTest(unittest.TestCase):
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=0), digest, fetch as fetch_mock, \
                 install as install_mock, \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
@@ -1852,9 +1639,6 @@ class WindowTest(unittest.TestCase):
                 mock.patch(
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=0), digest, fetch, install as install_mock, \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
@@ -1898,9 +1682,6 @@ class WindowTest(unittest.TestCase):
                 mock.patch(
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=0), digest, fetch, install as install_mock, \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
@@ -1957,9 +1738,6 @@ class WindowTest(unittest.TestCase):
                     return_value={"supported": True, "present": False,
                                   "digest": "", "profile": "",
                                   "manifest": None, "payload": {}}), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
@@ -2029,9 +1807,6 @@ class WindowTest(unittest.TestCase):
                 mock.patch(
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=0), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch.object(
                     self.window, "_enable_crash_capture",
@@ -2109,9 +1884,6 @@ class WindowTest(unittest.TestCase):
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     side_effect=lambda *unused: (
                         order.append("profile_cleanup") or 1)), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch.object(
                     self.window, "_start_server",
@@ -2163,23 +1935,6 @@ class WindowTest(unittest.TestCase):
         repair.assert_called_once_with(game_root)
         self.assertIn("repair complete", self._log_text())
         self.assertEqual("normal", self.window.start_button.cget("state"))
-
-    def test_normal_preferences_cleanup_runs_after_confirmation(self):
-        game_root = self._game("0.9.22.0.1", "1513")
-        with mock.patch.object(
-                self.window, "_confirm_normal_preferences_cleanup",
-                return_value=True), mock.patch(
-                "core.game_is_running", return_value=False), mock.patch(
-                "core.backup_normal_client_preferences",
-                return_value=["normal preferences backed up"]) as cleanup:
-            self.assertTrue(self.window._clean_normal_client_preferences())
-            for unused in range(200):
-                if not self.window._maintenance_busy:
-                    break
-                time.sleep(0.01)
-
-        cleanup.assert_called_once_with(game_root)
-        self.assertIn("normal preferences backed up", self._log_text())
 
     def test_reset_requires_confirmation(self):
         self._game("0.9.22.0.1", "1513")
@@ -2492,14 +2247,22 @@ class WindowTest(unittest.TestCase):
 
         self.assertIn("continuing with live output", stderr.getvalue())
 
+    def _ng_game(self):
+        game = os.path.join(self.settings_dir, "ng", "instances", "player")
+        worker = core.worker_root(game)
+        os.makedirs(game, exist_ok=True)
+        os.makedirs(worker, exist_ok=True)
+        with open(ng_client.executable(worker), "w") as stream:
+            stream.write("client")
+        return game, worker
+
     def test_new_worker_does_not_inherit_an_old_stop_request(self):
+        game, unused_worker = self._ng_game()
         role = wot_launcher.error_reports.ROLE_HIDDEN_WORKER
         self.window._stop_requested_roles.add(role)
-        starter = core.worker_starter_executable(self.settings_dir)
-        with open(starter, "w") as stream:
-            stream.write("starter")
         worker = _Process(exit_code=3)
-        with mock.patch("core.wait_for_worker_ready", return_value=False), \
+        with mock.patch.object(ng_client, "wait_for_worker_ready",
+                               return_value=False), \
                 mock.patch("wot_launcher.subprocess.Popen", return_value=worker), \
                 mock.patch.object(
                     wot_launcher.error_reports, "minidump_evidence",
@@ -2510,92 +2273,96 @@ class WindowTest(unittest.TestCase):
                     side_effect=lambda session, role, stop_requested=False:
                         stop_requested):
             self.assertFalse(self.window._start_worker(
-                self.settings_dir, "10.0.0.5", 1234))
+                game, "10.0.0.5", 1234))
         self.assertNotIn(role, self.window._stop_requested_roles)
         self.assertIn(role, self.window._observed_crash_roles)
 
-    def test_worker_start_failure_reports_the_native_failure_log(self):
-        starter = core.worker_starter_executable(self.settings_dir)
-        with open(starter, "w") as stream:
-            stream.write("starter")
-        marker = core.worker_ready_marker(self.settings_dir)
+    def test_worker_start_failure_reports_the_worker_python_log(self):
+        game, worker_root = self._ng_game()
+        marker = ng_client.worker_ready_marker(worker_root)
         with open(marker, "w") as stream:
-            stream.write("live-worker-marker")
-        previous_marker_token = core.worker_ready_marker_token(
-            self.settings_dir)
-        with open(core.worker_failure_log(self.settings_dir), "w") as stream:
+            stream.write("ready")
+        with open(os.path.join(worker_root, ng_client.PYTHON_LOG), "w") as stream:
             stream.write("stage=worker_exited_before_ready exit_code=7\n")
         worker = _Process(exit_code=23)
-        with mock.patch(
-                "core.wait_for_worker_ready", return_value=False) as wait, \
+        with mock.patch.object(
+                ng_client, "wait_for_worker_ready", return_value=False) as wait, \
                 mock.patch("wot_launcher.subprocess.Popen",
                            return_value=worker) as popen:
             self.assertFalse(self.window._start_worker(
-                self.settings_dir, "10.0.0.5", 1234))
+                game, "10.0.0.5", 1234))
 
-        self.assertEqual(self.settings_dir, popen.call_args.kwargs["cwd"])
+        self.assertEqual(worker_root, popen.call_args.kwargs["cwd"])
         self.assertEqual(
-            wot_launcher._no_console_flags(),
-            popen.call_args.kwargs["creationflags"])
+            core.worker_child_command(game), popen.call_args.args[0])
         environment = popen.call_args.kwargs["env"]
         self.assertEqual(
             "10.0.0.5", environment[core.CLIENT_SERVER_HOST_ENV_0922])
         self.assertEqual(
             "1234", environment[core.CLIENT_SERVER_PORT_ENV_0922])
-        self.assertEqual(
-            previous_marker_token,
-            wait.call_args.kwargs["previous_marker_token"])
-        self.assertTrue(os.path.isfile(marker))
+        self.assertEqual(worker_root, wait.call_args.args[1])
+        self.assertFalse(os.path.exists(marker))
         self.assertIn("worker_exited_before_ready", self._log_text())
 
-    def test_worker_starter_receives_its_session_dump_destination(self):
-        starter = core.worker_starter_executable(self.settings_dir)
-        with open(starter, "w") as stream:
-            stream.write("starter")
+    def test_worker_server_admission_comes_from_the_server_log(self):
+        self.window._worker_joined.clear()
+        server = _Process(exit_code=None, stdout=io.BytesIO(
+            b"[12:00:00] WORKER JOIN id=1 name=Simulation\n"))
+        self.window._server = server
+        self.window._pump_server_output(server)
+        self.assertTrue(self.window._worker_joined.is_set())
+
+    def test_worker_receives_its_trail_and_a_session_dump_monitor(self):
+        game, unused_worker = self._ng_game()
         boundary = wot_launcher.error_reports.begin_session(
-            self.settings_dir, needs_worker=True,
+            game, needs_worker=True,
             session_id="20260823T120000Z-111111111111")
         self.window._active_report_session = boundary
         self.window._crash_capture_enabled = True
         self.window._procdump_path = "C:\\tools\\procdump.exe"
-        worker = _Process(exit_code=None)
-        with mock.patch(
-                "core.wait_for_worker_ready", return_value=True), \
+        worker = _Process(exit_code=None, pid=42)
+        monitor = _Process(exit_code=None, pid=43)
+        with mock.patch.object(
+                ng_client, "wait_for_worker_ready", return_value=True), \
                 mock.patch("wot_launcher.subprocess.Popen",
-                           return_value=worker) as popen:
+                           side_effect=[worker, monitor]) as popen:
             self.assertTrue(self.window._start_worker(
-                self.settings_dir, "10.0.0.5", 1234))
+                game, "10.0.0.5", 1234))
 
-        environment = popen.call_args.kwargs["env"]
-        self.assertEqual(
-            "C:\\tools\\procdump.exe",
-            environment[wot_launcher.PROCDUMP_PATH_ENV])
-        self.assertEqual(
-            wot_launcher.error_reports.session_dump_path(
-                boundary, wot_launcher.error_reports.ROLE_HIDDEN_WORKER),
-            environment[wot_launcher.CRASH_DUMP_PATH_ENV])
-        self.assertEqual(
-            "mini", environment[wot_launcher.CRASH_DUMP_MODE_ENV])
+        environment = popen.call_args_list[0].kwargs["env"]
         self.assertEqual(
             wot_launcher.error_reports.session_trail_path(
                 boundary, wot_launcher.error_reports.ROLE_HIDDEN_WORKER),
             environment[wot_launcher.EXCEPTION_TRAIL_PATH_ENV])
-        self.window._stop_worker()
+        self.assertEqual(
+            ng_client.procdump_monitor_command(
+                "C:\\tools\\procdump.exe", 42,
+                wot_launcher.error_reports.session_dump_path(
+                    boundary, wot_launcher.error_reports.ROLE_HIDDEN_WORKER)),
+            popen.call_args_list[1].args[0])
+        with mock.patch("wot_launcher.subprocess.run") as run:
+            self.window._stop_worker()
+        self.assertEqual(
+            ng_client.procdump_cancel_command("C:\\tools\\procdump.exe", 42),
+            run.call_args.args[0])
+        self.assertTrue(worker.terminated)
 
-    def test_crash_capture_environment_requests_full_memory_dumps(self):
+    def test_full_crash_dumps_request_full_memory(self):
+        game, unused_worker = self._ng_game()
         boundary = wot_launcher.error_reports.begin_session(
-            self.settings_dir, needs_worker=True,
+            game, needs_worker=True,
             session_id="20260823T120000Z-222222222222")
         self.window._active_report_session = boundary
         self.window._crash_capture_enabled = True
         self.window._full_crash_dump_enabled = True
         self.window._procdump_path = "C:\\tools\\procdump.exe"
 
-        environment = self.window._crash_capture_environment(
-            {}, wot_launcher.error_reports.ROLE_HIDDEN_WORKER)
+        with mock.patch("wot_launcher.subprocess.Popen") as popen:
+            self.window._start_dump_monitor(
+                _Process(pid=42), wot_launcher.error_reports.ROLE_HIDDEN_WORKER)
 
-        self.assertEqual(
-            "full", environment[wot_launcher.CRASH_DUMP_MODE_ENV])
+        self.assertIn("-ma", popen.call_args.args[0])
+        self.assertNotIn("-mm", popen.call_args.args[0])
 
     def test_each_role_records_its_faults_in_its_own_trail(self):
         # Both processes load the same sidecar, so two roles sharing one
@@ -2624,31 +2391,31 @@ class WindowTest(unittest.TestCase):
 
         self.assertEqual({"KEEP": "1"}, environment)
 
-    def test_worker_stop_waits_for_the_native_starter_cleanup(self):
+    def test_worker_stop_detaches_the_dump_monitor_then_terminates(self):
         worker = _Process(exit_code=None, pid=42)
-        worker.wait = mock.Mock(return_value=0)
         self.window._worker = worker
-        self.window._worker_starter_root = self.settings_dir
 
         with mock.patch.object(
-                self.window, "_request_starter_stop",
-                return_value=True) as request:
-            self.assertIsNone(self.window._stop_worker())
+                self.window, "_release_dump_monitor",
+                return_value=False) as release:
+            self.window._stop_worker()
 
-        request.assert_called_once_with(worker, self.settings_dir)
-        worker.wait.assert_called_once_with(
-            timeout=core.STARTER_SHUTDOWN_TIMEOUT_SECONDS_0922)
-        self.assertFalse(worker.terminated)
-        self.assertFalse(worker.killed)
+        release.assert_called_once_with(worker)
+        self.assertTrue(worker.terminated)
+        self.assertIn(
+            wot_launcher.error_reports.ROLE_HIDDEN_WORKER,
+            self.window._forced_stop_roles)
+        self.assertNotIn(
+            wot_launcher.error_reports.ROLE_HIDDEN_WORKER,
+            self.window._observed_crash_roles)
 
-    def test_worker_crash_wins_a_simultaneous_starter_stop(self):
+    def test_worker_crash_wins_a_simultaneous_stop(self):
         worker = _Process(exit_code=None, pid=42)
         worker.wait = mock.Mock(return_value=23)
         self.window._worker = worker
-        self.window._worker_starter_root = self.settings_dir
 
         with mock.patch.object(
-                self.window, "_request_starter_stop", return_value=True):
+                self.window, "_release_dump_monitor", return_value=True):
             self.assertEqual(23, self.window._stop_worker())
 
         self.assertFalse(worker.terminated)
@@ -2659,10 +2426,9 @@ class WindowTest(unittest.TestCase):
     def test_requested_worker_stop_with_nonzero_exit_is_not_a_crash(self):
         worker = _StoppableProcess(exit_code=3, pid=42)
         self.window._worker = worker
-        self.window._worker_starter_root = self.settings_dir
 
         with mock.patch.object(
-                self.window, "_request_starter_stop",
+                self.window, "_release_dump_monitor",
                 side_effect=worker.request_stop), \
                 mock.patch.object(
                     wot_launcher.error_reports, "minidump_evidence",
@@ -2692,7 +2458,6 @@ class WindowTest(unittest.TestCase):
         """
         worker = _Process(exit_code=3, pid=42)
         self.window._worker = worker
-        self.window._worker_starter_root = self.settings_dir
 
         with mock.patch.object(
                 wot_launcher.error_reports, "minidump_evidence",
@@ -2716,7 +2481,6 @@ class WindowTest(unittest.TestCase):
     def test_worker_exception_dump_is_a_crash_even_with_zero_exit(self):
         worker = _Process(exit_code=0, pid=42)
         self.window._worker = worker
-        self.window._worker_starter_root = self.settings_dir
 
         with mock.patch.object(
                 wot_launcher.error_reports, "minidump_evidence",
@@ -2728,54 +2492,37 @@ class WindowTest(unittest.TestCase):
             wot_launcher.error_reports.ROLE_HIDDEN_WORKER,
             self.window._observed_crash_roles)
 
-    def test_close_game_uses_the_native_starter_stop_protocol(self):
-        game = _Process(exit_code=None, pid=42)
+    def test_close_game_captures_an_already_exited_visible_client(self):
+        game = _Process(exit_code=3, pid=42)
         self.window._game = game
-        self.window._game_starter_root = self.settings_dir
 
         with mock.patch.object(
-                self.window, "_request_starter_stop",
-                return_value=True) as request, \
+                self.window, "_release_dump_monitor") as release, \
+                mock.patch.object(self.window, "_stop_worker"), \
+                mock.patch.object(self.window, "_stop_server"), \
+                mock.patch("core.kill_game"):
+            self.assertTrue(self.window._kill_game())
+
+        release.assert_not_called()
+        self.assertIn(
+            wot_launcher.error_reports.ROLE_VISIBLE_CLIENT,
+            self.window._observed_crash_roles)
+
+    def test_forced_visible_client_kill_is_not_a_crash(self):
+        game = _Process(exit_code=None, pid=42)
+        self.window._game = game
+
+        with mock.patch.object(
+                self.window, "_release_dump_monitor",
+                return_value=False) as release, \
                 mock.patch.object(self.window, "_stop_worker"), \
                 mock.patch.object(self.window, "_stop_server"), \
                 mock.patch("core.kill_game") as kill_game:
             self.assertTrue(self.window._kill_game())
 
-        request.assert_called_once_with(game, self.settings_dir)
-        self.assertFalse(game.killed)
-        kill_game.assert_not_called()
-        self.assertEqual(set(), self.window._observed_crash_roles)
-
-    def test_close_game_captures_an_already_exited_visible_client(self):
-        game = _Process(exit_code=3, pid=42)
-        self.window._game = game
-        self.window._game_starter_root = self.settings_dir
-
-        with mock.patch.object(
-                self.window, "_request_starter_stop") as request, \
-                mock.patch.object(self.window, "_stop_worker"), \
-                mock.patch.object(self.window, "_stop_server"), \
-                mock.patch("core.kill_game"):
-            self.assertTrue(self.window._kill_game())
-
-        request.assert_not_called()
-        self.assertIn(
-            wot_launcher.error_reports.ROLE_VISIBLE_CLIENT,
-            self.window._observed_crash_roles)
-
-    def test_forced_visible_starter_kill_is_not_a_crash(self):
-        game = _Process(exit_code=None, pid=42)
-        self.window._game = game
-        self.window._game_starter_root = self.settings_dir
-
-        with mock.patch.object(
-                self.window, "_request_starter_stop", return_value=False), \
-                mock.patch.object(self.window, "_stop_worker"), \
-                mock.patch.object(self.window, "_stop_server"), \
-                mock.patch("core.kill_game"):
-            self.assertTrue(self.window._kill_game())
-
+        release.assert_called_once_with(game)
         self.assertTrue(game.killed)
+        kill_game.assert_called_once_with()
         self.assertNotIn(
             wot_launcher.error_reports.ROLE_VISIBLE_CLIENT,
             self.window._observed_crash_roles)
@@ -2783,59 +2530,71 @@ class WindowTest(unittest.TestCase):
             wot_launcher.error_reports.ROLE_VISIBLE_CLIENT,
             self.window._forced_stop_roles)
 
-    def test_starter_stop_helper_targets_the_started_process(self):
+    def test_releasing_a_dump_monitor_cancels_procdump_for_that_process(self):
         game = _Process(exit_code=None, pid=42)
-        result = mock.Mock(returncode=0)
+        monitor = _Process(exit_code=None, pid=43)
+        self.window._procdump_path = "C:\\tools\\procdump.exe"
+        self.window._dump_monitors[42] = monitor
 
-        with mock.patch(
-                "wot_launcher.subprocess.run", return_value=result) as run:
-            self.assertTrue(self.window._request_starter_stop(
-                game, self.settings_dir))
+        with mock.patch("wot_launcher.subprocess.run") as run:
+            self.assertFalse(self.window._release_dump_monitor(game))
 
         self.assertEqual(
-            core.starter_stop_command(self.settings_dir, 42),
+            ng_client.procdump_cancel_command("C:\\tools\\procdump.exe", 42),
             run.call_args.args[0])
         self.assertEqual(
-            core.STARTER_CONTROL_TIMEOUT_SECONDS_0922,
-            run.call_args.kwargs["timeout"])
+            ng_client.PROCDUMP_ATTACH_SECONDS, run.call_args.kwargs["timeout"])
+        self.assertNotIn(42, self.window._dump_monitors)
+        run.reset_mock()
+        self.window._release_dump_monitor(game)
+        run.assert_not_called()
 
-    def test_visible_crash_wins_a_stop_helper_exit_race(self):
+    def test_visible_crash_wins_a_stop_exit_race(self):
         game = _Process(exit_code=3, pid=42)
         forced = [False]
 
         with mock.patch.object(
-                self.window, "_request_starter_stop", return_value=False):
+                self.window, "_release_dump_monitor", return_value=False):
             self.window._stop_visible_starter(
                 game, self.settings_dir, forced)
 
         self.assertFalse(forced[0])
         self.assertFalse(game.terminated)
 
-    def test_paired_player_starter_receives_its_dump_destination(self):
+    def test_visible_client_receives_its_trail_and_a_dump_monitor(self):
+        game_root, unused_worker = self._ng_game()
         boundary = wot_launcher.error_reports.begin_session(
-            self.settings_dir,
+            game_root,
             session_id="20260823T120000Z-222222222222")
         self.window._active_report_session = boundary
         self.window._crash_capture_enabled = True
         self.window._procdump_path = "C:\\tools\\procdump.exe"
-        game = _Process(exit_code=None)
+        game = _Process(exit_code=None, pid=42)
+        monitor = _Process(exit_code=None, pid=43)
         with mock.patch(
-                "wot_launcher.subprocess.Popen", return_value=game) as popen, \
+                "wot_launcher.subprocess.Popen",
+                side_effect=[game, monitor]) as popen, \
+                mock.patch("wot_launcher.subprocess.run"), \
                 mock.patch(
                     "core.wait_for_paired_player_exit",
                     return_value=(0, False)):
             self.assertFalse(self.window._run_game(
-                self.settings_dir, core.PORT_0_9_22, core.LOCAL_HOST,
+                game_root, core.PORT_0_9_22, core.LOCAL_HOST,
                 core.DEFAULT_SERVER_PORT, paired_worker=True))
 
-        environment = popen.call_args.kwargs["env"]
+        self.assertEqual(game_root, popen.call_args_list[0].kwargs["cwd"])
+        environment = popen.call_args_list[0].kwargs["env"]
         self.assertEqual(
-            "C:\\tools\\procdump.exe",
-            environment[wot_launcher.PROCDUMP_PATH_ENV])
-        self.assertEqual(
-            wot_launcher.error_reports.session_dump_path(
+            wot_launcher.error_reports.session_trail_path(
                 boundary, wot_launcher.error_reports.ROLE_VISIBLE_CLIENT),
-            environment[wot_launcher.CRASH_DUMP_PATH_ENV])
+            environment[wot_launcher.EXCEPTION_TRAIL_PATH_ENV])
+        self.assertEqual(
+            ng_client.procdump_monitor_command(
+                "C:\\tools\\procdump.exe", 42,
+                wot_launcher.error_reports.session_dump_path(
+                    boundary, wot_launcher.error_reports.ROLE_VISIBLE_CLIENT)),
+            popen.call_args_list[1].args[0])
+        self.assertEqual({}, self.window._dump_monitors)
 
     def test_game_receives_resolved_launcher_language(self):
         for language in ("zh", "en"):
@@ -2848,37 +2607,6 @@ class WindowTest(unittest.TestCase):
                     core.DEFAULT_SERVER_PORT)
             self.assertEqual(language, popen.call_args.kwargs[
                 "env"]["WOT_OFFLINE_UI_LANGUAGE"])
-
-    def test_online_0_9_22_starter_receives_dump_destination(self):
-        boundary = wot_launcher.error_reports.begin_session(
-            self.settings_dir,
-            session_id="20260823T120000Z-333333333333")
-        self.window._active_report_session = boundary
-        self.window._crash_capture_enabled = True
-        self.window._procdump_path = "C:\\tools\\procdump.exe"
-        game = _Process(exit_code=3, pid=42)
-        with mock.patch(
-                "wot_launcher.subprocess.Popen",
-                return_value=game) as popen, \
-                mock.patch("core.wait_for_game_exit") as wait_for_game_exit:
-            self.assertTrue(self.window._run_game(
-                self.settings_dir, core.PORT_0_9_22, core.LOCAL_HOST,
-                core.DEFAULT_SERVER_PORT))
-
-        self.assertEqual(
-            [core.worker_starter_executable(self.settings_dir),
-             core.PLAYER_ARGUMENT_0922],
-            popen.call_args.args[0])
-        environment = popen.call_args.kwargs["env"]
-        self.assertEqual(
-            "C:\\tools\\procdump.exe",
-            environment[wot_launcher.PROCDUMP_PATH_ENV])
-        self.assertEqual(
-            wot_launcher.error_reports.session_dump_path(
-                boundary, wot_launcher.error_reports.ROLE_VISIBLE_CLIENT),
-            environment[wot_launcher.CRASH_DUMP_PATH_ENV])
-        self.assertIn("exit code 3", self._log_text())
-        wait_for_game_exit.assert_not_called()
 
     def test_visible_crash_result_survives_a_simultaneous_close_request(self):
         game = _Process(exit_code=3, pid=42)
@@ -3095,35 +2823,6 @@ class WindowTest(unittest.TestCase):
         sleep.assert_called_once_with(
             core.WORKER_FAILURE_DRAIN_SECONDS_0922)
 
-    def test_join_does_not_start_the_game_for_an_unrelated_listener(self):
-        session = {
-            "client": core.PORT_0_9_22,
-            "host": "10.0.0.5",
-            "tcp_port": 28782,
-            "needs_server": False,
-            "mode": core.MODE_JOIN,
-        }
-        with mock.patch("core.install_client_mod", return_value=[]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    return_value=0), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated") as isolate, \
-                mock.patch("core.write_settings", return_value=[]), \
-                mock.patch("core.listener_status",
-                           return_value=core.LISTENER_OCCUPIED), \
-                mock.patch.object(self.window, "_run_game") as run_game:
-            self.window._run_session(self.settings_dir, session, "PlayerOne")
-
-        isolate.assert_called_once_with(self.settings_dir)
-        run_game.assert_not_called()
-        self.assertIn("not the server for this client", self._log_text())
-
     def test_0922_join_waits_for_a_compatible_server_before_starting(self):
         session = {
             "client": core.PORT_0_9_22,
@@ -3140,9 +2839,6 @@ class WindowTest(unittest.TestCase):
                 mock.patch(
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
                     return_value=0), \
-                mock.patch(
-                    "core.ensure_0_9_22_preferences_isolation",
-                    return_value="preferences isolated"), \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_FREE), \

@@ -23,6 +23,7 @@ import random
 import re
 import socket
 import socketserver
+import struct
 import subprocess
 import sys
 import threading
@@ -52,6 +53,7 @@ SERVER_STDLIB_MODULES = (
     re.__name__,
     socket.__name__,
     socketserver.__name__,
+    struct.__name__,
     subprocess.__name__,
     sys.__name__,
     threading.__name__,

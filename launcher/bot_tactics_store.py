@@ -14,9 +14,10 @@ import tempfile
 import zipfile
 
 try:
-    from . import core
+    from . import core, ng_client
 except ImportError:
     import core
+    import ng_client
 
 # Source checkout and packaged source tree share the same pure-data contract.
 _source = Path(__file__).resolve().parents[1] / 'src/res/scripts/client'
@@ -160,13 +161,14 @@ def graph_data(name):
     if source.is_file() and not getattr(sys, 'frozen', False):
         data = source.read_bytes()
     else:
-        archive = core.client_archive('0.9.22')
-        with zipfile.ZipFile(archive) as pack:
-            member = 'mods/configs/offline_lan_0922/navgraphs/' + filename
-            info = pack.getinfo(member)
-            if info.file_size > 40 * 1024 * 1024:
-                raise contract.TacticsError('Navigation member too large')
-            data = pack.read(member)
+        package = ng_client.package_root()
+        if package is None:
+            raise contract.TacticsError('Navigation resource missing')
+        source = (Path(package) / 'mods/configs/offline_lan_0922/navgraphs' /
+                  filename)
+        if source.stat().st_size > 40 * 1024 * 1024:
+            raise contract.TacticsError('Navigation member too large')
+        data = source.read_bytes()
     if hashlib.sha256(data).hexdigest() != contract.MAPS[name]['resource_sha256']:
         raise contract.TacticsError('Navigation resource hash mismatch')
     return json.loads(data)
@@ -175,7 +177,8 @@ def graph_data(name):
 def minimap_image(game_root, name):
     """Read original DDS on demand; never distribute Wargaming map artwork."""
     from PIL import Image
-    package = Path(game_root) / 'res/packages' / (name + '.pkg')
+    package = (Path(ng_client.original_client_root(game_root)) /
+               'res/packages' / (name + '.pkg'))
     with zipfile.ZipFile(package) as pack:
         names = [n for n in pack.namelist() if n.replace('\\', '/').lower().endswith('/mmap.dds')]
         if len(names) != 1 or pack.getinfo(names[0]).file_size > 32 * 1024 * 1024:

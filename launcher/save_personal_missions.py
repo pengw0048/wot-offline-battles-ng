@@ -255,7 +255,7 @@ def badge_catalogue(game_root):
         return values[0].value
 
     translator = None
-    path = os.path.join(status["path"], "res", "text", "LC_MESSAGES", "badge.mo")
+    path = os.path.join(core.original_root(status), "res", "text", "LC_MESSAGES", "badge.mo")
     if os.path.isfile(path):
         with open(path, "rb") as stream:
             translator = gettext.GNUTranslations(stream)

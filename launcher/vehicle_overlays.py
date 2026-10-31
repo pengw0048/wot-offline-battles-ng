@@ -529,7 +529,7 @@ def _require_target(game_root, require_closed=False, is_running=None):
         raise VehicleOverlayError(
             "Vehicle data editing requires the exact supported 0.9.22 client.")
     package_path = os.path.join(
-        status["path"], *SOURCE_PACKAGE.split("/"))
+        core.original_root(status), *SOURCE_PACKAGE.split("/"))
     if not os.path.isfile(package_path):
         raise VehicleOverlayError("The original scripts.pkg is missing.")
     if require_closed:
@@ -773,7 +773,7 @@ def list_vehicle_choices(game_root):
         nation = record["nation"]
         if nation not in translators:
             translators[nation] = _vehicle_translations(
-                status["path"], nation)
+                core.original_root(status), nation)
         label = _vehicle_label(record, translators[nation])
         choice = dict((key, record[key]) for key in (
             "nation", "vehicle", "member", "tags", "vehicleClass", "level"))
@@ -817,7 +817,7 @@ def list_gold_vehicles(game_root):
         nation = record["nation"]
         if nation not in translators:
             translators[nation] = _vehicle_translations(
-                status["path"], nation)
+                core.original_root(status), nation)
         vehicles.append({
             "nation": nation,
             "vehicle": record["vehicle"],

@@ -84,7 +84,7 @@ class ErrorReportTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.game = os.path.join(self.root, "game")
+        self.game = os.path.join(self.root, "instances", "player")
         os.makedirs(self.game)
         self.settings = os.path.join(self.root, "state", "launcher.json")
         self.settings_patch = mock.patch.object(
@@ -98,8 +98,7 @@ class ErrorReportTest(unittest.TestCase):
         self.addCleanup(self.server_log_patch.stop)
 
     def _game_log(self, role):
-        return os.path.join(
-            self.game, error_reports._GAME_LOG_FILENAMES[role])
+        return error_reports._game_log_path(self.game, role)
 
     @staticmethod
     def _write(path, payload, mode="wb"):
@@ -153,40 +152,39 @@ class ErrorReportTest(unittest.TestCase):
         ))
 
     def test_oversized_logs_trim_before_new_session_checkpoints(self):
-        roles = (error_reports.ROLE_VISIBLE_CLIENT,
-                 error_reports.ROLE_HIDDEN_WORKER,
-                 error_reports.ROLE_HIDDEN_WORKER_STARTER)
-        paths = [core.launcher_log_path()] + [self._game_log(r) for r in roles]
+        path = core.launcher_log_path()
         old = b"old line\n" * 20 + "recent 中文\n".encode("utf-8")
-        for path in paths:
-            self._write(path, old)
+        self._write(path, old)
         with mock.patch.object(error_reports, "LOG_MAX_BYTES", 100), \
                 mock.patch.object(error_reports, "LOG_RETAIN_BYTES", 40):
             session = error_reports.begin_session(
                 self.game, needs_worker=True, session_id=self.SESSION_1)
-        for path in paths:
-            with open(path, "rb") as stream:
-                tail = stream.read()
-            self.assertLessEqual(len(tail), 40)
-            self.assertTrue(tail.endswith("recent 中文\n".encode("utf-8")))
-            tail.decode("utf-8")
-            self._write(path, b"new session\n", "ab")
+        with open(path, "rb") as stream:
+            tail = stream.read()
+        self.assertLessEqual(len(tail), 40)
+        self.assertTrue(tail.endswith("recent 中文\n".encode("utf-8")))
+        tail.decode("utf-8")
+        self._write(path, b"new session\n", "ab")
         error_reports.finalize_session(session)
         payloads = self._archive(error_reports.create_report())
-        self.assertEqual(len(paths), len(payloads))
-        self.assertTrue(all(p == b"new session\n" for p in payloads.values()))
+        self.assertEqual(b"new session\n", payloads["launcher.log"])
 
-    def test_small_logs_and_unused_worker_logs_are_untouched(self):
+    def test_each_start_keeps_one_previous_python_log(self):
         visible = self._game_log(error_reports.ROLE_VISIBLE_CLIENT)
         worker = self._game_log(error_reports.ROLE_HIDDEN_WORKER)
-        self._write(visible, b"small\n")
-        self._write(worker, b"worker\n" * 30)
-        with mock.patch.object(error_reports, "LOG_MAX_BYTES", 100):
-            error_reports.begin_session(self.game, session_id=self.SESSION_1)
-        for path, expected in ((visible, b"small\n"),
-                               (worker, b"worker\n" * 30)):
-            with open(path, "rb") as stream:
-                self.assertEqual(expected, stream.read())
+        self._write(visible, b"first run\n")
+        self._write(worker, b"worker run\n")
+        error_reports.begin_session(self.game, session_id=self.SESSION_1)
+        self.assertFalse(os.path.exists(visible))
+        with open(visible + ".previous", "rb") as stream:
+            self.assertEqual(b"first run\n", stream.read())
+        with open(worker, "rb") as stream:
+            self.assertEqual(b"worker run\n", stream.read())
+
+        self._write(visible, b"second run\n")
+        error_reports.begin_session(self.game, session_id=self.SESSION_2)
+        with open(visible + ".previous", "rb") as stream:
+            self.assertEqual(b"second run\n", stream.read())
 
     def test_trimming_skips_symlinks_and_locked_files(self):
         target = os.path.join(self.root, "target.log")
@@ -215,10 +213,8 @@ class ErrorReportTest(unittest.TestCase):
     def test_single_player_report_contains_only_this_session_log_slices(self):
         visible = self._game_log(error_reports.ROLE_VISIBLE_CLIENT)
         worker = self._game_log(error_reports.ROLE_HIDDEN_WORKER)
-        starter = self._game_log(error_reports.ROLE_HIDDEN_WORKER_STARTER)
         self._write(visible, b"old visible\n")
         self._write(worker, b"old worker\n")
-        self._write(starter, b"old starter line that is much longer\n" * 8)
         self._write(os.path.join(self.game, "preferences.xml"), b"private")
         self._write(os.path.join(
             self.game, "mods", "configs", "offline_lan_0922",
@@ -228,12 +224,9 @@ class ErrorReportTest(unittest.TestCase):
             self.game, needs_worker=True, local_server=True,
             session_id=self.SESSION_1, started_at="start")
         server = error_reports.attach_server(session, dedicated=True)
-        error_reports.expect_worker_starter_reset(session)
-        self._write(visible, b"new visible\n", "ab")
-        self._write(worker, b"new worker\n", "ab")
-        replacement = starter + ".new"
-        self._write(replacement, b"new starter\n")
-        os.replace(replacement, starter)
+        # Each NG client recreates its python.log when it starts.
+        self._write(visible, b"new visible\n")
+        self._write(worker, b"new worker\n")
         self._write(server, b"new server\n")
         self.assertTrue(error_reports.finalize_session(
             session, ended_at="end"))
@@ -249,7 +242,6 @@ class ErrorReportTest(unittest.TestCase):
             "server.log": b"new server\n",
             "visible-client.log": b"new visible\n",
             "hidden-worker.log": b"new worker\n",
-            "hidden-worker-starter.log": b"new starter\n",
         }, payloads)
         self.assertEqual((), report["missing"])
         self.assertEqual((), report["notRun"])
@@ -737,13 +729,13 @@ class ErrorReportTest(unittest.TestCase):
         self.assertEqual(b"during session\n", payloads["server.log"])
 
     def test_unexpected_log_replacement_is_not_mistaken_for_this_session(self):
-        visible = self._game_log(error_reports.ROLE_VISIBLE_CLIENT)
-        self._write(visible, b"old visible\n")
+        launcher = core.launcher_log_path()
+        self._write(launcher, b"old launcher\n")
         session = error_reports.begin_session(
             self.game, session_id=self.SESSION_1, started_at="start")
-        replacement = visible + ".replacement"
+        replacement = launcher + ".replacement"
         self._write(replacement, b"unrelated replacement\n")
-        os.replace(replacement, visible)
+        os.replace(replacement, launcher)
         error_reports.finalize_session(session, ended_at="end")
 
         with self.assertRaisesRegex(

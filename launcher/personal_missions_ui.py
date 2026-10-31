@@ -13,7 +13,7 @@ class PersonalMissionsDialog(object):
     def __init__(self, owner):
         self.owner = owner
         self.slot_id = owner._save_slot_id
-        self.game_root = owner.game_root.get().strip() or None
+        self.game_root = owner._client_root() or None
         self.progress = progress_store.read_progress(self.slot_id, self.game_root)
         tk, ttk, tr = owner._tk, owner._ttk, owner._t
         self.window = tk.Toplevel(owner.save_dialog)
@@ -131,7 +131,7 @@ class BadgesDialog(object):
     def __init__(self, owner):
         self.owner = owner
         self.slot_id = owner._save_slot_id
-        self.game_root = owner.game_root.get().strip() or None
+        self.game_root = owner._client_root() or None
         self.catalogue = progress_store.badge_catalogue(self.game_root)
         fields = progress_store.read_account_fields(self.slot_id, self.game_root)
         self.owned = set(int(key) for key in fields["badges"])

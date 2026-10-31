@@ -95,7 +95,6 @@ class WindowReplayTests(unittest.TestCase):
         session.update(replay_path=path,needs_server=False)
         with mock.patch('core.install_client_mod',return_value=[]), \
              mock.patch('core.write_settings',return_value=[]), \
-             mock.patch('core.ensure_0_9_22_preferences_isolation',return_value='prefs'), \
              mock.patch('wot_launcher.error_reports.begin_session',return_value=None), \
              mock.patch('wot_launcher.vehicle_overlays.prepare_vehicle_profile',return_value={'profile':None,'installedMembers':0}), \
              mock.patch.object(w,'_enable_crash_capture'), \

@@ -122,9 +122,18 @@ class OriginalResources:
         self.close()
 
 
-def prepare(client, package):
+def prepare(client, package, overlays=()):
+    """Write the package mounts; ``overlays`` precede every other root.
+
+    The launcher's vehicle-data overlay is the only caller-owned root. It takes
+    the place the original application gives ``res_mods``.
+    """
     client = client.expanduser().resolve()
     package = package.expanduser().resolve()
+    overlays = [Path(path).expanduser().resolve() for path in overlays]
+    for overlay in overlays:
+        if not overlay.is_dir():
+            raise ValueError('Missing resource overlay directory: ' + str(overlay))
     identity = inspect_client(client)
     for required in ('bwclient_h.exe', 'res/resources.xml', 'engine-res/resources.xml',
                      'offline-res.json', 'offline-res/scripts/client/OfflineGarageEntry.py',
@@ -144,7 +153,7 @@ def prepare(client, package):
     # The pinned offline package precedes the originals like the retail mods
     # path; it owns no game.pyc or entity table.
     offline = json.loads((package / 'offline-res.json').read_text(encoding='utf-8'))
-    for path in ([native_resources, package / 'offline-res'] + originals +
+    for path in (overlays + [native_resources, package / 'offline-res'] + originals +
                  [package / 'res', package / 'engine-res']):
         ET.SubElement(paths, 'Path').text = path.as_posix()
     atomic_write(package / 'app_type.xml', content_metadata)
@@ -154,6 +163,7 @@ def prepare(client, package):
         'client_version': identity['version'], 'client_build': identity['build'],
         'original_client': str(client),
         'resource_paths': [str(path) for path in originals],
+        'overlay_paths': [str(path) for path in overlays],
         'resources_copied': False,
         'original_executable_used_at_runtime': False,
         'personality': 'game',

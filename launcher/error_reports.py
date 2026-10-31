@@ -43,7 +43,6 @@ ROLE_SERVER = "server"
 ROLE_LAUNCHER = "launcher"
 ROLE_VISIBLE_CLIENT = "visible-client"
 ROLE_HIDDEN_WORKER = "hidden-worker"
-ROLE_HIDDEN_WORKER_STARTER = "hidden-worker-starter"
 
 PRIMARY_ROLES = (
     ROLE_SERVER,
@@ -59,19 +58,15 @@ _SOURCE_ORDER = (
     ROLE_SERVER,
     ROLE_VISIBLE_CLIENT,
     ROLE_HIDDEN_WORKER,
-    ROLE_HIDDEN_WORKER_STARTER,
 )
-_GAME_LOG_FILENAMES = {
-    ROLE_VISIBLE_CLIENT: "offline-player-python.log",
-    ROLE_HIDDEN_WORKER: "offline-worker-python.log",
-    ROLE_HIDDEN_WORKER_STARTER: core.WORKER_FAILURE_LOG_FILENAME_0922,
-}
+# Each NG instance writes its own python.log and recreates it on every start.
+_GAME_LOG_FILENAME = "python.log"
+_GAME_LOG_ROLES = (ROLE_VISIBLE_CLIENT, ROLE_HIDDEN_WORKER)
 _ARCHIVE_FILENAMES = {
     ROLE_LAUNCHER: "launcher.log",
     ROLE_SERVER: "server.log",
     ROLE_VISIBLE_CLIENT: "visible-client.log",
     ROLE_HIDDEN_WORKER: "hidden-worker.log",
-    ROLE_HIDDEN_WORKER_STARTER: "hidden-worker-starter.log",
 }
 _DUMP_FILENAMES = {
     ROLE_VISIBLE_CLIENT: "visible-client.dmp",
@@ -459,10 +454,10 @@ def begin_session(game_root, needs_worker=False, local_server=False,
         }
     game_roles = [ROLE_VISIBLE_CLIENT]
     if needs_worker:
-        game_roles.extend((ROLE_HIDDEN_WORKER, ROLE_HIDDEN_WORKER_STARTER))
+        game_roles.append(ROLE_HIDDEN_WORKER)
     for role in game_roles:
-        path = os.path.join(game_root, _GAME_LOG_FILENAMES[role])
-        _trim_old_log(path)
+        path = _game_log_path(game_root, role)
+        _rotate_previous_log(path)
         sources[role] = _checkpoint(path, "game")
     session = {
         "schema": SESSION_SCHEMA,
@@ -501,25 +496,30 @@ def attach_server(session, dedicated=False):
     return path
 
 
-def expect_worker_starter_reset(session):
-    """Record that the launched native starter will delete its old log."""
-    if not _is_latest(session):
-        return False
-    source = session.get("sources", {}).get(ROLE_HIDDEN_WORKER_STARTER)
-    if source is None:
-        return False
-    source["resetExpected"] = True
-    _write_state(session)
-    return True
+def _rotate_previous_log(path):
+    """Keep one previous run; the client may truncate its log in place."""
+    try:
+        value = os.lstat(path)
+        if (_is_reparse_point(value) or stat.S_ISLNK(value.st_mode) or
+                not stat.S_ISREG(value.st_mode)):
+            return
+        os.replace(path, path + ".previous")
+    except (IOError, OSError):
+        pass
+
+
+def _game_log_path(game_root, role):
+    root = (game_root if role == ROLE_VISIBLE_CLIENT
+            else core.worker_root(game_root))
+    return os.path.join(root, _GAME_LOG_FILENAME)
 
 
 def _source_path(session, role, source):
     kind = source.get("kind")
     if kind == "launcher" and role == ROLE_LAUNCHER:
         return core.launcher_log_path()
-    if kind == "game" and role in _GAME_LOG_FILENAMES:
-        return os.path.join(
-            session["gameRoot"], _GAME_LOG_FILENAMES[role])
+    if kind == "game" and role in _GAME_LOG_ROLES:
+        return _game_log_path(session["gameRoot"], role)
     if kind == "launcher-server" and role == ROLE_SERVER:
         return core.server_log_path()
     if kind == "session-server" and role == ROLE_SERVER:

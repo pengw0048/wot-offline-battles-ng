@@ -67,6 +67,23 @@ class NativeClientResourcePaths(unittest.TestCase):
         self.assertFalse(state['original_executable_used_at_runtime'])
         self.assertEqual((self.package / 'app_type.xml').read_bytes(), (self.client / 'app_type.xml').read_bytes())
 
+    def test_launcher_overlay_precedes_every_package_root(self):
+        overlay = self.root / 'launcher/res_mods/0.9.22.0.1'
+        overlay.mkdir(parents=True)
+        with patch.object(prepare, 'inspect_client', return_value={'version': '0.9.22.0.1', 'build': '1513'}):
+            prepare.prepare(self.client, self.package, overlays=[overlay])
+        paths = [Path(node.text) for node in ET.parse(self.package / 'paths.xml').findall('Paths/Path')]
+        self.assertEqual(paths[:3], [overlay, self.package / 'native-res', self.package / 'offline-res'])
+        state = json.loads((self.package / 'original-client.json').read_text())
+        self.assertEqual(state['overlay_paths'], [str(overlay)])
+
+    def test_missing_overlay_preserves_previous_paths(self):
+        (self.package / 'paths.xml').write_text('previous configuration')
+        with patch.object(prepare, 'inspect_client', return_value={'version': '0.9.22.0.1', 'build': '1513'}):
+            with self.assertRaisesRegex(ValueError, 'Missing resource overlay'):
+                prepare.prepare(self.client, self.package, overlays=[self.root / 'absent'])
+        self.assertEqual((self.package / 'paths.xml').read_text(), 'previous configuration')
+
     def test_missing_authored_package_preserves_previous_paths(self):
         (self.package / 'paths.xml').write_text('previous configuration')
         (self.client / 'res/packages/hd.pkg').unlink()

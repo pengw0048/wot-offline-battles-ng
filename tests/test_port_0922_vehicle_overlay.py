@@ -23,7 +23,6 @@ from vehicle_overlay_store import (
 from lan_battle_server import (
     CLIENT_BUILD_0922, ClientHandler, PROTOCOL_VERSION,
     ThreadedTCPServer, VEHICLE_OVERLAY_CAPABILITY)
-import core as launcher_core
 import vehicle_overlays as launcher_vehicle_overlays
 
 
@@ -106,13 +105,7 @@ class VehicleOverlayStoreTest(unittest.TestCase):
     def test_launcher_and_server_capacity_limits_match(self):
         self.assertEqual(
             MAX_OVERLAY_MEMBERS,
-            launcher_core.MAX_OVERLAY_MEMBERS)
-        self.assertEqual(
-            MAX_OVERLAY_MEMBERS,
             launcher_vehicle_overlays.MAX_OVERLAY_MEMBERS)
-        self.assertEqual(
-            MAX_OVERLAY_MANIFEST_BYTES,
-            launcher_core.MAX_OVERLAY_MANIFEST_BYTES)
         self.assertEqual(
             MAX_OVERLAY_MANIFEST_BYTES,
             launcher_vehicle_overlays.MAX_OVERLAY_MANIFEST_BYTES)

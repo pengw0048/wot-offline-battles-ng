@@ -28,9 +28,10 @@ except ImportError:
     import packed_xml
 
 try:
-    from . import i18n, vehicle_overlays
+    from . import i18n, ng_client, vehicle_overlays
 except ImportError:
     import i18n
+    import ng_client
     import vehicle_overlays
 
 
@@ -432,7 +433,8 @@ def _component_roots(package_path, nation):
 
 
 def _resource_package_paths(game_root):
-    package_root = os.path.join(os.path.abspath(game_root), "res", "packages")
+    package_root = os.path.join(os.path.abspath(
+        ng_client.original_client_root(game_root)), "res", "packages")
     if not os.path.isdir(package_root):
         raise ArmorViewerError("The stock resource package folder is missing.")
     try:

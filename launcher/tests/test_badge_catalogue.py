@@ -9,6 +9,7 @@ import zipfile
 from unittest import mock
 
 import core
+import ng_client
 import save_ledger
 import save_personal_missions as missions
 import wot_launcher
@@ -68,7 +69,9 @@ class BadgeCatalogueTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.game = self.temp.name
-        patcher = mock.patch.dict(os.environ, {"APPDATA": ""})
+        patcher = mock.patch.dict(os.environ, {
+            "APPDATA": "",
+            ng_client.DATA_ROOT_ENV: os.path.join(self.game, "ng-data")})
         patcher.start()
         self.addCleanup(patcher.stop)
         self._write(core.GAME_EXECUTABLE, b"")
@@ -116,7 +119,7 @@ class BadgeCatalogueTests(unittest.TestCase):
             dialog.changed()
             self.assertTrue(dialog.save())
             self.assertEqual({"10"}, set(missions.read_account_fields(
-                "career", self.game)["badges"]))
+                "career", owner._client_root())["badges"]))
             dialog.close()
             self.assertTrue(owner.save_dialog.options["grabbed"])
             self.assertTrue(owner._open_account_badges())

@@ -1,30 +1,36 @@
-wot-0.9.22-offline-battles v0.10.1
+wot-0.9.22-offline-battles NG v0.10.1
 
 Supported client: Chinese HD World of Tanks 0.9.22.0.1 #1513 (32-bit).
 The launcher and bundled server require 64-bit Windows.
 
-Extract the complete ZIP into a new empty folder. Keep _internal and licenses
-beside wot-0.9.22-offline-battles.exe, run the launcher and select the game.
-Use the existing save and vehicle profile. An update does not require resetting
-saves, recordings or settings. Do not mix old and new launcher files or install
-another mod copy manually; the launcher installs its matching client payload.
+This launcher starts the independent NG client (bwclient_h.exe), not the
+original mod. It is in development and has not passed full gameplay acceptance.
 
-All LAN participants must update together and restart the room/server. A room
-explicitly hosted by the launcher remains open until Stop room or launcher exit;
-leaving one player client does not terminate the other players' room.
+Extract the complete ZIP into a new empty folder. Keep _internal and licenses
+beside wot-0.9.22-offline-battles-ng.exe, run the launcher and select the
+original game folder. The launcher never writes to that folder: it copies the
+bundled NG client into its own instances and mounts the original packages
+read-only. Do not install the original mod into the game folder for NG.
+
+Everything NG writes lives in %LOCALAPPDATA%\WoT-Offline-NG: launcher settings,
+saves, shop, vehicle profiles, error reports, and the player and hidden-worker
+instances with their own preferences.xml, python.log and replays. Saves and
+settings of the original-mod launcher are neither read nor changed, and both
+launchers can be installed side by side. The NG room uses TCP 28792.
+
+Only single player and replays are available. LAN rooms, joining a room and
+the Bot tactics editor are not supported by the NG client yet.
 
 Closing the visible single-player game also closes its hidden simulation worker
-and temporary server. Cleanup normally takes a few seconds and may wait longer
-while a recording finishes. The launcher itself stays open.
+and temporary server. The launcher itself stays open.
 
 Set replay recording to Off, Last or All in the game. Recordings are saved under
-replays/offline in the game folder. Open .wotlanreplay files from the launcher's
-Replay tab. Playback is forward 1x with a manual camera; pause, seeking, speed
+replays/offline in the player instance. Open .wotlanreplay files from the
+launcher's Replay tab. Playback is forward 1x with a manual camera; pause, seeking, speed
 controls and native .wotreplay export are not available. Retain the recording's
 original vehicle profile. Playback does not award battle rewards.
 
-Use the launcher's built-in vehicle editor and error-report controls. The player
-download includes START_SPIKE_PROFILE.bat for optional detailed profiling.
+Use the launcher's built-in vehicle editor and error-report controls.
 
 Customize save -> Coatings edits preset-style inventory, including hidden styles.
 Select one vehicle or all compatible vehicles, add copies or fill missing styles,

@@ -44,7 +44,7 @@ def catalogue(game_root):
             prices[_text(fields['name'])] = (_text(fields.get('notInShop'))
                 if fields.get('notInShop') is not None else 'false').lower() in ('true', '1')
         translation = gettext.NullTranslations()
-        path = os.path.join(status['path'], 'res', 'text', 'LC_MESSAGES', 'vehicle_customization.mo')
+        path = os.path.join(core.original_root(status), 'res', 'text', 'LC_MESSAGES', 'vehicle_customization.mo')
         if os.path.isfile(path):
             with open(path, 'rb') as stream:
                 translation = gettext.GNUTranslations(stream)
