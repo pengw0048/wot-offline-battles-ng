@@ -1266,6 +1266,11 @@ void applyOrders(BotAuthority& a, const Value& message) {
 
 // The manifest build of a fresh round: line-up rows, director, lanes, SPG plans and the native generation.
 std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& message) {
+    // Native failures carry no source position: name the round-start step that raised.
+    auto stage = [](const std::string& name, const auto& body) {
+        try { return body(); }
+        catch (const std::exception& e) { const std::string why = describe(e); PyErr_Clear(); throw p::Error("Bot round start " + name + ": " + why); }
+    };
     const std::string mode = normalizeSkillMode(at(message, "bot_skill_mode"));
     std::map<std::pair<std::int64_t, std::int64_t>, std::string> pins;
     for (const auto& raw : at(message, "bot_lineup").resolved().array) {
@@ -1287,12 +1292,12 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
     if (normalizeMapName(cs::read(p::value(graph, "map").get())) != map_name) throw p::Error("required navigation graph is missing for " + map_name);
     if (p::string(p::value(graph, "format").get()) != "offline-lan-0922-navgraph" || p::integral(graph, "version", -1) != 2)
         throw p::Error("unsupported baked navigation graph");
-    const Value baked_routes = defaultRoutes(graph);
-    validateRoutes(baked_routes);
+    const Value baked_routes = stage("baked routes", [&] { return defaultRoutes(graph); });
+    stage("route validation", [&] { validateRoutes(baked_routes); });
     seed->map = map_name;
     seed->graph = borrow(graph);
-    seed->hazards = shoreHazards(graph);
-    seed->routes = directorRoutes(map_name, baked_routes);
+    seed->hazards = stage("shore hazards", [&] { return shoreHazards(graph); });
+    seed->routes = stage("director routes", [&] { return directorRoutes(map_name, baked_routes); });
     const auto battle_seed = stableSeed(pyStr(pyInt(round_id) ? round_id : integer(0)) + "|" + map_name);
     const std::int64_t server_time_ms = std::max<std::int64_t>(0, std::int64_t(pyNumber(at(message, "server_time_ms"), 0.)));
     for (const auto& raw : at(message, "bots").resolved().array) {
@@ -1323,16 +1328,18 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
             auto pin = pins.find({*team, *slot});
             rating = pin != pins.end() ? ratingForSkill(pin->second) : resolveRating(mode, round_id, *team, *slot);
         }
-        seed->bots[bot_id] = installBot(b, *seed, raw, bot_id, vehicle_name, std::move(pair), rating, battle_seed, server_time_ms);
+        seed->bots[bot_id] = stage("Bot " + std::to_string(bot_id) + " " + vehicle_name, [&] {
+            return installBot(b, *seed, raw, bot_id, vehicle_name, std::move(pair), rating, battle_seed, server_time_ms);
+        });
     }
     // _prepare_user_routes and _prepare_initial_spg_positions with one round allocation seed.
     std::random_device device;
     const std::uint64_t allocation = (std::uint64_t(device()) << 32) ^ std::uint64_t(device());
     const std::string allocation_seed = std::to_string(allocation);
-    assignRoutes(*seed, map_name, allocation_seed);
+    stage("routes", [&] { assignRoutes(*seed, map_name, allocation_seed); });
     Value graph_value = object();
     for (const char* key : {"map", "game_version", "directions", "bounds", "bases"}) graph_value.object[key] = cs::read(p::value(graph, key).get());
-    prepareSpgPositions(*seed, map_name, graph_value, allocation_seed);
+    stage("SPG positions", [&] { prepareSpgPositions(*seed, map_name, graph_value, allocation_seed); });
     // _ensure_native_simulation: a new generation retires the previous native owner.
     seed->generation = ++a.generation;
     if (a.owner) {
@@ -1346,9 +1353,10 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
     Value outgoing = object();
     outgoing.object["type"] = text("bot_manifest");
     Value bots = array();
-    for (const auto& row : ordered) bots.array.push_back(manifestEntry(*row.second));
+    stage("manifest", [&] { for (const auto& row : ordered) bots.array.push_back(manifestEntry(*row.second)); });
     outgoing.object["bots"] = std::move(bots);
-    if (at(message, "human_ram_timeline").truth()) outgoing.object["player_collision_profiles"] = playerCollisionManifest(b, at(message, "players"));
+    if (at(message, "human_ram_timeline").truth())
+        outgoing.object["player_collision_profiles"] = stage("player collision profiles", [&] { return playerCollisionManifest(b, at(message, "players")); });
     a.profiles.clear();
     for (const auto& bot : seed->bots) {
         Value row = object();

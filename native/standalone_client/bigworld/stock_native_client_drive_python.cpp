@@ -104,7 +104,7 @@ void synchronizeStatus(const native_battle::Battle&b,double now){
     auto owner=owned(b);const auto anchor=native_battle::projectiles::serverClockAnchor(b);std::optional<double>estimated;if(anchor)estimated=anchor->first+std::max(0.,now-anchor->second)*1000.;owner->statuses.synchronize(*b.vehicles,now,estimated);
 }
 DriverAccess driverAccess(native_battle::Battle&b){
-    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=engineEntity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity is unavailable");if(!b.local->physics)throw p::Error("Native player effective physics are unavailable");installPlayer(b,entity.get(),*b.local->physics);}
+    auto owner=owned(b);if(!owner->player){auto*actor=b.vehicles->find("player:"+std::to_string(b.vehicles->local_player_id));if(!actor)throw p::Error("Native local actor is not installed");auto entity=b.entity(actor->engine_id);if(entity.get()==Py_None)throw p::Error("Native local entity is unavailable");if(!b.local->physics)throw p::Error("Native player effective physics are unavailable");installPlayer(b,entity.get(),*b.local->physics);}
     return {owner,owner->player.get(),&owner->player_contacts,&owner->publication};
 }
 void installPlayer(native_battle::Battle&b,PyObject*entity,const native_battle::local::DriveParams&params){
@@ -137,7 +137,7 @@ void died(Battle&b){if(b.replay)return;auto owner=dr::existing(b);if(owner&&owne
 // One visible player slice: world ingress, status, the native driver and its reliable input publications.
 void drive(Battle&b,double dt){
     auto owner=dr::owned(b);auto state=b.vehicles;const auto key="player:"+std::to_string(state->local_player_id);const auto found=state->actors.find(key);
-    if(found==state->actors.end()||!found->second||!found->second->has_current)return;auto entity=dr::engineEntity(found->second->engine_id);if(entity.get()==Py_None)return;
+    if(found==state->actors.end()||!found->second||!found->second->has_current)return;auto entity=b.entity(found->second->engine_id);if(entity.get()==Py_None)return;
     const double now=b.clock();owner->installActual(b,entity.get(),state);owner->peer_installer.synchronize(b,*state,*owner->peers);dr::synchronizeStatus(b,now);
     const auto anchor=dr::motionAnchor(b);owner->actual->frame(now,anchor?std::optional<dr::ID>{anchor->first}:std::nullopt,anchor?anchor->second:now);
     const auto levels=stock_native_client_survival::levels(b);owner->actual->environment(levels[0],levels[1],stock_native_client_critical::report(b).resolved().kind!=Value::Kind::Null);owner->actual->battleOver(b.result.resolved().kind!=Value::Kind::Null);
