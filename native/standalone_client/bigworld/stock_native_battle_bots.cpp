@@ -53,11 +53,15 @@ void diagnose(Battle& b, BotAuthority& a, stock_native_bot::Owner& o, double now
         if (found != previous.end() && std::hypot(at[0] - found->second[0], at[1] - found->second[1]) > 1.) ++moved;
         previous[key] = at;
     }
+    std::string unready;
+    for (const auto& entry : b.vehicles->actors)
+        if (!entry.second->tombstone && !entry.second->ready) unready += (unready.empty() ? "" : ",") + entry.first;
     auto stats = owner::statistics(o);
     p::Ref text(PyObject_Repr(stats.get()));
     log("BOTDIAG bots=" + std::to_string(bots) + " alive=" + std::to_string(alive) + " moved=" + std::to_string(moved) +
         " generated=" + std::to_string(a.generated) + " enqueued=" + std::to_string(a.enqueued) + " send_failed=" + std::to_string(a.send_failed) +
-        " fire_seen=" + std::to_string(b.projectiles ? b.projectiles->bot_fire_seen.size() : 0) + " stats=" + p::string(text.get()));
+        " fire_seen=" + std::to_string(b.projectiles ? b.projectiles->bot_fire_seen.size() : 0) + " draw_off_ready=" +
+        std::to_string(int(readyForDrawOff(b))) + " unready=" + unready + " stats=" + p::string(text.get()));
 }
 OwnerRef existing(const Battle& b) {
     const auto* a = authority(b);
