@@ -1,24 +1,33 @@
 """Read-only preflight and child-environment isolation for offline replays.
 
 Executed by the launcher session thread, never a Tk or game render callback.
-This reads JSON/gzip only; it does not load pickle or issue game commands.
+This reads the native tagged/gzip stream without issuing game commands.
 """
 from __future__ import annotations
 import gzip
-import json
+import importlib
 import math
 import os
+import struct
 import time
 
 FILE_ENV = 'WOT_OFFLINE_REPLAY_FILE'
 AUTO_ENV = 'WOT_OFFLINE_REPLAY_AUTOSTART'
-MAX_LINE = 2 * 1024 * 1024
+MAGIC = b'WOTLANR2'
+RECORD_HEADER = struct.Struct('<BdI')
+MAX_RECORD = 16 * 1024 * 1024
 MAX_TOTAL = 768 * 1024 * 1024
 MAX_DURATION = 14400.0
-WIRE_TYPES = frozenset((
-    'battle_live', 'snapshot', 'events', 'bot_observation', 'team_chat',
-    'team_command', 'team_command_terminal', 'player_destructible_contact_result',
-    'landing_observation_result'))
+
+
+def _wire_modules():
+    # The packaged server already carries the authoritative stdlib-only codec.
+    try:
+        from . import core
+    except ImportError:
+        import core
+    schema = core._battle_wire_schema()
+    return schema, importlib.import_module(type(schema).__module__)
 
 
 def checked_path(path):
@@ -47,26 +56,41 @@ def validate(path, progress=None, cancelled=None):
     count = total = 0
     stamp = 0.0
     next_log = time.monotonic() + 2
-    def bad_constant(unused):
-        raise ValueError('The replay contains a non-finite JSON value.')
+    schema, codec = _wire_modules()
     with gzip.open(path, 'rb') as stream:
-        def row():
+        def read(size):
             nonlocal total
             if cancelled and cancelled():
                 raise ValueError('Replay startup was cancelled.')
-            raw = stream.readline(MAX_LINE + 1)
-            if not raw or len(raw) > MAX_LINE:
-                raise ValueError('The replay is truncated or has an oversized record.')
+            raw = stream.read(size)
             total += len(raw)
+            if len(raw) != size:
+                raise ValueError('The replay is truncated.')
             if total > MAX_TOTAL:
                 raise ValueError('The replay exceeds the decompressed size limit.')
-            result = json.loads(raw.decode('utf-8'), parse_constant=bad_constant)
-            if not isinstance(result, dict):
-                raise ValueError('Invalid replay record.')
-            return result
-        first = row()
-        h = first.get('data')
-        if (first.get('type') != 'header' or not isinstance(h, dict) or
+            return raw
+
+        if read(len(MAGIC)) != MAGIC:
+            raise ValueError('This replay uses an unsupported format; the NG client requires WOTLANR2.')
+
+        def row():
+            kind, moment, size = RECORD_HEADER.unpack(read(RECORD_HEADER.size))
+            if size > MAX_RECORD:
+                raise ValueError('The replay has an oversized record.')
+            payload = read(size)
+            try:
+                if kind in (4, 5):
+                    value = schema.decode(payload)
+                else:
+                    value, end = codec._read_any(payload, 0)
+                    if end != len(payload):
+                        raise ValueError('Trailing bytes in a replay value.')
+            except (ValueError, TypeError, IndexError, KeyError, struct.error, RecursionError) as error:
+                raise ValueError('The replay contains an invalid binary record: %s' % error) from error
+            return kind, moment, value
+
+        first, unused, h = row()
+        if (first != 0 or not isinstance(h, dict) or
                 h.get('magic') != 'WOT_OFFLINE_REPLAY' or h.get('schema') != 1 or
                 h.get('client') != '0.9.22.0.1-cn-1513'):
             raise ValueError('This is not a supported #1513 offline replay.')
@@ -84,21 +108,19 @@ def validate(path, progress=None, cancelled=None):
             if a != b or None in a:
                 raise ValueError('The replay initial %s lineup is incomplete.' % kind)
         while True:
-            value = row()
-            t = value.get('t')
-            if (isinstance(t, bool) or not isinstance(t, (int, float)) or
-                    not math.isfinite(t) or not stamp <= t <= MAX_DURATION):
+            kind, t, data = row()
+            if not math.isfinite(t) or not stamp <= t <= MAX_DURATION:
                 raise ValueError('The replay timestamps are invalid.')
             stamp = float(t)
-            kind = value.get('type')
-            if kind == 'end':
-                if value.get('records') != count or stream.read(1):
+            if kind == 3:
+                if not isinstance(data, dict) or data.get('records') != count or stream.read(1):
                     raise ValueError('The replay footer/count is invalid.')
                 break
-            data = value.get('data')
-            if (kind not in ('wire', 'local') or not isinstance(data, dict) or
-                    (kind == 'wire' and data.get('type') not in WIRE_TYPES)):
+            if kind not in (1, 2, 4, 5) or not isinstance(data, dict):
                 raise ValueError('The replay contains an unsupported gameplay record.')
+            # NativeReader filters non-playback wire messages and unmerged raw
+            # replica deltas. Both still count in the writer's terminal record.
+            # Replica admission/merging remains the native reader's owner.
             count += 1
             now = time.monotonic()
             if progress and now >= next_log:

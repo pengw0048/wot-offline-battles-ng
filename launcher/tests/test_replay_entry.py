@@ -3,6 +3,7 @@ import copy
 import gzip
 import json
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,10 +23,28 @@ def write_replay(path, n=2, rows=None, header=None):
             bots=[dict(id=i+2,alive=True,x=3.,y=0.,z=5.) for i in range(n)]))
     body=rows if rows is not None else [dict(type='local',t=.1,data={'position':[1.,2.,3.]}),
         dict(type='wire',t=.2,data={'type':'snapshot'}),dict(type='end',t=.3,records=2)]
-    with gzip.open(str(path),'wb') as f:
-        for row in [dict(type='header',data=h)]+body:
-            f.write((json.dumps(row)+'\n').encode('utf8'))
+    kinds = {'header': 0, 'wire': 1, 'local': 2, 'end': 3}
+    records = [(0, 0., h)]
+    records += [(kinds[row['type']], row['t'],
+                 dict((k, v) for k, v in row.items() if k not in ('type', 't'))
+                 if row['type'] == 'end' else row['data']) for row in body]
+    write_records(path, records)
     return str(path)
+
+
+def write_records(path, records):
+    unused, codec = replay_launch._wire_modules()
+    with gzip.open(str(path), 'wb') as stream:
+        stream.write(replay_launch.MAGIC)
+        for kind, stamp, value in records:
+            payload = bytearray()
+            if isinstance(value, bytes):
+                payload += value
+            else:
+                codec._any(payload, value, 'replay')
+            stream.write(replay_launch.RECORD_HEADER.pack(kind, stamp, len(payload)))
+            stream.write(payload)
+
 
 class PreflightTests(unittest.TestCase):
     def setUp(self):
@@ -45,14 +64,64 @@ class PreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):replay_launch.validate(self.path)
     def test_native_extension_rejected(self):
         with self.assertRaises(ValueError):replay_launch.checked_path(self.path.replace('.wotlanreplay','.wotreplay'))
-    def test_no_rewards_in_stream(self):
+    def test_non_playback_wire_frames_are_counted_and_not_executed(self):
         write_replay(self.path,rows=[dict(type='wire',t=1.,data={'type':'battle_receipt'}),dict(type='end',t=2.,records=1)])
-        with self.assertRaises(ValueError):replay_launch.validate(self.path)
+        self.assertEqual(1, replay_launch.validate(self.path)['records'])
+    def test_legacy_json_is_rejected_before_native_reader_start(self):
+        with gzip.open(self.path, 'wb') as stream:
+            stream.write(b'{"type":"header"}\n')
+        with self.assertRaisesRegex(ValueError, 'requires WOTLANR2'):
+            replay_launch.validate(self.path)
+    def header(self):
+        with gzip.open(self.path, 'rb') as stream:
+            stream.read(len(replay_launch.MAGIC))
+            unused, unused2, size = replay_launch.RECORD_HEADER.unpack(stream.read(13))
+            return replay_launch._wire_modules()[1]._read_any(stream.read(size), 0)[0]
+    def test_schema_and_raw_frames_are_supported(self):
+        schema, unused = replay_launch._wire_modules()
+        frame = schema.encode({'type': 'leave'})
+        write_records(self.path, [(0, 0., self.header()), (4, .1, frame),
+                                  (5, .2, frame), (3, .3, {'records': 2})])
+        self.assertEqual(2, replay_launch.validate(self.path)['records'])
+    def test_large_native_record_uses_sixteen_mib_limit(self):
+        unused, codec = replay_launch._wire_modules()
+        overhead = bytearray()
+        codec._any(overhead, {'value': ''}, 'replay')
+        value = {'value': 'x' * (replay_launch.MAX_RECORD - len(overhead))}
+        write_records(self.path, [(0, 0., self.header()), (2, .1, value),
+                                  (3, .2, {'records': 1})])
+        self.assertEqual(1, replay_launch.validate(self.path)['records'])
+    def test_oversized_record_is_rejected_before_allocation(self):
+        with gzip.open(self.path, 'wb') as stream:
+            stream.write(replay_launch.MAGIC + struct.pack('<BdI', 0, 0., replay_launch.MAX_RECORD + 1))
+        with self.assertRaisesRegex(ValueError, 'oversized'):
+            replay_launch.validate(self.path)
+    def test_unknown_kind_and_invalid_binary_payload_are_rejected(self):
+        header = self.header()
+        for kind, value in ((6, {}), (2, b'\xff'), (4, b'bad frame'), (5, b'bad frame')):
+            write_records(self.path, [(0, 0., header), (kind, .1, value), (3, .2, {'records': 1})])
+            with self.assertRaises(ValueError):
+                replay_launch.validate(self.path)
+    def test_trailing_data_and_nonfinite_timestamp_are_rejected(self):
+        header = self.header()
+        for stamp in (float('nan'), float('inf'), -1.):
+            write_records(self.path, [(0, 0., header), (2, stamp, {}), (3, 1., {'records': 1})])
+            with self.assertRaises(ValueError):
+                replay_launch.validate(self.path)
+        write_replay(self.path)
+        with gzip.open(self.path, 'ab') as stream:
+            stream.write(b'extra')
+        with self.assertRaises(ValueError):
+            replay_launch.validate(self.path)
     def test_corrupt_gzip(self):
         b=bytearray(Path(self.path).read_bytes());b[-8]^=1;Path(self.path).write_bytes(b)
         with self.assertRaises((ValueError, OSError, EOFError)):replay_launch.validate(self.path)
     def test_user_can_cancel_before_game_start(self):
         with self.assertRaisesRegex(ValueError,'cancelled'):replay_launch.validate(self.path,cancelled=lambda:True)
+    def test_total_decompressed_limit(self):
+        with mock.patch.object(replay_launch, 'MAX_TOTAL', 64):
+            with self.assertRaisesRegex(ValueError, 'decompressed size'):
+                replay_launch.validate(self.path)
     def test_environment_does_not_leak_back_to_normal_play(self):
         original=dict(OTHER='kept',WOT_OFFLINE_REPLAY_FILE='old',WOT_OFFLINE_REPLAY_AUTOSTART='1')
         normal=replay_launch.child_environment(original)
