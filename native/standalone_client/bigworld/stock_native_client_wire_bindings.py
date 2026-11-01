@@ -1,4 +1,5 @@
 """Move the pinned LAN client transport from NDJSON lines to binary battle frames."""
+import ast
 
 PRELUDE = '''
 
@@ -63,7 +64,74 @@ EDITS = (
 
 
 def client(source):
-    return _apply(source, EDITS, 'LAN transport') + TRAILER
+    return _retire_python_sender(_apply(source, EDITS, 'LAN transport') + TRAILER)
+
+
+def _replace_method(source, name, replacement):
+    module = ast.parse(source)
+    classes = [node for node in module.body
+               if isinstance(node, ast.ClassDef) and node.name == 'LANClient']
+    methods = [node for node in classes[0].body
+               if isinstance(node, ast.FunctionDef) and node.name == name] if len(classes) == 1 else []
+    if len(methods) != 1 or methods[0].decorator_list:
+        raise ValueError('Pinned LAN transport method changed: ' + name)
+    method = methods[0]
+    members = classes[0].body
+    position = members.index(method)
+    following = members[position + 1:] or module.body[module.body.index(classes[0]) + 1:]
+    end = min([following[0].lineno] + [node.lineno for node in getattr(following[0], 'decorator_list', [])]) - 1 if following else len(source.splitlines())
+    lines = source.splitlines(True)
+    return ''.join(lines[:method.lineno - 1]) + replacement + ''.join(lines[end:])
+
+
+def _retire_python_sender(source):
+    # No generated caller starts a Python sender. Remove its implementation and
+    # lifecycle state so new producers cannot mistake its event for a consumer.
+    source = _replace_method(source, '_sender_worker', '')
+    source = _replace_method(source, '_send_payload', '')
+    edits = (
+        ('                sent = self._send_payload(payload, sock, generation)\n'
+         '                if sent is not True:\n'
+         '                    return sent\n', '                sock.sendall(payload)\n', 1),
+        ('    while isinstance(sock, _NativeSocket):\n', '    while True:\n', 1),
+        ('                    self._poll_callback is None and\n'
+         '                    self._sender_thread is None):\n',
+         '                    self._poll_callback is None):\n', 1),
+        ('            sender_thread = self._sender_thread\n', '', 1),
+        ('            receive_thread = self.thread\n', '            transport_thread = self.thread\n', 1),
+        ('        for worker in (sender_thread, receive_thread):\n'
+         '            if worker is not None and worker is not current:\n'
+         '                try:\n'
+         '                    worker.join(SENDER_JOIN_TIMEOUT)\n'
+         '                except Exception:\n'
+         '                    pass\n',
+         '        if transport_thread is not None and transport_thread is not current:\n'
+         '            try:\n'
+         '                transport_thread.join(TRANSPORT_JOIN_TIMEOUT)\n'
+         '            except Exception:\n'
+         '                pass\n', 1),
+        ('                if (sender_thread is not None and\n'
+         '                        self._sender_thread is sender_thread):\n'
+         "                    is_alive = getattr(sender_thread, 'is_alive', None)\n"
+         '                    if is_alive is None:\n'
+         '                        is_alive = sender_thread.isAlive\n'
+         '                    if not is_alive():\n'
+         '                        self._sender_thread = None\n', '', 1),
+        ('        self._sender_thread = None\n', '', 1),
+        ('        self._outbound_event = threading.Event()\n', '', 1),
+        ('        self._outbound_event.clear()\n', '', 1),
+        ("            self._recv_buffer = u''\n", '', 2),
+        ("        self._recv_buffer = u''\n", '', 1),
+        ('    if owned:\n        self._outbound_event.set()\n', '', 1),
+        ('        self._outbound_event.set()\n', '', 3),
+        ('SENDER_JOIN_TIMEOUT = 0.1\n', 'TRANSPORT_JOIN_TIMEOUT = 0.1\n', 1),
+        ('SEND_STALL_TIMEOUT = 5.0\n', '', 1),
+    )
+    source = _apply(source, edits, 'retired Python sender')
+    for name in ('_sender_worker', '_sender_thread', '_outbound_event', '_send_payload', '_recv_buffer', 'SENDER_JOIN_TIMEOUT', 'SEND_STALL_TIMEOUT'):
+        if name in source:
+            raise ValueError('Generated native transport retained ' + name)
+    return source
 
 
 REPLAY_EDITS = (
@@ -78,10 +146,17 @@ REPLAY_EDITS = (
 )
 TRANSPORT_EDITS = (
     ('from gui.mods.offline_lan_0922 import offline_replay, replay_reader, replay_resources\n',
-     'from gui.mods.offline_lan_0922 import offline_replay, replay_reader, replay_resources\n'
-     'from gui.mods.offline_lan_0922 import native_replay\n', 1),
+     'from gui.mods.offline_lan_0922 import offline_replay, native_replay, replay_resources\n', 1),
     ("        reader_factory = kwargs.pop('replay_reader_factory', replay_reader.ProcessReader)\n",
      "        reader_factory = kwargs.pop('replay_reader_factory', native_replay.NativeReader)\n", 1),
+    ('            except replay_reader.Pending:\n', '            except native_replay.Pending:\n', 1),
+    ('        self._replay_reader_logged = False\n', '', 1),
+    ("            if not self._replay_reader_logged and getattr(self.reader,'pid',None):\n"
+     '                self._replay_reader_logged=True\n'
+     "                offline_replay.log('play_reader pid=%s isolated=True interpolation=True' % self.reader.pid)\n", '', 1),
+    ('            # Deliver ordered original records. Main-thread decode has already\n'
+     '            # happened in the reader process; native application remains here.\n',
+     '            # Deliver ordered records decoded by the native reader.\n', 1),
 )
 
 
@@ -95,7 +170,28 @@ def _apply(source, edits, label):
 
 
 def offline_replay(source):
-    return _apply(source, REPLAY_EDITS, 'replay recorder')
+    source = _apply(source, REPLAY_EDITS, 'replay recorder')
+    # NativeRecorder/NativeReader own the binary replay format. Keep publication
+    # and finishing callbacks used by native recording, but retire the old
+    # gzip/NDJSON implementations and the imports used only by those classes.
+    module = ast.parse(source)
+    names = ('Recorder', 'Reader', '_json_line')
+    spans = []
+    for name in names:
+        matches = [node for node in module.body
+                   if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name == name]
+        if len(matches) != 1 or matches[0].decorator_list:
+            raise ValueError('Pinned legacy replay declaration changed: ' + name)
+        node = matches[0]
+        following = module.body[module.body.index(node) + 1:]
+        spans.append((node.lineno - 1, following[0].lineno - 1 if following else len(source.splitlines())))
+    lines = source.splitlines(True)
+    for start, end in sorted(spans, reverse=True):
+        del lines[start:end]
+    source = ''.join(lines)
+    return _apply(source, tuple(('import ' + name + '\n', '', 1)
+                               for name in ('datetime', 'gzip', 'time', 'uuid')) +
+                  (('MAX_LINE = 2 * 1024 * 1024\n', '', 1),), 'retired replay process')
 
 
 def replay_transport(source):

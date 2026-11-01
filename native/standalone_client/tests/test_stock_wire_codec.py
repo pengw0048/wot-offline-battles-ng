@@ -268,7 +268,9 @@ for name in ('gui', 'gui.mods'):
 package = types.ModuleType('gui.mods.offline_lan_0922')
 package.__path__ = [sys.argv[3], root + '/gui/mods/offline_lan_0922']
 sys.modules[package.__name__] = package
+sys.modules['offline_client_lifecycle_native'] = types.ModuleType('offline_client_lifecycle_native')
 from gui.mods.offline_lan_0922 import native_replay, offline_replay
+assert not hasattr(offline_replay, 'Recorder') and not hasattr(offline_replay, 'Reader')
 clock = [100.0]
 header = {'welcome': {'type': u'welcome'}, 'start': {'type': u'battle_start', 'round_id': 3},
           'snapshot': {'type': u'snapshot', 'round_id': 3, 'players': [], 'bots': []}, 'config': {u'map': u'33_fjord'},
@@ -322,8 +324,11 @@ class NativeReplay(unittest.TestCase):
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='wire-replay-') as folder:
             folder = Path(folder)
-            (folder / 'pkg').mkdir()
-            (folder / 'pkg/native_replay.py').write_text((ROOT / 'bigworld/stock_native_replay.py').read_text())
+            sys.path.insert(0, str(ROOT / 'bigworld'))
+            from prepare_offline_fork import NATIVE_MODULE_ROOT, RUNTIME_ROOT, stage_runtime
+            stage_runtime(Path(fork), folder / 'prepared')
+            runtime = folder / 'prepared' / RUNTIME_ROOT
+            self.assertFalse(list((folder / 'prepared').rglob('*.wotmod')))
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                             '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
                             '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
@@ -335,7 +340,7 @@ class NativeReplay(unittest.TestCase):
             events = next(m for m in samples() if m['type'] == 'events')
             (folder / 'events.json').write_text(json.dumps(events))
             run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder),
-                                  str(Path(fork) / 'src/res/scripts/client'), str(folder / 'pkg'),
+                                  str(runtime / 'scripts/client'), str(runtime / NATIVE_MODULE_ROOT),
                                   str(folder / 'replays'), str(folder / 'events.json')],
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

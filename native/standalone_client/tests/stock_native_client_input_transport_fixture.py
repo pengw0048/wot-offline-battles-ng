@@ -74,7 +74,10 @@ def client(sock):
 
 
 live = client(lan._NativeSocket('127.0.0.1', port, 2.))
-assert live._sender_thread is None
+assert not hasattr(live, '_sender_thread') and not hasattr(live, '_outbound_event')
+assert not hasattr(live, '_recv_buffer')
+assert not hasattr(lan.LANClient, '_sender_worker')
+assert not hasattr(lan.LANClient, '_send_payload')
 
 
 def sent(kind, callback, preceding=()):
@@ -121,7 +124,9 @@ messages.append(dict(type='projectile_resolve', round_id=1, authority_epoch=7, p
 for message in messages:
     sent(message['type'], lambda: native.send(live, message))
 assert len(received) == 9 and not any(value['type'] == 'ping' for value in received)
-live.sock.close()
+live.stop()
+live.stop()
+assert live.sock is None and not live.running and live.phase == 'disconnected'
 assert closed.wait(3.) and not errors, errors
 listener.close()
 
@@ -148,5 +153,20 @@ for injected in (False, True):
     assert failed._outbound_queue == [] and failed._outbound_bytes == 0
     assert failed.sock is None and not failed.running and not failed.connected and socket_owner.closed
     assert native.send(failed, messages[-1]) is False
+
+# A retired generation neither drains nor clears its replacement's admitted FIFO.
+replacement = FailingSocket()
+current = client(replacement)
+current._transport_generation = 2
+current._outbound_queue = [(1, messages[0], 1)]
+current._outbound_bytes = 1
+old = FailingSocket()
+current._release_native_transport(1, old)
+current._flush_native_outbound(1)
+assert old.closed and current.sock is replacement and current.running and current.connected
+assert len(current._outbound_queue) == 1 and current._outbound_bytes == 1
+current.stop()
+current.stop()
+assert replacement.closed and not current.running and current._outbound_queue == []
 
 print('Eight native producers acknowledged over TCP without ping; failed sends cannot retain a queued launch')

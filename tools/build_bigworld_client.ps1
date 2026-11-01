@@ -246,33 +246,6 @@ print('Licensed SDK input extracted: %d files' % len(members))
     @{ revision = $OfflineForkRevision } | ConvertTo-Json | Set-Content -LiteralPath `
         (Join-Path $OfflineForkRoot "fork-source.json") -Encoding utf8NoBOM
 
-    # The unchanged recorder opens its complete release archive from disk.
-    # Resource mounts alone cannot supply the bundled child-process runtime.
-    $OfflineForkReleaseArchive = Join-Path $WorkRoot "offline-fork-release.zip"
-    Invoke-WebRequest -Uri "https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/download/v0.10.1/wot-0.9.22-offline-battles-0.10.1-Windows-x64.zip" -OutFile $OfflineForkReleaseArchive
-    @'
-import io
-from pathlib import Path
-import sys, zipfile
-source, release = Path(sys.argv[1]), Path(sys.argv[2])
-package = 'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod'
-client_member = '_internal/client/0.9.22.zip'
-mod_member = 'mods/0.9.22.0.1/' + package
-with zipfile.ZipFile(release) as outer:
-    if outer.namelist().count(client_member) != 1:
-        raise ValueError('The pinned release must contain one client archive')
-    with zipfile.ZipFile(io.BytesIO(outer.read(client_member))) as client:
-        if client.namelist().count(mod_member) != 1:
-            raise ValueError('The pinned client must contain one matching gameplay archive')
-        payload = client.read(mod_member)
-(source / 'dist').mkdir()
-(source / 'dist' / package).write_bytes(payload)
-print('Staged the pinned complete gameplay archive for recorder preparation')
-'@ | & python - $OfflineForkRoot $OfflineForkReleaseArchive
-    if ($LASTEXITCODE -ne 0) {
-        throw "The pinned offline recorder archive could not be prepared."
-    }
-
     # The pinned source predates the current SDK's API deprecations and the
     # standard library's nodiscard annotations. Keep /WX for other diagnostics.
     $CompilerOptions = Join-Path $EngineRoot "build\cmake\BWCompilerAndLinkerOptions.cmake"

@@ -10,6 +10,24 @@ SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
 
 FIXTURE = r'''
 import battle_feedback_test as native
+# Native install takes over the stock callable directly, including modules
+# imported before install, and restores all mutations on repeated teardown.
+import sys,types
+original=lambda *args:'stock'
+replacement=lambda *args:'native'
+other=lambda *args:'unrelated'
+mover=types.ModuleType('mover_alias_fixture');mover.getCollidableEntities=original
+reader=types.ModuleType('reader_alias_fixture');reader.getCollidableEntities=original
+unrelated=types.ModuleType('unrelated_alias_fixture');unrelated.getCollidableEntities=other
+sys.modules[mover.__name__]=mover;sys.modules[reader.__name__]=reader;sys.modules[unrelated.__name__]=unrelated
+native.aliases(mover,original,replacement)
+assert mover.getCollidableEntities is replacement and reader.getCollidableEntities is replacement
+assert unrelated.getCollidableEntities is other
+native.restore_aliases();native.restore_aliases()
+assert mover.getCollidableEntities is original and reader.getCollidableEntities is original
+assert unrelated.getCollidableEntities is other
+for module in (mover,reader,unrelated):del sys.modules[module.__name__]
+print('Native stock query alias takeover and idempotent restoration passed')
 class O(object):
  def __init__(self,**kw):self.__dict__.update(kw)
 class Legacy(object):

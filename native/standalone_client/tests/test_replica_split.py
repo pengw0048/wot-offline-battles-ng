@@ -32,13 +32,21 @@ def merge(model, message):
     return model
 
 
-def comparable(row, kind):
+def comparable(row, kind, contracts=()):
     excluded = COUNTDOWN_NAMES + (PLAYER_OWNER_NAMES if kind == 'player' else ())
     out = dict((k, v) for k, v in row.items() if k not in excluded)
     if isinstance(out.get('equipment_states'), list):
         out['equipment_states'] = [dict((k, v) for k, v in item.items()
                                         if k not in EQUIPMENT_COUNTDOWN_NAMES)
                                    for item in out['equipment_states']]
+        # The native receiver materializes the wire's Bot contract indexes.
+        # Compare complete contracts on both sides without dropping any fields.
+        if kind == 'bot':
+            for item in out['equipment_states']:
+                if type(item.get('equipment')) is int:
+                    index = item['equipment']
+                    assert 0 <= index < len(contracts), 'Unavailable Bot equipment contract'
+                    item['equipment'] = contracts[index]
     return out
 
 
@@ -76,12 +84,13 @@ class _Stream(unittest.TestCase):
 
     def assertMerged(self, message, model):
         expected = {}
+        contracts = message.get('bot_equipment_contracts', ())
         for row in message['players']:
             if row['id'] != self.own:
-                expected[('player', row['id'])] = comparable(row, 'player')
+                expected[('player', row['id'])] = comparable(row, 'player', contracts)
         for row in message['bots']:
-            expected[('bot', row['id'])] = comparable(row, 'bot')
-        got = dict((key, comparable(row, key[0])) for key, row in model.items())
+            expected[('bot', row['id'])] = comparable(row, 'bot', contracts)
+        got = dict((key, comparable(row, key[0], contracts)) for key, row in model.items())
         self.assertEqual(got, expected)
 
 class ReplicaSplit(_Stream):

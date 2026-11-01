@@ -16,6 +16,10 @@ _KINDS = {'wire': WIRE, 'local': LOCAL}
 _NAMES = {WIRE: 'wire', LOCAL: 'local', END: 'end'}
 
 
+class Pending(Exception):
+    """An injected reader has no next record ready yet."""
+
+
 class NativeRecorder(object):
     """Records local state from the main thread; the receive thread records every wire frame."""
 

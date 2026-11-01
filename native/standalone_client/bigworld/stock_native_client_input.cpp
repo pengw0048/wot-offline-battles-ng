@@ -95,9 +95,8 @@ bool enqueue(PyObject*client,PyObject*message){
         if(PyList_GET_SIZE(queue.get())>=limits.queue_messages||bytes+std::int64_t(frozen.bytes)>limits.queue_bytes)return false;
         const auto seq=p::integral(client,"_outbound_seq")+1;auto seq_value=p::integer(seq),size=p::integer(frozen.bytes);p::Ref item(PyTuple_Pack(3,seq_value.get(),frozen.value.get(),size.get()));p::append(queue.get(),item);attr(client,"_outbound_seq",seq_value);attr(client,"_outbound_bytes",p::integer(bytes+std::int64_t(frozen.bytes)));
     }
-    auto event=p::value(client,"_outbound_event");p::Ref empty(PyTuple_New(0));p::call(event.get(),"set",empty.get());
     // The visible transport has no Python sender thread. Hand the FIFO to its
-    // native sender now; setting the old event alone waits for the next ping.
+    // native sender now; there is no intermediate wake event or polling loop.
     try {
         p::Ref args(PyTuple_Pack(1,generation.get()));p::call(client,"_flush_native_outbound",args.get());
     } catch (const std::exception&) {

@@ -347,6 +347,24 @@ PyObject* teamCommandTargetHook(PyObject*, PyObject*) {
 }
 }
 
+// ProjectileMover and all imports made before the native round install share
+// one callable owner. Record every mutation for the normal reverse teardown.
+void replaceCollidableEntities(PyObject* replacement) {
+    auto& s = stock_state;
+    replaceAttribute(s.projectile_mover.get(), "getCollidableEntities", replacement);
+    PyObject* modules = PyImport_GetModuleDict();
+    Py_ssize_t cursor = 0;
+    PyObject *name, *module;
+    std::vector<PyObject*> owners;
+    while (PyDict_Next(modules, &cursor, &name, &module)) {
+        if (!module || module == Py_None || module == s.projectile_mover.get() || !PyModule_Check(module)) continue;
+        PyObject* dict = PyModule_GetDict(module);
+        PyObject* bound = dict ? PyDict_GetItemString(dict, "getCollidableEntities") : nullptr;
+        if (bound && bound == s.collidable_entities.get()) owners.push_back(module);
+    }
+    for (PyObject* owner : owners) replaceAttribute(owner, "getCollidableEntities", replacement);
+}
+
 // Installs the native battle hooks once. compat.py's lobby-wide install has captured every original.
 bool install(Battle& b) {
     auto& s = stock_state;
@@ -411,7 +429,6 @@ bool install(Battle& b) {
     s.relink_sources = captured("_original_steady_relink_sources");
     s.segment_may_hit = captured("_original_projectile_segment_may_hit");
     s.collidable_entities = captured("_original_projectile_collidable_entities");
-    s.python_collidable_entities = own(py::optional(s.compatibility.get(), "_projectile_collidable_entities_wrapper"));
     s.server_time = captured("_original_server_time");
     s.debug_update = own(py::optional(s.compatibility.get(), "_original_debug_update"));
     s.shell_tooltip = own(py::optional(s.compatibility.get(), "_original_shell_tooltip"));
@@ -505,20 +522,8 @@ bool install(Battle& b) {
     }
     install_hook(s.projectile_mover, "segmentMayHitEntity", projectileSegmentMayHit);
     {
-        // ProjectileMover.getCollidableEntities and every module that imported compat.py's wrapper.
         auto replacement = hook(projectileCollidableEntities, "getCollidableEntities");
-        replaceAttribute(s.projectile_mover.get(), "getCollidableEntities", replacement.get());
-        PyObject* modules = PyImport_GetModuleDict();
-        Py_ssize_t cursor = 0;
-        PyObject *name, *module;
-        std::vector<PyObject*> owners;
-        while (PyDict_Next(modules, &cursor, &name, &module)) {
-            if (!module || module == Py_None || module == s.projectile_mover.get() || !PyModule_Check(module)) continue;
-            PyObject* dict = PyModule_GetDict(module);
-            PyObject* bound = dict ? PyDict_GetItemString(dict, "getCollidableEntities") : nullptr;
-            if (bound && s.python_collidable_entities && bound == s.python_collidable_entities.get()) owners.push_back(module);
-        }
-        for (PyObject* owner : owners) replaceAttribute(owner, "getCollidableEntities", replacement.get());
+        replaceCollidableEntities(replacement.get());
     }
     if (s.compound_type) {
         install_hook(s.compound_type, "deactivate", compoundDeactivate, s.compound_deactivate.get() != Py_None);
@@ -612,8 +617,6 @@ void configure(Battle& b, PyObject* gui_type, PyObject* bonus_type, PyObject* pl
     c.bonus_type = borrow(bonus_type && bonus_type != Py_None ? bonus_type : nullptr);
     c.server_time_origin = p::scalar(call(stock_state.server_time, {}).get());
     c.clock_origin = p::scalar(py::call(stock_state.bigworld.get(), "time").get());
-    // The lobby-wide layer keeps its own battle flag for the hooks that stay Python.
-    py::set(stock_state.compatibility.get(), "_battle_active", Py_True);
     activateMap(b);
 }
 
@@ -621,7 +624,6 @@ void configure(Battle& b, PyObject* gui_type, PyObject* bonus_type, PyObject* pl
 void deactivate(Battle& b) {
     auto reset = [&] {
         if (b.compat) *b.compat = Compat();
-        if (stock_state.compatibility && PyObject_SetAttrString(stock_state.compatibility.get(), "_battle_active", Py_False) < 0) PyErr_Clear();
     };
     PyObject* done = stock_state.offline_map_creator ? PyObject_CallMethod(stock_state.offline_map_creator.get(), const_cast<char*>("SetActive"),
                                                                            const_cast<char*>("O"), Py_False)

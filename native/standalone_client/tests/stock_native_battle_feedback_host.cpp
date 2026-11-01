@@ -143,7 +143,26 @@ PyObject* combat(PyObject*, PyObject* args) {
         return nullptr;
     }
 }
-PyMethodDef methods[] = {{"combat", combat, METH_VARARGS, ""}, {"postmortem", postmortem, METH_VARARGS, ""},
+PyObject* aliases(PyObject*, PyObject* args) {
+    try {
+        PyObject *mover, *original, *replacement;
+        if (!PyArg_ParseTuple(args, "OOO", &mover, &original, &replacement)) return nullptr;
+        b::compat::stock().projectile_mover = b::borrow(mover);
+        b::compat::stock().collidable_entities = b::borrow(original);
+        b::compat::replaceCollidableEntities(replacement);
+        Py_RETURN_NONE;
+    } catch (const std::exception& e) {
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, e.what());
+        return nullptr;
+    }
+}
+PyObject* restoreAliases(PyObject*, PyObject*) {
+    b::Battle battle;
+    b::compat::uninstall(battle);
+    b::compat::releaseScriptOwners();
+    Py_RETURN_NONE;
+}
+PyMethodDef methods[] = {{"aliases", aliases, METH_VARARGS, ""}, {"restore_aliases", restoreAliases, METH_NOARGS, ""}, {"combat", combat, METH_VARARGS, ""}, {"postmortem", postmortem, METH_VARARGS, ""},
                          {"postmortem_id", postmortemId, METH_NOARGS, ""}, {"result", result, METH_VARARGS, ""},
                          {nullptr, nullptr, 0, nullptr}};
 }

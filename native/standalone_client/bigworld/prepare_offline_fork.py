@@ -4,16 +4,12 @@ The input tree is never modified. The offline package is staged complete under
 offline-res with only the reviewed independent-client seams adapted.
 """
 import argparse
-import ast
 import re
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import shutil
 import tempfile
-import xml.etree.ElementTree as ET
-import zipfile
 
 _spec = importlib.util.spec_from_file_location(
     'offline_math_bindings', Path(__file__).with_name('patch_offline_math_bindings.py'))
@@ -33,10 +29,6 @@ _spec = importlib.util.spec_from_file_location(
     'stock_snapshot_bindings', Path(__file__).with_name('stock_snapshot_bindings.py'))
 snapshot_bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(snapshot_bindings)
-_spec = importlib.util.spec_from_file_location(
-    'stock_replay_bindings', Path(__file__).with_name('stock_replay_bindings.py'))
-replay_bindings = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(replay_bindings)
 _spec = importlib.util.spec_from_file_location(
     'stock_native_client_replica_bindings', Path(__file__).with_name('stock_native_client_replica_bindings.py'))
 replica_bindings = importlib.util.module_from_spec(_spec)
@@ -94,10 +86,6 @@ COMPAT_PATH = NATIVE_MATH_PATH.with_name('compat.py')
 WORKER_PRESENTATION_PATH = NATIVE_MATH_PATH.with_name('worker_presentation.py')
 PINNED_RESOURCES = Path('src/res')
 RUNTIME_ROOT = Path('offline-res')
-REPLAY_PACKAGE_NAME = 'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod'
-REPLAY_PACKAGE_INPUT = Path('dist') / REPLAY_PACKAGE_NAME
-REPLAY_PACKAGE_OUTPUT = Path('mods/0.9.22.0.1') / REPLAY_PACKAGE_NAME
-REPLAY_PROCESS_PATH = Path('res/scripts/client/gui/mods/offline_lan_0922/replay_process.py')
 ENTRY_SOURCE = Path(__file__).with_name('offline_entry') / 'OfflineGarageEntry.py'
 ENTRY_PATH = Path('scripts/client/OfflineGarageEntry.py')
 SERVICES_SOURCE = ENTRY_SOURCE.with_name('OfflineOptionalServices.py')
@@ -258,8 +246,8 @@ ADAPTERS = {
     NATIVE_MATH_PATH: adapt_native_math,
     INSTANCE_GUARD_PATH: adapt_instance_guard,
     BOOTSTRAP_PATH: adapt_bootstrap,
-    COMPAT_PATH: lambda source: client_vehicle_hooks_bindings.compat(
-        client_query_bindings.compat(adapt_compat(source))),
+    COMPAT_PATH: lambda source: battle_shell.compat(client_vehicle_hooks_bindings.compat(
+        client_query_bindings.compat(adapt_compat(source)))),
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
@@ -275,14 +263,15 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('snapshot_sync.py')] = replica_bindings.snap
 ADAPTERS[NATIVE_MATH_PATH.with_name('offline_replay.py')] = (
     lambda source: client_lifecycle_bindings.offline_replay(wire_bindings.offline_replay(source)))
 ADAPTERS[NATIVE_MATH_PATH.with_name('replay_transport.py')] = wire_bindings.replay_transport
-ADAPTERS[Path('src') / REPLAY_PROCESS_PATH] = replay_bindings.process
 # The native battle world owns the destructible space, catalog and detached turrets, and the native
 # Bot authority owns the round start; these pinned battle-only modules and their battle-only
-# importers are not shipped.
+# importers are not shipped. Native replay owners also replace the process-backed
+# recorder and reader modules.
 RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
     'destructibles_sensor.py', 'destructibles_authority.py', 'destructibles_compat.py',
     'prebaked_destructibles.py', 'native_destructibles.py', 'destructible_layout.py',
     'entities/detached_turret.py', 'entities/turret_obstacles.py', 'rigid_turret.py',
+    'entities/native_remote_vehicle.py',
     'world_collision.py', 'native_world.py', 'native_engine_query.py', 'native_motion_core.py',
     'native_navigation_query.py',
     'bot_runtime.py', 'native_simulation.py', 'native_control_core.py', 'native_weapons.py',
@@ -290,7 +279,8 @@ RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
     'ai/planner.py', 'ai/traffic.py', 'bot_tactics_runtime.py', 'initial_allocation.py', 'spg_positions.py',
     'ballistics.py', 'battle_visibility.py', 'collision_flags.py', 'critical_statistics.py',
     'environment_push.py', 'gun_pitch_limits.py', 'hull_aiming.py', 'radio.py', 'artillery_controller.py',
-    'native_navigation_core.py'))
+    'native_navigation_core.py', 'replay_process.py', 'replay_reader.py',
+    'projectile_manager.py', 'projectile_runtime.py'))
 
 
 def retired_imports(path, source):
@@ -338,7 +328,6 @@ def stage_runtime(source, staged):
         shutil.copyfile(source_path, runtime / path)
     native_modules = (
         ('stock_snapshot_static.py', 'stock_snapshot_static.py'),
-        ('stock_replay_codec.py', 'stock_replay_codec.py'),
         ('stock_native_replay.py', 'native_replay.py'),
         ('stock_native_client_query.py', 'native_client_query.py'),
     )
@@ -355,71 +344,6 @@ def stage_runtime(source, staged):
         'services': SERVICES_PATH.as_posix(),
         'files': len(files) - len(RETIRED) + 2 + len(native_modules),
     }, indent=2, sort_keys=True) + '\n')
-
-
-def stage_replay_package(source, staged):
-    """Keep the original release archive for the recorder's physical ZIP reader.
-
-    It is deliberately absent from paths.xml. The adapted offline-res tree
-    remains the only executable gameplay payload; this archive is an unchanged
-    output of the pinned fork's build_wotmod.py, including its recorder runtime.
-    """
-    source, staged = Path(source), Path(staged)
-    package = source / REPLAY_PACKAGE_INPUT
-    if not package.is_file():
-        raise ValueError('Pinned v0.10.1 release wotmod input is missing: ' + str(package))
-    constants = {}
-    for node in ast.parse((source / 'src' / REPLAY_PROCESS_PATH).read_text(encoding='utf-8')).body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            name = node.targets[0].id
-            if name in ('PACKAGE_NAME', 'RUNTIME_RESOURCE', 'RUNTIME_DIGEST'):
-                if name in constants:
-                    raise ValueError('Duplicated pinned replay consumer constant: ' + name)
-                constants[name] = ast.literal_eval(node.value)
-    runtime = 'res/offline_replay/recorder-runtime.zip'
-    if (constants.get('PACKAGE_NAME') != REPLAY_PACKAGE_NAME or
-            constants.get('RUNTIME_RESOURCE') != runtime or
-            not isinstance(constants.get('RUNTIME_DIGEST'), str) or
-            len(constants['RUNTIME_DIGEST']) != 64):
-        raise ValueError('The pinned replay package consumer changed')
-    try:
-        with zipfile.ZipFile(package) as archive:
-            names = archive.namelist()
-            if len(set(names)) != len(names) or any(
-                    info.compress_type != zipfile.ZIP_STORED for info in archive.infolist()):
-                raise ValueError('The pinned wotmod has duplicate entries or changed archive format')
-            meta = ET.fromstring(archive.read('meta.xml'))
-            if meta.findtext('id') != 'org.colorfulmeans.offline_lan_0922' or meta.findtext('version') != '0.10.1':
-                raise ValueError('The replay sidecar is not the pinned v0.10.1 mod')
-            # Require the actual complete mod payload, not a runtime-only ZIP
-            # renamed to its filename. Python remains original CPython 2.7 PYC;
-            # every non-Python source resource must remain byte-for-byte intact.
-            for path in (source / 'src').rglob('*'):
-                if not path.is_file():
-                    continue
-                relative = path.relative_to(source / 'src')
-                member = relative.with_suffix('.pyc') if path.suffix == '.py' else relative
-                payload = archive.read(member.as_posix())
-                if path.suffix == '.py':
-                    if payload[:4] != b'\x03\xf3\r\n':
-                        raise ValueError('The replay sidecar has changed Python bytecode: ' + str(member))
-                elif payload != path.read_bytes():
-                    raise ValueError('The replay sidecar has changed source resources: ' + str(member))
-            for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'licenses/Boost-1.0.txt',
-                         'res/offline_replay/replay_reader_process.py'):
-                if not archive.read(name):
-                    raise ValueError('The replay sidecar is missing its original package member: ' + name)
-            if archive.read('LICENSE') != (source / 'LICENSE').read_bytes():
-                raise ValueError('The replay sidecar license differs from the pinned source')
-            if hashlib.sha256(archive.read(runtime)).hexdigest() != constants['RUNTIME_DIGEST']:
-                raise ValueError('The replay sidecar recorder runtime differs from its pinned consumer')
-            if archive.testzip() is not None:
-                raise ValueError('The replay sidecar has a corrupt archive member')
-    except (KeyError, zipfile.BadZipFile, ET.ParseError) as error:
-        raise ValueError('The pinned replay package is incomplete or invalid: ' + str(error)) from error
-    output = staged / REPLAY_PACKAGE_OUTPUT
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(package, output)
 
 
 def stage_native_drive_law(native):
@@ -451,7 +375,6 @@ def prepare(source, destination):
         patch(staged, rotation_query=True)
         stage_native_drive_law(native)
         stage_runtime(source, staged)
-        stage_replay_package(source, staged)
         # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().
         stock_catalog_identity.stage(source, staged)
         names = '\n'.join('    "' + name + '",' for name in METHODS)
@@ -470,6 +393,11 @@ def prepare(source, destination):
             if not output.exists() or output.read_bytes() != content:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(content)
+        # Retire the exact generated sidecar from older prepared outputs. The
+        # native recorder and reader do not load a Python process runtime.
+        old_replay = destination / 'mods/0.9.22.0.1/org.colorfulmeans.offline_lan_0922_0.10.1.wotmod'
+        if old_replay.is_file():
+            old_replay.unlink()
         # The runtime and catalog trees are shipped whole; drop stale files.
         for published in (destination / RUNTIME_ROOT,
                           destination / stock_catalog_identity.CONFIG_ROOT):

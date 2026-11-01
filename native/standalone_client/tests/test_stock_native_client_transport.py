@@ -92,6 +92,24 @@ one=native.canonical_rows(client,rows[:2],'bots',message)[0]
 one[0]['equipment_states'][0]['equipment']['tags'].append('changed')
 assert one[1]['equipment_states'][0]['equipment']['tags']==['repairkit']
 assert contract['tags']==['repairkit']
+# The generated decoder retains shared encode helpers and only native decode owners.
+package_name=original.__name__.rsplit('.',1)[0]
+sys.modules[package_name+'.stock_snapshot_static']=static
+setattr(sys.modules[package_name],'stock_snapshot_static',static)
+static_bindings=imp.load_source('test_static_bindings',sys.argv[2]+'/stock_snapshot_bindings.py')
+transport_bindings=imp.load_source('test_transport_bindings',sys.argv[2]+'/stock_native_client_transport_bindings.py')
+staged_source=transport_bindings.delta(static_bindings.delta(open(original.__file__.replace('.pyc','.py'),'rb').read()))
+import ast
+tree=ast.parse(staged_source)
+declarations=set(node.name for node in tree.body if isinstance(node,(ast.FunctionDef,ast.ClassDef)))
+assert not declarations.intersection(('_apply_rows','_PendingActors','SnapshotDeltaError'))
+staged=types.ModuleType(original.__name__+'_native_shell');staged.__package__=package_name
+exec(compile(staged_source,'staged_snapshot_delta.py','exec'),staged.__dict__)
+assert not hasattr(staged,'_PENDING_ACTORS') and staged.SnapshotDeltaError is native.SnapshotDeltaError
+assert staged.materialize is native.materialize
+probe=snap();expected,unused=original.encode(probe,None,1);actual,unused=staged.encode(probe,None,1)
+same(expected,actual)
+pending,unused=staged.decode(actual,None,True);same(probe,staged.materialize(pending))
 def bomb(*args,**kw):raise AssertionError('Python gameplay callback')
 lan._canonical_runtime_vehicle_row=bomb;equipment.decode_snapshot_equipment=bomb;original._clone=bomb
 assert native.canonical_rows(client,rows,'bots',message)[1]==2

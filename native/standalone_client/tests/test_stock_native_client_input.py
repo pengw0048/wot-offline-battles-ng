@@ -39,7 +39,6 @@ def run(kw,attrs=None,capabilities=True):
  ra=invoke(a.send_input,(),copy.deepcopy(kw));rb=invoke(native.send_input,(b,),copy.deepcopy(kw));same(ra,rb)
  for k in ('_input_seq_round','_input_seq','_landing_observation_round','_landing_observation_seq','_landing_observation_pending','_landing_observation_queue','_outbound_queue','_outbound_seq','_outbound_bytes','landing'):
   same(getattr(a,k),getattr(b,k))
- same(a._outbound_event.is_set(),b._outbound_event.is_set())
  return a,b
 base=dict(forward=1.,turn=-.3,position=(10.,20.,30.),yaw=7.,pitch=-7.,roll=.1,speed=20.,aim_yaw=8.,gun_pitch=-.2,shell_index=0,next_shell_index=0,shell_change_pending=False,pose_time_us=1234,gun_checkpoint=dict(reload_time=1.,reload_duration=5.,clip=1,clip_size=1,dispersion=.01),ram_contacts=[],tank_pushes=[],turret_pushes=[],destructible_contacts=[],up_cosine=.99)
 random.seed(1513)
@@ -95,8 +94,23 @@ class NativeClientInputTests(unittest.TestCase):
             spec.loader.exec_module(bindings[name])
         client = Path(source) / 'src/res/scripts/client'
         staged = (client / 'gui/mods/offline_lan_0922/lan_client.py').read_text()
+        import ast
+        original_class = next(node for node in ast.parse(staged).body if isinstance(node, ast.ClassDef) and node.name == 'LANClient')
+        originals = dict((node.name, node) for node in original_class.body if isinstance(node, ast.FunctionDef))
         for name in bindings:
             staged = bindings[name].client(staged)
+        generated_class = next(node for node in ast.parse(staged).body if isinstance(node, ast.ClassDef) and node.name == 'LANClient')
+        methods = dict((node.name, node) for node in generated_class.body if isinstance(node, ast.FunctionDef))
+        for name in ('_canonical_runtime_rows', '_load_server_timing', 'send_input',
+                     '_send_pending_landing_observation', '_start_queued_landing_observation', 'send_landing_observation'):
+            method = methods[name]
+            self.assertEqual(ast.dump(method.args), ast.dump(originals[name].args))
+            self.assertEqual(ast.get_docstring(method), ast.get_docstring(originals[name]))
+            statements = method.body[1:] if ast.get_docstring(method) is not None else method.body
+            self.assertIsInstance(statements[-1], ast.Return)
+            self.assertTrue(all(isinstance(node, ast.Import) for node in statements[:-1]), name)
+        for name in ('_sender_worker', '_send_payload'):
+            self.assertNotIn(name, methods)
         with tempfile.TemporaryDirectory(prefix='native-input-transport-') as directory:
             folder = Path(directory)
             (folder / 'pkg').mkdir()
