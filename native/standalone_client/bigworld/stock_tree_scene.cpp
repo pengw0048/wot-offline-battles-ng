@@ -1059,6 +1059,8 @@ bool drawTreePart( TreeRenderingOwner & owner, unsigned part, Moo::ERenderingPas
         instanced = false;
         material = owner.materials[part]->pass( pass, false );
     }
+    // The forward (.11) tree effects author no REFLECTION or SHADOW technique.
+    if (material && !material->hTechnique()) return true;
     if (instanced && !uploadTreeInstances( owner, records )) return owner.fail( "Cannot upload original tree instances" );
     TreeInstanceStreams streams;
     if (!streams.valid()) return owner.fail( "Cannot retain the caller's tree instance streams" );

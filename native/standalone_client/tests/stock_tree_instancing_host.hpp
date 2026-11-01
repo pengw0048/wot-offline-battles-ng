@@ -267,6 +267,9 @@ int main(int argc,char**argv)
         reset();TreeRenderingOwner owner;configure(owner,true);
         assert(drawTreePart(owner,0,Moo::RENDERING_PASS_REFLECTION,fixture.items,rotation,1));
         assert(owner.instanceBuffer.creations==0&&Moo::rc().receipts.size()==4&&restored(false));
+        // The forward effect variant authors no SHADOW technique: nothing is drawn or bound.
+        reset();assert(drawTreePart(owner,0,Moo::RENDERING_PASS_SHADOWS,fixture.items,rotation,1));
+        assert(owner.instanceBuffer.creations==0&&Moo::rc().receipts.empty()&&restored(false));
         std::vector<TreePartInstance>records;
         fixture.items[0].lod.branch=6;fixture.items[1].lod.branch=-1;
         assert(collectTreePartInstances(0,fixture.items,records)&&records.size()==2);
