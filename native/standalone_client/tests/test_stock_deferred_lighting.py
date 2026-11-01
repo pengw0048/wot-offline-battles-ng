@@ -128,8 +128,13 @@ class StockDeferredLightingTests(unittest.TestCase):
             self.fixture(root)
             PATCH.apply(root)
             baseline = {name: (root / name).read_text() for name in PUBLIC_FILES}
+            outputs = [root / name for name in PUBLIC_FILES] + [root / 'lib/stock_deferred_lighting.hpp']
+            for path in outputs:
+                os.utime(path, ns=(1000000000, 1000000000))
+            timestamps = {path: path.stat().st_mtime_ns for path in outputs}
             PATCH.apply(root)
             self.assertEqual(baseline, {name: (root / name).read_text() for name in PUBLIC_FILES})
+            self.assertEqual(timestamps, {path: path.stat().st_mtime_ns for path in outputs})
             cpp = root / 'lib/romp/enviro_minder.cpp'
             text = cpp.read_text().replace('    s_activatedEM_ = this;', '    s_activatedEM_ = this;\n    otherEnvironmentOwner();')
             text = text.replace('        loadTimeOfDay(pDS, loadFromExternal);',

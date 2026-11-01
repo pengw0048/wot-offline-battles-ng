@@ -95,8 +95,12 @@ def apply(root):
     header = Path(__file__).with_name('stock_deferred_lighting.hpp').read_text()
     # Validate all anchors and inputs before publishing any engine source.
     for path, text in changes.items():
-        path.write_text(text)
-    (root / 'lib/stock_deferred_lighting.hpp').write_text(header)
+        if path.read_text() != text:
+            path.write_text(text)
+    target = root / 'lib/stock_deferred_lighting.hpp'
+    # Unchanged headers must keep their cached-build dependency timestamps.
+    if not target.is_file() or target.read_text() != header:
+        target.write_text(header)
 
 
 if __name__ == '__main__':
