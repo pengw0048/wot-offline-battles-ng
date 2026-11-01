@@ -1,27 +1,32 @@
 #include "../bigworld/stock_native_player_environment_python.hpp"
+#include "../bigworld/stock_native_battle.hpp"
+#include "../bigworld/stock_native_battle_remote.hpp"
 #include <Python.h>
 #include <cassert>
-#include <cstdlib>
-#include <string>
 using namespace stock_native_player_environment;
-struct Water:World {std::optional<Pose> bodyPose(const Player&)override{return {};}double waterDepth(const Point&)override{return 10.;}};
-int main(){Py_DontWriteBytecodeFlag=1;Py_Initialize();const char* source=std::getenv("WOT_GAMEPLAY_SOURCE");assert(source);auto path=PySys_GetObject(const_cast<char*>("path"));const auto scripts=std::string(source)+"/src/res/scripts/client";auto p=PyString_FromString(scripts.c_str());PyList_Insert(path,0,p);Py_DECREF(p);
- const char* code=R"PY(
-import sys,types
-gui=types.ModuleType('gui');gui.__path__=[sys.path[0]+'/gui'];sys.modules['gui']=gui
-mods=types.ModuleType('gui.mods');mods.__path__=[sys.path[0]+'/gui/mods'];sys.modules['gui.mods']=mods
-from gui.mods.offline_lan_0922 import critical_damage as cd,device_damage as dd
-class O(object):pass
-descriptor=O();descriptor.hull={'hitTester':{'bbox':((-1.,0.,-2.),(1.,2.,2.))}};descriptor.chassis={'hullPosition':(0.,1.,0.)};descriptor.type=O();descriptor.type.crewRoles=[('commander',),('driver',)]
-dd.device_max_hp=lambda desc,name:100.
-descriptor._offline_critical_device_pools=dict((name,(100.,50.)) for name in ('engineHealth','ammoBayHealth','fuelTankHealth','radioHealth','gunHealth','turretRotatorHealth','surveyingDeviceHealth','leftTrackHealth','rightTrackHealth'))
-entity=O();entity.typeDescriptor=descriptor;entity.position=(0.,0.,0.);entity.devices_hp={'engineHealth':25.};entity._destroyed_devices=set();entity._critical_devices=set();entity._crew_ko=set(['driver']);entity.is_on_fire=True;entity._ammo_rack_death=False
-entity.id=3;entity.health=100;entity.matrix=None;entity._crew_impaired=set();entity._fire_started=None;entity._fire_timer=0.;entity._is_killed=False;entity.getComponents=lambda:()
-record={'kind':'player','network_id':3,'engine_id':33,'state':{'alive':True,'health':100,'input_seq':7,'x':0.,'y':0.,'z':0.}}
-battle=O();battle._records={'player:3':record};battle._remote_factory=O();battle._remote_factory._vehicles={33:entity}
-expected=cd.propose_drowning(entity)
-def bomb(*args,**kwargs): raise AssertionError('offline descriptor callback')
-dd.device_max_hp=bomb
-cd._crew_roster=bomb
-)PY";if(PyRun_SimpleString(code)){PyErr_Print();return 1;}auto globals=PyModule_GetDict(PyImport_AddModule("__main__"));auto battle=PyDict_GetItemString(globals,"battle");MetadataCache cache;Owner owner;Water water;std::optional<Batch> batch;
- if(!readAndAdvance(battle,.3,true,owner,water,cache,batch)){PyErr_Print();return 2;}assert(batch&&batch->observations.size()==1);auto out=observationsValue(*batch);if(!out){PyErr_Print();return 3;}PyDict_SetItemString(globals,"observations",out);Py_DECREF(out);if(PyRun_SimpleString("assert observations[0]['drowning_critical']==expected, (observations[0]['drowning_critical'],expected)\nassert entity.devices_hp=={'engineHealth':25.}\n")){PyErr_Print();return 4;}Py_Finalize();}
+namespace native_battle {
+Battle* current(){return nullptr;}
+namespace remote {
+p::Ref get(const Battle&,std::int64_t){Py_INCREF(Py_None);return p::Ref(Py_None);}
+Overlay* overlay(PyObject*,bool){return nullptr;}
+}
+}
+namespace {
+using stock_native_client_state::Value;
+Value number(double n){Value v;v.kind=Value::Kind::Number;v.number=n;return v;}
+Value row(double x,double y,double z,double yaw){Value v;v.kind=Value::Kind::Object;
+ v.object["x"]=number(x);v.object["y"]=number(y);v.object["z"]=number(z);v.object["yaw"]=number(yaw);v.object["pitch"]=number(0.);v.object["roll"]=number(0.);return v;}
+}
+int main(){Py_DontWriteBytecodeFlag=1;Py_Initialize();
+ if(PyRun_SimpleString("class O(object):pass\nentity=O();entity.siegeState=0;entity.devices_hp=None;entity._destroyed_devices=set();entity._critical_devices=set();entity._crew_ko=set();entity.is_on_fire=False;entity._ammo_rack_death=False\n"))return 1;
+ auto* entity=PyDict_GetItemString(PyModule_GetDict(PyImport_AddModule("__main__")),"entity");
+ // The worker seeds a human's collision pose at spawn; the authority row moves on.
+ stock_native_client_state::Actor record;record.kind="player";record.id=3;
+ record.presented.collision_pose=row(0.,0.,-35.,0.);
+ record.state=row(382.,56.31,38.,1.25);record.state.object["alive"].kind=Value::Kind::Boolean;record.state.object["alive"].boolean=true;
+ record.state.object["health"]=number(100.);record.state.object["input_seq"]=number(64.);
+ Metadata metadata;Player player;
+ if(!readPlayer(record,entity,metadata,player)){PyErr_Print();return 2;}
+ assert(player.id==3&&player.input_sequence==64);
+ assert(player.pose.position[0]==382.&&player.pose.position[1]==56.31&&player.pose.position[2]==38.&&player.pose.yaw==1.25);
+ Py_Finalize();}

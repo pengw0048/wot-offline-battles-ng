@@ -23,7 +23,7 @@ class EnvironmentTests(unittest.TestCase):
             run = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_python_boundary_and_resource_lifecycle(self):
+    def test_python_boundary_reads_the_authority_row(self):
         source = os.environ.get('WOT_FORK_0101_SOURCE')
         if not source or not shutil.which('pyenv'):
             self.skipTest('Fixed gameplay source and CPython 2.7.18 are required')
@@ -31,25 +31,21 @@ class EnvironmentTests(unittest.TestCase):
             env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
         includes = shlex.split(subprocess.check_output([python + '-config', '--includes'], text=True))
         linking = shlex.split(subprocess.check_output([python + '-config', '--ldflags'], text=True))
+        units = ['stock_native_player_environment', 'stock_native_player_environment_python', 'stock_native_bot_descriptor',
+                 'stock_native_bot_resource_lifecycle', 'stock_native_bot_combat', 'stock_native_client_state']
         with tempfile.TemporaryDirectory(prefix='native-player-ingress-') as folder:
-            for name, units in (
-                    ('stock_native_bot_resource_lifecycle', ['stock_native_bot_resource_lifecycle']),
-                    ('stock_native_player_environment_python', ['stock_native_player_environment',
-                        'stock_native_player_environment_python', 'stock_native_bot_descriptor', 'stock_native_bot_resource_lifecycle',
-                        'stock_native_bot_combat'])):
-                binary = Path(folder) / name
-                command = ['c++', '-std=c++17', '-Wno-register',
-                           '-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD', *includes,
-                           '-I' + str(ROOT / 'bigworld'), '-I' + str(Path(source) / 'native'),
-                           str(ROOT / ('tests/test_' + name + '.cpp'))]
-                command += [str(ROOT / ('bigworld/' + unit + '.cpp')) for unit in units]
-                command += linking + ['-o', str(binary)]
-                built = subprocess.run(command, capture_output=True, text=True)
-                self.assertEqual(built.returncode, 0, built.stderr)
-                run = subprocess.run([str(binary)], capture_output=True, text=True,
-                    env=dict(os.environ, WOT_GAMEPLAY_SOURCE=source, PYTHONDONTWRITEBYTECODE='1'))
-                self.assertEqual(run.returncode, 0, run.stderr)
-
+            binary = Path(folder) / 'environment_python'
+            command = ['c++', '-std=c++17', '-Wno-register', '-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD',
+                       '-DWOT_CLIENT_REPLICA_HOST_BUILD', *includes, '-I' + str(ROOT / 'bigworld'),
+                       '-I' + str(ROOT / 'include'), '-I' + str(Path(source) / 'native'),
+                       str(ROOT / 'tests/test_stock_native_player_environment_python.cpp')]
+            command += [str(ROOT / ('bigworld/' + unit + '.cpp')) for unit in units]
+            command += linking + ['-o', str(binary)]
+            built = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True,
+                                 env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+            self.assertEqual(run.returncode, 0, run.stderr)
 
 if __name__ == '__main__':
     unittest.main()

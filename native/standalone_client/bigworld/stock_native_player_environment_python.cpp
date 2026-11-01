@@ -33,12 +33,11 @@ bool readPlayer(const native_battle::Actor& record,PyObject* entity,const Metada
  if(!entity||entity==Py_None)return false;const Value& state=record.state.resolved();
  if(record.kind!="player"||record.local||state.kind!=Value::Kind::Object||!state.get("alive").truth(true)||state.get("health").numeric()<=0.)return false;
  Player row;row.native_remote=record.native_remote;auto siege=entityValue("siegeState");row.siege_state=siege.get()==Py_None?0:int(p::wide(siege.get()));row.id=record.id;if(row.id<=0)return false;row.input_sequence=std::max<std::int64_t>(0,std::int64_t(state.get("input_seq").numeric()));row.descriptor=metadata;
- const Value& snapshot=record.presented.collision_pose.resolved();const Value& source=snapshot.kind==Value::Kind::Object?snapshot:state;
+ // The latest authority row, as the projectile owner reads it; the worker sets a human's collision pose only at spawn.
  const auto has=[](const Value& v,const char* k){return v.object.count(k)!=0;};
- if(has(source,"x")&&has(source,"y")&&has(source,"z")){row.pose.position={source.get("x").numeric(),source.get("y").numeric(),source.get("z").numeric()};}
- else if(has(state,"x")&&has(state,"y")&&has(state,"z")){row.pose.position={state.get("x").numeric(),state.get("y").numeric(),state.get("z").numeric()};}
+ if(has(state,"x")&&has(state,"y")&&has(state,"z")){row.pose.position={state.get("x").numeric(),state.get("y").numeric(),state.get("z").numeric()};}
  else {auto pos=entityValue("position");row.pose.position=point(pos.get());}
- row.pose.yaw=source.get("yaw").numeric();row.pose.pitch=source.get("pitch").numeric();row.pose.roll=source.get("roll").numeric();
+ row.pose.yaw=state.get("yaw").numeric();row.pose.pitch=state.get("pitch").numeric();row.pose.roll=state.get("roll").numeric();
  auto hp=entityValue("devices_hp"),destroyed=entityValue("_destroyed_devices"),critical=entityValue("_critical_devices"),crew=entityValue("_crew_ko");
  auto dead=names(destroyed.get()),damaged=names(critical.get());row.critical.crew_ko=names(crew.get());row.critical.fire=p::flag(entityValue("is_on_fire").get());row.critical.ammo_rack_death=p::flag(entityValue("_ammo_rack_death").get());
  if(hp.get()!=Py_None){if(!PyDict_Check(hp.get()))throw p::Error("Player device HP is invalid");Py_ssize_t i=0;PyObject *key=nullptr,*v=nullptr;while(PyDict_Next(hp.get(),&i,&key,&v)){auto name=p::string(key);auto& d=row.critical.devices[name];d.hp=p::scalar(v);const auto maximum=metadata.maxima.find(name);if(maximum!=metadata.maxima.end())d.maximum=maximum->second;}}
