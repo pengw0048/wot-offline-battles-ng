@@ -257,7 +257,7 @@ void emit(Battle& b, LocalCriticalOwner& o) {
                 py::call(b.engine.avatar.get(), "updateVehicleMiscStatus", p::integer(id).get(), p::integer(edge.status).get(),
                          p::integer(edge.code).get(), seconds.get());
             } else if (edge.kind == "repaired") {
-                if (vehicles::damageInfoServiceable(b)) vehicles::showDamageInfo(b, id, edge.index, edge.extra, id);
+                if (!vehicles::damageInfoServiceable(b) || !vehicles::showDamageInfo(b, id, edge.index, edge.extra, id)) continue;
             }
             o.pending.erase(at);
         } catch (const std::exception& e) {

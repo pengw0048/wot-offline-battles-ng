@@ -84,18 +84,24 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
         writable(canonical).object["events"].kind = Value::Kind::Array;
         canonical.object["events"].array.clear();
         const bool apply = vehicles::reconcileCriticalAuthority(b, *target, event, &canonical);
-        if (apply && !(canonical == d.critical)) {
+        if (apply) {
+            // A repair tick may already have copied these devices into the
+            // durable cache. The admitted event still owns its one-shot HUD edge.
             const bool edge = target->local && b.gun;
             if (edge) gun::edge(b);
             Value presentation = critical.resolved();
             writable(presentation).object["devices"] = field(canonical, "devices");
             presentation.object["destroyed"] = field(canonical, "destroyed");
             if (target->local && b.critical && b.critical->owned && d.critical_base_revision == b.critical->base_revision) {
-                // The owning client already presented its own track transitions.
+                // The owner presents repairs, not the original destruction.
+                // Keep a destruction only while the accepted track is still broken.
                 Value filtered; filtered.kind = Value::Kind::Array;
                 for (const auto& item : field(critical, "events").resolved().array) {
                     const std::string name = field(item, "name").resolved().text;
-                    if (name != "leftTrackHealth" && name != "rightTrackHealth") filtered.array.push_back(item.resolved());
+                    const auto& destroyed = field(canonical, "destroyed").resolved().array;
+                    const bool broken = field(item, "state").resolved().text == "destroyed" &&
+                        std::any_of(destroyed.begin(), destroyed.end(), [&](const Value& value) { return value.resolved().text == name; });
+                    if ((name != "leftTrackHealth" && name != "rightTrackHealth") || broken) filtered.array.push_back(item.resolved());
                 }
                 presentation.object["events"] = std::move(filtered);
             }
