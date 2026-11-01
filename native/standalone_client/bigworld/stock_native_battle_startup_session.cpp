@@ -160,7 +160,15 @@ bool teamChat(Battle& b, const Value& message) {
     const std::int64_t sequence = integer(field(message, "chat_seq"));
     auto& seen = b.startup->chat_seen[key];
     if (sequence <= seen) return false;
-    const bool shown = p::flag(py::call(server::radio(b), "receive_team_chat", toPython(field(message, "text")).get(), issuer->second.get()).get());
+    // The wire owns UTF-8 bytes; the retained stock chat adapter accepts
+    // Unicode plaintext, as the former JSON decoder delivered on Python 2.
+    // Generic value conversion deliberately retains byte strings elsewhere.
+    const auto& text_value = field(message, "text").resolved();
+    if (text_value.kind != Value::Kind::Text) return false;
+    PyObject* decoded = PyUnicode_DecodeUTF8(text_value.text.data(), Py_ssize_t(text_value.text.size()), "strict");
+    if (!decoded) { PyErr_Clear(); return false; }
+    p::Ref plaintext(decoded);
+    const bool shown = p::flag(py::call(server::radio(b), "receive_team_chat", plaintext.get(), issuer->second.get()).get());
     if (shown) seen = sequence;
     return shown;
 }
