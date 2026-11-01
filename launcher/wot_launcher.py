@@ -3532,6 +3532,26 @@ class LauncherWindow(object):
         except OSError:
             pass
 
+    def _adopt_restarted_game(self, process, exit_code, closed, port_version):
+        """Follow BigWorld.restartGame: keep the session for its new client."""
+        if (port_version != core.PORT_0_9_22 or exit_code != 0 or closed or
+                self._stop_requested):
+            return None
+        pid = core.restarted_game_pid(process.pid)
+        if pid is None:
+            return None
+        try:
+            restarted = core.AdoptedProcess(pid)
+        except OSError as error:
+            self._log("Could not follow the restarted game: %s" % error)
+            return None
+        self._release_dump_monitor(process)
+        self._log("The game restarted itself; the server stays up.")
+        self._game = restarted
+        self._start_dump_monitor(
+            restarted, error_reports.ROLE_VISIBLE_CLIENT)
+        return restarted
+
     def _run_game(self, game_root, port_version, host, port,
                   paired_worker=False,
                   preferred_team=core.DEFAULT_PREFERRED_TEAM, replay_path=None):
@@ -3563,13 +3583,20 @@ class LauncherWindow(object):
                 name='game-focus-evidence', daemon=True)
             focus_thread.start()
         try:
-            if paired_worker:
-                exit_code, closed_for_required_process = (
-                    core.wait_for_paired_player_exit(
-                        game_process, game_root,
-                        required_process=self._worker))
-            else:
-                exit_code = game_process.wait()
+            while True:
+                if paired_worker:
+                    exit_code, closed_for_required_process = (
+                        core.wait_for_paired_player_exit(
+                            game_process, game_root,
+                            required_process=self._worker))
+                else:
+                    exit_code = game_process.wait()
+                restarted = self._adopt_restarted_game(
+                    game_process, exit_code, closed_for_required_process,
+                    port_version)
+                if restarted is None:
+                    break
+                game_process = restarted
         finally:
             focus_stop.set()
             if focus_thread is not None:

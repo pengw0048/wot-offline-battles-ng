@@ -1743,6 +1743,21 @@ class GameProcessTest(unittest.TestCase):
         self.assertFalse(core.game_is_running(
             executable="OtherGame.exe", enumerator=lambda: names))
 
+    def test_restarted_game_is_the_exited_clients_own_child(self):
+        rows = [(10, 1, "explorer.exe"), (20, 10, "bwclient_h.exe"),
+                (30, 20, "procdump.exe"), (40, 20, "bwclient_h.exe"),
+                (50, 99, "bwclient_h.exe")]
+
+        self.assertEqual(
+            core.restarted_game_pid(20, enumerator=lambda: rows), 40)
+        self.assertIsNone(
+            core.restarted_game_pid(40, enumerator=lambda: rows))
+
+        def fail():
+            raise OSError("process snapshot is unavailable")
+
+        self.assertIsNone(core.restarted_game_pid(20, enumerator=fail))
+
     def test_failed_native_process_enumerator_reports_the_game_as_gone(self):
         def fail():
             raise OSError("process snapshot is unavailable")

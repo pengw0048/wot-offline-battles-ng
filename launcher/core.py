@@ -1419,8 +1419,8 @@ def local_addresses(resolver=None):
                    if address and not address.startswith('127.')})
 
 
-def _running_process_names():
-    """Return Windows process image names without starting a console tool."""
+def _running_processes():
+    """Return Windows (pid, parent pid, image name) rows without a console tool."""
     if os.name != "nt":
         return None
 
@@ -1458,19 +1458,101 @@ def _running_process_names():
     invalid_handle = ctypes.c_void_p(-1).value
     if snapshot in (None, 0, invalid_handle):
         raise ctypes.WinError()
-    names = []
+    rows = []
     try:
         entry = ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(entry)
         if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
             while True:
-                names.append(entry.szExeFile)
+                rows.append((int(entry.th32ProcessID),
+                             int(entry.th32ParentProcessID),
+                             entry.szExeFile))
                 if not kernel32.Process32NextW(
                         snapshot, ctypes.byref(entry)):
                     break
     finally:
         kernel32.CloseHandle(snapshot)
-    return names
+    return rows
+
+
+def _running_process_names():
+    """Return Windows process image names without starting a console tool."""
+    rows = _running_processes()
+    return None if rows is None else [name for _, _, name in rows]
+
+
+def restarted_game_pid(parent_pid, executable=RUNNING_EXECUTABLE,
+                       enumerator=None):
+    """Return the game process that ``parent_pid`` started to restart itself.
+
+    BigWorld.restartGame runs the client's own command line before closing.
+    """
+    if enumerator is None:
+        if os.name != "nt":
+            return None
+        enumerator = _running_processes
+    try:
+        rows = enumerator()
+    except Exception:
+        return None
+    target = str(executable).casefold()
+    for pid, parent, name in rows or ():
+        if (parent == parent_pid and pid != parent_pid and
+                os.path.basename(str(name)).casefold() == target):
+            return pid
+    return None
+
+
+class AdoptedProcess(object):
+    """The Popen subset the launcher uses, for a process it did not start."""
+
+    _SYNCHRONIZE = 0x00100000
+    _TERMINATE = 0x0001
+    _QUERY_LIMITED = 0x1000
+    _STILL_ACTIVE = 259
+
+    def __init__(self, pid):
+        import ctypes
+        from ctypes import wintypes
+
+        self._kernel32 = ctypes.windll.kernel32
+        self._kernel32.OpenProcess.restype = wintypes.HANDLE
+        self._handle = self._kernel32.OpenProcess(
+            self._SYNCHRONIZE | self._TERMINATE | self._QUERY_LIMITED,
+            False, int(pid))
+        if not self._handle:
+            raise ctypes.WinError()
+        self.pid = int(pid)
+        self.returncode = None
+
+    def poll(self):
+        import ctypes
+        from ctypes import wintypes
+
+        if self.returncode is None:
+            code = wintypes.DWORD()
+            if (self._kernel32.GetExitCodeProcess(
+                    self._handle, ctypes.byref(code)) and
+                    code.value != self._STILL_ACTIVE):
+                self.returncode = int(code.value)
+        return self.returncode
+
+    def wait(self, timeout=None):
+        milliseconds = 0xFFFFFFFF if timeout is None else int(timeout * 1000)
+        if self._kernel32.WaitForSingleObject(
+                self._handle, milliseconds) != 0:
+            raise subprocess.TimeoutExpired("adopted game", timeout)
+        return self.poll()
+
+    def terminate(self):
+        self._kernel32.TerminateProcess(self._handle, 1)
+
+    kill = terminate
+
+    def __del__(self):
+        if getattr(self, "_handle", None):
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
 
 
 def game_is_running(executable=RUNNING_EXECUTABLE, enumerator=None):
