@@ -111,6 +111,11 @@ def patch_support(root, pending):
     # a70300 publishes (1,1,1,1) while HDR is disabled.
     text = replace_once(text, '            Vector4 params(0.0f, 1.0f, 1.0f, 1.0f);\n',
         '            Vector4 params(1.0f, 1.0f, 1.0f, 1.0f);\n', 'HDR disabled environment multipliers')
+    # A frame whose deferred preparation fails skips intercept; its resolve
+    # must not pop the previous frame's HDR target.
+    text = replace_once(text, '        //-- set main back buffer render target as current.\n        m_hdrRT->pop();\n',
+        '        //-- set main back buffer render target as current.\n        m_successed = false;\n        m_hdrRT->pop();\n',
+        'HDR one pop per intercept')
     text = replace_once(text, '    g_cfg = cfg ? *cfg : HDRSettings();\n',
         '    g_cfg = cfg ? *cfg : HDRSettings();\n'
         '    m_stockColorCorrection = loadStockColorCorrection(g_cfg.m_colorCorrectionMap);\n',

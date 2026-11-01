@@ -966,6 +966,7 @@ void stop(Battle& b, bool restore_account) {
     ++b.generation;
     cancel(b, s.frame_callback);
     cancel(b, s.ammo_callback);
+    cancel(b, s.leave_callback);
     std::string error;
     try { cleanup(b); } catch (const std::exception& e) { error = describe(e); }
     b.phase = Phase::Stopped;
@@ -980,6 +981,7 @@ void teardownAfterFailure(Battle& b) {
     ++b.generation;
     cancel(b, s.frame_callback);
     cancel(b, s.ammo_callback);
+    cancel(b, s.leave_callback);
     std::string cleanup_error;
     try { cleanup(b); } catch (const std::exception& e) { cleanup_error = describe(e); b.error += "; cleanup failed: " + cleanup_error; }
     b.phase = Phase::Failed;

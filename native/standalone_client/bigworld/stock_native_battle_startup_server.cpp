@@ -326,17 +326,19 @@ PyObject* setClientCtx(PyObject* o, PyObject* args) {
     s->client_context = value;
     Py_RETURN_NONE;
 }
-// Stock leaveArena: the session owns the round exit.
+// Stock leaveArena: the session owns the round exit. Like the server round trip it replaces, the exit runs
+// one callback later: the caller is usually a Flash button whose movie the teardown destroys.
 PyObject* leaveArena(PyObject* o, PyObject* args) {
     return guarded([&] {
         auto* s = self(o);
         Battle* b = owner(s);
         if (!b || s->destroyed || s->leave_requested) return ok(false);
+        if (!b->startup || !b->startup->on_local_leave || b->startup->on_local_leave.get() == Py_None) return ok(false);
+        b->startup->leave_callback = own(schedule(*b, 0., [](Battle& battle) {
+            battle.startup->leave_callback = Object();
+            py::invoke(battle.startup->on_local_leave.get());
+        }));
         s->leave_requested = true;
-        try {
-            if (b->startup && b->startup->on_local_leave && b->startup->on_local_leave.get() != Py_None)
-                py::invoke(b->startup->on_local_leave.get());
-        } catch (...) { s->leave_requested = false; throw; }
         return ok(true);
     });
 }

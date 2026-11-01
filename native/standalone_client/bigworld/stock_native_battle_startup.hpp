@@ -54,6 +54,7 @@ struct Startup {
     Object local_descriptor;
     std::int64_t local_vehicle_id = 0;
     Object on_local_leave;                         // lan_session callback
+    Object leave_callback;                         // the deferred local leave
     // Stock patches active for this round; each is restored only while still ours.
     Object gui_loader_type, gui_loading_original, gui_page_original, gui_loading_wrapper, gui_page_wrapper;
     // Teardown: a lobby restore waits one native callback boundary.

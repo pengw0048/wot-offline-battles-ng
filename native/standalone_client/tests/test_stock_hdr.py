@@ -87,6 +87,7 @@ int main() {
             self.assertNotIn('SetTexture("g_previousMipMap"', support)
             self.assertIn('drawStockToneMapping(m_toneMappingMat, g_cfg,', support)
             self.assertIn('Vector4 params(1.0f, 1.0f, 1.0f, 1.0f);', support)
+            self.assertIn('        m_successed = false;\n        m_hdrRT->pop();\n', support)
             settings = patched['lib/romp/hdr_settings.cpp']
             self.assertIn('loadStockToneMappings(iData, *this);', settings)
             self.assertIn('"environment/sunlightLumMultiplier", e.m_sunLumMultiplier', settings)

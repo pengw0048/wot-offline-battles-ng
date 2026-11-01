@@ -528,9 +528,19 @@ def patch_photon_occluders(root):
     ])
 
 
+def patch_scene_provider_lights(root):
+    # A compiled space draws before loadEnvironment creates its sun; skip it
+    # as chunk_umbra does instead of tripping the Hybrid MF_ASSERT_DEV.
+    apply_file(root, Path('lib/space/enviro_minder_scene_provider.cpp'), [
+        ('\tlightContainer.addDirectional( sunLight_ );\n',
+         '\tif (sunLight_)\n\t\tlightContainer.addDirectional( sunLight_ );\n', 'unloaded environment sun'),
+    ])
+
+
 def patch_environment(root):
     patch_far_plane(root)
     patch_photon_occluders(root)
+    patch_scene_provider_lights(root)
     # These types are included by public engine headers. The pinned build
     # flattens library linkage into bwclient, so target usage requirements do
     # not reach all header consumers. Publish the owned interface headers

@@ -35,6 +35,23 @@ class StockFarPlaneTests(unittest.TestCase):
             self.assertNotIn('new SkyDomeOccluder', cpp)
             self.assertIn('zBufferOccluder_ = new ZBufferOccluder();', cpp)
 
+    def test_an_unloaded_environment_adds_no_sun(self):
+        archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.is_file():
+            self.skipTest('Pinned public source archive is required')
+        with tempfile.TemporaryDirectory(prefix='stock-scene-provider-') as temporary:
+            root = Path(temporary)
+            name = 'lib/space/enviro_minder_scene_provider.cpp'
+            with tarfile.open(archive) as original:
+                member = next(m for m in original.getnames() if m.endswith('/programming/bigworld/' + name))
+                (root / name).parent.mkdir(parents=True)
+                (root / name).write_bytes(original.extractfile(member).read())
+            PATCH.patch_scene_provider_lights(root)
+            cpp = (root / name).read_text()
+            PATCH.patch_scene_provider_lights(root)
+            self.assertEqual(cpp, (root / name).read_text())
+            self.assertIn('\tif (sunLight_)\n\t\tlightContainer.addDirectional( sunLight_ );\n', cpp)
+
     def test_original_space_distances_replace_the_global_ratio(self):
         archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         compiler = shutil.which('c++')
