@@ -95,9 +95,19 @@ bool enqueue(PyObject*client,PyObject*message){
         if(PyList_GET_SIZE(queue.get())>=limits.queue_messages||bytes+std::int64_t(frozen.bytes)>limits.queue_bytes)return false;
         const auto seq=p::integral(client,"_outbound_seq")+1;auto seq_value=p::integer(seq),size=p::integer(frozen.bytes);p::Ref item(PyTuple_Pack(3,seq_value.get(),frozen.value.get(),size.get()));p::append(queue.get(),item);attr(client,"_outbound_seq",seq_value);attr(client,"_outbound_bytes",p::integer(bytes+std::int64_t(frozen.bytes)));
     }
-    // This is the existing network thread's synchronization event. Its Python
-    // Condition implementation owns the waiters; no gameplay runs here.
-    auto event=p::value(client,"_outbound_event");p::Ref empty(PyTuple_New(0));p::call(event.get(),"set",empty.get());return true;
+    auto event=p::value(client,"_outbound_event");p::Ref empty(PyTuple_New(0));p::call(event.get(),"set",empty.get());
+    // The visible transport has no Python sender thread. Hand the FIFO to its
+    // native sender now; setting the old event alone waits for the next ping.
+    try {
+        p::Ref args(PyTuple_Pack(1,generation.get()));p::call(client,"_flush_native_outbound",args.get());
+    } catch (const std::exception&) {
+        // A failed handoff must not leave a launch queued after its caller rolls back.
+        PyErr_Clear();
+        auto*done=PyObject_CallMethod(client,const_cast<char*>("_abort_outbound"),const_cast<char*>("sO"),"native outbound handoff failed",generation.get());
+        if(done)Py_DECREF(done);else PyErr_Clear();
+        return false;
+    }
+    Lock lock(client);auto current=p::value(client,"_transport_generation");return equal(generation.get(),current.get())&&available(client);
 }
 PyObject*send(PyObject*,PyObject*args){try{PyObject*client,*message;if(!PyArg_ParseTuple(args,"OO",&client,&message))return nullptr;return p::boolean(enqueue(client,message)).release();}catch(const std::exception&){PyErr_Clear();Py_RETURN_FALSE;}}
 PyObject*freeze(PyObject*,PyObject*v){try{std::size_t nodes=0;auto frozen=freezeValue(v,nodes,0);return Py_BuildValue("NK",frozen.value.release(),static_cast<unsigned long long>(frozen.bytes));}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
