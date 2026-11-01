@@ -65,6 +65,7 @@ bool beginFrame(bool scalar){assert(scalar);return beginOK;}void cancelFrame(){+
 bool prepareVelocity(Surface*,bool,bool){return velocityOK;}void endFrame(){++ends;}}temporalAA_;
 bool contactShadowsEnabled(){return false;}
 bool frameActive_=false,prepared_=false,kindCopied_=false;
+unsigned allocationRetryFrames_=0,creations=0;void createUnmanagedObjects(){++creations;}
 bool resourcesReady=true,fillSuccess=true,conversionSuccess=true,depthEffectsSuccess=true;
 unsigned fills=0,conversions=0,depthEffects=0;
 bool ready(){return resourcesReady;}
@@ -81,6 +82,9 @@ assert(device.SetDepthStencilSurface(&original)==0&&original.refs==2);
 StockDeferredBuffers owner;owner.depthSurface_=&depth;assert(depth.refs==2);
 assert(!owner.prepare()&&!owner.fills&&!owner.conversions);
 owner.resourcesReady=false;assert(!owner.begin()&&!device.gets);
+// A failed allocation retries on every 60th unready frame, not every frame.
+for(int i=1;i<59;++i)assert(!owner.begin());assert(!owner.creations);
+assert(!owner.begin()&&owner.creations==1&&!device.gets);
 owner.resourcesReady=true;device.failGet=true;assert(!owner.begin()&&!owner.previousDepth_.value);
 device.failGet=false;owner.temporalAA_.beginOK=false;assert(!owner.begin()&&!owner.previousDepth_.value);
 assert(device.current==&original&&original.refs==2);owner.temporalAA_.beginOK=true;

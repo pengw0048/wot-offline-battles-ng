@@ -102,6 +102,7 @@ private:
     Moo::BaseTexturePtr aoNoise_,horizonNoise_;
     bool constantsRegistered_=false;
     friend DX::Surface* stockFrameDepthSurface(DX::Surface* depth);
+    unsigned allocationRetryFrames_=0;
     bool frameActive_=false;
     bool prepared_=false;
     bool kindCopied_=false;

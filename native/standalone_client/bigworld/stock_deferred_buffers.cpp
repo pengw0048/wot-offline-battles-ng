@@ -488,6 +488,8 @@ void StockDeferredBuffers::deleteUnmanagedObjects()
 bool StockDeferredBuffers::begin()
 {
     if(frameActive_)return true;
+    // A mode change can briefly exhaust video memory; retry instead of losing the scene until the next reset.
+    if(!ready() && ++allocationRetryFrames_>=60){allocationRetryFrames_=0;createUnmanagedObjects();}
     if(!ready() || FAILED(Moo::rc().device()->GetDepthStencilSurface(&previousDepth_)))return false;
     // a6a940 enables DBE ScalarTAA at construction. a6b890/a6b8f0 retain it
     // for high lighting quality or active high-quality contact shadows.
