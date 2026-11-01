@@ -11,6 +11,16 @@ def replace(source, anchor, replacement):
     return source.replace(anchor, replacement)
 
 
+def include(source, header):
+    line = '#include "' + header + '"'
+    count = source.splitlines().count(line)
+    if count > 1:
+        raise RuntimeError('Duplicate tPS include: ' + header)
+    if count:
+        return source
+    return replace(source, '#include "pch.hpp"', '#include "pch.hpp"\n' + line)
+
+
 def patch(root):
     root = Path(root)
     pending = []
@@ -19,8 +29,7 @@ def patch(root):
                      '\tParticleSystems\t\tsystems_;\n\tuint32 inverseRenderGroups_ = 0;')
     pending.append((path, source))
     path = root / 'lib/particle/meta_particle_system.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_quality.hpp"')
+    source = include(path.read_text(), 'stock_tps_quality.hpp')
     source = replace(source, '''MetaParticleSystemPtr MetaParticleSystem::clone() const
 {
     BW_GUARD;
@@ -52,8 +61,7 @@ def patch(root):
                      '\tPSA_INFLUX_TYPE_ID\t\t\t= 16,\n\tPSA_TYPE_ID_MAX\t\t\t\t= 17')
     pending.append((path, source))
     path = root / 'lib/particle/actions/particle_system_action.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = include(path.read_text(), 'stock_tps_scene.hpp')
     for signature, addition in (
         ('const BW::string & ParticleSystemAction::typeToName(int type)',
          '    if (type == PSA_INFLUX_TYPE_ID) return stockInfluxActionName();'),
@@ -66,14 +74,12 @@ def patch(root):
                      'int type = pAction->typeID();\n    if (type == PSA_INFLUX_TYPE_ID) return wrapStockInfluxPSA( pAction );')
     pending.append((path, source))
     path = root / 'lib/particle/particle_system.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = include(path.read_text(), 'stock_tps_scene.hpp')
     source = replace(source, '\tthis->clearBoundingBox();\n\treturn true;\n}',
                      '\tthis->clearBoundingBox();\n    for (const auto & action : actions_) resetStockInfluxMotion( action.getObject() );\n\treturn true;\n}')
     pending.append((path, source))
     path = root / 'client/world_app.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = include(path.read_text(), 'stock_tps_scene.hpp')
     if '        tickStockTPSRuntime( dGameTime );' not in source:
         source = replace(source, '        GlobalEmbodiments::tick( dGameTime );',
                          '        GlobalEmbodiments::tick( dGameTime );\n        tickStockTPSRuntime( dGameTime );')
@@ -89,8 +95,7 @@ def patch(root):
                      '    drawStockTPSRuntime();\n    colourDrawContext.end( ')
     pending.append((path, source))
     path = root / 'client/facade_app.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
+    source = include(path.read_text(), 'stock_tps_scene.hpp')
     flush = '        App::instance().drawContext( App::COLOUR_DRAW_CONTEXT ).flush( Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );'
     if source.count(flush) != 1:
         raise RuntimeError('The tPS transparent flush owner changed')
@@ -98,10 +103,12 @@ def patch(root):
     source = source.replace('        drawStockTPSRuntime();\n', '')
     pending.append((path, source))
     path = root / 'client/script_app.cpp'
-    source = replace(path.read_text(), '#include "pch.hpp"',
-                     '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
-    source = replace(source, '\tBigWorldClientScript::fini();',
-                     '\tfiniStockTPSRuntime();\n\tBigWorldClientScript::fini();')
+    source = include(path.read_text(), 'stock_tps_scene.hpp')
+    if 'finiStockTPSRuntime();' not in source:
+        source = replace(source, '\tBigWorldClientScript::fini();',
+                         '\tfiniStockTPSRuntime();\n\tBigWorldClientScript::fini();')
+    if source.count('finiStockTPSRuntime();') != 1:
+        raise RuntimeError('The tPS shutdown owner must run exactly once')
     pending.append((path, source))
     for path, source in pending:
         if path.read_text() != source:

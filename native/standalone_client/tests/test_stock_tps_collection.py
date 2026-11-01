@@ -143,6 +143,34 @@ class StockTPSCollectionTests(unittest.TestCase):
             tps = patcher('patch_stock_tps')
             tps.patch(folder)
             patcher('patch_stock_sprite_shimmer').patch(folder)
+            # Other real patchers insert headers after pch and shutdown owners
+            # before Python teardown. Reapplying tPS must preserve that order.
+            for name in names:
+                path = folder / name
+                text = path.read_text()
+                for header in ('stock_tps_scene.hpp', 'stock_tps_quality.hpp'):
+                    line = '#include "' + header + '"\n'
+                    if line in text:
+                        text = text.replace(line, '')
+                        text = text.replace('#include "pch.hpp"\n',
+                                            '#include "pch.hpp"\n#include "other_stock_owner.hpp"\n' + line)
+                if name == 'client/script_app.cpp':
+                    text = text.replace('\tfiniStockTPSRuntime();\n\tBigWorldClientScript::fini();',
+                                        '\tfiniStockTPSRuntime();\n\tfiniStockVehicleStickers();\n'
+                                        '\tfiniStockBattlegroundElements();\n\tBigWorldClientScript::fini();')
+                path.write_text(text)
+            interleaved = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in folder.rglob('*') if p.is_file()}
+            tps.patch(folder)
+            self.assertEqual(interleaved, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in interleaved})
+            script = folder / 'client/script_app.cpp'
+            valid_script = script.read_text()
+            for duplicate in ('#include "stock_tps_scene.hpp"\n', '\tfiniStockTPSRuntime();\n'):
+                script.write_text(valid_script + duplicate)
+                unchanged = {p: p.read_bytes() for p in interleaved}
+                with self.assertRaises(RuntimeError):
+                    tps.patch(folder)
+                self.assertEqual(unchanged, {p: p.read_bytes() for p in unchanged})
+            script.write_text(valid_script)
             # Incremental upgrades remove the old Facade insertion, including
             # when another patch has inserted work before its flush.
             facade_path = folder / 'client/facade_app.cpp'
