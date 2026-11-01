@@ -47,6 +47,8 @@ bool active();
 bool install(Battle& b);
 // Restores the stock originals; called when the process retires the compatibility layer.
 void uninstall(Battle& b);
+// Drop captured stock objects after hooks and battle owners have retired.
+void releaseScriptOwners();
 
 // configure_battle: enables the normal battle UI/input path for the next Avatar and installs the hooks.
 void configure(Battle& b, PyObject* gui_type, PyObject* bonus_type, PyObject* player_name, PyObject* player_team,

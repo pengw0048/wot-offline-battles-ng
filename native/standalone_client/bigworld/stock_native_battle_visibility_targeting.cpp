@@ -174,14 +174,8 @@ void focus(Battle& b, PyObject* value) {
     callChecked(consumer.get(), "setTargetInFocus", args.get());
 }
 void candidate(Battle& b, PyObject* value) {
-    auto compatibility = b.engine.compatibility.get();
-    if (value != Py_None) {
-        if (!truth(compatibility, "_battle_active")) throw p::Error("Target-lock candidate requires a battle");
-        const bool lan = truth(value, "_offlineLANPresentation");
-        if (!lan && !truth(value, "_offlineNativeRemote")) throw p::Error("Target-lock candidate is not a remote Vehicle");
-        if (lan && field(value, "bw_entity").get() == Py_None) throw p::Error("Target-lock candidate has no visual entity");
-    }
-    put(compatibility, "_target_lock_candidate", value);
+    // The input hooks and team-command reader consume the native round owner.
+    compat::setTargetLockCandidate(b, value);
 }
 void refresh(Battle& b, VisibilityCore& c) {
     const auto revision = c.outline_revision;
@@ -375,19 +369,13 @@ bool clearOutline(Battle& b) {
 }
 
 bool releaseTargetLock(Battle& b, std::int64_t engine_id) {
-    if (!b.engine.avatar || !b.engine.compatibility) return false;
-    auto release = field(b.engine.compatibility.get(), "release_target_lock");
-    if (!PyCallable_Check(release.get())) return false;
-    auto id = p::integer(engine_id);
-    auto result = py::invoke(release.get(), b.engine.avatar.get(), id.get());
-    return p::flag(result.get());
+    return b.engine.avatar && compat::releaseTargetLock(b, b.engine.avatar.get(), engine_id);
 }
 
 // Releases the stock auto-aim lock once its vehicle stopped being a live, visible, presented target.
 void validateTargetLock(Battle& b) {
-    auto compatibility = b.engine.compatibility.get();
     auto* avatar = b.engine.avatar.get();
-    if (!compatibility || !avatar || !truth(compatibility, "_battle_active")) return;
+    if (!b.compat || !b.compat->active || !avatar) return;
     auto* c = core(b);
     if (!c) return;
     auto raw = field(avatar, "_PlayerAvatar__autoAimVehID");
@@ -414,9 +402,7 @@ void validateTargetLock(Battle& b) {
         PyErr_Clear();
     }
     if (holds) return;
-    auto fn = field(compatibility, "_original_avatar_auto_aim");
-    if (!PyCallable_Check(fn.get())) throw p::Error("#1513 target lock release boundary is unavailable");
-    py::invoke(fn.get(), avatar, Py_None);
+    compat::releaseTargetLock(b, avatar, p::wide(raw.get()));
 }
 }
 }

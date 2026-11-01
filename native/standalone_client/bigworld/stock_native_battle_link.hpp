@@ -43,6 +43,8 @@ using Handler = std::function<void(const std::string& kind, const std::shared_pt
 bool connect(PyObject* bigworld, const std::string& host, int port, Handler handler);
 // Sends leave and closes; `flush` lets queued frames drain briefly first. Idempotent.
 void disconnect(bool flush);
+// Process shutdown: close transport and drop the process-held script owner, even after disconnect fails.
+void releaseScriptOwners();
 bool connected();
 std::string phase();
 std::optional<std::int64_t> botAuthorityId();

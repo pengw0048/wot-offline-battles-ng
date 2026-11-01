@@ -81,6 +81,8 @@ struct Diagnostics {
 };
 
 namespace startup {
+// Process shutdown while Python, GUI and native space owners are still alive.
+void shutdown();
 // ---- LAN session entry points (lan_session.py / authority_worker.py battle dispatch) ----
 // BattleRuntime.start(config, message, lan_client, on_local_leave); false when it did not start.
 bool start(PyObject* shell, PyObject* runtime_modules, PyObject* config, PyObject* message, PyObject* client, PyObject* on_local_leave);

@@ -63,6 +63,11 @@ def apply(root):
          'loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_,\n'
          '        Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING);',
          'active forward/deferred SH source'),
+        ('        Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING);',
+         '        Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING);\n'
+         '    // #1513 6b6ef9 reads this from space.settings, not the sky resource.\n'
+         '    stockDeferredLightingSettings_.pbsResourcesReady = data->readBool("PBSReady", false);',
+         'active space PBS resource contract'),
     ])
     edit('lib/moo/deferred_lights_manager.cpp', [
         ('#include "deferred_lights_manager.hpp"',

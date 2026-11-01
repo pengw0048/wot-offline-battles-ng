@@ -101,6 +101,109 @@ int main() {
 
 
 class StockTPSParametersTests(unittest.TestCase):
+    def test_original_animation_rate_and_random_tile_bounds(self):
+        client = self.client()
+        try:
+            from stock_ballistics_oracle import Original, DATA, bits
+        except ImportError as error:
+            self.skipTest('Original PE oracle dependency missing: ' + str(error))
+        source = (ROOT/'bigworld/stock_tps_scene.cpp').read_text()
+        begin = source.index('    particle.columns = source.word( 0x1c0 );')
+        end = source.index('    if (render & 0x80u)', begin)
+        production = source[begin:end]
+        host = r'''
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <string>
+struct Source {
+    unsigned columns,rows;float rate;
+    unsigned word(unsigned offset)const{return offset==0x1c0?columns:offset==0x1c4?rows:2;}
+    float scalar(unsigned)const{return rate;}
+};
+struct Random {float value;float next(){return value;}};
+struct Particle {unsigned columns=1,rows=1,lastFrame=1,renderFlags=0;int previousFrame=0;float frameInterval=1.f;std::array<float,4> rectangle{};};
+bool setup(const Source& source,Random& random,Particle& particle,std::string& error) {
+    const unsigned render=3;
+@PRODUCTION@
+    return true;
+}
+int main(){Source source;Random random;
+while(std::cin.read(reinterpret_cast<char*>(&source.columns),4)) {
+    std::cin.read(reinterpret_cast<char*>(&source.rows),4);
+    std::cin.read(reinterpret_cast<char*>(&source.rate),4);
+    std::cin.read(reinterpret_cast<char*>(&random.value),4);
+    Particle particle;std::string error;if(!setup(source,random,particle,error))return 2;
+    std::cout.write(reinterpret_cast<const char*>(&particle.frameInterval),4);
+    std::cout.write(reinterpret_cast<const char*>(&particle.previousFrame),4);
+    std::cout.write(reinterpret_cast<const char*>(&particle.lastFrame),4);
+}return std::cin.eof()&&std::cout?0:3;}
+'''.replace('@PRODUCTION@', production)
+        rows = [(columns, height, rate, sample)
+                for columns, height in ((1,1), (2,3), (8,4), (8,7), (8,8))
+                for rate in (-32., -0., 0., .5, 1., 18., 32., 78., 110.,
+                             float('inf'), float('-inf'), float('nan'))
+                for sample in (0., .25, .5, .75, 1.)]
+        original = Original(client/'WorldOfTanks.exe')
+        particle = DATA+0x10000
+        inputs, expected = bytearray(), bytearray()
+        for columns, height, rate, sample in rows:
+            original.u.mem_write(particle, bytes(0x130))
+            original.put(particle+0xdc, '<2f', 1., 1.)
+            original.call(0xfb0e90, particle, [columns, height, bits(rate)])
+            interval = bytes(original.u.mem_read(particle+0x100, 4))
+            maximum = struct.unpack('<I', original.u.mem_read(particle+0xfc, 4))[0]
+            index = int(maximum*sample+.5)
+            self.assertLessEqual(index, maximum)
+            inputs.extend(struct.pack('<IIff', columns, height, rate, sample))
+            expected.extend(interval+struct.pack('<iI', index, maximum))
+        with tempfile.TemporaryDirectory(prefix='tps-animation-contract-') as directory:
+            folder = Path(directory)
+            binary = self.compile(folder, host)
+            self.assertEqual(subprocess.check_output([str(binary)], input=inputs), expected)
+            # Each previous defect must independently fail the original contract.
+            for previous in (host.replace('frameRate <= 0.f ? 1.f : 1.f / frameRate', 'frameRate'),
+                             host.replace('particle.columns * particle.rows - 1', 'particle.columns * particle.rows')):
+                binary = self.compile(folder, previous)
+                self.assertNotEqual(subprocess.check_output([str(binary)], input=inputs), expected)
+        # The original keeps a last-frame sentinel, and the advance path compares
+        # against that exact value rather than changing it to a frame count.
+        begin = source.index('        particle.frameElapsed += elapsed;')
+        end = source.index('        const float width =', begin)
+        advance = source[begin:end]
+        host = r'''
+#include <iostream>
+struct Particle {float frameInterval,frameElapsed;int previousFrame,nextFrame;unsigned lastFrame,renderFlags;};
+void advance(Particle& particle,float elapsed){
+@PRODUCTION@
+}
+int main(){Particle particle;float elapsed;
+while(std::cin.read(reinterpret_cast<char*>(&particle),sizeof(particle))){
+    std::cin.read(reinterpret_cast<char*>(&elapsed),4);advance(particle,elapsed);
+    std::cout.write(reinterpret_cast<const char*>(&particle.frameElapsed),4);
+    std::cout.write(reinterpret_cast<const char*>(&particle.previousFrame),8);
+}return std::cin.eof()&&std::cout?0:3;}
+'''.replace('@PRODUCTION@', advance)
+        from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ESI
+        inputs, expected = bytearray(), bytearray()
+        for maximum in (0,1,2,7,31,55):
+            for next_frame in sorted({0, max(0,maximum-1), maximum}):
+                for flags in (1,0x41):
+                    for accumulated in (0., .03125, .0625):
+                        for elapsed in (0., .03125, .125):
+                            original.put(particle+0xf4, '<3I2f', 3, next_frame, maximum, .03125, accumulated)
+                            original.put(DATA+0x20008, '<f', elapsed)
+                            original.u.reg_write(UC_X86_REG_ESI, particle)
+                            original.u.reg_write(UC_X86_REG_EBX, DATA+0x20000)
+                            original.u.reg_write(UC_X86_REG_EAX, flags)
+                            original.u.emu_start(0xf99954, 0xf999d1, count=100)
+                            inputs.extend(struct.pack('<2fiiIIf', .03125, accumulated, 3, next_frame, maximum, flags, elapsed))
+                            expected.extend(bytes(original.u.mem_read(particle+0x104,4)))
+                            expected.extend(bytes(original.u.mem_read(particle+0xf4,8)))
+        with tempfile.TemporaryDirectory(prefix='tps-animation-advance-') as directory:
+            binary = self.compile(Path(directory), host)
+            self.assertEqual(subprocess.check_output([str(binary)], input=inputs), expected)
+
     def client(self):
         value = os.environ.get('WOT_0922_CLIENT')
         if not value:

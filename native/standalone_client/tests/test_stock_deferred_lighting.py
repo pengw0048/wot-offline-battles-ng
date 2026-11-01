@@ -4,6 +4,7 @@ These host tests do not establish native deferred rendering acceptance.
 """
 from pathlib import Path
 import importlib.util
+import itertools
 import os
 import random
 import struct
@@ -40,6 +41,67 @@ int main(){
 
 
 class StockDeferredLightingTests(unittest.TestCase):
+    def test_original_space_pbs_readiness_reader_and_shader_provider(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for the original PBS readiness contract')
+        try:
+            import pefile
+            from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
+            from unicorn.x86_const import (UC_X86_REG_EAX, UC_X86_REG_EBP,
+                                           UC_X86_REG_EDI, UC_X86_REG_ESP,
+                                           UC_X86_REG_EIP)
+        except ImportError:
+            self.skipTest('pefile and Unicorn are required for the original instruction oracle')
+        pe = pefile.PE(str(Path(client) / 'WorldOfTanks.exe'))
+        image = pe.get_memory_mapped_image()
+        emulator = Uc(UC_ARCH_X86, UC_MODE_32)
+        emulator.mem_map(pe.OPTIONAL_HEADER.ImageBase, (len(image)+4095)&~4095)
+        emulator.mem_write(pe.OPTIONAL_HEADER.ImageBase, image)
+        frame, space = 0x10008000, 0x20000000
+        emulator.mem_map(frame-0x8000, 0x10000)
+        emulator.mem_map(space, 0x10000)
+        read_result = [False]
+        def read_bool(uc, address, unused_size, unused_data):
+            stack = uc.reg_read(UC_X86_REG_ESP)
+            ret, key, default = struct.unpack('<3I', uc.mem_read(stack, 12))
+            pointer, length = struct.unpack('<2I', uc.mem_read(key, 8))
+            self.assertEqual(bytes(uc.mem_read(pointer, length)), b'PBSReady')
+            self.assertEqual(default, 0)
+            uc.reg_write(UC_X86_REG_EAX, int(read_result[0]))
+            uc.reg_write(UC_X86_REG_ESP, stack+12)
+            uc.reg_write(UC_X86_REG_EIP, ret)
+        emulator.hook_add(UC_HOOK_CODE, read_bool, begin=0x117d780, end=0x117d780)
+        # Execute the exact space.settings reader and shared shader provider for
+        # both resource slots and both values, preserving the inactive slot.
+        for slot, value in itertools.product((0, 1), (False, True)):
+            read_result[0] = value
+            emulator.mem_write(space, bytes(0x1000))
+            emulator.mem_write(space+12, struct.pack('<2I', space+0x100, space+0x200))
+            emulator.mem_write(0x1d5966f, bytes([slot]))
+            emulator.mem_write(frame-0x48, struct.pack('<I', space+0x300))
+            emulator.reg_write(UC_X86_REG_EBP, frame)
+            emulator.reg_write(UC_X86_REG_EDI, space)
+            emulator.reg_write(UC_X86_REG_ESP, frame-0x400)
+            emulator.emu_start(0x6b6eef, 0x6b6f1a, count=100)
+            self.assertEqual(bytes(emulator.mem_read(space+0x100+slot*0x100+8, 1)), bytes([value]))
+            self.assertEqual(bytes(emulator.mem_read(space+0x100+(1-slot)*0x100+8, 1)), b'\0')
+            emulator.reg_write(UC_X86_REG_EAX, space)
+            emulator.emu_start(0x9b0280, 0x9b0295, count=100)
+            self.assertEqual(emulator.reg_read(UC_X86_REG_EAX), value)
+        from tools.packed_xml import read_packed_xml
+        states = {}
+        for package in (Path(client)/'res/packages').glob('*.pkg'):
+            with zipfile.ZipFile(package) as archive:
+                for name in archive.namelist():
+                    if name.endswith('/space.settings'):
+                        fields = dict(read_packed_xml(archive.read(name)).children)
+                        flag = fields.get(b'PBSReady')
+                        states[name] = bool(flag and flag.value)
+        self.assertFalse(states['spaces/01_karelia/space.settings'])
+        self.assertTrue(any(states.values()))
+        self.assertTrue(any(not value for value in states.values()))
+
     def test_production_producer_state_and_failures(self):
         with tempfile.TemporaryDirectory(prefix='stock-lighting-producers-') as temporary:
             binary = Path(temporary) / 'probe'
@@ -80,6 +142,7 @@ class StockDeferredLightingTests(unittest.TestCase):
             self.assertLess(text.index('    deactivateStockDeferredLightingSettings();'), text.index('    s_activatedEM_ = NULL;'))
             self.assertIn('loadStockDeferredLightingSettings(source, stockDeferredLightingSettings_,', text)
             self.assertIn('Renderer::instance().pipelineType() == IRendererPipeline::TYPE_FORWARD_SHADING', text)
+            self.assertIn('stockDeferredLightingSettings_.pbsResourcesReady = data->readBool("PBSReady", false);', text)
             self.assertIn('if (s_activatedEM_ == this)', text)
             managed = (root / 'lib/moo/deferred_lights_manager.cpp').read_text()
             self.assertEqual(managed.count('if (!initialiseStockDeferredLightingConstants())'), 1)

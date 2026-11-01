@@ -48,7 +48,7 @@ void assertPlayerIdentity(Battle& b, std::int64_t expected) {
     if (avatar_vehicle != expected || arena_vehicle != expected)
         throw p::Error("#1513 player identity mismatch: expected=" + std::to_string(expected) + " avatar=" + std::to_string(avatar_vehicle) +
                        " arenaDP=" + std::to_string(arena_vehicle));
-    py::call(b.engine.compatibility.get(), "assert_vehicle_marker_identity", p::integer(expected).get());
+    compat::assertMarkerIdentity(b, expected);
 }
 
 // The module-only stock voice events a confirmed internal penetration replaces (critical_voice.py).
@@ -373,9 +373,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
     const bool enemy = team(target) != team(attacker);
     auto avatar = b.engine.avatar.get();
     if (attacker.local && enemy) {
-        auto assert_damage = py::optional(b.engine.compatibility.get(), "assert_vehicle_marker_damage_type");
-        if (!py::callable(assert_damage)) throw p::Error("#1513 vehicle-marker damage boundary is unavailable");
-        py::invoke(assert_damage.get(), avatar, p::integer(attacker.engine_id).get());
+        compat::assertMarkerDamageType(b, avatar, attacker.engine_id);
     }
     auto output = p::list();
     auto packDamage = [&](std::int64_t amount) {
@@ -669,9 +667,8 @@ std::optional<std::string> surfaceMaterial(Battle& b, const Point& at) {
 
 // BattleRuntime._release_target_lock
 bool releaseTargetLock(Battle& b, std::int64_t engine_id) {
-    auto release = py::optional(b.engine.compatibility.get(), "release_target_lock");
-    if (!py::callable(release) || !b.engine.avatar) return false;
-    return p::flag(py::invoke(release.get(), b.engine.avatar.get(), p::integer(engine_id).get()).get());
+    if (!b.engine.avatar) return false;
+    return compat::releaseTargetLock(b, b.engine.avatar.get(), engine_id);
 }
 }
 }

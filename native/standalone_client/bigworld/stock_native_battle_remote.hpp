@@ -57,6 +57,8 @@ struct Remote {
 };
 
 namespace remote {
+// Process shutdown; release global presentation handles while Python is alive.
+void finaliseScriptOwners();
 // Creates the Remote subsystem for this round (visible client: interpolation off, worker: authority geometry).
 void install(Battle& b, bool interpolate_motion, bool authority_geometry);
 

@@ -426,9 +426,7 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
                 startup::binding::arenaVehicleKilled(b, v.engine_id, p::wide(attacker.get()), p::wide(reason_value.get()));
                 events::reportLocalKill(b, v, edge.attacker, reason);
                 if (local && edge.suppress_postmortem_killer) {
-                    auto clear = py::optional(b.engine.compatibility.get(), "clear_postmortem_killer");
-                    if (!py::callable(clear)) throw p::Error("#1513 postmortem killer compatibility boundary is unavailable");
-                    py::invoke(clear.get(), b.engine.avatar.get());
+                    compat::clearPostmortemKiller(b, b.engine.avatar.get());
                 }
             }
         }

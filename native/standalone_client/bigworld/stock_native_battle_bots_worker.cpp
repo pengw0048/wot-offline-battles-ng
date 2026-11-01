@@ -579,6 +579,8 @@ void stop(bool restore_account) {
     if (!error.empty()) throw p::Error(error);
 }
 
+void releaseScriptOwners() { session.reset(); }
+
 namespace {
 PyObject* installEntry(PyObject*, PyObject* args) {
     PyObject *config, *lobby_ready, *bigworld;

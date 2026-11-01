@@ -562,6 +562,8 @@ void uninstall(Battle&) {
     s.installed = false;
 }
 
+void releaseScriptOwners() { stock_state = Stock(); scope_state = Scopes(); }
+
 // ---- per-round battle API --------------------------------------------------------------------------------------
 namespace {
 Compat& state(Battle& b) {

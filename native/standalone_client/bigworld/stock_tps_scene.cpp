@@ -82,7 +82,7 @@ struct FxParticle
     std::uint32_t renderFlags = 0;
     TPSVector direction;
     std::array<float, 4> rectangle{ 0.f, 0.f, 1.f, 1.f };
-    unsigned columns = 1, rows = 1, frames = 1;
+    unsigned columns = 1, rows = 1, lastFrame = 1;
     int previousFrame = 0, nextFrame = 0;
     float frameInterval = 1.f, frameElapsed = 0.f, streakLength = 0.f;
 };
@@ -169,10 +169,14 @@ bool spawnFx( const wot::StockTPSEmitterResource & source, BirthContext & contex
             if ((source.word( 0xe8 ) & 0xffffu) > 1)
             {
                 particle.renderFlags |= 1u;
-                particle.frames = particle.columns * particle.rows;
-                particle.frameInterval = source.scalar( 0x1c8 );
+                particle.lastFrame = particle.columns * particle.rows - 1;
+                // #1513 fb0e90 receives frames per second, stores seconds per
+                // frame, and uses the last valid tile for random starts.
+                const float frameRate = source.scalar( 0x1c8 );
+                // COMISS/JB also takes the division path for unordered input.
+                particle.frameInterval = frameRate <= 0.f ? 1.f : 1.f / frameRate;
                 if (render & 2u)
-                    particle.previousFrame = static_cast<int>(std::round( float(particle.frames) * random.next() ));
+                    particle.previousFrame = static_cast<int>(std::round( float(particle.lastFrame) * random.next() ));
                 if (render & 0x40u) particle.renderFlags |= 0x40u;
             }
         }
@@ -956,8 +960,8 @@ void Runtime::append( SceneSource & source, FxParticle & particle, float elapsed
         {
             particle.previousFrame = particle.nextFrame;
             if (!(particle.renderFlags & 0x40u))
-                particle.nextFrame = particle.nextFrame + 1 >= int(particle.frames) ? 0 : particle.nextFrame + 1;
-            else if (particle.nextFrame + 1 < int(particle.frames)) ++particle.nextFrame;
+                particle.nextFrame = particle.nextFrame + 1 >= int(particle.lastFrame) ? 0 : particle.nextFrame + 1;
+            else if (particle.nextFrame + 1 < int(particle.lastFrame)) ++particle.nextFrame;
             particle.frameElapsed -= particle.frameInterval;
         }
         const float width = (particle.rectangle[2] - particle.rectangle[0]) / float(particle.columns);
