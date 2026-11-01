@@ -240,16 +240,15 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
         }
         buffer.erase(0, used);
         if (!ready.empty()) {
-            std::shared_ptr<stock_wire_replay::Writer> recorder;
-            double t = 0.;
-            {
-                std::lock_guard<std::mutex> lock(shared->mutex);
-                recorder = shared->recorder;
-                t = shared->record_offset + std::chrono::duration<double>(now - shared->record_origin).count();
-                for (auto& item : ready) shared->frames.push_back(item);
+            std::lock_guard<std::mutex> lock(shared->mutex);
+            // Detach shares this boundary: every published frame is already
+            // queued for recording, with no writer lease escaping past END.
+            // Only enqueue runs here; gzip compression stays on its own thread.
+            if (shared->recorder) {
+                const double t = shared->record_offset + std::chrono::duration<double>(now - shared->record_origin).count();
+                for (const auto& item : ready) stock_wire_replay::record_frame(*shared->recorder, item.frame, t);
             }
-            if (recorder)
-                for (const auto& item : ready) stock_wire_replay::record_frame(*recorder, item.frame, t);
+            for (auto& item : ready) shared->frames.push_back(item);
         }
     }
 }
