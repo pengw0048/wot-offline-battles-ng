@@ -45,6 +45,9 @@ SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=Tr
 '''
 
 EDITS = (
+    # The visible client's tick-clock estimate trails by snapshot queueing
+    # and tick catch-up; under load a legal trigger arrives ~1 s old.
+    ('PLAYER_TRIGGER_MAX_LAG_MS = 500\n', 'PLAYER_TRIGGER_MAX_LAG_MS = 2000\n', 1),
     # Module helpers after the last top-level import of the json module.
     ('import json\n', 'import json\n' + HELPERS, 1),
     (SERIALIZE_BEFORE, SERIALIZE_AFTER, 1),

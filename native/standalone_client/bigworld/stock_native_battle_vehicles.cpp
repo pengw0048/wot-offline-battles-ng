@@ -194,6 +194,8 @@ bool ready(Battle& b, Actor& v) {
     if (v.presented.remote) {
         if (!remote::isReady(b, v.engine_id)) return false;
         v.ready = true;
+        // Collision queries (projectiles, cursor) install a vehicle's geometry only on a lifecycle change.
+        world::vehicleChanged(b, v);
         return true;
     }
     auto getter = py::optional(b.engine.server.get(), "vehicleEnterStatus");
@@ -207,6 +209,7 @@ bool ready(Battle& b, Actor& v) {
     }
     if (phase != "completed" || !startup::binding::isVehicleReady(b, v.engine_id)) return false;
     v.ready = true;
+    world::vehicleChanged(b, v);
     return true;
 }
 
