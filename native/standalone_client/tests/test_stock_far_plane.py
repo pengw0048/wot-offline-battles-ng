@@ -16,6 +16,25 @@ SPEC.loader.exec_module(PATCH)
 
 
 class StockFarPlaneTests(unittest.TestCase):
+    def test_no_sky_dome_occluder_is_created(self):
+        archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.is_file():
+            self.skipTest('Pinned public source archive is required')
+        with tempfile.TemporaryDirectory(prefix='stock-photon-occluders-') as temporary:
+            root = Path(temporary)
+            name = 'lib/romp/enviro_minder.cpp'
+            with tarfile.open(archive) as original:
+                member = next(m for m in original.getnames() if m.endswith('/programming/bigworld/' + name))
+                (root / name).parent.mkdir(parents=True)
+                (root / name).write_bytes(original.extractfile(member).read())
+            PATCH.patch_photon_occluders(root)
+            cpp = (root / name).read_text()
+            PATCH.patch_photon_occluders(root)
+            self.assertEqual(cpp, (root / name).read_text())
+            # The #1513 executable has ZBufferOccluder but no SkyDomeOccluder RTTI.
+            self.assertNotIn('new SkyDomeOccluder', cpp)
+            self.assertIn('zBufferOccluder_ = new ZBufferOccluder();', cpp)
+
     def test_original_space_distances_replace_the_global_ratio(self):
         archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
         compiler = shutil.which('c++')

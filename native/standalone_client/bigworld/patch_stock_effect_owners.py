@@ -507,8 +507,30 @@ def patch_far_plane(root):
     ])
 
 
+SKY_DOME_OCCLUDER = '''        if (SkyDomeOccluder::isAvailable())
+        {
+            skyDomeOccluder_ = new SkyDomeOccluder( *this );
+            LensEffectManager::instance().addPhotonOccluder( skyDomeOccluder_ );
+        }
+        else
+        {
+            INFO_MSG( "Sky domes will not provide lens flare occlusion, "
+                "because scissor rects are unsuppported on this card\\n" );
+        }
+'''
+
+
+def patch_photon_occluders(root):
+    # #1513 has no SkyDomeOccluder type; its centred sky-dome test would leave
+    # an unlit square where the deferred sky is later composed.
+    apply_file(root, Path('lib/romp/enviro_minder.cpp'), [
+        (SKY_DOME_OCCLUDER, '        // #1513 creates no sky-dome lens-flare occluder.\n', 'original photon occluders'),
+    ])
+
+
 def patch_environment(root):
     patch_far_plane(root)
+    patch_photon_occluders(root)
     # These types are included by public engine headers. The pinned build
     # flattens library linkage into bwclient, so target usage requirements do
     # not reach all header consumers. Publish the owned interface headers
