@@ -150,6 +150,12 @@ TRANSPORT_EDITS = (
     ("        reader_factory = kwargs.pop('replay_reader_factory', replay_reader.ProcessReader)\n",
      "        reader_factory = kwargs.pop('replay_reader_factory', native_replay.NativeReader)\n", 1),
     ('            except replay_reader.Pending:\n', '            except native_replay.Pending:\n', 1),
+    ("        raise ValueError('recorded %s rejected: %s' % (kind, reason))\n",
+     "        if (kind == 'bot_observation' and reason == 'invalid_contacts' and\n"
+     "                self.phase == 'loading' and\n"
+     "                self._battle_live_round_id != self.round_id):\n"
+     "            raise ValueError('recording is missing the battle-live barrier before %s' % kind)\n"
+     "        raise ValueError('recorded %s rejected: %s' % (kind, reason))\n", 1),
     ('        self._replay_reader_logged = False\n', '', 1),
     ("            if not self._replay_reader_logged and getattr(self.reader,'pid',None):\n"
      '                self._replay_reader_logged=True\n'
