@@ -434,10 +434,20 @@ public:
 }
 
 // lib/space IEntityEmbodiment and client Entity/PyEntity.
+struct PyAttachment : PyObject {};
+struct ScriptObject { PyObject * value; PyObject * get() const { return value; } };
+struct App
+{
+    enum { COLOUR_DRAW_CONTEXT };
+    Moo::DrawContext colour{Moo::RENDERING_PASS_COLOR};
+    static App & instance() { static App value; return value; }
+    Moo::DrawContext & drawContext(int) { return colour; }
+};
 class IEntityEmbodiment
 {
 public:
     explicit IEntityEmbodiment(const std::string & name) : name_(name) {}
+    ScriptObject scriptObject() const { return {const_cast<PyAttachment *>(&attachment_)}; }
     // An immediate-mode render op through the rigid override material.
     void draw(Moo::DrawContext & context)
     {
@@ -449,6 +459,7 @@ public:
     }
 private:
     std::string name_;
+    PyAttachment attachment_{};
 };
 typedef Ptr<IEntityEmbodiment> IEntityEmbodimentPtr;
 typedef std::vector<IEntityEmbodimentPtr> EntityEmbodiments;
@@ -741,7 +752,25 @@ PyObject * gammaRamps(PyObject *, PyObject * args)
     return result;
 }
 
-PyObject * drawEdges(PyObject *, PyObject *) { return PyBool_FromLong(BW::drawStockEdgeDetection()); }
+PyObject * drawEdges(PyObject *, PyObject *)
+{
+    const bool prepared = BW::prepareStockEdgeDetection();
+    return PyBool_FromLong(BW::drawStockEdgeDetection() && prepared);
+}
+PyObject * deferEntity(PyObject *, PyObject * args)
+{
+    PyObject * object;int main = 1;
+    if (!PyArg_ParseTuple(args, "O!|i", &BW::pyEntityType, &object, &main)) return NULL;
+    BW::Entity & entity = *static_cast<BW::PyEntity *>(object)->entity;
+    BW::Moo::DrawContext other(BW::Moo::RENDERING_PASS_COLOR);
+    BW::Moo::DrawContext & context = main ? BW::App::instance().drawContext(0) : other;
+    const auto members = BW::EdgeDetector::embodiments(entity);
+    PyObject * result = PyTuple_New(members.size());
+    for (size_t i = 0; i < members.size(); ++i)
+        PyTuple_SET_ITEM(result, i, PyBool_FromLong(BW::stockDeferEdgeAttachment(
+            static_cast<const BW::PyAttachment *>(members[i]->scriptObject().get()), context)));
+    return result;
+}
 
 // makeEntity(primary, auxiliaries...): a PyEntity with named embodiments.
 PyObject * makeEntity(PyObject *, PyObject * args)
@@ -779,6 +808,7 @@ PyObject * setEntity(PyObject *, PyObject * args)
 PyMethodDef hostMethods[] = {
     {"setTargetCreates", setTargetCreates, METH_VARARGS, NULL},
     {"drawEdges", drawEdges, METH_NOARGS, NULL},
+    {"deferEntity", deferEntity, METH_VARARGS, NULL},
     {"setSelectFails", setSelectFails, METH_VARARGS, NULL},
     {"resetDevice", resetDevice, METH_NOARGS, NULL},
     {"applyDeviceGamma", applyDeviceGamma, METH_NOARGS, NULL},

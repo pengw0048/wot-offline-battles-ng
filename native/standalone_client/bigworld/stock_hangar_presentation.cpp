@@ -3,6 +3,7 @@
 #include "stock_hangar_presentation.hpp"
 #include "stock_effect_adapter.hpp"
 #include "stock_tps_scene.hpp"
+#include "app.hpp"
 #include "ashes/simple_gui.hpp"
 #include "entity.hpp"
 #include "py_entity.hpp"
@@ -107,7 +108,7 @@ struct EdgeMember
     IEntityEmbodimentPtr embodiment;
     uint colorIndex;
     uint drawMode;
-    bool flag;  // Stored at member +0x10 by 00af3c50; no consumer was traced.
+    bool flag;
 };
 
 class EdgeDetector : public Moo::DeviceCallback
@@ -120,6 +121,7 @@ public:
     std::shared_ptr<Moo::DrawContext::OverrideBlock> zPass;
     Moo::RenderTargetPtr target;
     bool closed = false;
+    bool prepared = false;
 
     EdgeDetector()
     {
@@ -175,6 +177,7 @@ public:
     }
     virtual void deleteUnmanagedObjects()
     {
+        prepared = false;
         // SetTexture retains the default-pool target; release it before the target.
         clearTexture( transfer, "g_edgeDetectedMap" );
         target = NULL;
@@ -257,30 +260,53 @@ public:
         }
         return true;
     }
-    bool draw()
+    bool prepare()
     {
+        prepared = false;
         prune();
         // 00af45fb: nothing to draw without members.
         // 00af4619: without the target (e.g. a 0x0 back buffer) the pass is silently skipped.
         if (closed || (members[0].empty() && members[1].empty()) || !ready()) return true;
-        if (!target->push()) return false;
-        bool success = SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
-        Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );
-        context.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
-        context.pushImmediateMode();
-        context.pushOverrideBlock( zPass.get() );
-        for (const auto & list : members)
-            for (const EdgeMember & member : list)
-            {
-                if (!parameters( member )) { success = false; continue; }
-                member.embodiment->draw( context );
-            }
-        context.popOverrideBlock( zPass.get() );
-        context.popImmediateMode();
-        context.end( Moo::DrawContext::ALL_CHANNELS_MASK );
-        context.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
-        target->pop();
-        if (!success) return false;
+        bool success = false;
+        if (target->push())
+        {
+            success = SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
+            Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );
+            context.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
+            context.pushImmediateMode();
+            context.pushOverrideBlock( zPass.get() );
+            for (const auto & list : members)
+                for (const EdgeMember & member : list)
+                {
+                    if (!parameters( member )) { success = false; continue; }
+                    member.embodiment->draw( context );
+                }
+            context.popOverrideBlock( zPass.get() );
+            context.popImmediateMode();
+            context.end( Moo::DrawContext::ALL_CHANNELS_MASK );
+            context.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
+            target->pop();
+        }
+        // #1513 af41e6..af4210 defers nonzero-mode colour draws;
+        // af49b8..af4a81 resubmits their original materials after the mask.
+        // Restore the opaque MRTs before drawing, even if mask setup failed.
+        if (!members[1].empty())
+        {
+            Moo::DrawContext colour( Moo::RENDERING_PASS_COLOR );
+            colour.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
+            colour.pushImmediateMode();
+            for (const EdgeMember & member : members[1]) member.embodiment->draw( colour );
+            colour.popImmediateMode();
+            colour.end( Moo::DrawContext::ALL_CHANNELS_MASK );
+            colour.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
+        }
+        prepared = success;
+        return success;
+    }
+    bool draw()
+    {
+        if (!prepared || !ready()) return true;
+        prepared = false;
         // 00af45f0: the edge map and exactly four colours. Fewer than four reads
         // past the original vector; here the missing colours are zero.
         Vector4 palette[4] = { Vector4( 0.f, 0.f, 0.f, 0.f ), Vector4( 0.f, 0.f, 0.f, 0.f ),
@@ -352,6 +378,24 @@ bool drawStockGUIBackground()
 bool drawStockEdgeDetection()
 {
     return !edgeDetector || edgeDetector->draw();
+}
+
+bool prepareStockEdgeDetection()
+{
+    return !edgeDetector || edgeDetector->prepare();
+}
+
+bool stockDeferEdgeAttachment( const PyAttachment * attachment, const Moo::DrawContext & context )
+{
+    // Defer only the normal main-scene submission. Shadow/reflection contexts
+    // and the drawer's own local contexts retain their original draw paths.
+    if (!attachment || !edgeDetector || !edgeDetector->ready() ||
+        &context != &App::instance().drawContext( App::COLOUR_DRAW_CONTEXT )) return false;
+    edgeDetector->prune();
+    const PyObject * identity = static_cast<const PyObject *>( attachment );
+    for (const EdgeMember & member : edgeDetector->members[1])
+        if (member.embodiment->scriptObject().get() == identity) return true;
+    return false;
 }
 
 /**

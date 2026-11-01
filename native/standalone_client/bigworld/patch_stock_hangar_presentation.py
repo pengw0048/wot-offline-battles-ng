@@ -28,8 +28,8 @@ EDITS = (
     ('client/gui_app.cpp', '    SimpleGUI::instance().draw();\n',
      '    if (!drawStockGUIBackground())\n'
      '        ERROR_MSG("WGBackgroundImage: background draw failed\\n");\n', True),
-    # 00630e2b/00630e77 draw the EdgeDrawer z-pass and transfer after the
-    # semitransparent scene, before lens effects and the PPAA resolve.
+    # 00630e77 transfers the World-prepared edge mask after the semitransparent
+    # scene. patch_stock_edge_detection.py restores the World preparation.
     ('client/lens_app.cpp', '#include "romp/lens_effect_manager.hpp"\n',
      '#include "stock_hangar_presentation.hpp"\n', True),
     ('client/lens_app.cpp', '    rp->endSemitransparentDraw();\n',

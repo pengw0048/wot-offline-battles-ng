@@ -430,6 +430,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
     # MouseCursor.inFocus and GUIApp's background/edge presentation owners.
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_hangar_presentation.py"),
         $EngineRoot) "stock-hangar-presentation-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_edge_detection.py"),
+        $EngineRoot) "stock-edge-detection-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_mouse_targeting.py"),
         $EngineRoot) "stock-mouse-targeting-patch.log"
     # Starts the generated offline mod at the original guiModsInit seam.
