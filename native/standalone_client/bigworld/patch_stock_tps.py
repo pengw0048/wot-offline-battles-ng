@@ -82,12 +82,20 @@ def patch(root):
                             '        tickStockBattlegroundElements();\n        tickStockTPSRuntime( dGameTime );')
     if source.count('        tickStockTPSRuntime( dGameTime );') != 1:
         raise RuntimeError('The tPS frame owner must tick exactly once')
+    # DrawContext::drawUserItem rejects items after end(), even if their
+    # transparent flush has not run yet. Queue both tPS streams while World
+    # still collects; Facade retains the actual transparent/Gas draw phase.
+    source = replace(source, '    colourDrawContext.end( ',
+                     '    drawStockTPSRuntime();\n    colourDrawContext.end( ')
     pending.append((path, source))
     path = root / 'client/facade_app.cpp'
     source = replace(path.read_text(), '#include "pch.hpp"',
                      '#include "pch.hpp"\n#include "stock_tps_scene.hpp"')
     flush = '        App::instance().drawContext( App::COLOUR_DRAW_CONTEXT ).flush( Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );'
-    source = replace(source, flush, '        drawStockTPSRuntime();\n' + flush)
+    if source.count(flush) != 1:
+        raise RuntimeError('The tPS transparent flush owner changed')
+    # Upgrade an already patched SDK as well as a pristine checkout.
+    source = source.replace('        drawStockTPSRuntime();\n', '')
     pending.append((path, source))
     path = root / 'client/script_app.cpp'
     source = replace(path.read_text(), '#include "pch.hpp"',
@@ -96,7 +104,8 @@ def patch(root):
                      '\tfiniStockTPSRuntime();\n\tBigWorldClientScript::fini();')
     pending.append((path, source))
     for path, source in pending:
-        path.write_text(source)
+        if path.read_text() != source:
+            path.write_text(source)
 
 
 if __name__ == '__main__':

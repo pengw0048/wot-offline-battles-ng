@@ -1251,6 +1251,7 @@ class TPSDrawItem : public Moo::DrawContext::UserDrawItem
 {
 public:
     explicit TPSDrawItem( std::shared_ptr<Runtime> value ) : runtime_(std::move(value)), generation_(runtime_->generation) {}
+    void fini() override { delete this; }
     void draw() override
     {
         if (!live()) return;
@@ -1271,6 +1272,7 @@ class TPSVisualDrawItem : public Moo::DrawContext::UserDrawItem
 {
 public:
     explicit TPSVisualDrawItem( std::shared_ptr<Runtime> value ) : runtime_(std::move(value)), generation_(runtime_->generation) {}
+    void fini() override { delete this; }
     void draw() override
     {
         if (!runtime_->closed && runtime_->generation == generation_) runtime_->drawVisuals();
