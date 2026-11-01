@@ -23,6 +23,9 @@ bool bindStockDeferredLegacyDecalInputs(ID3DXEffect* effect);
 void clearStockDeferredLegacyDecalInputs(const Moo::EffectMaterialPtr& material);
 bool setStockDeferredTextureScale(ID3DXEffect* effect,const char* parameter,uint width,uint height);
 bool drawStockDeferredSunLight(const Moo::EffectMaterialPtr& material);
+// During a deferred frame the scene depth replaces the main depth buffer that
+// reuseZ render targets captured at creation.
+DX::Surface* stockFrameDepthSurface(DX::Surface* depth);
 bool finishStockAntialiasingScene();
 bool resolveStockTemporalHDR(const Moo::RenderTargetPtr& source,
     DX::BaseTexture* averageLuminance, float middleGray, float whitePoint);
@@ -98,6 +101,7 @@ private:
     Moo::EffectMaterialPtr bilateralBlurMaterial_;
     Moo::BaseTexturePtr aoNoise_,horizonNoise_;
     bool constantsRegistered_=false;
+    friend DX::Surface* stockFrameDepthSurface(DX::Surface* depth);
     bool frameActive_=false;
     bool prepared_=false;
     bool kindCopied_=false;

@@ -76,6 +76,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_initialization.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings_consumers.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_presets.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_color_grading.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_hdr.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_settings.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_graphics_detection.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_cpu_detection.cpp"

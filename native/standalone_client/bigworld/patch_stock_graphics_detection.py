@@ -125,6 +125,21 @@ bool Renderer::finishStockGraphicsStartup()
         anchor = '        DeviceCallback::createAllManaged();'
         if context_source.count(anchor) != 1: raise ValueError('Device callback startup changed')
         context_source = context_source.replace(anchor, hook + '\n\n' + anchor, 1)
+    old_deferred = ('                        supported &= (deviceInfo.caps_.NumSimultaneousRTs >= 3);\n'
+                    '                        supported &= (deviceInfo.caps_.PrimitiveMiscCaps & D3DPMISCCAPS_INDEPENDENTWRITEMASKS) != 0;\n')
+    new_deferred = ('                        supported &= (deviceInfo.caps_.NumSimultaneousRTs >= 4);\n'
+                    '                        supported &= (deviceInfo.caps_.PrimitiveMiscCaps & D3DPMISCCAPS_INDEPENDENTWRITEMASKS) != 0;\n'
+                    '                        // #1513 927c70: G-buffer targets and the sampled INTZ scene depth on the desktop format.\n'
+                    '                        D3DDISPLAYMODE desktop;\n'
+                    '                        supported = supported && SUCCEEDED(d3d_->GetAdapterDisplayMode(adapterIndex, &desktop));\n'
+                    '                        for (D3DFORMAT target : { D3DFMT_A16B16G16R16F, D3DFMT_A2B10G10R10 })\n'
+                    '                            supported = supported && SUCCEEDED(d3d_->CheckDeviceFormat(adapterIndex, D3DDEVTYPE_HAL,\n'
+                    '                                desktop.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_TEXTURE, target));\n'
+                    '                        supported = supported && SUCCEEDED(d3d_->CheckDeviceFormat(adapterIndex, D3DDEVTYPE_HAL,\n'
+                    "                            desktop.Format, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z')));\n")
+    if new_deferred not in context_source:
+        if context_source.count(old_deferred) != 1: raise ValueError('Deferred shading compatibility changed')
+        context_source = context_source.replace(old_deferred, new_deferred, 1)
     py = root / 'lib/romp/py_graphics_setting.cpp'
     py_source = py.read_text(encoding='utf-8-sig')
     if include not in py_source:

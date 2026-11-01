@@ -191,9 +191,13 @@ PY_MODULE_FUNCTION(graphicSetting, BigWorld)
 static PyObject* py_graphicSettingIsSupported(PyObject* args)
 {
     PyObject* input;
+    PyObject* indexObject;
     BW::string label;
     int index;
-    if (!PyArg_ParseTuple(args, "Oi:graphicSettingIsSupported", &input, &index) || Script::setData(input, label)) return NULL;
+    // a17d40 converts the index with Script::setData(int&), which truncates
+    // the floats Scaleform passes for AS3 Number values.
+    if (!PyArg_ParseTuple(args, "OO:graphicSettingIsSupported", &input, &indexObject) ||
+        Script::setData(input, label) || Script::setData(indexObject, index, "index")) return NULL;
     auto setting = Moo::GraphicsSetting::getFromLabel(label);
     return PyBool_FromLong(setting && index >= 0 && static_cast<std::size_t>(index) < setting->options().size());
 }
@@ -202,9 +206,12 @@ PY_MODULE_FUNCTION(graphicSettingIsSupported, BigWorld)
 static PyObject* py_getGraphicsSettingApplyMethod(PyObject* args)
 {
     PyObject* input;
+    PyObject* indexObject;
     BW::string label;
     int index;
-    if (!PyArg_ParseTuple(args, "Oi:getGraphicsSettingApplyMethod", &input, &index) || Script::setData(input, label)) return NULL;
+    // a178b0 converts the index with Script::setData(int&), like a17d40.
+    if (!PyArg_ParseTuple(args, "OO:getGraphicsSettingApplyMethod", &input, &indexObject) ||
+        Script::setData(input, label) || Script::setData(indexObject, index, "index")) return NULL;
     auto setting = Moo::GraphicsSetting::getFromLabel(label);
     const bool restart = setting && setting->requiresRestart() && setting->activeOption() != index;
     return PyString_FromString(restart ? "restart" : "normal");

@@ -48,7 +48,24 @@ PY_AUTO_MODULE_FUNCTION( RETDATA, changeVideoMode, ARG( int, ARG( int, END ) ), 
         '        presentParameters_.BackBufferHeight = mode.Height;\n'
         '        presentParameters_.FullScreen_RefreshRateInHz = mode.RefreshRate;')
     render = replace_once(render, 'namespace Moo\n{',
-        'bool stockDisplayDeviceLost() { return s_lost; }\n\nnamespace Moo\n{')
+        'bool stockDisplayDeviceLost() { return s_lost; }\n\n'
+        '// Settings and window messages can reset the device inside a frame\'s\n'
+        '// push/pop scope. The reset releases the pushed surfaces; their pops\n'
+        '// then find the reset back buffer already bound.\n'
+        'static int s_stockRenderTargetsReleasedByReset = 0;\n\n'
+        'namespace Moo\n{')
+    render = replace_once(render,
+        '    renderTargetStack_.clear();\n',
+        '    s_stockRenderTargetsReleasedByReset += renderTargetStack_.nStackItems();\n'
+        '    renderTargetStack_.clear();\n')
+    render = replace_once(render,
+        '    MF_ASSERT_DEV( stackItems_.size() );\n',
+        '    if (stackItems_.empty() && s_stockRenderTargetsReleasedByReset > 0)\n'
+        '    {\n'
+        '        --s_stockRenderTargetsReleasedByReset;\n'
+        '        return true;\n'
+        '    }\n'
+        '    MF_ASSERT_DEV( stackItems_.size() );\n')
     render = replace_once(render,
         '            hr = device_->Present( NULL, NULL, NULL, NULL );',
         '            hr = device_->Present( NULL, NULL, NULL, NULL );\n'

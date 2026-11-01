@@ -593,6 +593,15 @@ activateStockScreenSpaceShadowSettings(wot::StockScreenSpaceShadowSettings());as
             result = subprocess.run([str(path/'probe')],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_scene_target_format_checks_use_the_adapter_display_format(self):
+        # D3D9 rejects the A8R8G8B8 back-buffer format as an adapter format (NOTAVAILABLE).
+        source = (ROOT / 'bigworld/stock_deferred_buffers.cpp').read_text()
+        body = source[source.index('void StockDeferredBuffers::createUnmanagedObjects()'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('direct3d->GetAdapterDisplayMode(creation.AdapterOrdinal,&desktop)', body)
+        checks = re.findall(r'CheckDeviceFormat\(creation\.AdapterOrdinal,creation\.DeviceType,\s*(\w+(?:\.\w+)?),', body)
+        self.assertEqual(checks, ['desktop.Format', 'desktop.Format'])
+
     def test_public_shader_layout_and_resource_idempotence(self):
         path = ROOT / 'bigworld/patch_stock_deferred_buffers.py'
         spec = importlib.util.spec_from_file_location('deferred_resources', path)
@@ -809,6 +818,11 @@ std::cout.write((char*)output,sizeof(output));}return !std::cin.eof();}
                 self.assertEqual(cpp.count('m_stockDeferredBuffers(new StockDeferredBuffers(*this))'), 1)
                 self.assertEqual(cpp.count('if (!m_stockDeferredBuffers->begin())'), 1)
                 self.assertEqual(cpp.count('if (!m_stockDeferredBuffers->end())'), 1)
+                # reuseZ targets pushed inside the frame bind the scene depth, not the main buffer.
+                target = (root / 'lib/moo/render_target.cpp').read_text()
+                self.assertEqual(target.count('pDepthTarget = stockFrameDepthSurface( pDepthTarget );\n'), 1)
+                self.assertLess(target.index('stockFrameDepthSurface( pDepthTarget )'),
+                                target.index('SetDepthStencilSurface( pDepthTarget )'))
                 self.assertLess(cpp.index('if (!m_stockDeferredBuffers->prepare())'), cpp.index('    m_decalsManager->draw();'))
                 self.assertLess(cpp.index('    m_decalsManager->draw();'), cpp.index('    if (!drawStockVehicleTraces())'))
                 self.assertLess(cpp.index('    if (!drawStockVehicleTraces())'), cpp.index('    m_dynamicShadowManager->receive();'))

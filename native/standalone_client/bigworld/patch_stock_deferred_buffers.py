@@ -221,6 +221,15 @@ def apply(root):
          READER + 'void EnviroMinder::loadHDR(const DataSectionPtr& data, bool loadFromExternal)',
          'void EnviroMinder::loadStockDeferredMaterials(')
 
+    source = 'lib/moo/render_target.cpp'
+    edit(source, '#include "render_target.hpp"',
+         '#include "render_target.hpp"\n#include "stock_deferred_buffers.hpp"', '#include "stock_deferred_buffers.hpp"')
+    # reuseZ targets captured the main depth buffer at creation; a deferred
+    # frame renders its depth and stencil into the original scene depth.
+    edit(source, '\thr = Moo::rc().device()->SetDepthStencilSurface( pDepthTarget );',
+         '\tpDepthTarget = stockFrameDepthSurface( pDepthTarget );\n'
+         '\thr = Moo::rc().device()->SetDepthStencilSurface( pDepthTarget );')
+
     application = Path(__file__).resolve().parent
     headers = ((application / 'stock_deferred_buffers.hpp', root / 'lib/stock_deferred_buffers.hpp'),
                (application.parent / 'include/wot/stock_deferred_buffers.hpp',

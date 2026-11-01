@@ -50,7 +50,13 @@ PyObjectPtr& operator=(const PyObjectPtr& p){Py_XINCREF(p.value);Py_XDECREF(valu
 ~PyObjectPtr(){Py_XDECREF(value);}explicit operator bool()const{return value!=nullptr;}PyObject* get()const{return value;}
 };
 namespace Script{int setData(PyObject* value,std::string& output){
-char* data;Py_ssize_t size;if(PyString_AsStringAndSize(value,&data,&size)<0)return -1;output.assign(data,size);return 0;}}
+char* data;Py_ssize_t size;if(PyString_AsStringAndSize(value,&data,&size)<0)return -1;output.assign(data,size);return 0;}
+// Public 14.4.1 Script::setData(int&): ints, truncated floats and in-range longs.
+int setData(PyObject* value,int& output,const char* name){
+if(PyInt_Check(value)){long v=PyInt_AsLong(value);output=int(v);if(v==output)return 0;}
+if(PyFloat_Check(value)){output=int(PyFloat_AsDouble(value));return 0;}
+if(PyLong_Check(value)){long v=PyLong_AsLong(value);output=int(v);if(!PyErr_Occurred()){if(v==output)return 0;}else PyErr_Clear();}
+PyErr_Format(PyExc_TypeError,"%s must be set to an int",name);return -1;}}
 namespace Moo{
 struct FakeRC {void* device(){return this;}}; FakeRC& rc(){static FakeRC x;return x;} bool isInitialised(){return true;}
 struct GraphicsSetting{

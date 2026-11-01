@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_graphics_initialization.hpp"
+#include "stock_color_grading.hpp"
 #include "stock_vehicle_fashions.hpp"
 #include "stock_startup_services.hpp"
 #include "stock_vehicle_traces.hpp"
@@ -27,6 +28,9 @@ void initialiseStockGraphicsConfiguration()
 bool initialiseStockCustomGraphicsSettings()
 {
     if (!initialiseStockParticleQualityProfiles()) return false;
+    // Renderer initialization registers this before 00971070, so it already
+    // exists when the presets below read the registry.
+    if (!initialiseStockColorGradingSetting()) return false;
     // 00971070 registers in this order. Registration preserves each owner's
     // cold state; preference application remains with GraphicsSetting.
     if (!initialiseStockVehicleDustSetting() ||

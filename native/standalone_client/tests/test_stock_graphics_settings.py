@@ -281,6 +281,12 @@ assert p.graphicSetting('ABSENT') is None
 assert p.getGraphicsSettingApplyMethod('AA_FIRST',1)=='normal'
 assert p.getGraphicsSettingApplyMethod('AA_FIRST',-123)=='restart'
 assert p.getGraphicsSettingApplyMethod('ABSENT',999)=='normal'
+# Scaleform delivers AS3 Number indices as Python floats.
+assert p.graphicSettingIsSupported('AA_FIRST',3.0) is True and p.graphicSettingIsSupported('AA_FIRST',5.0) is False
+assert p.getGraphicsSettingApplyMethod('AA_FIRST',1.0)=='normal' and p.getGraphicsSettingApplyMethod('AA_FIRST',-123.0)=='restart'
+try:p.getGraphicsSettingApplyMethod('AA_FIRST','1')
+except TypeError:pass
+else:raise AssertionError('string index')
 for index in (-1,5,3):
  try:p.setGraphicsSetting('AA_FIRST',index)
  except ValueError:pass

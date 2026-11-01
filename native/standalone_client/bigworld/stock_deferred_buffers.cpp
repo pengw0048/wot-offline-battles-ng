@@ -397,18 +397,24 @@ void StockDeferredBuffers::createUnmanagedObjects()
     if(!device || size.Width<2 || size.Height<2)return;
     D3DDEVICE_CREATION_PARAMETERS creation={};
     ComObjectWrap<IDirect3D9> direct3d;
-    if(FAILED(device->GetCreationParameters(&creation)) || FAILED(device->GetDirect3D(&direct3d)))return;
+    D3DDISPLAYMODE desktop={};
+    if(FAILED(device->GetCreationParameters(&creation)) || FAILED(device->GetDirect3D(&direct3d)) ||
+        FAILED(direct3d->GetAdapterDisplayMode(creation.AdapterOrdinal,&desktop)))return;
     // b2e7c0 maps Wgfx D24S8 + sampled-depth usage to INTZ. The modern
     // DX9 deferred path requires that actual capability; colour-buffer depth
-    // is not a valid substitute for the original material channels.
+    // is not a valid substitute for the original material channels. Like
+    // b26dc0, format checks use the adapter's display format, not the back buffer's.
     const D3DFORMAT intz=static_cast<D3DFORMAT>(MAKEFOURCC('I','N','T','Z'));
-    if(FAILED(direct3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,size.Format,
-        D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,intz)) ||
-        FAILED(device->CreateTexture(size.Width,size.Height,1,D3DUSAGE_DEPTHSTENCIL,intz,
-            D3DPOOL_DEFAULT,&hardwareDepth_,NULL)) ||
-        FAILED(hardwareDepth_->GetSurfaceLevel(0,&depthSurface_)))
+    HRESULT check=direct3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,desktop.Format,
+        D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_TEXTURE,intz),create=E_FAIL,level=E_FAIL;
+    if(SUCCEEDED(check))create=device->CreateTexture(size.Width,size.Height,1,D3DUSAGE_DEPTHSTENCIL,intz,
+        D3DPOOL_DEFAULT,&hardwareDepth_,NULL);
+    if(SUCCEEDED(create))level=hardwareDepth_->GetSurfaceLevel(0,&depthSurface_);
+    if(FAILED(level))
     {
-        ERROR_MSG("Deferred buffers: the device could not create the original INTZ scene depth\n");
+        ERROR_MSG("Deferred buffers: the device could not create the original INTZ scene depth "
+            "(%ux%u adapter format %d: check 0x%08lx create 0x%08lx level 0x%08lx)\n",size.Width,size.Height,
+            int(desktop.Format),check,create,level);
         deleteUnmanagedObjects();return;
     }
     linearDepth_=Moo::rc().createTexture(size.Width,size.Height,2,D3DUSAGE_RENDERTARGET,
@@ -426,7 +432,7 @@ void StockDeferredBuffers::createUnmanagedObjects()
         deleteUnmanagedObjects();return;
     }
     const bool alpha=SUCCEEDED(direct3d->CheckDeviceFormat(creation.AdapterOrdinal,creation.DeviceType,
-        size.Format,D3DUSAGE_RENDERTARGET,D3DRTYPE_TEXTURE,D3DFMT_A8));
+        desktop.Format,D3DUSAGE_RENDERTARGET,D3DRTYPE_TEXTURE,D3DFMT_A8));
     if(!Moo::createRenderTarget(kindCopy_,size.Width,size.Height,alpha?D3DFMT_A8:D3DFMT_A8R8G8B8,
         "stock/object kind copy",true,false) || !kindCopy_->pTexture() ||
         !converted_[0]->pTexture() || !converted_[1]->pTexture() ||
@@ -843,4 +849,9 @@ bool StockDeferredBuffers::drawSpaceDecalsAO()
 }
 
 StockDeferredBuffers* stockDeferredBuffers() { return owner; }
+DX::Surface* stockFrameDepthSurface(DX::Surface* depth)
+{
+    return owner && owner->frameActive_ && depth && depth==owner->previousDepth_.pComObject() ?
+        owner->depthSurface_.pComObject() : depth;
+}
 BW_END_NAMESPACE

@@ -35,6 +35,9 @@ static std::unordered_map<const char*, long> g_syncBy;
 static inline long long now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 inline bool onMain() { return g_started && GetCurrentThreadId() == g_main; }
 inline bool onRender() { return GetCurrentThreadId() == g_renderId; }
+// While the render thread is parked for a window-thread Reset, the main thread owns the device.
+static bool g_parked;
+inline bool mainOwnsDevice() { return g_parked && onMain(); }
 
 struct Rec { uint32_t size; void (*fn)(void*); };
 static void wake() { if (InterlockedCompareExchange(&g_sleeping, 0, 1) == 1) SetEvent(g_work); }
@@ -65,12 +68,14 @@ template<class T> static void invokeAndDestroy(void* p) { T* f = static_cast<T*>
 template<class F> void post(F&& f) {
     using T = typename std::decay<F>::type;
     static_assert(alignof(T) <= 8, "record alignment");
+    if (mainOwnsDevice()) { f(); return; }
     new (reserve(sizeof(T), &invokeAndDestroy<T>)) T(std::forward<F>(f)); commit();
 }
 template<class T> struct WithData { T f; uint32_t n; };
 template<class T> static void invokeData(void* p) { auto* h = static_cast<WithData<T>*>(p); h->f(reinterpret_cast<const uint8_t*>(h + 1)); h->~WithData<T>(); }
 template<class F> void postData(const void* data, uint32_t n, F&& f) {
     using T = typename std::decay<F>::type;
+    if (mainOwnsDevice()) { f(static_cast<const uint8_t*>(data)); return; }
     void* p = reserve(sizeof(WithData<T>) + n, &invokeData<T>);
     auto* h = new (p) WithData<T>{std::forward<F>(f), n};
     if (n) memcpy(h + 1, data, n);
@@ -85,7 +90,7 @@ static HANDLE threadEvent() { static thread_local HANDLE ev = CreateEventA(nullp
 void stallReport(const char* name);   // logs the render thread's stack once when a sync stalls
 template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
     using R = decltype(f());
-    if (!g_started || onRender()) return f();
+    if (!g_started || onRender() || mainOwnsDevice()) return f();
     struct Ctx { F* f; R r; } ctx{&f, R()};
     SyncTask task{[](void* c) { auto* x = static_cast<Ctx*>(c); x->r = (*x->f)(); }, &ctx, 0, threadEvent()};
     if (onMain()) {
@@ -663,8 +668,22 @@ HRESULT WIB::Unlock() { return bufferUnlock(this); }
 
 // Reset needs every reference to default-pool surfaces gone: drop shadow references and run pending retirements first.
 static void beforeReset() { rt::g_inlineRetire = true; sh::clearAll(); rt::runDeferred(); rt::g_inlineRetire = false; }
-HRESULT WDevice::Reset(D3DPRESENT_PARAMETERS* p) { return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = REAL->Reset(p); refreshShadows(REAL); return h; }, "Reset"); }
-HRESULT WDevice::ResetEx(D3DPRESENT_PARAMETERS* p, D3DDISPLAYMODEEX* m) { return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = REAL->ResetEx(p, m); refreshShadows(REAL); return h; }, "ResetEx"); }
+// D3D9 rejects Reset/ResetEx (D3DERR_INVALIDCALL) from any thread but the device window's.
+// The render thread drains the queue and parks; the window thread resets the device it then owns.
+template<class F> static HRESULT resetOnWindowThread(IDirect3DDevice9Ex* real, F&& reset, const char* name) {
+    if (!rt::onMain() || rt::g_parked) return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = reset(); refreshShadows(real); return h; }, name);
+    static HANDLE parked = CreateEventA(nullptr, FALSE, FALSE, nullptr), resume = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    rt::post([] { beforeReset(); SetEvent(parked); WaitForSingleObject(resume, INFINITE); });
+    rt::g_sinceWake = 0; rt::wake();
+    WaitForSingleObject(parked, INFINITE);
+    rt::g_parked = true;
+    HRESULT h = reset(); refreshShadows(real);
+    rt::g_parked = false;
+    SetEvent(resume);
+    return h;
+}
+HRESULT WDevice::Reset(D3DPRESENT_PARAMETERS* p) { return resetOnWindowThread(REAL, [&] { return REAL->Reset(p); }, "Reset"); }
+HRESULT WDevice::ResetEx(D3DPRESENT_PARAMETERS* p, D3DDISPLAYMODEEX* m) { return resetOnWindowThread(REAL, [&] { return REAL->ResetEx(p, m); }, "ResetEx"); }
 HRESULT WDevice::EndStateBlock(IDirect3DStateBlock9** o) { return rt::sync([&]() -> HRESULT { HRESULT h = REAL->EndStateBlock(o); if (*o) *o = rt::wrapOut(this, *o); refreshShadows(REAL); return h; }, "EndStateBlock"); }
 
 // ------------------------------------------------------------------ render thread

@@ -235,6 +235,15 @@ assert(detector.presetId("MAX")==0&&detector.presetId("hIgH")==1&&detector.prese
             self.assertLess(hook, managed)
             self.assertLess(managed, unmanaged)
             self.assertIn('!Renderer::instance().finishStockGraphicsStartup()) return false;', context)
+            # 927c70: a GPU without these formats (no INTZ on Parallels) must fall back to forward.
+            deferred = context[context.index('//-- compatibility for deferred shading pipeline.'):]
+            deferred = deferred[:deferred.index('COMPATIBILITYFLAG_DEFERRED_SHADING')]
+            self.assertIn('NumSimultaneousRTs >= 4', deferred)
+            self.assertNotIn('NumSimultaneousRTs >= 3', deferred)
+            for target in ('D3DFMT_A16B16G16R16F', 'D3DFMT_A2B10G10R10'):
+                self.assertIn(target, deferred)
+            self.assertIn("D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z')", deferred)
+            self.assertEqual(deferred.count('supported && SUCCEEDED(d3d_->CheckDeviceFormat('), 2)
             renderer = (root / 'lib/moo/renderer.cpp').read_text()
             methods = '\n'.join(graphics.function(renderer, marker) for marker in (
                 'void Renderer::prepareStockGraphicsStartup(', 'bool Renderer::finishStockGraphicsStartup(',

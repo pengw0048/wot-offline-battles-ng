@@ -476,6 +476,8 @@ print('Staged the pinned complete gameplay archive for recorder preparation')
         $EngineRoot) "stock-deferred-buffers-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_antialiasing.py"),
         $EngineRoot) "stock-antialiasing-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_hdr.py"),
+        $EngineRoot) "stock-hdr-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_vehicle_traces.py"),
         $EngineRoot) "stock-vehicle-traces-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_flock_manager.py"),
