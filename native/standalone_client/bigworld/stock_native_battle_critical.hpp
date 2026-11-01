@@ -43,6 +43,8 @@ Value applyPayload(Battle& b, PyObject* entity, const Value& payload);
 Value applyDeath(Battle& b, PyObject* entity, const char* cause);
 // The accepted damage of a vehicle, or null before its first payload.
 const VehicleDamage* damage(const Battle& b, std::int64_t engine_id);
+// Whether an undelivered HUD edge still matches the current native damage owner.
+bool eventCurrent(const Battle& b, PyObject* entity, const Value& event);
 // crew x module x stun multiplier of one stat ("reload", "aim_time", "dispersion", "turret_speed", "mobility",
 // "vision", "signal") for a stock entity; >1 lengthens a time, <1 slows a speed or shrinks a range.
 double statFactor(Battle& b, PyObject* entity, const std::string& stat);
