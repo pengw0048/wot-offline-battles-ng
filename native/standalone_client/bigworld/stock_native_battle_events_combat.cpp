@@ -59,7 +59,7 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
     auto entity = b.entity(target->engine_id);
     if (entity.get() == Py_None) throw p::Error("ordered combat event target has no native entity: " + *target_key);
     if (attacker && b.entity(attacker->engine_id).get() == Py_None) throw p::Error("ordered combat event attacker has no native entity: " + *attacker_key);
-    feedback::damageSticker(b, event, *target);
+    b.feature("projectile damage stickers", [&] { feedback::damageSticker(b, event, *target); }, false);
     const bool blind = attacker && feedback::blindLocalAttack(b, *target, *attacker);
     const bool dead_target = field(state, "health").numeric(0.) <= 0. || !field(state, "alive").truth(true);
     const bool suppress_postmortem = vehicles::suppressPostmortemKiller(b, *target, state, attacker_engine);
@@ -70,7 +70,9 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
     }
     if (source == "player_left" && attacker) throw p::Error("player_left event has an attacker");
     if (attacker) {
-        feedback::combatHit(b, event, *target, *attacker);
+        // Optional effect setup can fail before combatHit reaches its inner
+        // guards. Keep confirmed credit and health, and retry effects on later hits.
+        b.feature("combat hit presentation", [&] { feedback::combatHit(b, event, *target, *attacker); }, false);
         feedback::combat(b, event, *target, *attacker, reason);
     } else if (source == "environment" || source == "fire") {
         feedback::environment(b, event, *target, reason);

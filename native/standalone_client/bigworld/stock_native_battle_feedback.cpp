@@ -390,7 +390,9 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
         if (critical_count > 0) p::append(output.get(), eventRow(types.get(), "CRIT", target.engine_id, packCrits()));
         if (dead) p::append(output.get(), eventRow(types.get(), "KILL", target.engine_id, p::integer(0)));
     }
-    if (attacker.local && source(event) == "shot" && anyHit(text(field(event, "kind")))) {
+    // Shot-result UI/voice is optional; its stock callback must not cost the
+    // confirmed damage rows or the health edge that follows this presenter.
+    if (attacker.local && source(event) == "shot" && anyHit(text(field(event, "kind")))) b.feature("shot result feedback", [&] {
         auto flags_type = py::optional(b.engine.constants.get(), "VEHICLE_HIT_FLAGS");
         if (flags_type.get() == Py_None) throw p::Error("#1513 VEHICLE_HIT_FLAGS are unavailable");
         auto flag = [&](const char* name) { return constant(flags_type.get(), name); };
@@ -457,7 +459,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
             presentCriticalVoice(b, callback.get(), results.get());
         else
             py::invoke(callback.get(), results.get());
-    }
+    }, false);
     if (target.local && (enemy || isTrue(field(event, "push_attributed")))) {
         const std::int64_t blocked = nonNegative(event, "blocked_damage");
         if (blocked > 0) p::append(output.get(), eventRow(types.get(), "TANKING", attacker.engine_id, packDamage(blocked)));
@@ -465,7 +467,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
         if (critical_count > 0) p::append(output.get(), eventRow(types.get(), "RECEIVED_CRIT", attacker.engine_id, packCrits()));
     }
     const bool any = PyList_GET_SIZE(output.get()) != 0;
-    if (any) py::invoke(battleEventsCallback(b).get(), output.get());
+    if (any) b.feature("combat battle events", [&] { py::invoke(battleEventsCallback(b).get(), output.get()); }, false);
     return any;
 }
 
@@ -478,12 +480,11 @@ bool environment(Battle& b, const Value& event, Actor& target, std::optional<std
     const std::int64_t damage = nonNegative(event, "damage");
     if (damage <= 0) return false;
     auto types = eventTypes(b, "#1513 battle feedback constants are unavailable");
-    auto callback = battleEventsCallback(b);
     auto details = p::integer(toInt(py::call(types.get(), "packDamage", p::integer(damage).get(),
                                              reason ? p::integer(*reason).get() : Py_None).get()));
     auto rows = p::list();
     p::append(rows.get(), eventRow(types.get(), "RECEIVED_DAMAGE", target.engine_id, std::move(details)));
-    py::invoke(callback.get(), rows.get());
+    b.feature("combat battle events", [&] { py::invoke(battleEventsCallback(b).get(), rows.get()); }, false);
     return true;
 }
 
