@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,13 +87,19 @@ def samples():
     return messages
 
 
-@unittest.skipUnless(subprocess.run(['pyenv', 'which', 'python2.7'], capture_output=True,
-                                    env=dict(os.environ, PYENV_VERSION='2.7.18')).returncode == 0,
-                     'CPython 2.7.18 audit runtime is required')
+def python27_audit_runtime():
+    pyenv = shutil.which('pyenv')
+    if pyenv:
+        result = subprocess.run([pyenv, 'which', 'python2.7'], capture_output=True, text=True,
+                                env=dict(os.environ, PYENV_VERSION='2.7.18'))
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    raise unittest.SkipTest('CPython 2.7.18 audit runtime is required')
+
+
 class StockWireCodec(unittest.TestCase):
     def test_python27_native_matches_schema_codec(self):
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         messages = samples()
         with tempfile.TemporaryDirectory(prefix='wire-codec-') as folder:
@@ -212,8 +219,7 @@ class StagedClientTransport(unittest.TestCase):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         client = Path(fork) / 'src/res/scripts/client'
         import importlib.util
@@ -312,8 +318,7 @@ class NativeReplay(unittest.TestCase):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='wire-replay-') as folder:
             folder = Path(folder)

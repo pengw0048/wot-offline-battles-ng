@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from test_stock_vector4_basic import block
+from native_test_compile_flags import native_test_compile_flags
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = r'''
@@ -154,7 +155,7 @@ class InfluxSyncTests(unittest.TestCase):
             folder = Path(directory)
             (folder / 'probe.cpp').write_text(host)
             subprocess.run([compiler, '-std=c++17', '-O2', '-Wall', '-Wextra',
-                            '-Werror', '-fsanitize=address,undefined',
+                            '-Werror', *native_test_compile_flags(compiler),
                             str(folder / 'probe.cpp'), '-o', str(folder / 'probe')], check=True)
             subprocess.run([str(folder / 'probe')], check=True)
 
