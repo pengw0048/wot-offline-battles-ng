@@ -88,10 +88,30 @@ def sdk_edits(sdk_root, edit):
     class_alias_edits(sdk_root, edit)
     amf3_edits(sdk_root, edit)
     text_selection_edits(sdk_root, edit)
+    html_default_format_edits(sdk_root, edit)
     translator_edits(sdk_root, edit)
     drop_shadow_edits(sdk_root, edit)
     bitmap_lifetime_edits(sdk_root, edit)
     tracer_merge_edits(sdk_root, edit)
+
+
+def html_default_format_edits(sdk_root, edit):
+    # #1513 00ca0911..00ca096a and 00ca0adb..00ca0b34 merge the current
+    # default formats before parsing translated and untranslated HTML. Dynamic
+    # BattleMessage fields set $FieldFont through defaultTextFormat; their
+    # original TextFieldDef still has the SDK's Times New Roman default.
+    source = sdk_root / 'Src/GFx/GFx_TextField.cpp'
+    for indent in ('                    ', '            '):
+        before = (indent + 'GetInitialFormats(&txtFmt, &paraFmt);                \n' +
+                  indent + 'Text::StyledText::HTMLImageTagInfoArray imageInfoArray')
+        after = (indent + 'GetInitialFormats(&txtFmt, &paraFmt);                \n' +
+                 indent + 'if (!HasStyleSheet())\n' +
+                 indent + '{\n' +
+                 indent + '    txtFmt = txtFmt.Merge(*pDocument->GetDefaultTextFormat());\n' +
+                 indent + '    paraFmt = paraFmt.Merge(*pDocument->GetDefaultParagraphFormat());\n' +
+                 indent + '}\n' +
+                 indent + 'Text::StyledText::HTMLImageTagInfoArray imageInfoArray')
+        edit(source, before, after, 'HTML current default formats at indent %d' % len(indent))
 
 
 def tracer_merge_edits(sdk_root, edit):
@@ -902,7 +922,8 @@ def patch_engine(engine_root, sdk_root):
 
     sdk_edits(sdk_root, edit)
     for path, source in changes.items():
-        path.write_text(source, encoding=source_encoding(path))
+        if read_source(path) != source:
+            path.write_text(source, encoding=source_encoding(path))
     print('Public BigWorld connected to source Scaleform 4.2.22; optional FMOD/video remain uninstalled')
 
 
@@ -917,7 +938,8 @@ def patch_sdk(sdk_root):
 
     sdk_edits(Path(sdk_root), edit)
     for path, source in changes.items():
-        path.write_text(source, encoding=source_encoding(path))
+        if read_source(path) != source:
+            path.write_text(source, encoding=source_encoding(path))
     print('Scaleform SDK source seams prepared for private static linking')
 
 
