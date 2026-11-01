@@ -50,6 +50,30 @@ NG_CLIENT_EXCLUDED_RELATIVE_PATHS = (
     "engine-res/scripts/common/Lib/idlelib",
     "engine-res/scripts/client/DLLs/win64",
     "engine-res/scripts/common/pydev",
+    # The particle editor's example space owns this flora/terrain closure.
+    # The client uses the map's flora or system/data/flora.xml instead.
+    "engine-res/helpers/spaces/pe",
+    "engine-res/helpers/flora",
+    "engine-res/helpers/maps/lev_dirt01.tga",
+    "engine-res/helpers/maps/lev_dirt02.tga",
+    "engine-res/helpers/maps/lev_grass_01.tga",
+    "engine-res/helpers/maps/lev_grassflowers.tga",
+    # Direct3D 9 is the supported renderer; retain D3DX9 and its compiler.
+    "d3dx10_43.dll",
+    "d3dx11_43.dll",
+    # Product preparation mounts owned #1513 packages in the launcher process.
+    # Authoring/baking and direct development entry points stay in the dev ZIP.
+    "tools/prepare_native_static_models.py",
+    "tools/prepare_native_vehicle.py",
+    "tools/bake_navigation_0922.py",
+    "tools/bake_destructibles_0922.py",
+    "tools/bw_primitives_geometry.py",
+    "tools/space_bin_0922.py",
+    "tools/navigation_graph_schema.py",
+    "tools/vendor",
+    "native/standalone_client/bigworld/res",
+    "run-client.cmd",
+    "README-FIRST.txt",
 )
 BUILD_IDENTITY_RELATIVE = "mods/configs/offline_lan_0922/build_identity.json"
 BUILD_IDENTITY_ENV = "WOT_OFFLINE_BUILD_IDENTITY"

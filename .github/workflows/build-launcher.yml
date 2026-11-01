@@ -72,6 +72,7 @@ jobs:
           sys.path.insert(0, os.path.join(sys.argv[1], 'launcher'))
           import core
           import ng_client
+          import stage_payload
 
           launcher, payload, expected = sys.argv[2:5]
           with open(launcher, 'rb') as stream:
@@ -90,14 +91,7 @@ jobs:
                      for name in names if name.lower().endswith('.pdb')]
           assert not symbols, symbols
 
-          retired_paths = (
-              'prepare-runtime',
-              'Start-Client.cmd',
-              'engine-res/scripts/common/Lib/test',
-              'engine-res/scripts/common/Lib/idlelib',
-              'engine-res/scripts/client/DLLs/win64',
-              'engine-res/scripts/common/pydev',
-          )
+          retired_paths = stage_payload.NG_CLIENT_EXCLUDED_RELATIVE_PATHS
           retired_sidecars = frozenset((
               'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod',
               'recorder-runtime.zip',
