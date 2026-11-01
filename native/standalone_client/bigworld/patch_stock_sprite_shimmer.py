@@ -2,6 +2,8 @@
 
 Run after patch_stock_particle_scale.py. Both shaders are read from the original
 resources.xml AutoConfig paths; the original resource packages remain unchanged.
+The colour context no longer collects the shimmer channel: #1513 draws it into a
+distortion target that no DX9 shader samples, never into the scene colour.
 """
 import argparse
 from pathlib import Path
@@ -32,8 +34,18 @@ def replace(text, before, after, name):
     return text.replace(before, after, 1)
 
 
+COLLECT = 'colourDrawContext.%s( Moo::DrawContext::ALL_CHANNELS_MASK );'
+SCENE_CHANNELS = ('colourDrawContext.%s( Moo::DrawContext::OPAQUE_CHANNEL_MASK |\n'
+                  '        Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );')
+
+
 def patch(root):
     root = Path(root)
+    world = root / 'client/world_app.cpp'
+    world_source = world.read_text()
+    for call in ('begin', 'end'):
+        world_source = replace(world_source, COLLECT % call, SCENE_CHANNELS % call,
+                               'colour context ' + call)
     cpp = root / 'lib/particle/renderers/sprite_particle_renderer.cpp'
     ipp = cpp.with_suffix('.ipp')
     source = cpp.read_text()
@@ -76,9 +88,10 @@ def patch(root):
                      if line.strip() not in legacy)
     inline = replace(ipp.read_text(), OLD_SETTER,
                      '// materialFX is out-of-line: it selects configured shaders.', 'inline setter')
-    # Validate every seam before writing either file.
+    # Validate every seam before writing any file.
     cpp.write_text(source)
     ipp.write_text(inline)
+    world.write_text(world_source)
 
 
 if __name__ == '__main__':

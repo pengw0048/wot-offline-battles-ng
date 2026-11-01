@@ -28,7 +28,8 @@ def sdk(test):
         test.skipTest('Pinned public SDK archive required')
     names = ('lib/particle/renderers/sprite_particle_renderer.cpp',
              'lib/particle/renderers/sprite_particle_renderer.ipp',
-             'lib/particle/particle_serialisation.hpp')
+             'lib/particle/particle_serialisation.hpp',
+             'client/world_app.cpp')
     with tarfile.open(archive) as tar:
         return {name: tar.extractfile(next(m for m in tar if m.name.endswith('/'+name))).read().decode('utf-8-sig') for name in names}
 
@@ -128,6 +129,9 @@ class SpriteShimmerTests(unittest.TestCase):
             cpp=(folder/'lib/particle/renderers/sprite_particle_renderer.cpp').read_text()
             self.assertIn('job->scale_ = scale;',cpp)
             self.assertIn('s_shimmerEffectFileName',cpp)
+            world=(folder/'client/world_app.cpp').read_text()
+            self.assertNotIn('ALL_CHANNELS_MASK',world)
+            self.assertEqual(world.count('Moo::DrawContext::TRANSPARENT_CHANNEL_MASK );'),2)
 
     def test_original_native_selection(self):
         original=client(self)
@@ -173,6 +177,27 @@ class SpriteShimmerTests(unittest.TestCase):
                         output.write_bytes(zipfile.ZipFile(io.BytesIO(z.read(member))).read('effect'))
                         files.append(str(output))
                     subprocess.run([str(binary),*files],check=True)
+
+    def test_original_dx9_shaders_never_sample_the_distortion_target(self):
+        original=client(self)
+        compiler=os.environ.get('CXX') or shutil.which('c++')
+        if not compiler:
+            if 'CXX' in os.environ:raise AssertionError('Invalid explicit CXX')
+            self.skipTest('C++ compiler required for original shader consumers')
+        with tempfile.TemporaryDirectory(prefix='distortion-consumers-') as temp:
+            folder=Path(temp);binary=folder/'probe.exe'
+            subprocess.run([compiler,'-std=c++17',*native_test_compile_flags(compiler),'-I'+str(ROOT/'include'),
+                str(ROOT/'tests/stock_distortion_consumers.cpp'),str(ROOT/'src/stock_shader_binary.cpp'),
+                '-o',str(binary)],check=True)
+            files=[]
+            with zipfile.ZipFile(original/'res/packages/shaders.pkg') as z:
+                for member in z.namelist():
+                    if member.endswith(('.10.dx9.fxo','.11.dx9.fxo')):
+                        output=folder/('%d.effect'%len(files))
+                        output.write_bytes(zipfile.ZipFile(io.BytesIO(z.read(member))).read('effect'))
+                        files.append(str(output))
+            self.assertEqual(len(files),464)
+            subprocess.run([str(binary),*files],check=True)
 
 
 
