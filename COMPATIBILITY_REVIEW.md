@@ -4161,3 +4161,32 @@ The host differential fixtures exercise the pinned Python laws, publication
 retry order and startup/resource transitions. They do not establish rendering,
 native memory ownership, gameplay feel or frame-time improvements; those
 boundaries require the matching Windows client and exercised scene.
+
+
+### Native rendering parameter and snapshot ownership
+
+The renderer mounts both original ARIE effects and public D3DX fallback effects.
+ARIE shared values retain their UniformContext owner. Public D3DX shared
+semantics must also register the existing live providers: their former effect
+pools are absent, so skipping those semantics leaves camera, projection and
+scene inputs at defaults. This applies to the public dynamic/semi-dynamic
+shadow resolves and other retained fallback passes, not just one map.
+Manual ARIE writes select the material's private binding before setting values.
+SimpleGUI and MiniMap filtering follow the same rule as Flora and sky caches.
+HDR and Flora retire manual render-target references from existing bindings
+before releasing the targets; cleanup never allocates a binding. Automatic
+semantic textures keep their existing producer and device-loss lifecycle.
+
+Flash movies publish viewport/clip state before Capture. A display-handle copy
+retains a context, not a particular immutable frame. Global and component
+movies keep their asynchronous ownership; shared DrawTextManager calls capture
+and consume serially before another component changes that owner. Text jobs
+establish a frame, preserve the existing world-text stencil contract, and skip
+submission when frame/scene creation fails. Device reset drains old jobs and
+reports a failed HAL restore without pretending that restoration succeeded.
+
+Focused regressions execute public producer/consumer code, original #1513
+FXO bindings and SDK snapshot copy-on-write behavior, with failing old-code
+controls. These establish ownership and interface contracts. They do not prove
+that a photographed GTX 1070 brightness boundary or intermittent garage frame
+has disappeared; that remains a matching Windows scene-validation boundary.

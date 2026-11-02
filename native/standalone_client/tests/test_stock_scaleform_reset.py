@@ -36,7 +36,7 @@ class ScaleformResetTests(unittest.TestCase):
         for old, new in PATCH.EDITS['lib/scaleform/manager.cpp']:
             if 'hal->PrepareForReset' in new or 'hal->RestoreAfterReset' in new:
                 self.assertEqual(manager.count(old), 1)
-                manager = manager.replace(old, new)
+                manager = manager.replace(old, PATCH.render_job_ownership(new))
         bodies = '\n'.join(function(callbacks, signature) for signature in (
             'void DeviceCallback::deleteAllUnmanaged(', 'void DeviceCallback::createAllUnmanaged('))
         bodies += '\n}\nnamespace ScaleformBW {\n' + '\n'.join(function(manager, signature) for signature in (
@@ -67,11 +67,13 @@ FIXTURE = r'''
 #include <vector>
 #define BW_GUARD
 #define TRACE_MSG(...) ((void)0)
+unsigned restoreErrors=0;
+#define ERROR_MSG(...) ((void)++restoreErrors)
 namespace Render {namespace D3D9 {
 struct HAL {
- unsigned backbuffer=1920,cached=1920,prepared=0,restored=0;bool ready=false;
+ unsigned backbuffer=1920,cached=1920,prepared=0,restored=0;bool ready=false,fail=false;
  void PrepareForReset(){ready=true;cached=0;++prepared;}
- void RestoreAfterReset(){assert(ready);cached=backbuffer;ready=false;++restored;}
+ bool RestoreAfterReset(){assert(ready);if(fail)return false;cached=backbuffer;ready=false;++restored;return true;}
 };}}
 struct HALPtr {Render::D3D9::HAL*value;operator bool()const{return value;}Render::D3D9::HAL*GetPtr(){return value;}};
 struct StockRenderThread {static unsigned syncs;template<class F>static void runSync(F&f){++syncs;f();}};
@@ -112,6 +114,9 @@ int main(){
  // Ordinary D3D9 still uses the forced callbacks.
  Moo::rc().ex=false;Moo::DeviceCallback::deleteAllUnmanaged(true);
  hal.backbuffer=800;Moo::DeviceCallback::createAllUnmanaged(true);assert(hal.cached==800);
+ assert(!restoreErrors);
+ hal.fail=true;Moo::DeviceCallback::deleteAllUnmanaged(true);Moo::DeviceCallback::createAllUnmanaged(true);
+ assert(hal.ready&&restoreErrors==1); // Failure remains visible and is never reported as a restored HAL.
 }
 '''
 

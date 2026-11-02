@@ -28,6 +28,18 @@ TONEMAPPING = '''void HDRSupport::doTonemapping()
 }
 '''
 
+RELEASE_TARGETS = '''static void clearStockHdrTexture(const Moo::EffectMaterialPtr& material, const char* name)
+{
+    if (!material || !material->pEffect()) return;
+    ID3DXEffect* binding = material->properties().existingStockBinding();
+    if (binding) binding->SetTexture(name, NULL);
+    ID3DXEffect* current = material->pEffect()->pEffect();
+    if (current && current != binding && !wot::is_stock_effect(current))
+        current->SetTexture(name, NULL);
+}
+
+'''
+
 
 def function(text, signature):
     start = text.index(signature)
@@ -108,6 +120,23 @@ def patch_support(root, pending):
     text = path.read_text()
     text = replace_once(text, '#include "hdr_support.hpp"\n',
         '#include "hdr_support.hpp"\n#include "stock_hdr.hpp"\n', 'HDR support include')
+    text = replace_once(text, '#include "stock_hdr.hpp"\n',
+        '#include "stock_hdr.hpp"\n#include "stock_effect_adapter.hpp"\n', 'HDR binding lifecycle include')
+    signature = 'void HDRSupport::deleteUnmanagedObjects()\n'
+    text = replace_once(text, signature, RELEASE_TARGETS + signature, 'HDR manual texture cleanup helper')
+    text = replace_once(text, signature + '{\n    BW_GUARD;\n',
+        signature + '{\n    BW_GUARD;\n'
+        '    // Manual DEFAULT-pool targets belong to this material Binding.\n'
+        '    // Release them before their render-target owners, without allocating a Binding.\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_previousMipMap");\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_avgLumMap1");\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_avgLumMap2");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_avgLumMap");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_HDRMap");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_bloomMap");\n'
+        '    clearStockHdrTexture(m_bloomMat, "g_srcMap");\n'
+        '    clearStockHdrTexture(m_bloomMat, "g_prevMipMap");\n'
+        '    clearStockHdrTexture(m_gaussianBlurMat, "g_srcMap");\n', 'HDR manual texture retirement')
     # a70300 publishes (1,1,1,1) while HDR is disabled.
     text = replace_once(text, '            Vector4 params(0.0f, 1.0f, 1.0f, 1.0f);\n',
         '            Vector4 params(1.0f, 1.0f, 1.0f, 1.0f);\n', 'HDR disabled environment multipliers')

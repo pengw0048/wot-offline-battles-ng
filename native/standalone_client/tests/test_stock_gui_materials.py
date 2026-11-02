@@ -48,6 +48,10 @@ class StockGUIMaterialTests(unittest.TestCase):
                 member = next(n for n in original.getnames()
                               if n.endswith('/programming/bigworld/lib/ashes/' + name))
                 (self.ashes / name).write_bytes(original.extractfile(member).read())
+            member = next(n for n in original.getnames()
+                          if n.endswith('/programming/bigworld/client/minimap.cpp'))
+            (self.root / 'client').mkdir()
+            (self.root / 'client/minimap.cpp').write_bytes(original.extractfile(member).read())
 
     def test_gui_profiler_patch_only_adds_scopes_and_is_transactional(self):
         spec = importlib.util.spec_from_file_location(
@@ -651,6 +655,10 @@ class StockGUIFactorTests(unittest.TestCase):
                     member = next(n for n in original.getnames()
                                   if n.endswith('/programming/bigworld/lib/ashes/' + name))
                     (ashes / name).write_bytes(original.extractfile(member).read())
+                member = next(n for n in original.getnames()
+                              if n.endswith('/programming/bigworld/client/minimap.cpp'))
+                (root / 'client').mkdir()
+                (root / 'client/minimap.cpp').write_bytes(original.extractfile(member).read())
             public = (ashes / 'simple_gui.cpp').read_text()
             PATCH.patch_gui_materials(root)
             generated = (ashes / 'simple_gui.cpp').read_text()

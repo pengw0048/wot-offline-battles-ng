@@ -270,6 +270,9 @@ DECLARE_DEBUG_COMPONENT2( "2DComponents", 0 )
 
 DECLARE_DEBUG_COMPONENT2( "2DComponents", 0 )
 '''),
+        ('\tRender::TreeRootDisplayHandle &displayHandle = *const_cast<Render::TreeRootDisplayHandle*>(&Manager::instance().pTextManager()->GetDisplayHandle());',
+         '\tPtr<GFx::DrawTextManager> textManager = Manager::instance().pTextManager();\n'
+         '\tif (!textManager) return;'),
         (r'''
 
 void FlashTextGUIComponent::drawSelf( bool reallyDraw, bool overlay )
@@ -328,6 +331,8 @@ void FlashTextGUIComponent::drawSelf( bool reallyDraw, bool overlay )
 
 		// We are done with the text
 '''),
+        ('\t\t// begin text rendering\n\t\tManager::instance().pTextManager()->SetViewport(gv);',
+         '\t\t// begin text rendering\n\t\ttextManager->SetViewport(gv);'),
     ),
     'lib/scaleform/py_movie_view.cpp': (
         (r'''#include "moo/render_context.hpp"
@@ -370,6 +375,76 @@ HAL_CONTRACT = '''                  UInt32 halConfigFlags = 0,
                   ThreadId renderThreadId = ThreadId())'''
 
 
+def viewport_before_capture(text):
+    # #1513 aa84df/aa84f4 publishes the viewport before aa8504 captures it.
+    # Capture freezes root viewport/matrix data; writing afterwards only
+    # updates the next snapshot, including the first draw after a clip change.
+    return text.replace(
+        '\t\t\tpMovieView->Capture();\n\t\t\tpMovieView->SetViewport(gvFullScreen);',
+        '\t\t\tpMovieView->SetViewport(gvFullScreen);\n\t\t\tpMovieView->Capture();').replace(
+        '\t{\n\t\tPROFILER_SCOPED( GUI_FlashCapture );\n'
+        '\t\tpMovieView_->pMovieView()->Capture();\n\t}\n'
+        '\tpMovieView_->pMovieView()->SetViewport( gv );',
+        '\tpMovieView_->pMovieView()->SetViewport( gv );\n'
+        '\t{\n\t\tPROFILER_SCOPED( GUI_FlashCapture );\n'
+        '\t\tpMovieView_->pMovieView()->Capture();\n\t}')
+
+
+def render_job_ownership(text):
+    text = text.replace('renderer->BeginFrame();', 'if (!renderer->BeginFrame()) return;')
+    text = text.replace(
+        '\t\tRender::TreeRootDisplayHandle handle;',
+        '\t\tPtr<GFx::DrawTextManager> owner;\n\t\tRender::TreeRootDisplayHandle handle;')
+    text = text.replace(
+        '\t\t\tif (handle.NextCapture(renderer->GetContextNotify()))\n'
+        '\t\t\t\trenderer->Display(handle);\n\t\t}',
+        '\t\t\tif (!renderer->BeginFrame()) return;\n'
+        '\t\t\tif (handle.NextCapture(renderer->GetContextNotify()))\n'
+        '\t\t\t\trenderer->Display(handle);\n'
+        '\t\t\trenderer->EndFrame();\n\t\t}')
+    if 'struct TextDisplayJob' in text:
+        text = text.replace(
+            '\t\tPtr<GFx::DrawTextManager> owner;\n',
+            '\t\tPtr<GFx::DrawTextManager> owner;\n\t\tbool overlay;\n')
+        text = text.replace(
+            '\t\t\tif (!renderer->BeginFrame()) return;\n',
+            '\t\t\tif (!renderer->BeginFrame()) return;\n'
+            '\t\t\tif (!overlay)\n\t\t\t{\n'
+            '\t\t\t\tif (!renderer->BeginScene()) { renderer->EndFrame(); return; }\n'
+            '\t\t\t\t// BeginDisplay keeps an explicitly opened scene. Restore the\n'
+            '\t\t\t\t// original world-text depth mask after HAL scene defaults.\n'
+            '\t\t\t\tIDirect3DDevice9* device = Moo::rc().device();\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILENABLE, TRUE);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILREF, 2);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);\n'
+            '\t\t\t}\n')
+        text = text.replace('\t\t\trenderer->EndFrame();\n',
+                            '\t\t\tif (!overlay) renderer->EndScene();\n\t\t\trenderer->EndFrame();\n')
+    text = text.replace(
+        'void postTextDisplay(Ptr<Render::Renderer2D>& renderer, Render::TreeRootDisplayHandle& handle)',
+        'void drawTextDisplay(Ptr<Render::Renderer2D>& renderer, const Ptr<GFx::DrawTextManager>& textManager, bool overlay)')
+    text = text.replace(
+        '\t\tjob->handle = handle;\n\t\tStockRenderThread::postJob(job);',
+        '\t\tjob->owner = textManager;\n'
+        '\t\tjob->overlay = overlay;\n'
+        '\t\ttextManager->Capture();\n'
+        '\t\tjob->handle = textManager->GetDisplayHandle();\n'
+        '\t\tStockRenderThread::postJob(job);\n'
+        '\t\t// All components share this context; consume this snapshot before\n'
+        '\t\t// the next component changes its viewport or text transforms.\n'
+        '\t\tStockRenderThread::drain();')
+    text = text.replace('postTextDisplay(pRenderer, displayHandle);', 'drawTextDisplay(pRenderer, textManager, overlay);')
+    text = text.replace('Manager::instance().pTextManager()->SetViewport(gv);', 'textManager->SetViewport(gv);')
+    return text.replace(
+        'auto job = [hal]() { hal->RestoreAfterReset(); };',
+        'auto job = [hal]() {\n'
+        '\t\t\t\tif (!hal->RestoreAfterReset())\n'
+        '\t\t\t\t\tERROR_MSG("Scaleform: HAL restore after device reset failed\\n");\n'
+        '\t\t\t};')
+
+
 def patch(root, scaleform_root):
     # Display jobs rely on the D3D9 HAL accepting the render thread at init.
     if HAL_CONTRACT not in (Path(scaleform_root) / HAL_HEADER).read_text():
@@ -379,7 +454,13 @@ def patch(root, scaleform_root):
         path = Path(root) / relative
         text = path.read_text()
         for old, new in edits:
-            text = replace_once(text, old, new, relative)
+            viewport_ordered = viewport_before_capture(new)
+            ordered = render_job_ownership(viewport_ordered)
+            # Upgrade the preceding render-thread adapter in cached SDK trees.
+            for previous in (new, viewport_ordered):
+                if ordered != previous and previous in text:
+                    text = replace_once(text, previous, ordered, relative)
+            text = replace_once(text, old, ordered, relative)
         path.write_text(text)
 
 

@@ -268,6 +268,10 @@ def patch_gui_materials(root):
     ])
     signature = 'bool SimpleGUIComponent::setupTechniqueTable( Moo::EffectMaterialPtr material )'
     apply_file(root, ashes / 'simple_gui_component.cpp', [
+        ('\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType_ );',
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType_ );',
+         'GUI manual filter uses its draw binding'),
         (signature, GUI_MATERIAL_TECHNIQUE + signature, 'GUI material technique names'),
         ('\t// Additionally, the GUI effect lists its techniques in order based on \n'
          '\t// materialFX enum',
@@ -294,6 +298,25 @@ def patch_gui_materials(root):
          '\ttechnique_ = materialTechnique(material_, materialFX());\n'
          '\treturn technique_ != NULL;', 'font GUI uses the same materialFX names'),
     ])
+    apply_file(root, Path('client/minimap.cpp'), [
+        ('\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType() );',
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType() );',
+         'minimap manual filter uses its draw binding'),
+    ])
+
+
+def patch_legacy_shared_constants(text):
+    old = '''\t\t\t//-- If the parameter has a Semantic, set it up as an automatic constant, but if
+\t\t\t//--     it is also shared skip it because shared constants are set by effect pool
+\t\t\t//--\t mechanism only once per frame for all effect files.
+\t\t\tif (!isShared(pEffect, param) || isEffectPool_)'''
+    new = '''\t\t\t// ARIE shared constants belong to its UniformContext. Legacy D3DX
+\t\t\t// effects have no effect pool here, so bind their shared semantics
+\t\t\t// to the same live producers as their nonshared parameters.
+\t\t\tif (!isShared(pEffect, param) || isEffectPool_ ||
+\t\t\t\t!wot::is_stock_effect(pEffect))'''
+    return replace_once(text, old, new, "legacy shared semantic producers")
 
 
 def patch(root):
@@ -344,6 +367,7 @@ def patch(root):
     text = replace_once(text, old, new, "real ARIE factory")
     text = replace_once(text, " \tpEffect_ =  pEffect;", "\tactiveBinding_ = NULL;\n\tstockPass_ = UINT_MAX;\n \tpEffect_ =  pEffect;", "reload binding reset")
     text = replace_once(text, "(*pValue)( pEffect_.pComObject(), it->first );", "(*pValue)( pEffect(), it->first );", "automatic constants destination")
+    text = patch_legacy_shared_constants(text)
     text = patch_managed_lifecycle(text)
     path.write_text(text)
     apply_file(root, moo / "effect_material.cpp", [
@@ -384,10 +408,45 @@ def patch_parameter_caches(root):
     # A Definition is immutable draw metadata; manual values must target the
     # material's private binding, including after recompilation/device reset.
     apply_file(root, Path('lib/romp/flora_renderer.cpp'), [
+        ('#include "flora_texture.hpp"',
+         '#include "flora_texture.hpp"\n#include "stock_effect_adapter.hpp"',
+         'flora binding lifecycle include'),
         ('    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
          '    standardParams_.effect(material_->pEffect()->pEffect());\n'
          '    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
          'flora runtime parameter binding'),
+        ('''    if(material_.exists())
+    {
+        material_->pEffect()->pEffect()->SetTexture("blendMap", NULL);
+        standardParams_.commitChanges();
+    }
+    //-- ToDo (b_sviglo): reconsider shadow material in flora. It seems useless.
+    if(shadowMaterial_->pEffect())
+    {
+        shadowMaterial_->pEffect()->pEffect()->SetTexture("blendMap", NULL);
+        shadowParams_.commitChanges();
+    }''', '''    // end() restores the Definition; retire this material's actual Binding.
+    // Its tint copy is DEFAULT-pool; the diffuse atlas keeps its semantic owner.
+    if (material_.exists() && material_->pEffect())
+    {
+        ID3DXEffect* binding = material_->properties().existingStockBinding();
+        if (binding) binding->SetTexture("g_tintMap", NULL);
+        ID3DXEffect* current = material_->pEffect()->pEffect();
+        if (current && current != binding && !wot::is_stock_effect(current))
+        {
+            current->SetTexture("g_tintMap", NULL);
+            current->SetTexture("blendMap", NULL);
+        }
+    }
+    if (shadowMaterial_.exists() && shadowMaterial_->pEffect())
+    {
+        ID3DXEffect* current = shadowMaterial_->pEffect()->pEffect();
+        if (current && !wot::is_stock_effect(current)) current->SetTexture("blendMap", NULL);
+    }
+    // Drop cached effect references and their handles; preDraw binds afresh.
+    standardParams_.effect(NULL);
+    shadowParams_.effect(NULL);
+    parameters_ = NULL;''', 'flora manual texture retirement'),
     ])
     apply_file(root, Path('lib/romp/sky_gradient_dome.cpp'), [
         ('\t//calculate runtime effect values',
