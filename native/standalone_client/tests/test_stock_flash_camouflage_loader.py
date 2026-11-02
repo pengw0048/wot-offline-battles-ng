@@ -55,7 +55,7 @@ class FlashCamouflageLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='flash-camouflage-loader-') as folder:
             root = Path(folder)
             path = root / 'host.cpp'
-            path.write_text(HOST.replace('@OWNER@', source))
+            path.write_text(HOST.replace('@OWNER@', source), encoding='utf-8')
             binary = root / 'host'
             subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
                             *native_test_compile_flags(compiler), '-I', str(ROOT / 'bigworld'),
@@ -84,7 +84,9 @@ HOST = r'''
 #include <set>
 #include <string>
 #include <vector>
+#if !defined(_WIN32) && !defined(__stdcall)
 #define __stdcall
+#endif
 #define CHECK(value) do{if(!(value))return 41;}while(0)
 using HMODULE=void*;
 const unsigned LOAD_WITH_ALTERED_SEARCH_PATH=8;
@@ -107,22 +109,24 @@ struct BWResource{
 HMODULE LoadLibraryExW(const wchar_t*path,void*,unsigned flags){assert(flags==8&&std::wstring(path).find(L'/')==std::wstring::npos);return reinterpret_cast<void*>(static_cast<std::uintptr_t>(++libraries));}
 unsigned long GetLastError(){return 126;}
 void FreeLibrary(HMODULE){++freed;}
-void imageInit(){++initialized;}void utilityInit(){}void shutdown(){++shutdowns;}
-unsigned imageError(){return 0x506;}
+void __stdcall imageInit(){++initialized;}
+void __stdcall utilityInit(){}
+void __stdcall shutdown(){++shutdowns;}
+unsigned __stdcall imageError(){return 0x506;}
 struct Decoded {
  unsigned marker=0,width=1,height=1,depth=1,mipmaps=0,layers=0,next=0,cube=0;
  bool loaded=false,converted=false;std::vector<unsigned>pixels{0};
 };
 std::map<unsigned,Decoded>decoded;
 unsigned flattened=0,overlaid=0;
-unsigned generate(){
+unsigned __stdcall generate(){
  if(failure=="generate-failure"||(failure=="flatten-generate-failure"&&images.size()==1))return 0;
  images.insert(++generated);decoded[generated]=Decoded();return generated;
 }
-void bind(unsigned value){assert(images.count(value));current=value;}
-void removeImage(unsigned value){assert(images.erase(value)==1);decoded.erase(value);++removed;}
-unsigned char disable(unsigned value){assert(value==0x636);return failure!="disable-failure";}
-unsigned char load(unsigned type,const void*data,unsigned length){
+void __stdcall bind(unsigned value){assert(images.count(value));current=value;}
+void __stdcall removeImage(unsigned value){assert(images.erase(value)==1);decoded.erase(value);++removed;}
+unsigned char __stdcall disable(unsigned value){assert(value==0x636);return failure!="disable-failure";}
+unsigned char __stdcall load(unsigned type,const void*data,unsigned length){
  assert(type==0&&length==1);auto&i=decoded[current];i.marker=*static_cast<const unsigned char*>(data);
  i.width=4;i.height=6;i.loaded=true;i.pixels.assign(24,i.marker==1?0x00ff0000u:0xff001122u);
  if(failure=="success-depth")i.depth=2;else if(failure=="success-layers")i.layers=1;
@@ -130,13 +134,13 @@ unsigned char load(unsigned type,const void*data,unsigned length){
  else if(failure!="success-flat")i.mipmaps=9;
  return failure!="load-failure";
 }
-unsigned char convert(unsigned format,unsigned type){
+unsigned char __stdcall convert(unsigned format,unsigned type){
  assert(format==0x80e1&&type==0x1401);auto&i=decoded[current];
  if(failure=="convert-failure"&&i.loaded)return 0;
  if(failure=="flatten-convert-failure"&&!i.loaded)return 0;
  i.converted=true;return 1;
 }
-unsigned char scale(unsigned w,unsigned h,unsigned depth){
+unsigned char __stdcall scale(unsigned w,unsigned h,unsigned depth){
  assert(depth==1);auto&i=decoded[current];assert(!i.mipmaps&&!i.layers&&!i.next&&!i.cube&&i.depth==1);
  if(!i.loaded){++flattened;if(failure=="flatten-size-failure")return 0;}
  else if(failure=="scale-failure")return 0;
@@ -145,7 +149,7 @@ unsigned char scale(unsigned w,unsigned h,unsigned depth){
   i.pixels[y*w+x]=i.marker==1?((y==0?255u:y==1?128u:0u)<<16):(0xff001122u+y*0x10000u+x*0x100u);
  return 1;
 }
-unsigned char overlay(unsigned source,int x,int y,int z){
+unsigned char __stdcall overlay(unsigned source,int x,int y,int z){
  assert(x==0&&y==0&&z==0);auto&from=decoded[source];auto&to=decoded[current];
  assert(to.width==from.width&&to.height==from.height&&to.converted&&to.depth==1&&source!=current);
  if(failure=="overlay-failure")return 0;
@@ -155,7 +159,7 @@ struct MirrorImageInfo{
  unsigned id;unsigned char*data;unsigned width,height,depth;unsigned char bpp;
  unsigned size,format,type,origin;unsigned char*palette;unsigned paletteType,paletteSize,cubeFlags,next,mipmaps,layers;
 };
-void describe(void*out){
+void __stdcall describe(void*out){
  auto*p=static_cast<MirrorImageInfo*>(out);auto&i=decoded[current];
  p->width=i.width;p->height=i.height;p->depth=i.depth;p->bpp=4;p->size=i.width*i.height*4;
  p->format=0x80e1;p->type=0x1401;p->origin=0x601;p->data=reinterpret_cast<unsigned char*>(i.pixels.data());
@@ -164,15 +168,21 @@ void describe(void*out){
 }
 void*GetProcAddress(HMODULE,const char*name){
  const std::string n(name);if(failure=="missing-symbol"&&n=="iluScale")return nullptr;
- if(n=="ilInit")return reinterpret_cast<void*>(&imageInit);if(n=="ilShutDown")return reinterpret_cast<void*>(&shutdown);
+ if(n=="ilInit")return reinterpret_cast<void*>(&imageInit);
+ if(n=="ilShutDown")return reinterpret_cast<void*>(&shutdown);
  if(n=="ilGetError")return reinterpret_cast<void*>(&imageError);
- if(n=="_ilGenImage@0")return reinterpret_cast<void*>(&generate);if(n=="ilBindImage")return reinterpret_cast<void*>(&bind);
+ if(n=="_ilGenImage@0")return reinterpret_cast<void*>(&generate);
+ if(n=="ilBindImage")return reinterpret_cast<void*>(&bind);
  if(n=="_ilDeleteImage@4")return reinterpret_cast<void*>(&removeImage);
  if(n=="_ilDisable@4")return reinterpret_cast<void*>(&disable);
  if(n=="_ilOverlayImage@16")return reinterpret_cast<void*>(&overlay);
- if(n=="ilLoadL")return reinterpret_cast<void*>(&load);if(n=="ilConvertImage")return reinterpret_cast<void*>(&convert);
- if(n=="iluInit")return reinterpret_cast<void*>(&utilityInit);if(n=="iluScale")return reinterpret_cast<void*>(&scale);
- if(n=="_iluGetImageInfo@4")return reinterpret_cast<void*>(&describe);assert(false);return nullptr;
+ if(n=="ilLoadL")return reinterpret_cast<void*>(&load);
+ if(n=="ilConvertImage")return reinterpret_cast<void*>(&convert);
+ if(n=="iluInit")return reinterpret_cast<void*>(&utilityInit);
+ if(n=="iluScale")return reinterpret_cast<void*>(&scale);
+ if(n=="_iluGetImageInfo@4")return reinterpret_cast<void*>(&describe);
+ assert(false);
+ return nullptr;
 }
 namespace Scaleform {
 namespace Memory{void*pGlobalHeap=nullptr;}

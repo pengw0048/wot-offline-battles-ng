@@ -79,7 +79,7 @@ int main() {
         with tempfile.TemporaryDirectory(prefix='stock-desktop-') as tmp:
             path = Path(tmp)
             source, binary = path / 'host.cpp', path / 'host'
-            source.write_text(host)
+            source.write_text(host, encoding='utf-8')
             command = ['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror',
                 '-I', str(ROOT / 'bigworld'), str(source), '-o', str(binary)]
             subprocess.run(command, check=True)

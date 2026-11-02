@@ -127,7 +127,10 @@ struct Device {
     unsigned copies=0;bool fail=false;
     HRESULT GetRenderTargetData(DX::Surface* source,SystemSurface* target) {
         ++copies;if(fail)return -1;
-        for(unsigned i=0;i<4;++i)target->pixel[i]=source->pixel[i];return 0;
+        for(unsigned i=0;i<4;++i) {
+            target->pixel[i]=source->pixel[i];
+        }
+        return 0;
     }
 };
 namespace Moo {

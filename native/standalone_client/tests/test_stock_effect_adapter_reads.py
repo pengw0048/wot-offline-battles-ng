@@ -30,7 +30,10 @@ std::shared_ptr<wot::StockEffectBinary> definition(){
  field("number",0,0);field("vector",1,16);field("matrix",2,32);field("boolean",3,96);field("integer",4,100);field("unsigned",5,104);field("array",0,112,3,12);field("vectors",1,160,2);field("matrices",2,192,2);field("bools",3,320,3,12);field("ints",4,368,3);
  initial(b.defaults,0,1.f);const D3DXVECTOR4 v={1,2,3,4};initial(b.defaults,16,v);D3DXMATRIX m{};for(int i=0;i<4;++i)m.m[i][i]=1;initial(b.defaults,32,m);
  initial(b.defaults,96,BOOL(FALSE));initial(b.defaults,100,INT(4));initial(b.defaults,104,0xffffffffu);
- for(unsigned i=0;i<3;++i)initial(b.defaults,112+16*i,float(i+1));e->uniform_buffers.push_back(b);
+ for(unsigned i=0;i<3;++i) {
+  initial(b.defaults,112+16*i,float(i+1));
+ }
+ e->uniform_buffers.push_back(b);
  wot::StockEffectUniformBuffer selection;selection.name="$Selection";selection.defaults.resize(8);wot::StockEffectUniform u;u.name="choose";u.type_index=4;u.elements=1;selection.uniforms.push_back(u);e->uniform_buffers.push_back(selection);
  wot::StockEffectUniformBuffer shared;shared.name="PerFrame";shared.flags=1;shared.defaults.resize(16);u.name="frameValue";u.semantic="TestFrame";u.semantic_present=true;u.type_index=1;shared.uniforms.push_back(u);e->uniform_buffers.push_back(shared);
  wot::StockEffectResource resource;resource.name="texture";resource.type_index=6;resource.semantic="TestTexture";resource.semantic_present=true;e->resource_views.push_back(resource);
@@ -97,7 +100,13 @@ int main(){try{
  check(material->SetTexture("texture",nullptr)==S_OK&&texture->refs==1&&material->GetTexture("texture",&textureGot)==S_OK&&!textureGot,"texture cleared current value");texture->Release();
  auto* automaticTexture=new IDirect3DTexture9;D3DXHANDLE automaticHandle=nullptr;
  auto automaticContext=std::make_shared<wot::StockEffectSharedContext>([&](const std::string&semantic,ID3DXEffect*target,D3DXHANDLE h){
- if(semantic!="TestTexture")return false;if(!target)return true;automaticHandle=h;
+ if(semantic!="TestTexture") {
+  return false;
+ }
+ if(!target) {
+  return true;
+ }
+ automaticHandle=h;
  check(target->SetTexture(h,automaticTexture)==S_OK,"automatic texture capture set");IDirect3DBaseTexture9* value=nullptr;
  check(target->GetTexture(h,&value)==S_OK&&value==automaticTexture,"automatic texture capture get");value->Release();return true;},[](const std::string&failure){std::cerr<<failure<<"\n";});
  {wot::StockEffectAdapter automatic(runtime,automaticContext);UINT passes=0;
