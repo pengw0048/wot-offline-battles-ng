@@ -385,8 +385,7 @@ sampler stockLinearDepthSampler = sampler_state
     text = pending.get(shadow, (root / shadow).read_text(encoding='latin1'))
     start = text.index('float rotated_PCF_filter(')
     end = text.index('//-- Sampling appropriate split.', start)
-    if 'stockShadowReceiverDepth(' not in text[start:end]:
-        text = text[:start] + '''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
+    point_filter = '''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
     float zReceiver, float2 depthGradient, int split, const int samplesCount)
 {
     // Splits occupy a horizontal atlas, not a square 2x2 allocation.
@@ -412,7 +411,50 @@ sampler stockLinearDepthSampler = sampler_state
     return sum / samplesCount;
 }
 
-''' + text[end:]
+'''
+    filtered = point_filter.replace('''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);''', '''        float2 grid = uv * dimensions - .5f;
+        float2 base = floor(grid);
+        float2 phase = grid - base;
+        float2 uv00 = clamp((base + float2(.5f, .5f)) * texel, lower, upper);
+        float2 uv10 = clamp((base + float2(1.5f, .5f)) * texel, lower, upper);
+        float2 uv01 = clamp((base + float2(.5f, 1.5f)) * texel, lower, upper);
+        float2 uv11 = clamp((base + float2(1.5f, 1.5f)) * texel, lower, upper);
+        float topLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv00, dimensions) > tex2D(s, uv00).x;
+        float topRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv10, dimensions) > tex2D(s, uv10).x;
+        float bottomLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv01, dimensions) > tex2D(s, uv01).x;
+        float bottomRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv11, dimensions) > tex2D(s, uv11).x;
+        sum += stockShadowBilinearCoverage(topLeft, topRight,
+            bottomLeft, bottomRight, phase);''')
+    # Accept only the reviewed public shader, the previous POINT adapter,
+    # or this comparison-filtered adapter. Cached resource upgrades must not
+    # silently keep an older kernel or overwrite an unreviewed local edit.
+    def filter_tokens(value):
+        return re.sub(r'\s+', '', re.sub(r'//[^\n]*|/\*.*?\*/', '', value, flags=re.S))
+
+    public_filter = (
+        'floatrotated_PCF_filter(samplers,infloat2screenUV,float2shadowUV,floatzReceiver,floatsplitBlurFactor'
+        ',constintsamplesCount){halfsum=0.0f;half2adjust=1/(2*g_dynamicShadowMapResolution);float2noiseUV=scr'
+        'eenUV*(g_screen.xy/float2(256,256));half2noise=tex2D(noiseMapSampler,noiseUV).rg;half2x2rotMat={+noi'
+        'se.r,-noise.g,+noise.g,+noise.r};halfblurFactor=lerp(2.0f,1.0f,splitBlurFactor);#if0[unroll]for(inti'
+        '=0;i<samplesCount;++i){float2coords=mul(poissonDisk[i],rotMat);sum+=(zReceiver>tex2D(s,shadowUV+coor'
+        'ds*adjust*blurFactor).x);}#elseconsthalfadjustBlurFactor=adjust*blurFactor;[unroll]for(inti=0;i<samp'
+        'lesCount;i+=4){half4coords01;half4coords23;coords01.xy=mul(poissonDisk[i+0],rotMat);coords01.zw=mul('
+        'poissonDisk[i+1],rotMat);coords23.xy=mul(poissonDisk[i+2],rotMat);coords23.zw=mul(poissonDisk[i+3],r'
+        'otMat);coords01*=adjustBlurFactor;coords23*=adjustBlurFactor;float4depths;depths[0]=tex2D(s,shadowUV'
+        '+coords01.xy).x;depths[1]=tex2D(s,shadowUV+coords01.zw).x;depths[2]=tex2D(s,shadowUV+coords23.xy).x;'
+        'depths[3]=tex2D(s,shadowUV+coords23.zw).x;half4res=(zReceiver.xxxx>depths)?1.0f:0.0f;sum+=dot(res,1)'
+        ';}#endifreturn(sum/samplesCount);}'
+    )
+    current_filter = filter_tokens(text[start:end])
+    if current_filter not in (public_filter, filter_tokens(point_filter), filter_tokens(filtered)):
+        raise ValueError('Deferred resource directional filter changed: ' + shadow)
+    text = text[:start] + filtered + text[end:]
     pending[shadow] = text
     edit(shadow, 'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);',
          'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);\n'

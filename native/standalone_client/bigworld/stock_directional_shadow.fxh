@@ -25,6 +25,15 @@ float stockShadowReceiverDepth(float2 receiverUV, float receiverDepth,
     return receiverDepth + gradient.x * offset.x + gradient.y * offset.y;
 }
 
+// R32F stores raw depth, whereas the original D16 shadow sampler returns
+// linearly filtered comparison coverage. Interpolate comparisons, never depth.
+float stockShadowBilinearCoverage(float topLeft, float topRight,
+    float bottomLeft, float bottomRight, float2 phase)
+{
+    return lerp(lerp(topLeft, topRight, phase.x),
+                lerp(bottomLeft, bottomRight, phase.x), phase.y);
+}
+
 // The original ASM receiver writes static coverage to BLUE. Terrain and
 // object depths are separate public atlas channels; union their occlusion at
 // each PCF sample before averaging, so overlap is never counted twice.

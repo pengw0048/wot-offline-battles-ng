@@ -134,7 +134,13 @@ assert((receiver>atlas+bias)==(receiver-bias>atlas));
                                     'float2x2 rotation = {noise.x, -noise.y, noise.y, noise.x};')
             kernel = kernel.replace('g_screen.xy', 'g_screen')
             kernel = kernel.replace('tex2D(noiseMapSampler, noiseUV).rg', 'sampleNoise(noiseUV)')
-            kernel = kernel.replace('tex2D(s, uv).x', 'sampleAtlas(s, uv)')
+            kernel = re.sub(r'tex2D\(s, (uv\d*)\)\.x', r'sampleAtlas(s, \1)', kernel)
+            old_kernel = kernel.replace('rotated_PCF_filter(', 'point_PCF_filter(')
+            first = old_kernel.index('        float2 grid =')
+            last = old_kernel.index('\n    }\n    return', first)
+            old_kernel = old_kernel[:first] + '''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > sampleAtlas(s, uv));''' + old_kernel[last:]
             points = shader[shader.index('const static float2 poissonDisk[]'):shader.index('//-- do PCF filter')]
             host = r"""
 #include <algorithm>
@@ -156,6 +162,7 @@ float2 mul(float2 v,float2x2 m){return {v.x*m.a+v.y*m.c,v.x*m.b+v.y*m.d};}
 float g_dynamicShadowMapResolution,g_splitCount;float2 g_screen(1920,1080);
 float2 currentUV,currentGradient;float currentDepth,bias=.0001f,blocker=0;
 unsigned calls,negativeShadows;int currentSplit;float angle;bool checker=false;
+bool edge=false;float edgeX=0;
 float2 sampleNoise(float2){return {std::cos(angle),std::sin(angle)};}
 float sampleAtlas(int,float2 uv){
 ++calls;const float width=g_dynamicShadowMapResolution*g_splitCount;
@@ -165,7 +172,7 @@ assert(pixel.x<(currentSplit+1)*g_dynamicShadowMapResolution);
 assert(pixel.y>=0&&pixel.y<g_dynamicShadowMapResolution);
 const float2 centre=pixel/float2(width,g_dynamicShadowMapResolution);
 const float2 delta=centre-currentUV;
-const float occlusion=checker && (int(pixel.x+pixel.y)&1)?0.f:blocker;
+const float occlusion=(edge && pixel.x>=edgeX)||(checker && (int(pixel.x+pixel.y)&1))?0.f:blocker;
 const float depth=currentDepth+delta.x*currentGradient.x+delta.y*currentGradient.y-occlusion;
 negativeShadows += currentDepth-bias>depth;
 return depth;
@@ -173,6 +180,7 @@ return depth;
 @HELPER@
 @POINTS@
 @KERNEL@
+@OLD_KERNEL@
 int main(){
 unsigned cases=0,negativeFailures=0;
 for(unsigned resolution:{512u,1024u,2048u})for(unsigned count:{1u,3u,4u}){
@@ -194,26 +202,57 @@ const float local=phase==0?0.f:phase==28?1.f:.4f+phase/(29.f*resolution);
 currentUV={(split+local)/count,phase==0?0.f:phase==28?1.f:.6f+phase/(31.f*resolution)};
 currentDepth=.5f;calls=negativeShadows=0;blocker=0;
 float coverage=rotated_PCF_filter(0,{.3f,.4f},currentUV,currentDepth-bias,gradient,split,samples);
-assert(calls==unsigned(samples));assert(coverage==0.f);negativeFailures+=negativeShadows>0;
+assert(calls==unsigned(samples)*4);assert(coverage==0.f);negativeFailures+=negativeShadows>0;
 // A distinct closer caster remains a shadow at every slope and movement phase.
 blocker=.01f;calls=0;
 coverage=rotated_PCF_filter(0,{.3f,.4f},currentUV,currentDepth-bias,gradient,split,samples);
-assert(calls==unsigned(samples));assert(coverage==1.f);
+assert(calls==unsigned(samples)*4);assert(std::fabs(coverage-1.f)<.000001f);
 checker=true;calls=0;
 coverage=rotated_PCF_filter(0,{.3f,.4f},currentUV,currentDepth-bias,gradient,split,samples);
-assert(calls==unsigned(samples));assert(coverage>=0.f&&coverage<=1.f);
-assert(coverage*samples==std::floor(coverage*samples));checker=false;
+assert(calls==unsigned(samples)*4);assert(coverage>=0.f&&coverage<=1.f);checker=false;
 ++cases;
 }
 }
 }
 assert(negativeFailures>1000);
+// A genuine caster boundary moves continuously through fractional texels.
+// Execute the production four-comparison filter, including signed slopes,
+// every atlas tile and fixed noise rotations. The previous POINT kernel
+// must fail the same continuity bound, rather than merely differ in source.
+edge=true;blocker=.01f;unsigned fractional=0;float oldMaximumJump=0,newMaximumJump=0;
+for(unsigned resolution:{512u,1024u,2048u})for(unsigned count:{1u,3u,4u}){
+g_dynamicShadowMapResolution=float(resolution);g_splitCount=float(count);
+for(int split=0;split<int(count);++split)for(unsigned rotation=0;rotation<18;++rotation)
+for(float sx:{-.8f,0.f,.8f}){
+currentSplit=split;angle=rotation*.174532925f;currentGradient={sx*count,.7f};currentDepth=.5f;
+edgeX=float(split*resolution+resolution/2);float previous=-1,oldPrevious=-1,previousX=0;
+for(unsigned phase=0;phase<=4096;++phase){
+const float x=edgeX-1.5f+3.f*phase/4096;
+currentUV={x/(resolution*count),.6f};calls=0;
+const float coverage=rotated_PCF_filter(0,{.3f,.4f},currentUV,currentDepth-bias,currentGradient,split,8);
+assert(calls==32);assert(coverage>=0.f&&coverage<=1.f);
+const float old=point_PCF_filter(0,{.3f,.4f},currentUV,currentDepth-bias,currentGradient,split,8);
+const float actualX=currentUV.x*(resolution*count);
+if(previous>=0){
+const float jump=std::fabs(coverage-previous),oldJump=std::fabs(old-oldPrevious);
+// At a straight edge, bilinear coverage is 1-Lipschitz in shadow texels.
+// Allow two float ULPs for atlas UV multiply/divide round trips.
+assert(jump<=std::fabs(actualX-previousX)+2.f*resolution*count/8388608.f);
+newMaximumJump=max(newMaximumJump,jump);oldMaximumJump=max(oldMaximumJump,oldJump);
+}
+if(std::fabs(coverage*8-std::round(coverage*8))>.001f)++fractional;
+previous=coverage;oldPrevious=old;previousX=actualX;
+}
+}
+}
+assert(fractional>10000);assert(oldMaximumJump>=.249f);assert(newMaximumJump<.002f);
+std::cout<<"edge continuity: POINT jump="<<oldMaximumJump<<" bilinear comparison jump="<<newMaximumJump<<" fractional phases="<<fractional<<"\n";
 const auto degenerate=stockShadowDepthGradient({0,0,1},{0,0,2});assert(degenerate.x==0&&degenerate.y==0);
 std::cout<<cases<<" receiver plane/tile/sample cases; old fixed-depth comparison failed "<<negativeFailures<<" cases\n";
 }
-""".replace('@HELPER@', helper).replace('@POINTS@', points).replace('@KERNEL@', kernel)
+""".replace('@HELPER@', helper).replace('@POINTS@', points).replace('@KERNEL@', kernel).replace('@OLD_KERNEL@', old_kernel)
             (root / 'probe.cpp').write_text(host)
-            result = subprocess.run(['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror',
+            result = subprocess.run(['c++', '-std=c++14', '-O2', '-Wall', '-Wextra', '-Werror',
                                      str(root / 'probe.cpp'), '-o', str(root / 'probe')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(root / 'probe')], capture_output=True, text=True)
@@ -465,6 +504,30 @@ m_stockShadowDepthBiases.clear();assert(m_stockShadowDepthBiases.empty());
             before = (root / 'shaders/shadow/dynamic_resolve.fx').read_bytes()
             module.patch_resources(root)
             self.assertEqual(before, (root / 'shaders/shadow/dynamic_resolve.fx').read_bytes())
+            # Upgrade the previous deployed resource tree as well as pristine
+            # public resources. A marker-only guard used to retain POINT PCF.
+            path = root / 'shaders/shadow/dynamic_resolve.fx'
+            current = path.read_text(encoding='latin1')
+            first = current.index('        float2 grid =')
+            last = current.index('\n    }\n    return', first)
+            point = current[:first] + '''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);''' + current[last:]
+            path.write_text(point, encoding='latin1')
+            self.assertNotIn('stockShadowBilinearCoverage(', point)
+            module.patch_resources(root)
+            self.assertEqual(before, path.read_bytes())
+            module.patch_resources(root)
+            self.assertEqual(before, path.read_bytes())
+            # Existing markers are not sufficient to accept an unknown edit.
+            changed = path.read_text(encoding='latin1').replace(
+                'float blurFactor = lerp(2.f, 1.f, split / g_splitCount);',
+                'float blurFactor = lerp(3.f, 1.f, split / g_splitCount);')
+            self.assertNotEqual(current, changed)
+            path.write_text(changed, encoding='latin1')
+            with self.assertRaisesRegex(ValueError, 'directional filter changed'):
+                module.patch_resources(root)
+            self.assertEqual(changed, path.read_text(encoding='latin1'))
         # Actual producer lines are exercised by the combined SDK patch-order
         # test; each value uses the current split's projection and tile size.
         patch = (ROOT / 'bigworld/patch_stock_deferred_buffers.py').read_text()

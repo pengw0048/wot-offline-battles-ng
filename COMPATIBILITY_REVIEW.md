@@ -4385,3 +4385,30 @@ frame progression. No WeakRef, Loader constructor, forced queue flush or GPU
 upload workaround was added for that premature observation. The exercised VM
 scene has rendered-thumbnail evidence; provider requests alone remain
 insufficient as image-complete or render acknowledgement.
+
+### Directional comparison-filter continuity
+
+The high-quality public directional receiver used eight POINT depth comparisons
+on an R32F COLOR atlas. It therefore produced at most nine coverage levels,
+and repeated taps on the same texel could change coverage by 0.25 after a tiny
+subtexel translation. The exact #1513 producer uses a D16 depth resource, with
+LINEAR comparison sampling; its receiver accumulates filtered comparison
+results. Filtering raw R32F depth before comparing is not equivalent.
+
+The adapter now compares the four neighbouring depths independently and
+bilinearly weights those comparison results for each existing Poisson tap.
+Receiver-plane depth correction is evaluated at each actual raster sample, and
+every neighbour clamps to the current atlas tile. HIGH retains its 1024-pixel
+three-split atlas and eight tap locations; its explicit depth fetch count
+increases from eight to 32. The resource patch upgrades both pristine and
+previous POINT kernels, is idempotent and rejects unknown local kernel edits.
+
+The extracted production kernel covers 31,320 plane/tile/tap cases and moving
+edge phases. The old POINT negative control jumps by 25%; the filtered host
+arithmetic's largest tested step is about 0.11%, before render-target
+quantization. A Windows VM compiles the actual dynamic_resolve effect and
+completes the matching high-quality movement/fire/garage sequence. These
+checks establish the sampling defect and exercised correction; they do not
+certify all GTX 1070 temporal artifacts or complete retail PCSS equivalence.
+The separate caster/color pose audit found same-frame transform snapshots and
+no normal-path historical dynamic shadow atlas reuse.

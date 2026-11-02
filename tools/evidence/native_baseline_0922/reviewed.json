@@ -1096,10 +1096,10 @@
   "renderer_reviews": [
     {
       "area": "shadow_dynamic",
-      "evidence_and_boundary": "Original split bias coefficients retained. Actual HLSL helper/filter arithmetic exercised over resolutions/splits/slopes/phases/tile edges; old fixed-depth comparison fails. GPU image acceptance remains pending.",
-      "finding": "R32F receiver compared different points on a sloped surface; rectangular atlas PCF used a square step and the 1-sample path issued four reads.",
+      "evidence_and_boundary": "Original bias, per-neighbour receiver planes and tile clamps retained. Extracted production arithmetic covers 31,320 plane/tile/tap cases and subtexel continuity; old POINT control jumps 25%, filtered arithmetic about 0.11% before target quantization. The actual new shader compiles and runs in the Windows VM high-quality scene. GTX 1070 temporal-image acceptance and full retail PCSS equivalence remain unproved.",
+      "finding": "R32F receiver compared different points on a sloped surface; rectangular atlas PCF used a square step and the 1-sample path issued four reads. The R32F POINT adapter also omitted the original D16 sampler's bilinear comparison weights, quantizing eight-tap coverage to nine levels.",
       "source": "bigworld/patch_stock_deferred_buffers.py; bigworld/stock_directional_shadow.fxh; tests/test_stock_directional_shadow.py",
-      "status": "fixed_source_and_host"
+      "status": "fixed_source_host_and_bounded_windows"
     },
     {
       "area": "shadow_world_reconstruction",
