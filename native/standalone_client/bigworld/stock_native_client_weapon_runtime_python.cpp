@@ -9,6 +9,7 @@
 #include "stock_native_client_drive_status.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_params.hpp"
+#include "stock_native_battle_startup.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
 #include "pyscript/script.hpp"
@@ -139,8 +140,9 @@ void emitSafe(Battle&b,RuntimeOwner&o){try{emit(b,o);o.publication_error.clear()
 struct Guard {RuntimeOwner&o;explicit Guard(RuntimeOwner&value):o(value){o.advancing=true;}~Guard(){o.advancing=false;}};
 Gun*advanceWithMotion(Battle&b,double now,std::optional<std::array<double,2>>frozen){
     auto o=ensure(b);if(o->advancing)return &o->runtime->gun();Guard guard(*o);refreshOwner(b,*o,now);const auto f=factors(*o);
+    // Startup owns readiness after the stock own-vehicle visual clears the consumables controllers.
     if(!b.replay){const auto driver=drive::driverAccess(b);if(!driver.driver)throw p::Error("Native local gun has no current player driver");const auto&motion=driver.driver->state();
-        const auto output=o->runtime->advance(now,b.live,frozen?(*frozen)[0]:motion.speed,frozen?(*frozen)[1]:motion.turn_speed,f,b.gun->client_ready);
+        const auto output=o->runtime->advance(now,b.live,frozen?(*frozen)[0]:motion.speed,frozen?(*frozen)[1]:motion.turn_speed,f,(b.startup && b.startup->client_ready_received));
         b.gun->last_tick=now;reportCrew(*o,f);if(!active(b,*o))throw p::Error("Native gun retired during crew diagnostics");queue(b,*o,output,now);emitSafe(b,*o);}
     if(!active(b,*o))throw p::Error("Native player gun retired during presentation");return &o->runtime->gun();
 }
@@ -182,14 +184,14 @@ bool equipmentSnapshot(Battle&b,const shared::Value&snapshot,bool present){
     }
     std::vector<Equipment> equipment;const auto&rows=wire.resolved().array;for(std::size_t i=0;i<rows.size();++i)equipment.push_back(equipmentRow(rows[i],frame.clocks[i].ready_at));
     o->runtime->equipment(std::move(equipment));o->accepted_revision=o->state->revision;o->have_equipment=true;o->equipment_wire=wire;b.gun->equipment_revision=int(revision);
-    if(present&&b.gun->client_ready&&b.engine.avatar&&b.engine.server){Edges output;o->runtime->equipment(output,now,true);queue(b,*o,output,now);if(!o->advancing){Guard guard(*o);emitSafe(b,*o);}}
+    if(present&&(b.startup && b.startup->client_ready_received)&&b.engine.avatar&&b.engine.server){Edges output;o->runtime->equipment(output,now,true);queue(b,*o,output,now);if(!o->advancing){Guard guard(*o);emitSafe(b,*o);}}
     return true;
 }
 // The rows stay current until the accepted wire changes again; actor state may still hold the previous ledger.
 void equipmentIngress(Battle&b,std::vector<Equipment> rows){auto o=ensure(b);o->runtime->equipment(std::move(rows));o->have_equipment=true;o->accepted_revision=o->state->revision;}
 // One HUD publication request; true when it produced an edge.
 bool publish(Battle&b,const std::string&action,double now,bool force,double remaining,double duration){
-    auto o=ensure(b);refreshOwner(b,*o,now);Edges output;const bool ready=b.gun->client_ready;
+    auto o=ensure(b);refreshOwner(b,*o,now);Edges output;const bool ready=(b.startup && b.startup->client_ready_received);
     if(action=="ammo")o->runtime->ammo(output,now,ready,force);else if(action=="equipment")o->runtime->equipment(output,now,ready);else if(action=="reload")o->runtime->reload(output,remaining,duration,force);else if(action=="targeting")o->runtime->targeting(output,factors(*o));else throw p::Error("Unknown native player publication edge");
     const bool changed=!output.ammunition.empty()||output.current_shell||!output.equipment.empty()||output.reload||output.targeting;queue(b,*o,output,now);if(!o->advancing){Guard guard(*o);emitSafe(b,*o);}return changed;
 }
