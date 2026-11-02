@@ -133,6 +133,16 @@ struct Presentation {
     std::optional<std::array<std::int64_t,4>> health;   // health, display health, crew active, death reason
     Value critical;
     std::int64_t critical_revision=-1,critical_base_revision=0,critical_ack_seq=0;
+    // Accepted simulation state is independent of successful stock HUD delivery.
+    struct CriticalNotification {
+        Value event;
+        std::int64_t attacker=0,index=0,extra=0;
+    };
+    std::map<std::string,CriticalNotification> critical_hud_pending;
+    std::vector<std::string> critical_hud_order;
+    Handle critical_hud_entity;
+    std::int64_t critical_hud_engine_id=0;
+    std::uint64_t critical_hud_epoch=0;
     bool critical_layout_prewarmed=false;
     std::string ammo_death_cause;
     // Pose, aim, settle and track writes already made, so unchanged samples cost no engine call.

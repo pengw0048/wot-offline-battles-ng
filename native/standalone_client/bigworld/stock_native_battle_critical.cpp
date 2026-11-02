@@ -262,6 +262,25 @@ const VehicleDamage* damage(const Battle& b, std::int64_t engine_id) {
     return at == b.critical->vehicles.end() ? nullptr : &at->second;
 }
 
+bool eventCurrent(const Battle& b, PyObject* entity, const Value& event) {
+    const auto* d = damage(b, idOf(entity));
+    if (!d) return false;
+    const auto& kind = event.get("kind").resolved().text;
+    const auto& name = event.get("name").resolved().text;
+    const auto& state = event.get("state").resolved();
+    if (kind == "fire") return state.truth() == d->fire;
+    if (kind == "crew") return state.text == (d->crew_ko.count(name) ? "destroyed" : "normal");
+    if (kind != "device") return false;
+    std::string current = "normal";
+    if (d->destroyed.count(name)) current = "destroyed";
+    else if (d->critical.count(name)) current = "critical";
+    else {
+        const auto hp = d->devices.find(name);
+        if (hp != d->devices.end()) current = deviceState(hp->second, maxHp(descriptorOf(entity).get(), name));
+    }
+    return state.text == current;
+}
+
 // critical_damage.apply_payload: install one server-relayed state without re-rolling any damage law.
 Value applyPayload(Battle& b, PyObject* entity, const Value& raw) {
     const auto& payload = raw.resolved();

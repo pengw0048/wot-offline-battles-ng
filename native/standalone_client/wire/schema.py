@@ -401,8 +401,9 @@ PROJECTILE_RESOLVE = record('ProjectileResolve', F('round_id', I64), F('authorit
     F('penetration_factor', F64), N('impact', VEC3), N('direct', EFFECT),
     F('splash', List(EFFECT, 30)), F('destructibles', List(RECEIPT, 64)), O('hit_vehicle', BOOL),
     O('wreck_hit', Any()), ON('launch_proof', LAUNCH_PROOF), O('client_build', STR))
+# Post-result detached-turret tails have no motion sample or source horizon.
 BOT_STATE = record('BotState', F('round_id', I64), O('authority_epoch', I64),
-    F('sample_time_us', I64), O('source_batch_horizon_us', I64), F('rows', List(List(I64, 1024), 30)),
+    O('sample_time_us', I64), O('source_batch_horizon_us', I64), F('rows', List(List(I64, 1024), 30)),
     O('human_ram_armors', List(Any(), 64)), O('push_contacts', Any()),
     O('detached_turrets', List(Any(), 30)), O('bot_state_revision', I64))
 
@@ -430,7 +431,9 @@ for _name in ('battle_live', 'battle_start', 'roster', 'welcome', 'pong', 'worke
               'hello', 'battle_ready', 'ping', 'snapshot_resync', 'leave_battle', 'leave',
               'battle_receipt_ack', 'bot_manifest', 'bot_ram_report', 'simulation_progress',
               'player_environment', 'destructible', 'rules_state', 'battle_result',
-              'descriptor_catalog', 'start_battle'):
+              'descriptor_catalog', 'start_battle',
+              'select_vehicle', 'select_team', 'set_team_size',
+              'set_bot_tier_mode', 'set_bot_skill_mode'):
     MESSAGES[_name] = None
 
 SCHEMA = Schema(R, MESSAGES)

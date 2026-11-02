@@ -67,10 +67,12 @@ jobs:
           import os
           import struct
           import sys
+          import zipfile
 
           sys.path.insert(0, os.path.join(sys.argv[1], 'launcher'))
           import core
           import ng_client
+          import stage_payload
 
           launcher, payload, expected = sys.argv[2:5]
           with open(launcher, 'rb') as stream:
@@ -88,6 +90,34 @@ jobs:
           symbols = [os.path.join(root, name) for root, _, names in os.walk(payload)
                      for name in names if name.lower().endswith('.pdb')]
           assert not symbols, symbols
+
+          retired_paths = stage_payload.NG_CLIENT_EXCLUDED_RELATIVE_PATHS
+          retired_sidecars = frozenset((
+              'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod',
+              'recorder-runtime.zip',
+          ))
+
+          def verify_retired_entries(names, label):
+              forbidden = [name for name in names
+                           if name.rsplit('/', 1)[-1] in retired_sidecars or any(
+                               name == path or name.startswith(path + '/')
+                               for path in retired_paths)]
+              assert not forbidden, (label, forbidden)
+
+          package_names = [os.path.relpath(os.path.join(root, name), package).replace('\\', '/')
+                           for root, directories, files in os.walk(package)
+                           for name in directories + files]
+          verify_retired_entries(package_names, 'NG payload')
+          app_root = os.path.dirname(launcher)
+          archive = os.path.join(os.path.dirname(app_root),
+                                 os.path.basename(app_root) + '-Windows.zip')
+          package_prefix = os.path.relpath(package, os.path.dirname(app_root)).replace('\\', '/') + '/'
+          with zipfile.ZipFile(archive) as final_zip:
+              names = [name.replace('\\', '/') for name in final_zip.namelist()]
+              assert package_prefix + 'bwclient_h.exe' in names, 'final ZIP is missing the NG executable'
+              verify_retired_entries([name[len(package_prefix):].rstrip('/')
+                                      for name in names if name.startswith(package_prefix)],
+                                     'final launcher ZIP')
           '@ | python - $tree $launcher $payload "github-${{ github.run_id }}-${{ github.run_attempt }}"
           if ($LASTEXITCODE -ne 0) {
               throw "NG payload verification failed"

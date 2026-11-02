@@ -80,12 +80,21 @@ bool suppressPostmortemKiller(Battle& b, const Actor& victim, const Value& state
 
 // BattleRuntime._sync_fire_effect: the stock fire extra follows the burning state.
 bool syncFireEffect(Battle& b, PyObject* entity, std::optional<bool> burning) {
+    if (!burning) {
+        if (!b.running()) return false;
+        auto engine_id = py::optional(entity, "id");
+        if (engine_id.get() == Py_None) return false;
+        // applyPayload owns fire in C++; stock Vehicle has no is_on_fire property.
+        const auto* damage = critical::damage(b, p::wide(engine_id.get()));
+        if (!damage) return false;
+        burning = damage->fire;
+    }
     auto descriptor = py::optional(entity, "typeDescriptor");
     auto extras = py::optional(descriptor.get(), "extrasDict");
     if (extras.get() == Py_None) return false;
     auto extra = py::call(extras.get(), "get", p::text("fire").get());
     if (extra.get() == Py_None) return false;
-    const bool on = burning ? *burning : p::flag(py::optional(entity, "is_on_fire").get());
+    const bool on = *burning;
     if (on == p::flag(py::call(extra.get(), "isRunningFor", entity).get())) return false;
     if (!on) { py::call(extra.get(), "stopFor", entity); return true; }
     auto appearance = py::optional(entity, "appearance");
@@ -426,9 +435,7 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
                 startup::binding::arenaVehicleKilled(b, v.engine_id, p::wide(attacker.get()), p::wide(reason_value.get()));
                 events::reportLocalKill(b, v, edge.attacker, reason);
                 if (local && edge.suppress_postmortem_killer) {
-                    auto clear = py::optional(b.engine.compatibility.get(), "clear_postmortem_killer");
-                    if (!py::callable(clear)) throw p::Error("#1513 postmortem killer compatibility boundary is unavailable");
-                    py::invoke(clear.get(), b.engine.avatar.get());
+                    compat::clearPostmortemKiller(b, b.engine.avatar.get());
                 }
             }
         }

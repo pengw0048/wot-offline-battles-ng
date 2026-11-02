@@ -442,10 +442,16 @@ def member_calls(mask, depth, occluded, name):
 
 
 def frame(members, colours):
-    return (['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+    deferred = [call.split(':', 2)[1] for call in members
+                if call.startswith('embodiment.draw:') and ':depthFunc=0;' not in call]
+    normal = (['context.begin:7', 'context.pushImmediateMode'] +
+              ['embodiment.draw:%s:plain' % name for name in deferred] +
+              ['context.popImmediateMode', 'context.end:7', 'context.flush:7']) if deferred else []
+    return (['device.GetDepthStencilSurface:scene', 'target.push:stock/Edge detect',
+             'device.SetDepthStencilSurface:scene', 'device.Clear:1:0:1:0', 'context.begin:7',
              'context.pushImmediateMode', 'context.pushOverrideBlock'] + members +
             ['context.popOverrideBlock', 'context.popImmediateMode', 'context.end:7', 'context.flush:7',
-             'target.pop:stock/Edge detect',
+             'target.pop:stock/Edge detect'] + normal + [
              'effect.SetTexture:%s:g_edgeDetectedMap:stock/Edge detect' % TRANSFER_BINDING,
              'effect.SetVectorArray:%s:g_edgeColors:%s' % (TRANSFER_BINDING, colours),
              'fsQuad.drawChecked:%s:1280x720:g_edgeColors=%s;g_edgeDetectedMap=stock/Edge detect' %
@@ -508,11 +514,44 @@ own = Highlighter()
 own_vehicle = host.makeEntity('player')
 own._Highlighter__vehicle, own._Highlighter__highlightStatus, own._Highlighter__isPlayersVehicle = own_vehicle, 0, True
 own.highlight(True, False)
+check(host.deferEntity(own_vehicle), (True,))
+check(host.deferEntity(own_vehicle, False), (False,))
+check(host.deferEntity(vehicles[0][1]), (False,))
 check(host.drawEdges(), True)
 # Mode 1 is the second list, drawn after every mode-0 member.
 check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('1,0,0,0', 3, 1, 'player'), battle_colours))
+host.setSelectFails(1)
+check(host.drawEdges(), False)
+failed = host.calls()
+assert 'embodiment.draw:player:plain' in failed
+assert not any(call.startswith('fsQuad.drawChecked:') for call in failed)
+host.setSelectFails(0)
+# Failed depth acquisition/binding cannot draw a mask against stale depth.
+# The deferred original-colour submission still runs and restores the scene.
+for read, bind in ((1, 0), (0, 1)):
+    host.setDepthFails(read, bind)
+    check(host.drawEdges(), False)
+    failed = host.calls()
+    assert 'embodiment.draw:player:plain' in failed
+    assert not any(call.startswith('fsQuad.drawChecked:') for call in failed)
+    assert not any(':depthFunc=' in call and call.startswith('embodiment.draw:') for call in failed)
+    assert ('target.pop:stock/Edge detect' in failed) == bool(bind)
+host.setDepthFails(0, 0)
+check(host.drawEdges(), True)
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('1,0,0,0', 3, 1, 'player'), battle_colours))
 own.deactivate()
+check(host.deferEntity(own_vehicle), (False,))
 assert own._Highlighter__vehicle is None
+
+# The same active scene-depth contract applies to rigid/skinned members and
+# all three modes; no stale allocation-time target depth may reach either draw.
+skinned = host.makeEntity('vehicleSkinned')
+for mode, depth, occluded in ((0, 0, 0), (1, 3, 1), (2, 1, 0)):
+    BigWorld.wgAddEdgeDetectEntity(skinned, 0, mode, True)
+    check(host.drawEdges(), True)
+    check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS +
+                             member_calls('1,0,0,0', depth, occluded, 'vehicleSkinned'), battle_colours))
+BigWorld.wgDelEdgeDetectEntity(skinned)
 
 # Invalid values warn and are still added; an index past 3 has no mask bit.
 result, text = warnings_of(BigWorld.wgAddEdgeDetectEntity, own_vehicle, 7, 5, True)
@@ -530,6 +569,24 @@ print 'edge: invalid', expect_type_error(BigWorld.wgDelEdgeDetectEntity, None)
 print 'edge: invalid', expect_type_error(BigWorld.wgAddEdgeDetectEntity, own_vehicle, -1)
 BigWorld.wgDelEdgeDetectEntity(own_vehicle)
 BigWorld.wgDelEdgeDetectEntity(own_vehicle)
+
+# Every current embodiment uses its own attachment identity. Replacement and
+# leave prune only those stale owners; mode 0 resumes normal colour immediately.
+compound = host.makeEntity('ownHull', 'ownAuxiliary')
+BigWorld.wgAddEdgeDetectEntity(compound, 0, 1, True)
+check(host.deferEntity(compound), (True, True))
+check(host.deferEntity(compound, False), (False, False))
+host.setEntity(compound, 1, 0, 'newOwnHull')
+check(host.deferEntity(compound), (False, True))
+BigWorld.wgAddEdgeDetectEntity(compound, 0, 2, False)
+check(host.deferEntity(compound), (True, True))
+BigWorld.wgAddEdgeDetectEntity(compound, 0, 0, False)
+check(host.deferEntity(compound), (False, False))
+BigWorld.wgAddEdgeDetectEntity(compound, 0, 1, True)
+host.setEntity(compound, 0, 0)
+check(host.deferEntity(compound), (False, False))
+BigWorld.wgDelEdgeDetectEntity(compound)
+host.calls()
 
 # Leaving the world or replacing the model drops the stale key; no draw follows.
 host.setEntity(vehicles[1][1], 0, 0)
@@ -554,7 +611,8 @@ check(host.calls()[-2], 'effect.SetVectorArray:%s:g_edgeColors:1,0,1,1|0,0,0,0|0
 # A failed binding selection skips the member and reports the pass as failed.
 host.setSelectFails(1)
 check(host.drawEdges(), False)
-check(host.calls(), ['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+check(host.calls(), ['device.GetDepthStencilSurface:scene', 'target.push:stock/Edge detect',
+                     'device.SetDepthStencilSurface:scene', 'device.Clear:1:0:1:0', 'context.begin:7',
                      'context.pushImmediateMode', 'context.pushOverrideBlock', 'context.popOverrideBlock',
                      'context.popImmediateMode', 'context.end:7', 'context.flush:7',
                      'target.pop:stock/Edge detect'])

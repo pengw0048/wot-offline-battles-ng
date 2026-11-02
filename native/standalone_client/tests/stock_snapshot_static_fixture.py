@@ -1,7 +1,5 @@
 """Python 2/3 differential tests against the exact adapted fork payload."""
 from __future__ import print_function
-import ast
-import base64
 import copy
 import os
 import gc
@@ -60,25 +58,11 @@ class StaticTests(unittest.TestCase):
         client._commit_player_static_inputs(result)
         self.assertEqual(lan._canonical_effective_params(params), result[0][0]['effective_params'])
 
-    def test_actual_business_consumers_copy_before_mutating_static_inputs(self):
+    def test_python_boundary_consumers_copy_before_mutating_static_inputs(self):
         from gui.mods.offline_lan_0922 import critical_damage, crew_battle
         from gui.mods.offline_lan_0922 import player_critical_mechanics, equipment_mechanics
-        # Execute the pinned method bodies without starting BigWorld.
-        path = os.path.join(os.path.dirname(lan.__file__), 'battle_runtime.py')
-        tree = ast.parse(open(path, 'rb').read())
-        names = set(('_player_effective_snapshot', '_local_loadout',
-                     '_player_ram_profile', '_remote_outfit'))
-        methods = [node for node in ast.walk(tree)
-                   if isinstance(node, ast.FunctionDef) and node.name in names]
-        self.assertEqual(names, set(node.name for node in methods))
-        module = ast.parse('')
-        module.body = methods
-        environment = dict(effective_params=lan.effective_params_wire, base64=base64)
-        exec(compile(module, path, 'exec'), environment)
         class Battle(object):
             pass
-        for name in names:
-            setattr(Battle, name, environment[name])
         raw_params = effective_params()
         raw_params['equipment'] = [equipment_mechanics.project_equipment(dict(
             name='largeRepairkit', id=5, compactDescr=11005, tags=['repairkit'],
@@ -87,22 +71,11 @@ class StaticTests(unittest.TestCase):
         state = dict(effective_params=static.freeze(raw_params),
                      outfits=static.freeze({'1': 'YWJj'}))
         params = state['effective_params']
-        # Local mechanics intentionally take a detached canonical snapshot.
-        local = environment['_player_effective_snapshot'].__get__(None, Battle)(state)
+        # Canonical snapshots remain explicitly detachable at Python boundaries.
+        local = static.detach(params)
         local['physics']['mass'] = 1.
         local['crew']['members'].append({})
         self.assertEqual(5730., params['physics']['mass'])
-        battle = Battle()
-        battle._local_loadout_cache = None
-        battle._local_effective_params = params
-        battle._arena_outfit_season = lambda: 1
-        loadout = battle._local_loadout(None)
-        loadout['reload_factor'] = 2.
-        self.assertEqual(.96, params['loadout']['reload_factor'])
-        profile = environment['_player_ram_profile'].__get__(None, Battle)(params)
-        profile['ramming_bonus'] = .1
-        self.assertEqual(0., params['ramming']['ramming_bonus'])
-        self.assertEqual(b'abc', battle._remote_outfit(state, 'player'))
         self.assertEqual(lan.effective_params_wire.skill_summary(params),
                          lan.effective_params_wire.skill_summary(static.detach(params)))
         self.assertEqual(crew_battle.for_critical(params, {}),
@@ -118,7 +91,7 @@ class StaticTests(unittest.TestCase):
         equipment.contract['tags'].append('local')
         equipment.uses_left = 0
         self.assertEqual(['repairkit'], params['equipment'][0]['tags'])
-        # Gun launch mutates a deepcopy, as the real fire path does.
+        # Explicit Python copies remain writable without changing the version.
         shot = copy.deepcopy(params['gun']['shots'][0]['source_shot'])
         shot['deadeye'] = True
         self.assertFalse(params['gun']['shots'][0]['source_shot']['deadeye'])

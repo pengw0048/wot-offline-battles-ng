@@ -147,6 +147,8 @@ void stop(bool restore_account);
 void onEvent(const std::string& kind, const std::shared_ptr<const Value>& message);
 // worker_session_install/start/stop for the stock bootstrap entry.
 PyMethodDef* methods();
+// Release process-held Python handles after stop(), before Python finalisation.
+void releaseScriptOwners();
 }
 
 // Defined by the startup subsystem; the worker session drives a round through them.

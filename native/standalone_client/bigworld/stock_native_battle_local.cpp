@@ -277,9 +277,8 @@ bool enableSiegeHints(Battle& b) {
 void preparePresentation(Battle& b, PyObject* entity) {
     auto& l = *b.local;
     if (l.matrix) throw p::Error("player pose was prepared more than once");
-    auto native_attribute = py::attr(b.engine.compatibility.get(), "native_vehicle_attribute");
-    auto native_matrix = py::invoke(native_attribute.get(), entity, p::text("matrix").get());
-    auto filter = py::invoke(native_attribute.get(), entity, p::text("filter").get());
+    auto native_matrix = compat::nativeVehicleAttribute(entity, "matrix");
+    auto filter = compat::nativeVehicleAttribute(entity, "filter");
     PyObject* raw_stabilised = PyObject_GetAttrString(filter.get(), "stabilisedMatrix");
     if (!raw_stabilised) {
         if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("native Vehicle filter stabilisedMatrix");
@@ -316,8 +315,7 @@ void attachPresentation(Battle& b) {
     if (entity.get() == Py_None) throw p::Error("player Vehicle is unavailable for presentation");
     if (!l.matrix) preparePresentation(b, entity.get());
     if (hasSiege(py::optional(entity.get(), "typeDescriptor").get()) && !l.siege_body_matrix) {
-        auto native_attribute = py::attr(b.engine.compatibility.get(), "native_vehicle_attribute");
-        auto filter = py::invoke(native_attribute.get(), entity.get(), p::text("filter").get());
+        auto filter = compat::nativeVehicleAttribute(entity.get(), "filter");
         l.native_stabilised_matrix = own(py::optional(filter.get(), "stabilisedMatrix"));
         prepareSiegePose(b, entity.get());
         auto motion = vector(b, l.camera_velocity);

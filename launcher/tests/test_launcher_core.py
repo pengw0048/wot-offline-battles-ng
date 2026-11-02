@@ -1371,6 +1371,110 @@ class PayloadStagingTest(unittest.TestCase):
         self.assertFalse(any(path.lower().endswith(".pdb") for path in written))
         self.assertTrue(os.path.isfile(os.path.join(target, "bwclient_h.exe")))
 
+    def test_launcher_prepares_without_the_standalone_development_interpreter(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "bigworld-client-win32")
+        self._write_ng_client(package)
+        entries = {
+            "prepare-runtime/python.exe": "development interpreter",
+            "prepare-runtime/python314.dll": "development runtime",
+            "prepare-runtime/python314.zip": "development standard library",
+            "Start-Client.cmd": "prepare-runtime\\python.exe",
+            "engine-res/scripts/common/Lib/test/test_socket.py": "regression suite",
+            "engine-res/scripts/common/Lib/idlelib/idle.py": "IDLE editor",
+            "engine-res/scripts/client/DLLs/win64/_socket.pyd": "AMD64 extension",
+            "engine-res/scripts/common/pydev/eclipse/pydev/pydevd.py": "IDE debugger",
+            "engine-res/scripts/common/bw_site.py": "automatic startup entry",
+            "engine-res/scripts/common/bwpydevd.py": "guarded debugger startup",
+            "engine-res/scripts/common/Lib/string.py": "engine Python 2 library",
+            "engine-res/scripts/common/Lib/unittest/__init__.py": "runtime library",
+            "engine-res/scripts/client/DLLs/win32/_socket.pyd": "x86 extension",
+            "engine-res/scripts/client/DLLs/win64_resources/data": "sibling resource",
+            "offline-res/scripts/common/Lib/test/owned.py": "different resource owner",
+            "engine-res/shaders/std_effects/shader.fx": "render resource",
+            "engine-res/helpers/props/standin.model": "fallback model",
+            "tools/inspect_client.py": "preparation dependency",
+            "tools/prepare_native_client.py": (
+                "import sys\n"
+                "def prepare(client, package, overlays=()):\n"
+                "    assert getattr(sys, 'frozen', False)\n"
+                "    return {'executable': sys.executable, 'original': str(client), "
+                "'overlay': [str(path) for path in overlays]}\n"),
+        }
+        for relative, text in entries.items():
+            path = os.path.join(package, *relative.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as stream:
+                stream.write(text)
+        target = os.path.join(source, "staged")
+
+        written = stage_payload.stage_ng_client(target, package, identity="test-staging")
+
+        for relative in ("prepare-runtime", "Start-Client.cmd",
+                "engine-res/scripts/common/Lib/test", "engine-res/scripts/common/Lib/idlelib",
+                "engine-res/scripts/client/DLLs/win64", "engine-res/scripts/common/pydev"):
+            self.assertFalse(os.path.exists(os.path.join(target, *relative.split("/"))))
+            self.assertTrue(os.path.exists(os.path.join(package, *relative.split("/"))))
+        retained = tuple(relative for relative in entries if not any(
+            relative == excluded or relative.startswith(excluded + "/")
+            for excluded in stage_payload.NG_CLIENT_EXCLUDED_RELATIVE_PATHS))
+        for relative in stage_payload.NG_CLIENT_REQUIRED + retained:
+            self.assertIn(os.path.join(target, *relative.split("/")), written)
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(ng_client.subprocess, "Popen", side_effect=AssertionError("unexpected interpreter")):
+            result = ng_client.prepare_instance(target, source, os.path.join(source, "overlay"))
+        self.assertEqual(sys.executable, result["executable"])
+        self.assertEqual(source, result["original"])
+        self.assertEqual([os.path.join(source, "overlay")], result["overlay"])
+
+    def test_editor_example_closure_and_authoring_tools_stay_in_the_development_package(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "bigworld-client-win32")
+        self._write_ng_client(package)
+        retired = (
+            "engine-res/helpers/spaces/pe/space.settings",
+            "engine-res/helpers/flora/flora.xml",
+            "engine-res/helpers/maps/lev_dirt01.tga",
+            "engine-res/helpers/maps/lev_dirt02.tga",
+            "engine-res/helpers/maps/lev_grass_01.tga",
+            "engine-res/helpers/maps/lev_grassflowers.tga",
+            "d3dx10_43.dll", "d3dx11_43.dll",
+            "tools/prepare_native_static_models.py", "tools/prepare_native_vehicle.py",
+            "tools/bake_navigation_0922.py", "tools/bake_destructibles_0922.py",
+            "tools/bw_primitives_geometry.py", "tools/space_bin_0922.py",
+            "tools/navigation_graph_schema.py", "tools/vendor/wot_space_bin_utils/space.py",
+            "native/standalone_client/bigworld/res/resources.xml",
+            "run-client.cmd", "README-FIRST.txt",
+        )
+        retained = (
+            "engine-res/helpers/props/standin.model",
+            "engine-res/helpers/maps/aid_builder.tga",
+            "engine-res/helpers/maps/lev_dirt01_custom.tga",
+            "engine-res/helpers/spaces/runtime/space.settings",
+            "engine-res/system/data/flora.xml", "engine-res/system/fonts/default_medium.font",
+            "engine-res/shaders/flora/flora.fx", "D3DX9_43.dll", "D3DCompiler_43.dll",
+            "tools/inspect_client.py", "tools/packed_xml.py",
+            "offline-res/helpers/flora/flora.xml",
+            "mods/configs/offline_lan_0922/navgraphs/map.json",
+            "mods/configs/offline_lan_0922/destructibles/map.json",
+        )
+        for relative in retired + retained:
+            path = os.path.join(package, *relative.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as stream:
+                stream.write(relative)
+        target = os.path.join(source, "staged")
+
+        written = stage_payload.stage_ng_client(target, package, identity="test-staging")
+
+        for relative in retired:
+            self.assertFalse(os.path.exists(os.path.join(target, *relative.split("/"))), relative)
+            self.assertTrue(os.path.isfile(os.path.join(package, *relative.split("/"))), relative)
+        for relative in stage_payload.NG_CLIENT_REQUIRED + retained:
+            self.assertIn(os.path.join(target, *relative.split("/")), written)
+
     def test_an_incomplete_ng_client_package_is_rejected(self):
         source = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, source, True)

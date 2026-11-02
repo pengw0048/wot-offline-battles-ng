@@ -2,6 +2,7 @@
 #if !defined(WOT_NATIVE_BATTLE_HOST_BUILD)
 #include "pch.hpp"
 #include "pyscript/script.hpp"
+#include "cstdmf/main_loop_task.hpp"
 #endif
 #include "stock_native_battle_startup_internal.hpp"
 #include "stock_native_battle_events.hpp"
@@ -10,6 +11,8 @@
 #include "stock_native_battle_world.hpp"
 #include "stock_native_battle_bots.hpp"
 #include "stock_native_battle_remote.hpp"
+#include "stock_native_battle_compat.hpp"
+#include "stock_native_battle_link.hpp"
 
 namespace native_battle {
 namespace startup {
@@ -131,6 +134,24 @@ PyMethodDef methods[] = {
     {nullptr, nullptr, 0, nullptr}};
 }
 
+// Process lifetime is distinct from returning to the garage: no Account restore,
+// and no Python reference may survive until the CRT's static destructors.
+void shutdown() {
+    auto attempt = [](const char* name, auto body) {
+        try { body(); }
+        catch (const std::exception& e) { log(std::string("shutdown ") + name + ": " + describe(e)); PyErr_Clear(); }
+    };
+    attempt("worker", [] { worker::stop(false); });
+    attempt("round", [] { stopRound(false); });
+    attempt("worker link", [] { link::releaseScriptOwners(); });
+    if (Battle* b = current()) attempt("stock hooks", [b] { compat::uninstall(*b); });
+    attempt("presentation", [] { remote::finaliseScriptOwners(); });
+    // Remove current() before any destructor can re-enter a stock hook.
+    retire().reset();
+    worker::releaseScriptOwners();
+    compat::releaseScriptOwners();
+}
+
 PyMethodDef* moduleMethods() { return methods; }
 }
 }
@@ -154,5 +175,16 @@ public:
     }
 };
 NativeBattleModule nativeBattleModule;
+
+// MainLoopTasks finalises in reverse order. Retire script-backed battle owners
+// before GUI, spaces and ScriptApp are torn down, including partial startup.
+class NativeBattleLifetime final : public BW::MainLoopTask {
+public:
+    NativeBattleLifetime() {
+        BW::MainLoopTasks::root().add(this, "NativeBattleLifetime", ">Finale", NULL);
+    }
+    void fini() override { native_battle::startup::shutdown(); }
+};
+NativeBattleLifetime nativeBattleLifetime;
 }
 #endif

@@ -1,4 +1,5 @@
 """Exercise the real fixed-source preparation, its payload and consumers."""
+import ast
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 from prepare_offline_fork import (
     ACCOUNT_ATTEMPT, ADAPTERS, BOOTSTRAP_PATH, COMPAT_PATH, ENTRY_PATH, ENTRY_SOURCE,
     INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT, PINNED_RESOURCES,
-    NATIVE_MODULE_ROOT, REPLAY_PACKAGE_INPUT, RETIRED, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
+    NATIVE_MODULE_ROOT, RETIRED, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
     prepare)
 
 PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
@@ -49,14 +50,6 @@ class OfflineForkPreparationTests(unittest.TestCase):
         for dataset in ('destructibles', 'foliage', 'navgraphs'):
             shutil.copytree(self.original / dataset, self.source / dataset)
         (self.source / 'fork-source.json').write_text('{"revision":"' + PINNED_COMMIT + '"}')
-        # The source fixture includes the unchanged v0.10.1 build_wotmod.py output
-        # at dist/, just like the production builder's explicit release input.
-        replay_package = self.original / REPLAY_PACKAGE_INPUT
-        self.assertTrue(replay_package.is_file(),
-                        'WOT_FORK_0101_SOURCE must include the pinned release wotmod at ' + str(REPLAY_PACKAGE_INPUT))
-        (self.source / REPLAY_PACKAGE_INPUT).parent.mkdir(parents=True)
-        shutil.copyfile(replay_package, self.source / REPLAY_PACKAGE_INPUT)
-        shutil.copyfile(self.original / 'LICENSE', self.source / 'LICENSE')
         self.output = self.root / 'output'
 
     def test_preparation_preserves_input_and_unchanged_output_timestamps(self):
@@ -99,22 +92,23 @@ class OfflineForkPreparationTests(unittest.TestCase):
             prepare(self.source, self.output)
         self.assertFalse(self.output.exists())
 
-    def test_missing_or_invalid_replay_package_publishes_nothing(self):
-        package = self.source / REPLAY_PACKAGE_INPUT
-        original = package.read_bytes()
-        package.unlink()
-        with self.assertRaisesRegex(ValueError, 'wotmod input is missing'):
-            prepare(self.source, self.output)
-        self.assertFalse(self.output.exists())
-        package.write_bytes(original)
+    def test_native_replay_needs_no_archive_and_retires_only_the_old_sidecar(self):
+        self.assertFalse((self.source / 'dist').exists())
+        old_mod = self.output / 'mods/0.9.22.0.1/org.colorfulmeans.offline_lan_0922_0.10.1.wotmod'
+        old_mod.parent.mkdir(parents=True)
+        old_mod.write_bytes(b'old generated sidecar')
+        other_mod = old_mod.with_name('unrelated.wotmod')
+        other_mod.write_bytes(b'preserve unrelated output')
         prepare(self.source, self.output)
-        before = {p.relative_to(self.output): (p.read_bytes(), p.stat().st_mtime_ns)
-                  for p in self.output.rglob('*') if p.is_file()}
-        package.write_bytes(b'not the original release archive')
-        with self.assertRaises(ValueError):
-            prepare(self.source, self.output)
-        self.assertEqual(before, {p.relative_to(self.output): (p.read_bytes(), p.stat().st_mtime_ns)
-                                  for p in self.output.rglob('*') if p.is_file()})
+        self.assertFalse(old_mod.exists())
+        self.assertEqual(other_mod.read_bytes(), b'preserve unrelated output')
+        self.assertFalse(list((self.output / RUNTIME_ROOT).rglob('recorder-runtime.zip')))
+        # Even an unrelated invalid old release archive is no longer an input.
+        obsolete_input = self.source / 'dist' / old_mod.name
+        obsolete_input.parent.mkdir()
+        obsolete_input.write_bytes(b'not a ZIP')
+        prepare(self.source, self.output)
+        self.assertFalse(old_mod.exists())
 
     def runtime(self):
         prepare(self.source, self.output)
@@ -127,11 +121,13 @@ class OfflineForkPreparationTests(unittest.TestCase):
         shipped = {p.relative_to(runtime) for p in runtime.rglob('*') if p.is_file()}
         native_modules = {
             'stock_snapshot_static.py': 'stock_snapshot_static.py',
-            'stock_replay_codec.py': 'stock_replay_codec.py',
             'native_replay.py': 'stock_native_replay.py',
             'native_client_query.py': 'stock_native_client_query.py',
         }
         retired = {path.relative_to(PINNED_RESOURCES) for path in RETIRED}
+        for name in ('projectile_manager.py', 'projectile_runtime.py'):
+            self.assertIn(NATIVE_MODULE_ROOT / name, retired)
+            self.assertFalse((runtime / NATIVE_MODULE_ROOT / name).exists())
         self.assertEqual(shipped, (pinned - retired) | {ENTRY_PATH, SERVICES_PATH} |
                          {NATIVE_MODULE_ROOT / name for name in native_modules})
         for name, source_name in native_modules.items():
@@ -171,6 +167,54 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.assertEqual((runtime / 'mod_offline_lan_0922.py').read_bytes(),
                          (self.source / PINNED_RESOURCES /
                           'scripts/client/gui/mods/mod_offline_lan_0922.py').read_bytes())
+
+    def test_staged_compat_retires_battle_owner_and_preserves_native_captures(self):
+        from stock_native_battle_shell import (RETIRED_COMPAT_METHODS,
+            RETIRED_COMPAT_STATE, _RETIRED_COMPAT_HOOKS, _RETIRED_COMPAT_HELPERS,
+            _NATIVE_DESCRIPTORS)
+        runtime = self.runtime()
+        staged = runtime / 'scripts/client/gui/mods/offline_lan_0922/compat.py'
+        original = (self.source / COMPAT_PATH).read_text()
+        output = staged.read_text()
+        tree = ast.parse(output)
+        names = {node.name for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+        self.assertFalse(names & (RETIRED_COMPAT_METHODS | _RETIRED_COMPAT_HOOKS |
+                                  _RETIRED_COMPAT_HELPERS | _NATIVE_DESCRIPTORS))
+        self.assertFalse({node.attr for node in ast.walk(tree)
+                          if isinstance(node, ast.Attribute)} & RETIRED_COMPAT_STATE)
+        def captures(source):
+            return {target.attr for node in ast.walk(ast.parse(source))
+                    if isinstance(node, ast.Assign) for assigned in node.targets
+                    for target in ast.walk(assigned) if isinstance(target, ast.Attribute)
+                    and (target.attr.startswith('_original_') or target.attr.endswith('_code'))}
+        self.assertEqual(captures(original), captures(output))
+        for method in ('connect', 'disconnect', 'garage_state', 'seed_account_context',
+                       'restore_lobby_account', 'retire_current_player', 'fini'):
+            self.assertIn(method, names)
+        # Native code must not recreate a mirror after Python has retired it.
+        native = (ROOT / 'bigworld/stock_native_battle_compat.cpp').read_text()
+        self.assertNotIn('"_battle_active"', native)
+        self.assertNotIn('"_projectile_collidable_entities_wrapper"', native)
+        self.assertNotIn('native_client_query', output)
+        self.assertNotIn('postmortem_causes', output)
+        self.assertFalse(staged.with_name('entities').joinpath('native_remote_vehicle.py').exists())
+        self.assertTrue(staged.with_name('entities').joinpath('remote_vehicle.py').is_file())
+        if not PY27.is_file():
+            self.skipTest('The pinned CPython 2.7 interpreter is required for install smoke')
+        result = subprocess.run([str(PY27), '-E', '-s', '-B',
+            str(ROOT / 'tests/stock_native_compat_fixture.py'), str(staged),
+            str(staged.with_name('tactical_radio.py'))], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('install, captures, native descriptors, retirement and rollback passed', result.stdout)
+
+    def test_compat_cleanup_rejects_new_consumers_of_retired_state(self):
+        original = (self.source / COMPAT_PATH).read_text()
+        changed = original.replace('    def garage_state(self):',
+            '    def stale_battle_reader(self):\n        return self._battle_active\n\n'
+            '    def garage_state(self):')
+        with self.assertRaisesRegex(ValueError, 'retired battle state'):
+            ADAPTERS[COMPAT_PATH](changed)
 
     def test_rollback_block_is_roots_reviewed_account_attempt(self):
         source = ROOT_COMPAT.read_text()
@@ -282,7 +326,7 @@ for base, unused, files in os.walk(sys.argv[1]):
 print(count)
 ''', str(runtime)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertGreater(int(result.stdout), 180)
+        self.assertEqual(int(result.stdout), len(list(runtime.rglob('*.py'))))
         package = 'gui.mods.offline_lan_0922'
         names = set()
         for path in runtime.rglob('*.py'):

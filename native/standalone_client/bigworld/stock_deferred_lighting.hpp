@@ -13,6 +13,7 @@ struct StockDeferredLightingSettings
     float pmremMips[4] = {};
     float forwardMultiplier = 1.f;
     bool forward = false;
+    bool pbsResourcesReady = false;
     bool loaded = false;
 };
 

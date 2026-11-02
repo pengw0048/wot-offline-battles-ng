@@ -61,8 +61,11 @@ std::array<std::int64_t, 3> equipmentEcho(Battle& b, const params::EquipmentStat
     if (remaining > 0.) return {1, stage("COOLDOWN"), std::int64_t(std::ceil(remaining))};
     return {1, stage("READY"), 0};
 }
+}
+
+namespace params {
 // BattleRuntime._present_equipments outside the live gun runtime: publish only item transitions.
-bool presentEquipments(Battle& b, double now) {
+bool presentEquipment(Battle& b, double now) {
     auto& s = state(b);
     if (b.replay && !b.gun->replay_publishing) return false;
     if (!b.startup || !b.startup->client_ready_received || !s.equipment) return false;
@@ -83,9 +86,7 @@ bool presentEquipments(Battle& b, double now) {
     s.equipment_signature = std::move(signature);
     return changed;
 }
-}
 
-namespace params {
 Value canonical(Battle&, const Value& raw) {
     auto snapshot = canonicalEffectiveParams(raw);
     return snapshot ? std::move(*snapshot) : Value();
@@ -208,7 +209,7 @@ bool restoreEquipmentCold(Battle& b, const Value& snapshot, bool present) {
     }
     if (present && !b.worker && b.engine.avatar && b.engine.server) {
         if (live_gun) gun::publishKind(b, "equipment", now);
-        else presentEquipments(b, now);
+        else presentEquipment(b, now);
     }
     return true;
 }

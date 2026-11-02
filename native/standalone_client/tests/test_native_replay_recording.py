@@ -1,4 +1,4 @@
-"""The native replay recording and transport timing match the staged Python on identical fakes."""
+"""Recording starts at an accepted round barrier; unchanged recording and timing remain differential."""
 import ast
 import os
 from pathlib import Path
@@ -55,6 +55,23 @@ def namespace(log, v, impl):
     g['native_recording_mode'] = lambda: log.append(('mode',)) or (0, 1, 2)[v % 3]
     g['os'] = Obj(log, 'os', {'getcwd': 'C:/game', 'getcwdu': u'C:/game', 'getpid': 1},
                   missing=() if v % 2 else ('getcwdu',), path=Obj(log, 'path', {'join': lambda *parts: '/'.join(parts)}))
+    # The native writer must attach after the accepted live barrier. Keep
+    # the pinned body as the reference for everything past this new boundary.
+    original_start = g['ensure_recording']
+    def guarded_start(value):
+        client = value.client
+        start = value._start_message or {}
+        round_id = start.get('round_id')
+        live = getattr(client, '_offline_replay_live', None) if client is not None else None
+        snapshot = getattr(client, 'last_snapshot', None) if client is not None else None
+        eligible = (value.state == 'running' and round_id is not None and
+                    isinstance(live, dict) and live.get('type') == 'battle_live' and live.get('round_id') == round_id and
+                    isinstance(snapshot, dict) and snapshot.get('type') == 'snapshot' and snapshot.get('round_id') == round_id)
+        if eligible:
+            return original_start(value)
+        if client is not None:
+            g['poll_process_status'](client)
+    g['ensure_recording'] = guarded_start
     if impl == 'native':
         for name in ('poll_process_status', 'ensure_recording', 'local_state', 'record_local'):
             g[name] = (lambda name: lambda value: getattr(native, name)(value, g))(name)
@@ -73,14 +90,17 @@ def runtime(log, v):
     client = Obj(log, 'client', missing=() if v % 7 else ('_offline_replay_recorder',),
                  _offline_replay_recorder=None if v % 6 == 5 else recorder(log, v), is_offline_replay=v % 17 == 16,
                  _offline_replay_attempted=(None, 'r1')[v % 9 == 8], _offline_replay_welcome=({'w': 1}, 'bad')[v % 10 == 9],
-                 _offline_replay_live=None, last_snapshot=(None, {'type': 'snapshot', 'actors': []}, {'players': []})[v % 3],
+                 _offline_replay_live=(None, {'type': 'battle_live', 'round_id': 'r0'},
+                                       {'type': 'battle_live', 'round_id': 'r1'}, {'type': 'other', 'round_id': 'r1'})[v % 4],
+                 last_snapshot=(None, {'type': 'snapshot', 'round_id': 'r1', 'actors': []},
+                                {'type': 'snapshot', 'round_id': 'r0'}, {'players': []})[v % 7 % 4],
                  player_id=(4, '4', 'x')[v % 19 // 17 * 2 if v % 19 >= 17 else 0])
     records = {'bot:1': {'kind': 'bot', 'spot_visible': v % 2 == 0, 'spot_marker_visible': 0},
                'bot:2': {'kind': 'bot'}, 'player:4': {'kind': 'player'}, 'bot:3': {'kind': u'bot', 'spot_visible': 'yes'}}
     rotator = Obj(log, 'rotator', turretYaw=0.5, gunPitch=-0.1) if v % 3 else None
     entity = Obj(log, 'entity', health=(300, 299.7, None)[v % 3] if v % 23 != 22 else 'x', gunAngles=12)
     gun = Obj(log, 'gun', ammo={'shell': [1, 2]}, shot_index=3, clip=[1, 2], reload_time=4.5) if v % 4 else None
-    attrs = dict(client=client, _worker_mode=v % 29 == 28, _client_ready_received=v % 8 != 7, _ready_sent=True,
+    attrs = dict(client=client, state='stopped' if v % 13 == 12 else 'running', _worker_mode=v % 29 == 28, _client_ready_received=v % 8 != 7, _ready_sent=True,
                  _start_message=({'round_id': 'r1'}, None)[v % 14 == 13], _config={'map': 'm', 'vehicle': 'v', 'other': 1},
                  _local_descriptor='desc', _local_position=(1.0, 2.0, 3.0), _local_yaw=0.25, _local_speed=3,
                  _server=Obj(log, 'server', vehicle_id=4) if v % 5 else None, _avatar=Obj(log, 'avatar', gunRotator=rotator),

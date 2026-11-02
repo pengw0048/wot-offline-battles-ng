@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,20 @@ def samples():
                           'wreck_hit': {'target_kind': 'bot', 'target_id': 2 ** 63 + 5}}]})
     messages.append({'type': 'track_repair', 'round_id': 1, 'critical_base_revision': 0, 'repair_seq': 1,
                      'tracks': [{'name': 'leftTrackHealth', 'hp': 12.5, 'max_hp': 100.0, 'state': 'critical'}]})
+    # The post-result detached-turret tail is not a new Bot motion sample.
+    messages.append({'type': 'bot_state', 'round_id': 1, 'authority_epoch': 2,
+                     'rows': [], 'detached_turrets': []})
+    messages.append({'type': 'bot_state', 'round_id': 1, 'authority_epoch': 2,
+                     'rows': [], 'sample_time_us': 1000, 'source_batch_horizon_us': 2000})
+    messages.extend([
+        {'type': 'select_vehicle', 'vehicle': 'germany:G04_PzVI_Tiger_I', 'max_health': 1500,
+         'vehicle_compact_descr': 'AQID', 'effective_params': {'camouflage': {'camouflage_id': None}},
+         'marks_on_gun': 2, 'outfits': {}},
+        {'type': 'select_team', 'team': 0},
+        {'type': 'set_team_size', 'team': 2, 'size': 15},
+        {'type': 'set_bot_tier_mode', 'mode': 'random'},
+        {'type': 'set_bot_skill_mode', 'mode': 'mixed'},
+    ])
     import replica_split
     tick = next((m for m in messages if m.get('type') == 'snapshot' and 'client_build' not in m
                  and m.get('bots') and m.get('players')), None)
@@ -86,13 +101,19 @@ def samples():
     return messages
 
 
-@unittest.skipUnless(subprocess.run(['pyenv', 'which', 'python2.7'], capture_output=True,
-                                    env=dict(os.environ, PYENV_VERSION='2.7.18')).returncode == 0,
-                     'CPython 2.7.18 audit runtime is required')
+def python27_audit_runtime():
+    pyenv = shutil.which('pyenv')
+    if pyenv:
+        result = subprocess.run([pyenv, 'which', 'python2.7'], capture_output=True, text=True,
+                                env=dict(os.environ, PYENV_VERSION='2.7.18'))
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    raise unittest.SkipTest('CPython 2.7.18 audit runtime is required')
+
+
 class StockWireCodec(unittest.TestCase):
     def test_python27_native_matches_schema_codec(self):
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         messages = samples()
         with tempfile.TemporaryDirectory(prefix='wire-codec-') as folder:
@@ -176,7 +197,7 @@ for frame, age, native in received:
     view, complete = wire.replica_message(native), wire.complete_snapshot(native)
     assert view['type'] == 'snapshot' and view['bots'] == [] and len(view['players']) == 1, view
     assert view['_native_snapshot'] is native and complete['bots'], complete
-assert replicas == 1, replicas
+assert replicas == sum(wire.decode(frame)['type'] == 'replica_snapshot' for frame in frames), replicas
 wire.net_record(sock._handle, None)
 assert wire.replay_count(writer) == len(frames) and wire.replay_finish(writer)[0]
 reader = wire.replay_reader(sys.argv[1] + '/frames.wotlanreplay')
@@ -212,8 +233,7 @@ class StagedClientTransport(unittest.TestCase):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         client = Path(fork) / 'src/res/scripts/client'
         import importlib.util
@@ -262,7 +282,9 @@ for name in ('gui', 'gui.mods'):
 package = types.ModuleType('gui.mods.offline_lan_0922')
 package.__path__ = [sys.argv[3], root + '/gui/mods/offline_lan_0922']
 sys.modules[package.__name__] = package
+sys.modules['offline_client_lifecycle_native'] = types.ModuleType('offline_client_lifecycle_native')
 from gui.mods.offline_lan_0922 import native_replay, offline_replay
+assert not hasattr(offline_replay, 'Recorder') and not hasattr(offline_replay, 'Reader')
 clock = [100.0]
 header = {'welcome': {'type': u'welcome'}, 'start': {'type': u'battle_start', 'round_id': 3},
           'snapshot': {'type': u'snapshot', 'round_id': 3, 'players': [], 'bots': []}, 'config': {u'map': u'33_fjord'},
@@ -312,13 +334,15 @@ class NativeReplay(unittest.TestCase):
         fork = os.environ.get('WOT_FORK_0101_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
-        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
-                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
+        py27 = python27_audit_runtime()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='wire-replay-') as folder:
             folder = Path(folder)
-            (folder / 'pkg').mkdir()
-            (folder / 'pkg/native_replay.py').write_text((ROOT / 'bigworld/stock_native_replay.py').read_text())
+            sys.path.insert(0, str(ROOT / 'bigworld'))
+            from prepare_offline_fork import NATIVE_MODULE_ROOT, RUNTIME_ROOT, stage_runtime
+            stage_runtime(Path(fork), folder / 'prepared')
+            runtime = folder / 'prepared' / RUNTIME_ROOT
+            self.assertFalse(list((folder / 'prepared').rglob('*.wotmod')))
             subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
                             '-Wno-missing-field-initializers', '-DWOT_WIRE_HOST_BUILD', '-bundle',
                             '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
@@ -330,7 +354,7 @@ class NativeReplay(unittest.TestCase):
             events = next(m for m in samples() if m['type'] == 'events')
             (folder / 'events.json').write_text(json.dumps(events))
             run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder),
-                                  str(Path(fork) / 'src/res/scripts/client'), str(folder / 'pkg'),
+                                  str(runtime / 'scripts/client'), str(runtime / NATIVE_MODULE_ROOT),
                                   str(folder / 'replays'), str(folder / 'events.json')],
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

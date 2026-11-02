@@ -109,6 +109,25 @@ std::string text(const Vector4 & v)
 }
 #define SUCCEEDED(hr) (((HRESULT)(hr)) >= 0)
 enum { D3DFMT_A8R8G8B8 = 21, D3DCLEAR_TARGET = 1 };
+namespace DX {
+struct Surface
+{
+    const char * name;
+    unsigned refs = 0;
+    void AddRef() { ++refs; }
+    void Release() { assert(refs); --refs; }
+};
+}
+template <class T> class ComObjectWrap
+{
+public:
+    ~ComObjectWrap() { if (value_) value_->Release(); }
+    T ** operator&() { assert(!value_); return &value_; }
+    T * pComObject() const { return value_; }
+    explicit operator bool() const { return value_ != NULL; }
+private:
+    T * value_ = NULL;
+};
 
 // Public lib/input/input.hpp MouseEvent fields.
 class MouseEvent
@@ -327,6 +346,24 @@ struct D3DGAMMARAMP { WORD red[256], green[256], blue[256]; };
 enum { D3DSGR_CALIBRATE = 1 };
 struct Device
 {
+    DX::Surface scene{"scene"}, stale{"captured"};
+    DX::Surface * depth = &scene;
+    bool depthReadFails = false, depthBindFails = false;
+    HRESULT GetDepthStencilSurface(DX::Surface ** surface)
+    {
+        record(std::string("device.GetDepthStencilSurface:") + depth->name);
+        if (depthReadFails) return -1;
+        *surface = depth;
+        depth->AddRef();
+        return 0;
+    }
+    HRESULT SetDepthStencilSurface(DX::Surface * surface)
+    {
+        record(std::string("device.SetDepthStencilSurface:") + surface->name);
+        if (depthBindFails) return -1;
+        depth = surface;
+        return 0;
+    }
     D3DGAMMARAMP ramp;
     HRESULT SetGammaRamp(unsigned swapChain, unsigned flags, const D3DGAMMARAMP * value)
     {
@@ -381,11 +418,24 @@ class RenderTarget
 {
 public:
     explicit RenderTarget(const std::string & name) : name_(name) {}
-    bool push() { record("target.push:" + name_); return true; }
-    void pop() { record("target.pop:" + name_); }
+    // SDK reuseZ captures its depth at allocation. Deliberately model the
+    // Windows failure: the active scene has since switched to another surface.
+    bool push()
+    {
+        previous_ = rc().device()->depth;
+        rc().device()->depth = &rc().device()->stale;
+        record("target.push:" + name_);
+        return true;
+    }
+    void pop()
+    {
+        rc().device()->depth = previous_;
+        record("target.pop:" + name_);
+    }
     void * pTexture() { return const_cast<char *>(name_.c_str()); }
 private:
     std::string name_;
+    DX::Surface * previous_ = NULL;
 };
 typedef Ptr<RenderTarget> RenderTargetPtr;
 bool targetCreates = true;
@@ -434,21 +484,34 @@ public:
 }
 
 // lib/space IEntityEmbodiment and client Entity/PyEntity.
+struct PyAttachment : PyObject {};
+struct ScriptObject { PyObject * value; PyObject * get() const { return value; } };
+struct App
+{
+    enum { COLOUR_DRAW_CONTEXT };
+    Moo::DrawContext colour{Moo::RENDERING_PASS_COLOR};
+    static App & instance() { static App value; return value; }
+    Moo::DrawContext & drawContext(int) { return colour; }
+};
 class IEntityEmbodiment
 {
 public:
     explicit IEntityEmbodiment(const std::string & name) : name_(name) {}
+    ScriptObject scriptObject() const { return {const_cast<PyAttachment *>(&attachment_)}; }
     // An immediate-mode render op through the rigid override material.
     void draw(Moo::DrawContext & context)
     {
         if (!context.override_) { record("embodiment.draw:" + name_ + ":plain"); return; }
-        Moo::EffectMaterial * material = context.override_->stockMaterial(false)->baseMaterial().get();
+        assert(Moo::rc().device()->depth == &Moo::rc().device()->scene);
+        const bool skinned = name_.find("Skinned") != std::string::npos;
+        Moo::EffectMaterial * material = context.override_->stockMaterial(skinned)->baseMaterial().get();
         ID3DXEffect * drawn = material->begin();
         record("embodiment.draw:" + name_ + ":" + (drawn ? drawn->summary() : "unselected"));
         material->end();
     }
 private:
     std::string name_;
+    PyAttachment attachment_{};
 };
 typedef Ptr<IEntityEmbodiment> IEntityEmbodimentPtr;
 typedef std::vector<IEntityEmbodimentPtr> EntityEmbodiments;
@@ -668,6 +731,15 @@ PyObject * setTargetCreates(PyObject *, PyObject * args)
     Py_RETURN_NONE;
 }
 
+PyObject * setDepthFails(PyObject *, PyObject * args)
+{
+    int read, bind;
+    if (!PyArg_ParseTuple(args, "ii", &read, &bind)) return NULL;
+    BW::Moo::rc().device()->depthReadFails = read != 0;
+    BW::Moo::rc().device()->depthBindFails = bind != 0;
+    Py_RETURN_NONE;
+}
+
 PyObject * setSelectFails(PyObject *, PyObject * args)
 {
     int fails;
@@ -741,7 +813,28 @@ PyObject * gammaRamps(PyObject *, PyObject * args)
     return result;
 }
 
-PyObject * drawEdges(PyObject *, PyObject *) { return PyBool_FromLong(BW::drawStockEdgeDetection()); }
+PyObject * drawEdges(PyObject *, PyObject *)
+{
+    const bool prepared = BW::prepareStockEdgeDetection();
+    const bool drawn = BW::drawStockEdgeDetection();
+    assert(BW::Moo::rc().device()->depth == &BW::Moo::rc().device()->scene);
+    assert(BW::Moo::rc().device()->scene.refs == 0);
+    return PyBool_FromLong(drawn && prepared);
+}
+PyObject * deferEntity(PyObject *, PyObject * args)
+{
+    PyObject * object;int main = 1;
+    if (!PyArg_ParseTuple(args, "O!|i", &BW::pyEntityType, &object, &main)) return NULL;
+    BW::Entity & entity = *static_cast<BW::PyEntity *>(object)->entity;
+    BW::Moo::DrawContext other(BW::Moo::RENDERING_PASS_COLOR);
+    BW::Moo::DrawContext & context = main ? BW::App::instance().drawContext(0) : other;
+    const auto members = BW::EdgeDetector::embodiments(entity);
+    PyObject * result = PyTuple_New(members.size());
+    for (size_t i = 0; i < members.size(); ++i)
+        PyTuple_SET_ITEM(result, i, PyBool_FromLong(BW::stockDeferEdgeAttachment(
+            static_cast<const BW::PyAttachment *>(members[i]->scriptObject().get()), context)));
+    return result;
+}
 
 // makeEntity(primary, auxiliaries...): a PyEntity with named embodiments.
 PyObject * makeEntity(PyObject *, PyObject * args)
@@ -779,7 +872,9 @@ PyObject * setEntity(PyObject *, PyObject * args)
 PyMethodDef hostMethods[] = {
     {"setTargetCreates", setTargetCreates, METH_VARARGS, NULL},
     {"drawEdges", drawEdges, METH_NOARGS, NULL},
+    {"deferEntity", deferEntity, METH_VARARGS, NULL},
     {"setSelectFails", setSelectFails, METH_VARARGS, NULL},
+    {"setDepthFails", setDepthFails, METH_VARARGS, NULL},
     {"resetDevice", resetDevice, METH_NOARGS, NULL},
     {"applyDeviceGamma", applyDeviceGamma, METH_NOARGS, NULL},
     {"detachDevice", detachDevice, METH_NOARGS, NULL},

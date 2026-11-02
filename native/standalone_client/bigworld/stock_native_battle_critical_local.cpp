@@ -257,7 +257,7 @@ void emit(Battle& b, LocalCriticalOwner& o) {
                 py::call(b.engine.avatar.get(), "updateVehicleMiscStatus", p::integer(id).get(), p::integer(edge.status).get(),
                          p::integer(edge.code).get(), seconds.get());
             } else if (edge.kind == "repaired") {
-                if (vehicles::damageInfoServiceable(b)) vehicles::showDamageInfo(b, id, edge.index, edge.extra, id);
+                if (!vehicles::damageInfoServiceable(b) || !vehicles::showDamageInfo(b, id, edge.index, edge.extra, id)) continue;
             }
             o.pending.erase(at);
         } catch (const std::exception& e) {
@@ -374,6 +374,12 @@ bool reconcileAuthority(Battle& b, Actor& vehicle, const V& source, V* canonical
     auto& presented = vehicle.presented;
     const std::int64_t previous = presented.critical_revision;
     if (revision < previous) return false;
+    // The server omits an undamaged player's empty critical object. Establish its native
+    // initial state only on the first accepted zero-revision contract; never repair a lost owner later.
+    if (!canonical && previous < 0 && s.get("critical_revision").numeric(-1.) == 0. &&
+        s.get("critical_base_revision").numeric(-1.) == 0. && s.get("critical_ack_seq").numeric(-1.) == 0. &&
+        s.get("critical").resolved().kind == V::Kind::Null && b.critical)
+        b.critical->vehicles.emplace(vehicle.engine_id, VehicleDamage{});
     presented.critical_revision = revision;
     presented.critical_base_revision = base;
     presented.critical_ack_seq = ack;

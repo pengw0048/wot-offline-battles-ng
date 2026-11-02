@@ -289,7 +289,7 @@ void retireRuntime(const std::string& reason) {
     session->active_round.reset();
     session->last_progress_frame = 0;
     session->next_progress = 0.;
-    if (round && reason != "round_complete") session->retired_rounds.insert(*round);
+    if (round) session->retired_rounds.insert(*round);
     session->state = reason == "round_complete" ? "waiting" : "standby";
     writeStatus(true);
 }
@@ -332,20 +332,35 @@ bool startRound(const std::shared_ptr<const Value>& start) {
     const auto& round_value = message.get("round_id").resolved();
     const std::optional<std::int64_t> round = round_value.kind == Value::Kind::Integer ? std::optional<std::int64_t>(round_value.integer) : std::nullopt;
     if (!round || session->retired_rounds.count(*round) || !authorityHere()) return false;
-    if (current() && session->active_round == round) return false;
-    if (current() && session->active_round != round) {
-        if (session->active_round && *round < *session->active_round) return false;
+    if (session->active_round) {
+        if (*round <= *session->active_round) return false;
+        const Battle* previous = current();
+        if (!previous || !previous->worker || previous->round_id != *session->active_round || previous->phase == Phase::Loading) {
+            failure("worker received overlapping round lifecycles");
+            return false;
+        }
         try { retireRuntime("round_complete"); } catch (const std::exception& e) { failure(describe(e)); return false; }
+    }
+    // Native teardown retains the stopped Battle for its deferred Account
+    // restore. That object is not the worker session's live round owner.
+    const Battle* previous = current();
+    if (previous && (!previous->worker || previous->phase != Phase::Stopped ||
+                     !session->retired_rounds.count(previous->round_id))) {
+        failure("worker received overlapping round lifecycles");
+        return false;
+    }
+    if (previous && *round <= previous->round_id) return false;
+    if (session->pending_start && session->pending_start->get("round_id") != message.get("round_id")) {
+        failure("worker received overlapping pending rounds");
+        return false;
     }
     bool lobby = false;
     try { lobby = p::flag(py::invoke(session->lobby_ready.get()).get()); } catch (const std::exception& e) { failure(describe(e)); return false; }
-    if (!lobby) {
-        if (session->pending_start && session->pending_start->get("round_id") != message.get("round_id")) {
-            failure("worker received overlapping pending rounds");
-            return false;
+    if (!lobby || (previous && previous->startup && previous->startup->restore_pending)) {
+        if (!session->pending_start) {
+            session->pending_start = start;
+            session->pending_deadline = wall() + cs::read(session->config.get()).get("startupTimeoutSeconds").numeric(30.);
         }
-        session->pending_start = start;
-        session->pending_deadline = wall() + cs::read(session->config.get()).get("startupTimeoutSeconds").numeric(30.);
         session->state = "waiting_lobby";
         writeStatus(true);
         return true;
@@ -354,7 +369,6 @@ bool startRound(const std::shared_ptr<const Value>& start) {
     session->pending_deadline = -1.;
     session->last_progress_frame = 0;
     session->next_progress = 0.;
-    if (current()) { failure("worker received overlapping round lifecycles"); return false; }
     // The worker plays its own carrier Avatar, parked below the map.
     const Value* dummy = nullptr;
     for (const auto& row : message.get("players").resolved().array)
@@ -399,7 +413,7 @@ bool publishProgress(const Battle& b) {
 
 void monitor() {
     if (session->stopped) return;
-    if (!current() && session->pending_start) {
+    if (!session->active_round && session->pending_start) {
         if (!authorityHere()) {
             session->pending_start.reset();
             session->pending_deadline = -1.;
@@ -409,17 +423,15 @@ void monitor() {
             return;
         }
     }
-    if (!current() && session->pending_start) {
+    if (!session->active_round && session->pending_start) {
         bool lobby = false;
         try { lobby = p::flag(py::invoke(session->lobby_ready.get()).get()); } catch (const std::exception& e) { failure(describe(e)); return; }
         if (lobby) {
-            auto pending = std::move(session->pending_start);
-            session->pending_start.reset();
-            session->pending_deadline = -1.;
+            auto pending = session->pending_start;
             if (!startRound(pending)) return;
         }
     }
-    if (Battle* b = current()) {
+    if (Battle* b = session->active_round ? current() : nullptr) {
         if (!authorityHere() || (session->active_round && session->retired_rounds.count(*session->active_round))) {
             if (!retireOrFail("authority_lost")) return;
         } else if (b->running()) {
@@ -485,14 +497,18 @@ std::string transportFailure(const std::string& kind, const Value& message) {
 void onEvent(const std::string& kind, const std::shared_ptr<const Value>& event) {
     const Value& message = *event;
     if (kind == "welcome" || kind == "roster") {
+        const Value& round = message.get("round_id").resolved();
+        if (round.kind == Value::Kind::Integer &&
+            ((session->active_round && round.integer < *session->active_round) ||
+             (session->pending_start && round.integer < session->pending_start->get("round_id").numeric()))) return;
         if (kind == "welcome") session->retry_delay = RETRY_SECONDS;
         if (session->linked && !authorityHere()) { session->pending_start.reset(); session->pending_deadline = -1.; }
-        if (current() && !authorityHere() && !retireOrFail("authority_lost")) return;
+        if (session->active_round && !authorityHere() && !retireOrFail("authority_lost")) return;
         const Value& phase = message.get("phase").resolved();
         if (phase.kind == Value::Kind::Text && phase.text == "waiting") {
             session->pending_start.reset();
             session->pending_deadline = -1.;
-            if (current() && !retireOrFail("round_complete")) return;
+            if (session->active_round && !retireOrFail("round_complete")) return;
             session->state = "waiting";
         } else if (!current()) {
             session->state = "standby";
@@ -578,6 +594,8 @@ void stop(bool restore_account) {
     writeStatus(true);
     if (!error.empty()) throw p::Error(error);
 }
+
+void releaseScriptOwners() { session.reset(); }
 
 namespace {
 PyObject* installEntry(PyObject*, PyObject* args) {

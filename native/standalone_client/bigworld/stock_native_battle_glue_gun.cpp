@@ -379,6 +379,7 @@ bool applyReplayAmmo(Battle& b, const Value& sample) {
         ~Publishing() { gun.replay_publishing = false; }
     } publishing(*b.gun);
     publishKind(b, "ammo", now);
+    params::presentEquipment(b, b.clock());
     if (publication) publishKind(b, "reload", now, true, publication->left, publication->duration);
     return true;
 }

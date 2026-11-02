@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add one identity record for each multiply-stale SDK model-node instance."""
+"""Restore #1513's initial node pose and diagnose multiply-stale node instances."""
 import argparse
 import os
 from pathlib import Path
@@ -14,6 +14,24 @@ NEW_FIELDS = FIELDS + '''
 \tvoid reportStaleIdentity( const char * reader, uint32 current ) const;'''
 INIT = '\t, lastLatchTimestamp_( 0 )'
 NEW_INIT = INIT + '\n\t, reportedStaleIdentity_( false )'
+MATRIX_INIT = '\tlastWorldTransform_( Matrix::identity )'
+NEW_MATRIX_INIT = '\tlastWorldTransform_( pOwner ? pOwner->worldTransform() : Matrix::identity )'
+CONSTRUCTOR_END = '\n{\n}\n\n/**\n *\tDestructor\n */\nPyModelNode::~PyModelNode()'
+NEW_CONSTRUCTOR_END = '''
+{
+	// #1513 0x008fc499..0x008fc4ee publishes owner/local pose before the first frame latch.
+	if (localTransform_.exists())
+	{
+		Matrix local;
+		localTransform_->matrix( local );
+		lastWorldTransform_.preMultiply( local );
+	}
+}
+
+/**
+ *	Destructor
+ */
+PyModelNode::~PyModelNode()'''
 ANCHOR = '\n/**\n *\tConstructor\n */\nPyModelNode::PyModelNode('
 HELPER = '''
 #if ENABLE_TRANSFORM_VALIDATION
@@ -70,6 +88,8 @@ def patch_text(text, path):
     if 'void PyModelNode::reportStaleIdentity(' in text and HELPER not in text:
         raise ValueError('Model-node identity helper changed')
     text = replace_once(text, INIT, NEW_INIT)
+    text = replace_once(text, MATRIX_INIT, NEW_MATRIX_INIT)
+    text = replace_once(text, CONSTRUCTOR_END, NEW_CONSTRUCTOR_END)
     text = replace_once(text, ANCHOR, HELPER + ANCHOR)
     for reader in ('matrix', 'getMatrix'):
         before = '\t\tWARNING_MSG( "PyModelNode::%s: "' % reader

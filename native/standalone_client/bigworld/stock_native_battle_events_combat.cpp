@@ -59,7 +59,7 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
     auto entity = b.entity(target->engine_id);
     if (entity.get() == Py_None) throw p::Error("ordered combat event target has no native entity: " + *target_key);
     if (attacker && b.entity(attacker->engine_id).get() == Py_None) throw p::Error("ordered combat event attacker has no native entity: " + *attacker_key);
-    feedback::damageSticker(b, event, *target);
+    b.feature("projectile damage stickers", [&] { feedback::damageSticker(b, event, *target); }, false);
     const bool blind = attacker && feedback::blindLocalAttack(b, *target, *attacker);
     const bool dead_target = field(state, "health").numeric(0.) <= 0. || !field(state, "alive").truth(true);
     const bool suppress_postmortem = vehicles::suppressPostmortemKiller(b, *target, state, attacker_engine);
@@ -70,7 +70,9 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
     }
     if (source == "player_left" && attacker) throw p::Error("player_left event has an attacker");
     if (attacker) {
-        feedback::combatHit(b, event, *target, *attacker);
+        // Optional effect setup can fail before combatHit reaches its inner
+        // guards. Keep confirmed credit and health, and retry effects on later hits.
+        b.feature("combat hit presentation", [&] { feedback::combatHit(b, event, *target, *attacker); }, false);
         feedback::combat(b, event, *target, *attacker, reason);
     } else if (source == "environment" || source == "fire") {
         feedback::environment(b, event, *target, reason);
@@ -82,18 +84,24 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
         writable(canonical).object["events"].kind = Value::Kind::Array;
         canonical.object["events"].array.clear();
         const bool apply = vehicles::reconcileCriticalAuthority(b, *target, event, &canonical);
-        if (apply && !(canonical == d.critical)) {
+        if (apply) {
+            // A repair tick may already have copied these devices into the
+            // durable cache. The admitted event still owns its one-shot HUD edge.
             const bool edge = target->local && b.gun;
             if (edge) gun::edge(b);
             Value presentation = critical.resolved();
             writable(presentation).object["devices"] = field(canonical, "devices");
             presentation.object["destroyed"] = field(canonical, "destroyed");
             if (target->local && b.critical && b.critical->owned && d.critical_base_revision == b.critical->base_revision) {
-                // The owning client already presented its own track transitions.
+                // The owner presents repairs, not the original destruction.
+                // Keep a destruction only while the accepted track is still broken.
                 Value filtered; filtered.kind = Value::Kind::Array;
                 for (const auto& item : field(critical, "events").resolved().array) {
                     const std::string name = field(item, "name").resolved().text;
-                    if (name != "leftTrackHealth" && name != "rightTrackHealth") filtered.array.push_back(item.resolved());
+                    const auto& destroyed = field(canonical, "destroyed").resolved().array;
+                    const bool broken = field(item, "state").resolved().text == "destroyed" &&
+                        std::any_of(destroyed.begin(), destroyed.end(), [&](const Value& value) { return value.resolved().text == name; });
+                    if ((name != "leftTrackHealth" && name != "rightTrackHealth") || broken) filtered.array.push_back(item.resolved());
                 }
                 presentation.object["events"] = std::move(filtered);
             }

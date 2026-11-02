@@ -182,7 +182,6 @@ struct LocalGun {
     Object ammo_callback;
     std::int64_t replay_muzzle_count = 0;
     bool replay_publishing = false;
-    bool client_ready = false;                         // the Avatar entered and the HUD accepts edges
     int equipment_revision = -1;
     // Replay: the latest validated local row and the recorded reload cycles it presents (replay_presentation.ReloadEdges).
     Value replay_local;
