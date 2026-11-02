@@ -185,6 +185,8 @@ class CountdownSelfPresentationTests(unittest.TestCase):
         prepare = finish.index('if (!b.worker) local::prepare(b);')
         bind = finish.index('if (!b.worker) stock_native_client_drive::attachSelfPresentation(')
         running = finish.index('b.phase = Phase::Running;')
+        self.assertLess(model, bind)
+        self.assertLess(query, bind)
         self.assertLess(prepare, bind)
         self.assertLess(bind, running)
 
@@ -234,5 +236,3 @@ class CountdownSelfPresentationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-        self.assertLess(model, bind)
-        self.assertLess(query, bind)
