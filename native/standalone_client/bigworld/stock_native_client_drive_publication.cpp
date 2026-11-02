@@ -50,6 +50,10 @@ std::vector<V>PublicationLedger::acknowledgeDestructible(ID admitted,ID resolved
 }
 void PublicationLedger::queueLanding(V observation,std::size_t maximum){if(landing_impacts.array.size()>=maximum)throw std::runtime_error("Native landing observation queue exceeded limit");landing_impacts.array.push_back(std::move(observation));}
 bool PublicationLedger::landingAdmitted(){if(landing_impacts.array.empty())return false;landing_impacts.array.erase(landing_impacts.array.begin());return true;}
-void PublicationLedger::barrier(const PlayerState&state,const Controls&controls,const Point&position,double yaw){FrozenInput out;out.sequence=++barrier_sequence_;out.state=state;out.state.position=position;out.state.yaw=yaw;out.controls=controls;out.ram_contacts=ram_contacts;out.destructible_contacts=destructible_contacts;out.tank_pushes=tank_pushes;out.turret_pushes=turret_pushes;barriers_.push_back(std::move(out));}
+void PublicationLedger::barrier(const PlayerState&state,const Controls&controls,const Point&position,double yaw){FrozenInput out;out.sequence=++barrier_sequence_;out.state=state;
+    // A contact barrier can precede native presentation at a different pose.
+    // It has no applied-body receipt until present() samples that pose.
+    if(position!=state.position||yaw!=state.yaw)out.state.hydraulic_body.reset();
+    out.state.position=position;out.state.yaw=yaw;out.controls=controls;out.ram_contacts=ram_contacts;out.destructible_contacts=destructible_contacts;out.tank_pushes=tank_pushes;out.turret_pushes=turret_pushes;barriers_.push_back(std::move(out));}
 bool PublicationLedger::barrierAdmitted(std::uint64_t sequence){if(barriers_.empty()||barriers_.front().sequence!=sequence)return false;barriers_.pop_front();return true;}
 }

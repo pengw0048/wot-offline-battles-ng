@@ -21,7 +21,8 @@ def _actors(rows, motion_names, excluded, previous, full, restate=False):
     old_signatures, old_motion = previous
     for row in rows:
         key = row['id']
-        moved = tuple(row[name] for name in motion_names)
+        moved = tuple(row.get(name) if name == 'hydraulic_body' else row[name]
+                      for name in motion_names)
         seen[key] = moved
         if full or old_motion.get(key) != moved:
             entry = {'id': key}

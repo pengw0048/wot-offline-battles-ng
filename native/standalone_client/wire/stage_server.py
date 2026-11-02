@@ -12,6 +12,19 @@ _WIRE = _battle_wire_schema.SCHEMA
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 
+def _hydraulic_body_receipt(raw):
+    if not isinstance(raw, (list, tuple)) or len(raw) != 8:
+        raise ValueError("hydraulic_body must contain eight numbers")
+    bounds = (2000.0, 1000.0, 2000.0) + (math.pi * 2.0,) * 5
+    values = []
+    for value, bound in zip(raw, bounds):
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(float(value)) or abs(float(value)) > bound):
+            raise ValueError("hydraulic_body is outside the input bounds")
+        values.append(float(value))
+    return tuple(values)
+
+
 def _frame_ready(buffer):
     return len(buffer) >= 8 and len(buffer) >= 8 + int.from_bytes(buffer[:4], "little")
 
@@ -45,6 +58,37 @@ SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=Tr
 '''
 
 EDITS = (
+    # Carry the visible native body's applied pose with the accepted input.
+    ('            player.vehicle = vehicle\n',
+     '            player.vehicle = vehicle\n            player.hydraulic_body = None\n', 1),
+    ('    "up_cosine",\n))\n', '    "up_cosine", "hydraulic_body",\n))\n', 1),
+    ('    up_cosine: float = 1.0\n',
+     '    up_cosine: float = 1.0\n    hydraulic_body: Optional[tuple] = None\n', 1),
+    ('            player.roll = 0.0\n',
+     '            player.roll = 0.0\n            player.hydraulic_body = None\n', 1),
+    ('            "up_cosine": None,\n',
+     '            "up_cosine": None,\n            "hydraulic_body": None,\n', 1),
+    ('        reason, field = self._modern_input_envelope_failure(\n'
+     '            player, message, validate_contacts=inactive_modern)\n',
+     '        if "hydraulic_body" in message:\n'
+     '            if not all(name in message for name in ("x", "y", "z", "yaw")):\n'
+     '                return ("hydraulic_body_context", "hydraulic_body"), parsed\n'
+     '            try:\n'
+     '                parsed["hydraulic_body"] = _hydraulic_body_receipt(message["hydraulic_body"])\n'
+     '            except (TypeError, ValueError, OverflowError):\n'
+     '                return ("hydraulic_body_shape", "hydraulic_body"), parsed\n'
+     '        reason, field = self._modern_input_envelope_failure(\n'
+     '            player, message, validate_contacts=inactive_modern)\n', 1),
+    ('                    player.client_position = True\n',
+     '                    player.hydraulic_body = parsed["hydraulic_body"]\n'
+     '                    player.client_position = True\n', 1),
+    ('        player.pose_history.append(sample)\n',
+     '        if player.hydraulic_body is not None:\n'
+     '            sample["hydraulic_body"] = player.hydraulic_body\n'
+     '        player.pose_history.append(sample)\n', 1),
+    ('            "up_cosine": round(player.up_cosine, 6),\n',
+     '            "up_cosine": round(player.up_cosine, 6),\n'
+     '            "hydraulic_body": player.hydraulic_body,\n', 1),
     # The visible client's tick-clock estimate trails by snapshot queueing
     # and tick catch-up; under load a legal trigger arrives ~1 s old.
     ('PLAYER_TRIGGER_MAX_LAG_MS = 500\n', 'PLAYER_TRIGGER_MAX_LAG_MS = 2000\n', 1),

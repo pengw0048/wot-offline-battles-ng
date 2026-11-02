@@ -35,6 +35,9 @@ def merge(model, message):
 def comparable(row, kind, contracts=()):
     excluded = COUNTDOWN_NAMES + (PLAYER_OWNER_NAMES if kind == 'player' else ())
     out = dict((k, v) for k, v in row.items() if k not in excluded)
+    # Motion explicitly clears a missing applied-body receipt with null.
+    if kind == 'player' and out.get('hydraulic_body') is None:
+        out.pop('hydraulic_body', None)
     if isinstance(out.get('equipment_states'), list):
         out['equipment_states'] = [dict((k, v) for k, v in item.items()
                                         if k not in EQUIPMENT_COUNTDOWN_NAMES)

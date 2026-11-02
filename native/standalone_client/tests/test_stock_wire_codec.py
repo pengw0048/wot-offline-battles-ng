@@ -77,6 +77,9 @@ def samples():
                           'piercing_loss': 0.0, 'penetration_factor': 1.0, 'hit_vehicle': False,
                           'shooter_kind': 'bot', 'shooter_id': 3, 'shot_seq': 7,
                           'wreck_hit': {'target_kind': 'bot', 'target_id': 2 ** 63 + 5}}]})
+    messages.append({'type': 'input', 'round_id': 1, 'input_seq': 3,
+                     'x': 10., 'y': 20., 'z': 30., 'yaw': .4, 'pitch': .02,
+                     'hydraulic_body': [10., 20.25, 30.5, .4, -.2, .1, -.3, .15]})
     messages.append({'type': 'track_repair', 'round_id': 1, 'critical_base_revision': 0, 'repair_seq': 1,
                      'tracks': [{'name': 'leftTrackHealth', 'hp': 12.5, 'max_hp': 100.0, 'state': 'critical'}]})
     # The post-result detached-turret tail is not a new Bot motion sample.

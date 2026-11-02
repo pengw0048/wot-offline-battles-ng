@@ -8,6 +8,8 @@ F64 = Scalar('f64')
 BOOL = Bool()
 STR = Str()
 VEC3 = List(F64, 3)
+# Applied world body xyz/ypr and local turret/gun angles, from one native sample.
+HYDRAULIC_BODY = Tuple(*(F64 for unused in range(8)))
 
 
 def F(name, kind):
@@ -191,7 +193,8 @@ PLAYER_ROW_FIELDS = (
     O('gun_checkpoint', GUN_CHECKPOINT), O('ram_contact', RAM_CONTACT),
     O('ram_contacts', List(RAM_CONTACT, 32)), O('destructible_contacts', List(DESTRUCTIBLE_CONTACT, 16)),
     O('destructible_contact_resolved_seqs', List(I64, 64)),
-    O('destructible_contact_rejected_seqs', List(I64, 16)), O('critical', CRITICAL))
+    O('destructible_contact_rejected_seqs', List(I64, 16)), O('critical', CRITICAL),
+    ON('hydraulic_body', HYDRAULIC_BODY))
 PLAYER_ROW = record('PlayerRow', *PLAYER_ROW_FIELDS)
 PLAYER_ROW_FULL = record('PlayerRowFull', *(PLAYER_ROW_FIELDS + (
     O('outfits', Map(STR, 3)), O('effective_params', Any()))))
@@ -237,7 +240,7 @@ SNAPSHOT = record('Snapshot',
 # Motion is sent when its values change; a remote actor's state record only when its
 # non-countdown fields change; the recipient's own row in full every snapshot.
 PLAYER_MOTION_NAMES = ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'up_cosine', 'aim_yaw',
-                       'gun_pitch', 'forward', 'turn', 'speed')
+                       'gun_pitch', 'forward', 'turn', 'speed', 'hydraulic_body')
 BOT_MOTION_NAMES = ('x', 'y', 'z', 'yaw', 'pitch', 'roll', 'aim_yaw', 'gun_pitch', 'speed',
                     'push_x', 'push_z', 'push_yaw', 'movement_dir', 'rotation_dir', 'airborne',
                     'service_brake')
@@ -252,7 +255,9 @@ PLAYER_OWNER_NAMES = (
     'destructible_contact_resolved_seq', 'gun_checkpoint_seq', 'gun_checkpoint', 'ram_contact',
     'ram_contacts', 'destructible_contacts', 'destructible_contact_resolved_seqs',
     'destructible_contact_rejected_seqs')
-PLAYER_MOTION = record('PlayerMotion', F('id', I64), *(F(n, F64) for n in PLAYER_MOTION_NAMES))
+PLAYER_MOTION = record('PlayerMotion', F('id', I64),
+    *(F(n, F64) for n in PLAYER_MOTION_NAMES if n != 'hydraulic_body'),
+    N('hydraulic_body', HYDRAULIC_BODY))
 BOT_MOTION = record('BotMotion', F('id', I32),
                     *(f for f in BOT_ROW_FIELDS if f.name in BOT_MOTION_NAMES))
 PLAYER_STATE = record('PlayerState', *(f for f in PLAYER_ROW_FIELDS
@@ -359,7 +364,8 @@ INPUT = record('Input',
     O('shell_change_pending', BOOL), O('gun_checkpoint', GUN_CHECKPOINT), O('siege_enabled', BOOL),
     O('tank_pushes', List(TANK_PUSH, 30)), O('turret_pushes', List(TURRET_PUSH, 30)),
     O('ram_contacts', List(INPUT_RAM_CONTACT, 32)),
-    O('destructible_contacts', List(INPUT_DESTRUCTIBLE_CONTACT, 16)))
+    O('destructible_contacts', List(INPUT_DESTRUCTIBLE_CONTACT, 16)),
+    O('hydraulic_body', HYDRAULIC_BODY))
 TRACK = record('TrackRepairRow', F('name', STR), F('hp', F64), F('max_hp', F64), F('state', STR))
 TRACK_REPAIR = record('TrackRepair', F('round_id', I64), F('critical_base_revision', I64),
                       F('repair_seq', I64), F('tracks', List(TRACK, 2)))

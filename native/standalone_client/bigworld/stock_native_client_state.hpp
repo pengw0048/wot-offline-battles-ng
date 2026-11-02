@@ -60,6 +60,7 @@ struct Value {
 };
 // Keep passive Actor/State consumers independent of the Python data decoder.
 inline ObjectFields::~ObjectFields()=default;
+std::optional<std::array<double,8>> hydraulicBody(const Value&);
 struct Sample {double time=0.;std::optional<std::int64_t> revision;Pose value{};Value state;};
 // Accepted contact history owns exactly the newest 512 revisions. Physical
 // slots stay fixed; chronological indexes follow head across wraparound.
@@ -161,6 +162,7 @@ struct Actor {
     std::uint64_t revision=0,descriptor_revision=0;
     bool local=false,has_current=false,has_target=false,missing=false;
     Pose current{},target{},velocity{};
+    std::optional<std::array<double,8>> hydraulic_body,target_hydraulic_body;
     std::vector<Sample> samples;ReceiptHistory receipts;
     double target_time=0.,sample_time=0.,anchor_time=0.,anchor_local=0.,ideal=0.,delay=0.,observed=0.;
     std::optional<double> cursor,snapshot_interval,previous_sample;

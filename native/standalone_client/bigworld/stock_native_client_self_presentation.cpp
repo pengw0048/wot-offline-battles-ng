@@ -340,6 +340,20 @@ void tracks(Owner&o,Battle&b,PyObject*e,PyObject*appearance,const PlayerDriver&d
     }
     if(actor->alive){const auto speeds=trackScroll(driver.descriptor(),driver.state(),o.track_min,o.track_max);applyTrackScroll(appearance,speeds[0],speeds[1]);}
 }
+void sampleHydraulicBody(Owner&o,Battle&b,PyObject*e,PlayerDriver&driver) {
+    auto&receipt=driver.state().hydraulic_body;receipt.reset();
+    auto*actor=o.shared->find("player:"+std::to_string(o.shared->local_player_id));
+    if(actor)actor->hydraulic_body.reset();
+    if(!driver.descriptor().hydraulic||!o.current())return;
+    auto body=poseProvider(b,"_local_pose_matrix"),appearance=field(e,"appearance");
+    auto turret=field(appearance.get(),"turretMatrix"),gun=field(appearance.get(),"gunMatrix");
+    if(body.get()==Py_None||turret.get()==Py_None||gun.get()==Py_None)return;
+    auto world=matrix(o.math.get(),body.get()),local_turret=matrix(o.math.get(),turret.get()),local_gun=matrix(o.math.get(),gun.get());
+    auto position=field(world.get(),"translation");const auto point=xyz(position.get());
+    std::array<double,8> value{point[0],point[1],point[2],number(world.get(),"yaw"),number(world.get(),"pitch"),number(world.get(),"roll"),number(local_turret.get(),"yaw"),number(local_gun.get(),"pitch")};
+    for(double v:value)if(!std::isfinite(v))throw p::Error("Applied hydraulic body receipt is not finite");
+    receipt=value;if(actor)actor->hydraulic_body=value;
+}
 }
 void selfPresentation(Battle&b,PyObject*e,PlayerDriver&driver,double elapsed,const SliceTrace&,bool stopped) {
     auto owner=acquire(b,e);auto&self=*owner;auto root=obj(b.local->matrix),model=obj(b.local->model);
@@ -348,6 +362,7 @@ void selfPresentation(Battle&b,PyObject*e,PlayerDriver&driver,double elapsed,con
     auto position=vector(self.math.get(),s.position);auto motion=self.camera.sample(xyz(position.get()),dt,self.velocity);
     auto velocity=vector(self.math.get(),motion.velocity),acceleration=vector(self.math.get(),motion.acceleration);rotate(root.get(),{s.yaw,s.pitch,s.roll});put(root.get(),"translation",position);
     if(!b.replay)hydraulic(self,b,e,driver,dt);
+    sampleHydraulicBody(self,b,e,driver);
     auto snapshot=obj(b.local->stabilised_snapshot);if(snapshot.get()!=Py_None){auto provider=obj(b.local->stabilised_matrix);copyMatrix(snapshot.get(),provider.get());}
     overlay(self,b,s,position.get(),velocity.get(),acceleration.get());sniper(self,b,e,previousYaw,s.yaw);b.local->camera_velocity=xyz((velocity).get());self.velocity=xyz(velocity.get());self.speed=s.speed;self.turn=s.turn_speed;
     auto appearance=field(e,"appearance");optional(self,b,"local body swinging",[&]{bindSwing(self,b,appearance.get(),model.get());});if(!self.current())return;optional(self,b,"local engine audio motion",[&]{bindAudio(owner,b,appearance.get());});if(!self.current())return;

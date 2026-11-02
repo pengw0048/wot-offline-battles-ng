@@ -77,6 +77,8 @@ Point PlayerDriver::resettle(PlayerWorld&world,const Point&start,Point position,
     auto gradient=state_.support_gradient;if(state_.ground_plane)gradient=std::array<double,2>{state_.ground_plane->gradient_x,state_.ground_plane->gradient_z};
     const double delta=gradient?std::max(0.,(*gradient)[0]*x+(*gradient)[1]*z):0.;world.vertical(state_,position,yaw,0.,position,start,delta,0.);return position;}
 bool PlayerDriver::slice(PlayerWorld&world,double dt){auto&s=state_;const auto&d=descriptor_;const auto condition=world.conditions();if(!condition.ready)return false;
+    // Motion barriers precede the next native presentation and cannot carry its prior receipt.
+    s.hydraulic_body.reset();
     dt=std::max(0.,std::min(.1,dt));SliceTrace trace;trace.initial_position=s.position;trace.initial_yaw=s.yaw;
     if(condition.battle_over||!condition.alive||(!condition.has_alive_method&&!condition.crew_active)){s.speed=s.turn_speed=s.drive_turn=s.drive_throttle=s.direction_command=0.;s.service_brake=false;controls_.forward=controls_.turn=0.;world.present(s,dt,trace,true);return true;}
     auto position=s.position;const auto tick=position;double yaw=s.yaw;canonicalize(yaw);s.yaw=yaw;const auto before=s;const double tick_yaw=yaw;double motion_yaw=yaw;const bool airborne_at_start=s.airborne;

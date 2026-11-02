@@ -43,6 +43,8 @@ struct PlayerState:step::VerticalState {
     std::optional<bool> siege_braking,siege_pending;
     std::optional<std::int64_t> siege_request_sequence;
     bool support_blocked=false,suspension_failed=false,suspension_slide_applied=false;
+    // Receipt from the applied native body and component providers, never an aim estimate.
+    std::optional<std::array<double,8>> hydraulic_body;
     bool has_presentation=false;
 };
 struct SliceTrace {
