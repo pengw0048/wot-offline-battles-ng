@@ -10,6 +10,8 @@ namespace w=stock_native_world;
 namespace {
 Pose appliedSample(const Actor& actor,const c::PoseSample& baseline)
 {Pose out(baseline);out.hydraulic_body=actor.hydraulic_body;out.require_hydraulic_body=actor.require_hydraulic_body;return out;}
+bool sameBaseline(const c::PoseSample& a,const c::PoseSample& b)
+{return a.position==b.position&&a.values==b.values&&a.mask==b.mask;}
 v::ActorKey key(const Key& value)
 {return {{static_cast<std::int64_t>(value.kind),value.id}};}
 double distance(const native_visibility::Vec3& a,const native_visibility::Vec3& b)
@@ -39,6 +41,8 @@ void Perception::begin(const offline_simulation::TickToken& token,const std::vec
 {
     for(auto it=sampled_poses_.begin();it!=sampled_poses_.end();)
         if(it->first.second+12.<now)it=sampled_poses_.erase(it);else ++it;
+    for(auto it=ambiguous_samples_.begin();it!=ambiguous_samples_.end();)
+        if(it->second+12.<now)it=ambiguous_samples_.erase(it);else ++it;
     std::vector<c::ActorConfig> configs;std::vector<c::ActorSample> samples;
     std::vector<Key> order;std::vector<v::FrontierActor> frontiers;
     std::map<Key,Actor> actors;
@@ -107,7 +111,12 @@ void Perception::events(bool aggregate)
         // The pinned Store::observe emits the target's current ActorSample
         // synchronously. Freeze its applied receipt at this producer boundary.
         const auto frozen=appliedSample(target->second,event.pose);
-        sampled_poses_[{event.target,event.sampled_at}]=frozen;
+        const auto identity=std::make_pair(event.target,event.sampled_at);
+        const auto previous=sampled_poses_.find(identity);
+        if(previous!=sampled_poses_.end()&&(!sameBaseline(previous->second,frozen)||
+            previous->second.hydraulic_body!=frozen.hydraulic_body||previous->second.require_hydraulic_body!=frozen.require_hydraulic_body))
+            ambiguous_samples_.insert(identity);
+        sampled_poses_[identity]=frozen;
         auto& memory=remembered_[k];memory.pose=frozen;
         memory.until=std::max(memory.until,event.sampled_at+std::min(12.,std::max(0.,event.duration)));
         if(aggregate) {
@@ -123,8 +132,9 @@ std::vector<Contact> Perception::contacts(const Key& source)
     events(false);std::vector<Contact> result;result.reserve(rows.size());
     for(const auto& row:rows){Contact contact(row);
         const auto frozen=sampled_poses_.find({row.target,row.sampled_at});
-        if(frozen!=sampled_poses_.end())contact.pose=frozen->second;
-        else {const auto actor=actors_.find(row.target);if(actor!=actors_.end())contact.pose.require_hydraulic_body=actor->second.require_hydraulic_body;}
+        if(frozen!=sampled_poses_.end()&&!ambiguous_samples_.count(frozen->first)&&sameBaseline(frozen->second,row.pose))contact.pose=frozen->second;
+        else {const auto actor=actors_.find(row.target);contact.pose.require_hydraulic_body=
+            (frozen!=sampled_poses_.end()&&frozen->second.require_hydraulic_body)||(actor!=actors_.end()&&actor->second.require_hydraulic_body);}
         result.push_back(std::move(contact));}
     return result;
 }

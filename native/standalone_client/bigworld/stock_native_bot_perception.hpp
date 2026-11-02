@@ -54,6 +54,7 @@ class Perception {
     // The retained control core freezes baseline poses by observation time.
     // Keep the applied body alongside that same observation, never a newer row.
     std::map<std::pair<Key,double>,Pose> sampled_poses_;
+    std::set<std::pair<Key,double>> ambiguous_samples_;
     std::uint64_t phase_=0;
     bool open_=false;
     offline_visibility::FrontierActor frontier(const Actor&)const;

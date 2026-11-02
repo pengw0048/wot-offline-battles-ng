@@ -122,10 +122,12 @@ struct MemoryProbe {
  ControlProbe control_;std::map<Key,Actor>actors_;
  std::map<TeamKey,Remembered>remembered_;std::map<TeamKey,Observation>observations_;
  std::map<std::pair<Key,double>,Pose>sampled_poses_;
+ std::set<std::pair<Key,double>>ambiguous_samples_;
  c::SightReply sight(const c::SightRequest&){return {};}
  void events(bool);std::vector<Contact>contacts(const Key&);
 };
 @SAMPLE@
+@MATCH@
 @EVENTS@
 @CONTACTS@
 int main(){
@@ -142,6 +144,10 @@ int main(){
  target.hydraulic_body=second;rows=owner.contacts(observer);assert(rows[0].pose.hydraulic_body==first);
  event.sampled_at=2.;owner.control_.events={event};owner.control_.found[0].sampled_at=2.;
  rows=owner.contacts(observer);assert(rows[0].pose.hydraulic_body==second);
+ // The retained core has no input sequence. Different applications at one
+ // observation timestamp are ambiguous even when their baseline is identical.
+ target.hydraulic_body=first;owner.control_.events={event};
+ rows=owner.contacts(observer);assert(!rows[0].pose.hydraulic_body&&rows[0].pose.require_hydraulic_body);
  owner.control_.found[0].sampled_at=.5;rows=owner.contacts(observer);
  assert(!rows[0].pose.hydraulic_body&&rows[0].pose.require_hydraulic_body);
  target.hydraulic_body.reset();event.sampled_at=3.;owner.control_.events={event};owner.control_.found[0].sampled_at=3.;
@@ -221,6 +227,7 @@ class HumanHydraulicConsumer(unittest.TestCase):
     def test_control_observation_identity_keeps_the_original_applied_body(self):
         source = (ROOT / 'bigworld/stock_native_bot_perception.cpp').read_text()
         fixture = MEMORY.replace('@SAMPLE@', block(source, 'Pose appliedSample('))
+        fixture = fixture.replace('@MATCH@', block(source, 'bool sameBaseline('))
         for token, signature in (('EVENTS', 'void Perception::events('),
                                  ('CONTACTS', 'std::vector<Contact> Perception::contacts(')):
             fixture = fixture.replace('@' + token + '@', block(source, signature).replace('Perception::', 'MemoryProbe::'))
