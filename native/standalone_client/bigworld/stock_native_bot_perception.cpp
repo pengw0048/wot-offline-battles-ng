@@ -8,6 +8,8 @@ namespace c=offline_simulation::control;
 namespace v=offline_visibility;
 namespace w=stock_native_world;
 namespace {
+Pose appliedSample(const Actor& actor,const c::PoseSample& baseline)
+{Pose out(baseline);out.hydraulic_body=actor.hydraulic_body;out.require_hydraulic_body=actor.require_hydraulic_body;return out;}
 v::ActorKey key(const Key& value)
 {return {{static_cast<std::int64_t>(value.kind),value.id}};}
 double distance(const native_visibility::Vec3& a,const native_visibility::Vec3& b)
@@ -35,6 +37,8 @@ void Perception::foliage(v::Update changes)
 void Perception::begin(const offline_simulation::TickToken& token,const std::vector<Actor>& rows,
     double now,int budget,bool include_humans,std::uint64_t phase)
 {
+    for(auto it=sampled_poses_.begin();it!=sampled_poses_.end();)
+        if(it->first.second+12.<now)it=sampled_poses_.erase(it);else ++it;
     std::vector<c::ActorConfig> configs;std::vector<c::ActorSample> samples;
     std::vector<Key> order;std::vector<v::FrontierActor> frontiers;
     std::map<Key,Actor> actors;
@@ -73,6 +77,11 @@ bool Perception::ray(const native_visibility::Ray& request)
 c::SightReply Perception::sight(const c::SightRequest& request)
 {
     c::SightReply reply;reply.sampled_at=request.now;
+    for(const auto& key:{request.observer,request.target}){
+        const auto actor=actors_.find(key);
+        if(actor!=actors_.end()&&actor->second.require_hydraulic_body&&!actor->second.hydraulic_body){
+            reply.status=offline_simulation::QueryStatus::Failed;return reply;}
+    }
     native_visibility::DetectionInputs inputs;
     const auto& d=request.detection;
     inputs.distance=d.distance;inputs.view_range=d.view;
@@ -95,10 +104,14 @@ void Perception::events(bool aggregate)
         const auto source=actors_.find(event.observer),target=actors_.find(event.target);
         if(source==actors_.end()||target==actors_.end())continue;
         const TeamKey k{source->second.config.team,event.target};
-        auto& memory=remembered_[k];memory.pose=event.pose;
+        // The pinned Store::observe emits the target's current ActorSample
+        // synchronously. Freeze its applied receipt at this producer boundary.
+        const auto frozen=appliedSample(target->second,event.pose);
+        sampled_poses_[{event.target,event.sampled_at}]=frozen;
+        auto& memory=remembered_[k];memory.pose=frozen;
         memory.until=std::max(memory.until,event.sampled_at+std::min(12.,std::max(0.,event.duration)));
         if(aggregate) {
-            auto& observation=observations_[k];observation.visible=true;observation.pose=event.pose;
+            auto& observation=observations_[k];observation.visible=true;observation.pose=frozen;
             (event.observer.kind==offline_simulation::ActorKind::Human?observation.human_observers:
                 observation.bot_observers).insert(event.observer.id);
         }
@@ -106,8 +119,14 @@ void Perception::events(bool aggregate)
 }
 std::vector<Contact> Perception::contacts(const Key& source)
 {
-    auto result=control_.contacts(source,[&](const c::SightRequest& request){return sight(request);});
-    events(false);return result;
+    const auto rows=control_.contacts(source,[&](const c::SightRequest& request){return sight(request);});
+    events(false);std::vector<Contact> result;result.reserve(rows.size());
+    for(const auto& row:rows){Contact contact(row);
+        const auto frozen=sampled_poses_.find({row.target,row.sampled_at});
+        if(frozen!=sampled_poses_.end())contact.pose=frozen->second;
+        else {const auto actor=actors_.find(row.target);if(actor!=actors_.end())contact.pose.require_hydraulic_body=actor->second.require_hydraulic_body;}
+        result.push_back(std::move(contact));}
+    return result;
 }
 void Perception::observeHumans()
 {
@@ -115,7 +134,7 @@ void Perception::observeHumans()
     for(const auto& a:actors_)if(a.first.kind==offline_simulation::ActorKind::Human)teams.insert(a.second.config.team);
     for(const int team:teams)for(const auto& a:actors_)
         if(a.second.target_available&&a.second.config.team!=team) {
-            auto& row=observations_[{team,a.first}];row.pose=a.second.sample.pose;
+            auto& row=observations_[{team,a.first}];row.pose=appliedSample(a.second,a.second.sample.pose);
         }
     control_.observe_humans([&](const c::SightRequest& request){return sight(request);});events(true);
 }

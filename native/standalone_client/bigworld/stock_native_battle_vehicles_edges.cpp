@@ -471,6 +471,13 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
     if (remote::owns(b, v) || v.local) return;
     auto& d = v.presented;
     const auto& state = d.state;
+    if (v.kind == "player") remote::setHydraulicBody(b, v.engine_id, b.worker?cs::hydraulicBody(state):v.hydraulic_body);
+    if (remote::hydraulicBodyPending(b, v.engine_id)) {
+        d.pose_signature.reset();
+        d.aim_signature.reset();
+        d.collision_pose = Value{};
+        return;
+    }
     const double now = b.clock();
     const std::int64_t siege = has(state, "siege_state") ? integer(field(state, "siege_state")) : 0;
     d.collision_pose = projectiles::boundaryPose(b, {pose[0], pose[1], pose[2]}, state);

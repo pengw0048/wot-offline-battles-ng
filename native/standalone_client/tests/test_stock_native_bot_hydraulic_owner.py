@@ -1,8 +1,8 @@
-"""Canonical Bot hydraulics keep one body/aim owner through live presentation.
+"""Applied Bot/Human hydraulics keep one body/aim owner through presentation.
 
 Compile the production presentation decision and geometry-row publisher with
 explicit engine traps: the canonical branch must never query or feed a second
-native filter owner. Human and visible paths retain their existing contract.
+native filter owner. Human receipts preserve the separate terrain baseline.
 """
 from pathlib import Path
 import subprocess
@@ -19,11 +19,12 @@ HOST = r'''
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
-struct Object {void*get()const{return nullptr;}};
+struct Object {int id=0;void*get()const{return reinterpret_cast<void*>(std::uintptr_t(id));}explicit operator bool()const{return id!=0;}};
 void*Py_None=nullptr;
 namespace p {struct Error:std::runtime_error{using std::runtime_error::runtime_error;};Object number(double){return {};}}
 namespace py {
@@ -39,8 +40,9 @@ struct Battle {
 };
 struct RemoteVehicle {
  bool authority_geometry=true,siege=true;std::int64_t engine_id=42;
- double pitch=.31,local_pitch=-99.;Object entity;
- std::optional<double>aim_desired_gun_pitch;
+ double pitch=.31,local_pitch=-99.;Object entity,aim,hydraulic_matrix,provider;
+ std::optional<double>aim_desired_gun_pitch,aim_relative_yaw;
+ std::optional<std::array<double,8>>hydraulic_body;
 };
 bool hasSiege(const RemoteVehicle&rv){return rv.siege;}
 bool prepareSiegePose(Battle&,RemoteVehicle&){throw std::logic_error("legacy body/ground ratio sampled");}
@@ -48,20 +50,33 @@ bool siegeActive(const RemoteVehicle&){return true;}
 std::pair<double,double>absolutePitchLimits(void*){return {-.1,.1};}
 double wrap(double n){return n;}
 bool writeAimPitch(RemoteVehicle&rv,double pitch){rv.local_pitch=pitch;return true;}
+RemoteVehicle* current_remote=nullptr;
+RemoteVehicle* vehicle(const Battle&,std::int64_t id){return current_remote&&current_remote->engine_id==id?current_remote:nullptr;}
+int body_writes=0,body_rebinds=0;
+Object matrix(Battle&){return {1};}
+void writePose(void*,const std::array<double,6>&){++body_writes;}
+void rebindProvider(Battle&,RemoteVehicle&rv){assert(rv.hydraulic_body);++body_rebinds;}
+void nativeMatrix(void*,const std::array<double,3>&,const std::array<double,3>&,bool){}
 @CANONICAL@
 @SIEGE@
+namespace receipt {
+using Pose=std::array<double,8>;
+@BODY@
+}
+using receipt::setHydraulicBody;
+@PENDING@
 namespace offline_simulation {enum class ActorKind {Human,Bot};struct ActorKey{ActorKind kind;std::int64_t id;};}
 using Key=offline_simulation::ActorKey;
 using Point=std::array<double,3>;
-namespace step {struct AimPose{Point position{};double pitch=0,turret_yaw=0,gun_pitch=0;};}
-struct GeometryPose {Point position{};double yaw=0,pitch=0,roll=0,turret_yaw=0,gun_pitch=0;int siege=0;bool native_components=false,native_hydraulics=false;};
+namespace step {struct AimPose{Point position{};double pitch=0,turret_yaw=0,gun_pitch=0;std::optional<std::array<double,8>>hydraulic_body;bool require_hydraulic_body=false;};}
+struct GeometryPose {Point position{};double yaw=0,pitch=0,roll=0,turret_yaw=0,gun_pitch=0;int siege=0;bool native_components=false,native_hydraulics=false;std::optional<std::array<double,8>>hydraulic_body;bool require_hydraulic_body=false;};
 struct ServiceEntity {
  Key key;int mode=0,team=0;bool alive=true,available=true;
  struct Target {step::AimPose pose;struct Position{Point position{};}target;bool alive=true;}target;
 };
 struct GeometryRow {Key key;GeometryPose pose;int team=0;bool alive=false,available=false;};
 std::int64_t plannerId(Key k){return k.kind==offline_simulation::ActorKind::Human?1000000+k.id:k.id;}
-GeometryPose geomPose(const step::AimPose&p){GeometryPose q;q.position=p.position;q.pitch=p.pitch;q.turret_yaw=p.turret_yaw;q.gun_pitch=p.gun_pitch;return q;}
+GeometryPose geomPose(const step::AimPose&p){GeometryPose q;q.position=p.position;q.pitch=p.pitch;q.turret_yaw=p.turret_yaw;q.gun_pitch=p.gun_pitch;q.hydraulic_body=p.hydraulic_body;q.require_hydraulic_body=p.require_hydraulic_body;return q;}
 struct NativeServices {std::map<std::int64_t,GeometryRow>rows_;void updatePose(ServiceEntity&,const step::AimPose&,bool);};
 @PUBLISH@
 // Matrix arithmetic is an explicit engine boundary. The production frames
@@ -107,13 +122,28 @@ int main(){
   assert(siegePose(battle,remote));assert(remote.local_pitch==gun);
  }
  remote.aim_desired_gun_pitch.reset();assert(siegePose(battle,remote));
- // These are distinct owners, never a universal hydraulics bypass.
- for(auto*actor:{&human,static_cast<Actor*>(nullptr)}){
-  battle.actor=actor;assert(!canonicalBotPose(battle,remote));bool trapped=false;
-  try{siegePose(battle,remote);}catch(const std::logic_error&){trapped=true;}assert(trapped);
- }
+ // A client-only Human physics object has no simulation Tank. Missing
+ // body data remains unknown; a real receipt supplies the applied gun angle.
+ battle.actor=&human;remote.aim_desired_gun_pitch=.9;
+ current_remote=&remote;assert(hydraulicBodyPending(battle,42));
+ assert(!siegePose(battle,remote));
+ const auto received=std::array<double,8>{11.,3.4,-5.2,.2,.3,-.1,.07,-.04};
+ assert(setHydraulicBody(battle,42,received));assert(!hydraulicBodyPending(battle,42));
+ assert(body_writes==1&&body_rebinds==1&&remote.provider.id==1);
+ assert(siegePose(battle,remote)&&remote.local_pitch==-.04);
+ // Losing a receipt retains the complete old visual provider without writing
+ // new pose/aim. The next real sample restores the same provider immediately.
+ assert(!setHydraulicBody(battle,42,{}));assert(hydraulicBodyPending(battle,42));
+ assert(body_writes==1&&remote.provider.id==1);
+ assert(setHydraulicBody(battle,42,received));assert(!hydraulicBodyPending(battle,42)&&body_writes==2&&body_rebinds==1);
+ auto invalid=received;invalid[4]=std::numeric_limits<double>::quiet_NaN();bool rejected=false;
+ try{setHydraulicBody(battle,42,invalid);}catch(const p::Error&){rejected=true;}
+ assert(rejected&&remote.hydraulic_body==received&&body_writes==2);
+ remote.hydraulic_body.reset();battle.actor=nullptr;assert(!siegePose(battle,remote));
  battle.actor=&bot;battle.worker=false;assert(!canonicalBotPose(battle,remote));
+ assert(!hydraulicBodyPending(battle,42));
  battle.worker=true;remote.siege=false;assert(!siegePose(battle,remote));
+ battle.actor=&human;assert(!hydraulicBodyPending(battle,42));
  NativeServices services;step::AimPose pose;pose.position={10.,3.,-5.};pose.pitch=.23;pose.turret_yaw=.4;pose.gun_pitch=-.06;
  BW::MatrixProvider oldProvider;Vehicle geometry;
  geometry.native_body=geometry.native_ground=geometry.native_turret=geometry.native_gun=&oldProvider;
@@ -129,8 +159,24 @@ int main(){
    assert(queried.body.pitch()==float(pose.pitch));
    assert(queried.component_inverse[2].yaw()==-float(pose.turret_yaw));
    assert(queried.component_inverse[3].pitch()==-float(pose.gun_pitch));
-  }catch(const std::logic_error&){trapped=true;}
+  }catch(const std::exception&){trapped=true;}
   assert(trapped==(kind==offline_simulation::ActorKind::Human));
+  if(kind==offline_simulation::ActorKind::Human){
+   pose.hydraulic_body=std::array<double,8>{11.,3.4,-5.2,.2,.3,-.1,.07,-.04};
+   services.updatePose(entity,pose,true);
+   const auto applied=frames(geometry,services.rows_.at(plannerId(entity.key)).pose);
+   assert(applied.chassis.pitch()==float(.23));
+   assert(applied.body.pitch()==float(.3));
+   assert(applied.body.position.x==11.f&&applied.body.position.y==float(3.4)&&applied.body.position.z==float(-5.2));
+   assert(applied.component_inverse[2].yaw()==-float(.07));
+   assert(applied.component_inverse[3].pitch()==float(.04));
+   pose.hydraulic_body.reset();services.updatePose(entity,pose,true);
+   geometry.has_siege=false;
+   geometry.native_turret=geometry.native_gun=nullptr;
+   assert(frames(geometry,services.rows_.at(plannerId(entity.key)).pose).body.pitch()==float(.23));
+   geometry.native_turret=geometry.native_gun=&oldProvider;
+   geometry.has_siege=true;
+  }
   entity.mode=0;services.updatePose(entity,pose,false);
   assert(services.rows_.at(plannerId(entity.key)).pose.siege==0);
  }
@@ -145,6 +191,8 @@ class NativeBotHydraulicOwner(unittest.TestCase):
         geometry = (ROOT / 'bigworld/stock_native_bot_vehicle_geometry.cpp').read_text()
         source = HOST.replace('@CANONICAL@', block(remote, 'bool canonicalBotPose('))
         source = source.replace('@SIEGE@', block(remote, 'bool siegePose('))
+        source = source.replace('@BODY@', block(remote, 'bool setHydraulicBody('))
+        source = source.replace('@PENDING@', block(remote, 'bool hydraulicBodyPending('))
         source = source.replace('@PUBLISH@', block(services, 'void NativeServices::updatePose('))
         source = source.replace('@FRAMES@', block(geometry, 'Frames frames('))
         with tempfile.TemporaryDirectory(prefix='bot-hydraulic-owner-') as temporary:

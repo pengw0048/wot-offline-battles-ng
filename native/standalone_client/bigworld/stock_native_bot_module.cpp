@@ -76,16 +76,7 @@ struct PlayerEnvironmentWorld final:player_environment::World {
     std::optional<player_environment::Pose> bodyPose(const player_environment::Player&player)override{
         if(!player.native_remote)return {};
         const auto*vehicle=vehicles.find(humanKey(player.id));if(!vehicle||!vehicle->ready)return {};
-        try{
-            geometry::Pose pose;pose.position=player.pose.position;pose.yaw=player.pose.yaw;
-            pose.pitch=player.pose.pitch;pose.roll=player.pose.roll;pose.siege=player.siege_state;
-            const auto frame=geometry::frames(*vehicle,pose);const auto origin=frame.body.applyToOrigin();
-            player_environment::Pose result;result.position={origin.x,origin.y,origin.z};
-            result.yaw=frame.body.yaw();result.pitch=frame.body.pitch();result.roll=frame.body.roll();
-            for(double value:{result.position[0],result.position[1],result.position[2],result.yaw,result.pitch,result.roll})
-                if(!std::isfinite(value))return {};
-            return result;
-        }catch(const std::exception&){return {};}
+        return player.applied_body;
     }
     double waterDepth(const Point&point)override{
         auto start=point,end=point;start[1]+=20.;end[1]-=5.;double distance=0.;
@@ -276,7 +267,7 @@ struct Owner {
                 if(!present.insert(id).second)continue;
                 if(!humans.count(id))installHuman(battle,row,id);
                 HumanIngress input;require(readHumanInput(row,humans.at(id),input));
-                services.updateHuman(humanKey(id),input.target,input.human.perception.config.team,input.target.alive,input.target.available,input.radius);
+                services.updateHuman(humanKey(id),input.target,input.human.perception.config.team,input.target.alive,input.geometry_available,input.radius);
                 accepted.push_back(std::move(input.human));
             }catch(const std::exception&e){local(e);}
         }

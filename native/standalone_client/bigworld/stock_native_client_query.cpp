@@ -92,7 +92,8 @@ geo::Pose geometryPose(const state::Actor&a){
     geo::Pose out;out.position={a.current[0],a.current[1],a.current[2]};
     out.yaw=a.current[3];out.pitch=a.current[4];out.roll=a.current[5];
     out.turret_yaw=a.current[6]-a.current[3];out.gun_pitch=a.current[7];
-    out.siege=int(a.siege_state);out.native_components=true;out.native_hydraulics=true;return out;
+    out.siege=int(a.siege_state);out.native_components=out.native_hydraulics=a.kind=="player"&&!a.hydraulic_body;
+    out.hydraulic_body=a.hydraulic_body;out.require_hydraulic_body=a.kind=="player";return out;
 }
 std::optional<Bounds> bounds(const geo::Vehicle&cached,const state::Actor&a){
     auto&shape=const_cast<geo::Vehicle&>(cached);shape.detached=a.detached;

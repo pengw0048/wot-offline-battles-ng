@@ -23,7 +23,7 @@ const char* status(wot::offline_bot_step::CriticalStatus s){using S=wot::offline
 bool readMetadata(PyObject* descriptor,Metadata& output){try{
  Metadata m;auto hull=p::value(descriptor,"hull"),tester=p::value(hull.get(),"hitTester"),bbox=p::value(tester.get(),"bbox");auto lo=p::item(bbox.get(),0),hi=p::item(bbox.get(),1);m.minimum=point(lo.get());m.maximum=point(hi.get());auto chassis=p::value(descriptor,"chassis"),mount=p::value(chassis.get(),"hullPosition");m.mount=point(mount.get());
  for(const char* name:devices){const auto pool=stock_native_bot_descriptor::devicePool(descriptor,name);if(pool.maximum)m.maxima[name]=*pool.maximum;}
- m.crew=drowningRoster(descriptor);output=std::move(m);return true;
+ m.crew=drowningRoster(descriptor);auto siege=p::value(descriptor,"hasSiegeMode");m.requires_hydraulic_body=siege.get()!=Py_None&&p::flag(siege.get());output=std::move(m);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readPlayer(const native_battle::Actor& record,PyObject* entity,const Metadata& metadata,Player& output){try{
  using native_battle::Value;
@@ -36,6 +36,8 @@ bool readPlayer(const native_battle::Actor& record,PyObject* entity,const Metada
  if(has(state,"x")&&has(state,"y")&&has(state,"z")){row.pose.position={state.get("x").numeric(),state.get("y").numeric(),state.get("z").numeric()};}
  else {auto pos=entityValue("position");row.pose.position=point(pos.get());}
  row.pose.yaw=state.get("yaw").numeric();row.pose.pitch=state.get("pitch").numeric();row.pose.roll=state.get("roll").numeric();
+ if(const auto body=stock_native_client_state::hydraulicBody(state))
+  row.applied_body=Pose{{(*body)[0],(*body)[1],(*body)[2]},(*body)[3],(*body)[4],(*body)[5]};
  row.critical=native_battle::critical::simulationState(record,entity,metadata.maxima);
  output=std::move(row);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}

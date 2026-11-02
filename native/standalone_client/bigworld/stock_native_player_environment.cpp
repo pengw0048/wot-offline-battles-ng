@@ -36,7 +36,10 @@ std::optional<Batch> Owner::advance(double dt,bool authority,const std::vector<P
  Batch result;result.sequence=sequence_+1;std::vector<const Player*> ordered;for(const auto& player:players)ordered.push_back(&player);
  std::sort(ordered.begin(),ordered.end(),[](const Player*a,const Player*b){return std::to_string(a->id)<std::to_string(b->id);});
  for(const Player* player:ordered){if(player->id<=0)continue;Pose pose=player->pose;
-  try{pose=world.bodyPose(*player).value_or(pose);}catch(const std::exception&){}
+  std::optional<Pose> applied;
+  try{applied=world.bodyPose(*player);}catch(const std::exception&){}
+  if(player->descriptor.requires_hydraulic_body&&!applied)continue;
+  pose=applied.value_or(pose);
   const auto sample=hullSample(player->descriptor,pose);if(!sample)continue;
   double depth=-1.;try{depth=world.waterDepth(sample->first);}catch(const std::exception&){}if(!finite(depth))continue;const int level=depth>sample->second?2:depth>sample->second*.5?1:0;
   Observation observation;observation.id=player->id;observation.input_sequence=std::max<std::int64_t>(0,player->input_sequence);observation.level=level;

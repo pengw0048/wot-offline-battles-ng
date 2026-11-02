@@ -8,7 +8,7 @@ namespace stock_native_bot {
 namespace {
 ID plannerId(Key key){return key.kind==offline_simulation::ActorKind::Human?1000000+key.id:key.id;}
 geometry::Pose geomPose(const step::AimPose& p){geometry::Pose q;q.position=p.position;q.yaw=p.yaw;q.pitch=p.pitch;q.roll=p.roll;
- q.turret_yaw=p.turret_yaw;q.gun_pitch=p.gun_pitch;q.native_components=false;q.native_hydraulics=false;return q;}
+ q.turret_yaw=p.turret_yaw;q.gun_pitch=p.gun_pitch;q.hydraulic_body=p.hydraulic_body;q.require_hydraulic_body=p.require_hydraulic_body;q.native_components=false;q.native_hydraulics=false;return q;}
 Point plain(const BW::Vector3& p){return {p.x,p.y,p.z};}
 BW::Vector3 native(const Point& p){return BW::Vector3(float(p[0]),float(p[1]),float(p[2]));}
 }
@@ -24,7 +24,7 @@ public:
  std::optional<step::WeaponTarget> target(const std::string& kind,ID id)override {
   const Key key{kind=="human"?offline_simulation::ActorKind::Human:offline_simulation::ActorKind::Bot,id};
   const auto it=owner_.entities_.find(plannerId(key));if(it==owner_.entities_.end())return {};
-  auto value=it->second.target;value.available=it->second.available;value.alive=it->second.alive;return value;
+  auto value=it->second.target;value.available=it->second.available&&(!value.pose.require_hydraulic_body||value.pose.hydraulic_body.has_value());value.alive=it->second.alive;return value;
  }
  std::optional<Point> barrel_point(Key key,const step::AimPose& pose)override {
   const auto row=owner_.entities_.find(plannerId(key));if(row==owner_.entities_.end()||!row->second.available)return {};
@@ -83,9 +83,10 @@ void NativeServices::updatePose(ServiceEntity& e,const step::AimPose& pose,bool 
  GeometryRow row;row.key=e.key;row.pose=geomPose(pose);row.pose.siege=e.mode==1?2:0;row.team=e.team;row.alive=alive;row.available=e.available;
  // Bot motion and aim are authoritative before the render-frame publication.
  // Neither old filter compensation nor last frame's native gun/turret angles
- // may overwrite that canonical query pose. Human inputs retain their
- // existing chassis-pose/aim contract.
- row.pose.native_components=row.pose.native_hydraulics=e.key.kind==offline_simulation::ActorKind::Human;
+ // may overwrite canonical Bots or the Human's applied body receipt. Human
+ // chassis pose remains the terrain baseline; required missing bodies stay unknown.
+ row.pose.require_hydraulic_body=e.key.kind==offline_simulation::ActorKind::Human;
+ row.pose.native_components=row.pose.native_hydraulics=row.pose.require_hydraulic_body&&!row.pose.hydraulic_body;
  rows_[plannerId(e.key)]=row;
 }
 void NativeServices::updateHuman(Key key,const step::WeaponTarget& target,int team,bool alive,bool available,double radius){

@@ -35,6 +35,8 @@ struct Pose {
     double yaw=0.,pitch=0.,roll=0.,turret_yaw=0.,gun_pitch=0.;
     int siege=0;
     bool native_components=true,native_hydraulics=true;
+    std::optional<std::array<double, 8>> hydraulic_body;
+    bool require_hydraulic_body=false;
 };
 struct Frames {
     BW::Matrix body,chassis;

@@ -14,7 +14,6 @@ Remote::~Remote() = default;
 namespace remote {
 namespace {
 constexpr double minimum_keyframe = 0.001;
-constexpr std::int64_t siege_enabled = 2, siege_switching_off = 3;
 
 bool flagOf(PyObject* o, const char* name, bool fallback = false) {
     auto v = py::optional(o, name);
@@ -130,60 +129,8 @@ void updateMotion(RemoteVehicle& rv, const Point& previous_position, double prev
     rv.turn_speed = turn;
 }
 
-Object relativeBody(Battle& b, PyObject* first, PyObject* second) {
-    auto product = py::call(b.engine.math.get(), "MatrixProduct");
-    py::set(product.get(), "a", first);
-    if (second) py::set(product.get(), "b", second);
-    return own(std::move(product));
-}
-
-// Relates native hydraulic body pitch to the canonical LAN ground.
-bool prepareSiegePose(Battle& b, RemoteVehicle& rv) {
-    auto descriptor = py::optional(rv.entity.get(), "typeDescriptor");
-    if (!flagOf(descriptor.get(), "hasSiegeMode")) return false;
-    if (rv.siege_relative_body) return true;
-    auto inverse = py::optional(b.engine.math.get(), "MatrixInverse");
-    if (!py::callable(inverse)) throw p::Error("#1513 Math.MatrixInverse is unavailable");
-    auto filter = py::optional(rv.entity.get(), "filter");
-    auto body = py::optional(filter.get(), "bodyMatrix");
-    auto ground = py::optional(filter.get(), "groundPlacingMatrix");
-    if (body.get() == Py_None || ground.get() == Py_None) throw p::Error("#1513 hydraulic vehicle matrices are unavailable");
-    // Exact #1513 Vehicle.getComponents uses body * inverse(ground) for the hull, turret and gun.
-    auto inverted = py::invoke(inverse.get(), ground.get());
-    rv.siege_relative_body = relativeBody(b, body.get(), inverted.get());
-    rv.siege_body = relativeBody(b, rv.siege_relative_body.get(), rv.matrix.get());
-    return true;
-}
-
-std::pair<double, double> absolutePitchLimits(PyObject* descriptor) {
-    auto gun = py::optional(descriptor, "gun");
-    auto limits = py::optional(gun.get(), "pitchLimits");
-    p::Ref absolute(p::retain(Py_None));
-    if (PyDict_Check(limits.get())) {
-        PyObject* raw = PyDict_GetItemString(limits.get(), "absolute");
-        replace(absolute, p::retain(raw ? raw : Py_None));
-    } else replace(absolute, py::optional(limits.get(), "absolute"));
-    PyObject* low = absolute.get() != Py_None ? PySequence_GetItem(absolute.get(), 0) : nullptr;
-    PyObject* high = low ? PySequence_GetItem(absolute.get(), 1) : nullptr;
-    if (!high) {
-        Py_XDECREF(low);
-        PyErr_Clear();
-        throw p::Error("#1513 hydraulic gun pitch limits are unavailable");
-    }
-    p::Ref l(low), h(high);
-    const double minimum = PyFloat_AsDouble(l.get()), maximum = PyFloat_AsDouble(h.get());
-    if (PyErr_Occurred()) { PyErr_Clear(); throw p::Error("#1513 hydraulic gun pitch limits are unavailable"); }
-    if (minimum > maximum) throw p::Error("#1513 hydraulic gun pitch limits are invalid");
-    return {minimum, maximum};
-}
-
 bool hasSiege(const RemoteVehicle& rv) {
     return flagOf(py::optional(rv.entity.get(), "typeDescriptor").get(), "hasSiegeMode");
-}
-bool siegeActive(const RemoteVehicle& rv) {
-    auto state = py::optional(rv.entity.get(), "siegeState");
-    const std::int64_t value = state.get() == Py_None ? 0 : p::wide(state.get());
-    return value == siege_enabled || value == siege_switching_off;
 }
 
 bool canonicalBotPose(const Battle& b, const RemoteVehicle& rv) {
@@ -192,37 +139,16 @@ bool canonicalBotPose(const Battle& b, const RemoteVehicle& rv) {
     return actor && actor->kind == "bot";
 }
 
-// Publish the Bot's canonical local aim, or retain the human native body/ground contract.
+// Both owners publish applied local gun angles; client-only WGVehiclePhysics
+// owns ground placement springs, never a configured simulation Tank.
 bool siegePose(Battle& b, RemoteVehicle& rv) {
     if (!rv.authority_geometry || !hasSiege(rv)) return false;
-    // The worker's WeaponRuntime already owns the hydraulic body pitch and
-    // local gun angle. A filter target here would introduce a second owner,
-    // and subtracting rv.pitch again would corrupt that local gun angle.
     if (canonicalBotPose(b, rv)) {
         if (rv.aim_desired_gun_pitch) writeAimPitch(rv, *rv.aim_desired_gun_pitch);
         return true;
     }
-    prepareSiegePose(b, rv);
-    const bool active = siegeActive(rv);
-    auto desired = rv.aim_desired_gun_pitch;
-    auto visible = desired;
-    double delta = 0.;
-    if (active && desired) {
-        const double local_desired = *desired - rv.pitch;
-        const auto limits = absolutePitchLimits(py::attr(rv.entity.get(), "typeDescriptor").get());
-        visible = std::max(limits.first, std::min(limits.second, local_desired));
-        delta = wrap(local_desired - *visible);
-    }
-    if (visible) writeAimPitch(rv, *visible);
-    auto filter = py::optional(rv.entity.get(), "filter");
-    auto get_physics = py::optional(filter.get(), "getVehiclePhysics");
-    if (!py::callable(get_physics)) throw p::Error("#1513 Siege vehicle physics boundary is unavailable");
-    auto physics = py::invoke(get_physics.get());
-    if (physics.get() == Py_None) return false;
-    auto set_delta = py::optional(physics.get(), "setHullAimingAnglesDelta");
-    if (!py::callable(set_delta)) throw p::Error("#1513 hydraulic aiming input boundary is unavailable");
-    // The exact x86 wrapper takes yaw first and pitch second.
-    py::invoke(set_delta.get(), p::number(0.).get(), p::number(delta).get());
+    if (!rv.hydraulic_body) return false;
+    writeAimPitch(rv, (*rv.hydraulic_body)[7]);
     return true;
 }
 
@@ -322,7 +248,8 @@ bool writeAimPitch(RemoteVehicle& rv, double gun_pitch) {
 void publishPose(RemoteVehicle& rv) {
     if (!rv.entity) return;
     p::Ref position(nativeVector(rv.position)), velocity(nativeVector(rv.velocity)), acceleration(nativeVector(rv.acceleration));
-    OverlayPose pose{position.get(), rv.yaw, rv.provider.get(), rv.speed, rv.turn_speed, velocity.get(), acceleration.get()};
+    OverlayPose pose{position.get(), rv.yaw, rv.provider.get(), rv.speed, rv.turn_speed, velocity.get(), acceleration.get(),
+                     rv.hydraulic_body ? rv.matrix.get() : nullptr};
     publishOverlay(rv.entity.get(), pose);
 }
 
@@ -647,6 +574,7 @@ bool setPose(Battle& b, std::int64_t engine_id, const Point& position, double ya
              std::optional<double> relax_time, std::optional<double> now) {
     RemoteVehicle* rv = vehicle(b, engine_id);
     if (!rv) return false;
+    if (hydraulicBodyPending(b, engine_id)) return false;
     const Point ypr = principalYpr(yaw, pitch, roll);
     const Point previous_position = rv->position;
     const double previous_yaw = rv->yaw;
@@ -667,6 +595,7 @@ bool setPose(Battle& b, std::int64_t engine_id, const Point& position, double ya
 bool setAim(Battle& b, std::int64_t engine_id, double hull_yaw, double aim_yaw, double gun_pitch) {
     RemoteVehicle* rv = vehicle(b, engine_id);
     if (!rv) return false;
+    if (hydraulicBodyPending(b, engine_id)) return false;
     double turret_yaw = wrap(aim_yaw - hull_yaw), component_pitch = gun_pitch;
     auto descriptor = py::optional(rv->entity.get(), "typeDescriptor");
     auto gun = PyDict_Check(descriptor.get()) ? p::value(descriptor.get(), "gun") : py::optional(descriptor.get(), "gun");
@@ -674,6 +603,10 @@ bool setAim(Battle& b, std::int64_t engine_id, double hull_yaw, double aim_yaw, 
     auto static_pitch = PyDict_Check(gun.get()) ? p::value(gun.get(), "staticPitch") : py::optional(gun.get(), "staticPitch");
     if (static_yaw.get() != Py_None) turret_yaw = p::scalar(static_yaw.get());
     if (static_pitch.get() != Py_None) component_pitch = p::scalar(static_pitch.get());
+    if (rv->hydraulic_body) {
+        turret_yaw = (*rv->hydraulic_body)[6];
+        component_pitch = (*rv->hydraulic_body)[7];
+    }
     if (!rv->aim_relative_yaw || *rv->aim_relative_yaw != turret_yaw) {
         nativeMatrix(py::attr(rv->aim.get(), "turretMatrix").get(), {}, {turret_yaw, 0., 0.}, true);
         rv->aim_relative_yaw = turret_yaw;
@@ -686,6 +619,38 @@ bool setAim(Battle& b, std::int64_t engine_id, double hull_yaw, double aim_yaw, 
         py::set(rv->entity.get(), "_gun_pitch", p::number(gun_pitch).get());
     }
     return true;
+}
+
+bool setHydraulicBody(Battle& b, std::int64_t engine_id, const std::optional<Pose>& body) {
+    RemoteVehicle* rv = vehicle(b, engine_id);
+    if (!rv) return false;
+    if (!body) { rv->hydraulic_body.reset(); return false; }
+    for (double value : *body)
+        if (!std::isfinite(value)) throw p::Error("hydraulic body receipt must be finite");
+    if (!rv->hydraulic_matrix) rv->hydraulic_matrix = matrix(b);
+    writePose(rv->hydraulic_matrix.get(), {(*body)[0], (*body)[1], (*body)[2], (*body)[3], (*body)[4], (*body)[5]});
+    if (rv->entity && rv->aim) {
+        const double yaw=(*body)[6];
+        if (!rv->aim_relative_yaw || *rv->aim_relative_yaw!=yaw) {
+            nativeMatrix(py::attr(rv->aim.get(), "turretMatrix").get(), {}, {yaw,0.,0.}, true);
+            rv->aim_relative_yaw=yaw;
+        }
+        writeAimPitch(*rv,(*body)[7]);
+    }
+    rv->hydraulic_body = body;
+    // Rebinding can synchronously publish stock overlays. Install the complete
+    // receipt first so its steady chassis matrix is never the new body matrix.
+    if (rv->provider.get() != rv->hydraulic_matrix.get()) {
+        rv->provider = rv->hydraulic_matrix;
+        rebindProvider(b, *rv);
+    }
+    return true;
+}
+
+bool hydraulicBodyPending(const Battle& b, std::int64_t engine_id) {
+    const auto* rv = vehicle(b, engine_id);
+    const auto* actor = b.vehicleByEngine(engine_id);
+    return rv && actor && actor->kind == "player" && hasSiege(*rv) && !rv->hydraulic_body;
 }
 
 bool settleMotion(Battle& b, std::int64_t engine_id, std::optional<double> now) {
@@ -707,11 +672,10 @@ std::optional<std::pair<Object, Object>> collisionMatrices(Battle& b, std::int64
     RemoteVehicle* rv = vehicle(b, engine_id);
     if (!rv || !rv->entity) return std::nullopt;
     const Object canonical = ground ? borrow(ground) : rv->matrix;
-    if (canonicalBotPose(b, *rv) || !rv->authority_geometry || !hasSiege(*rv) || !siegeActive(*rv))
-        return std::make_pair(canonical, canonical);
-    prepareSiegePose(b, *rv);
-    const Object body = ground ? relativeBody(b, rv->siege_relative_body.get(), ground) : rv->siege_body;
-    return std::make_pair(body, canonical);
+    if (canonicalBotPose(b, *rv) || !hasSiege(*rv)) return std::make_pair(canonical, canonical);
+    // This API has no historical body receipt for a caller-supplied ground.
+    if (ground || !rv->hydraulic_body || !rv->hydraulic_matrix) return std::nullopt;
+    return std::make_pair(rv->hydraulic_matrix, rv->matrix);
 }
 
 bool presentHitImpulse(Battle& b, std::int64_t engine_id, PyObject* direction, double impulse) {

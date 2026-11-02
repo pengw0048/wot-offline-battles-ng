@@ -4,11 +4,20 @@
 #include "stock_native_world_pipeline.hpp"
 #include <map>
 #include <set>
+#include <optional>
 
 namespace stock_native_bot_perception {
 using Key=offline_simulation::ActorKey;
-using Pose=offline_simulation::control::PoseSample;
-using Contact=offline_simulation::control::Contact;
+struct Pose:offline_simulation::control::PoseSample {
+    std::optional<std::array<double,8>> hydraulic_body;
+    bool require_hydraulic_body=false;
+    Pose()=default;
+    Pose(const offline_simulation::control::PoseSample& p):offline_simulation::control::PoseSample(p){}
+};
+struct Contact:offline_simulation::control::Contact {
+    Pose pose;
+    explicit Contact(const offline_simulation::control::Contact& c):offline_simulation::control::Contact(c),pose(c.pose){}
+};
 struct Actor {
     offline_simulation::control::ActorConfig config;
     offline_simulation::control::ActorSample sample;
@@ -16,6 +25,8 @@ struct Actor {
     native_visibility::Pose observer_pose,target_pose;
     std::uint64_t identity=0;
     bool target_available=false;
+    std::optional<std::array<double,8>> hydraulic_body;
+    bool require_hydraulic_body=false;
 };
 struct TeamKey {
     int team=0;Key target;
@@ -40,6 +51,9 @@ class Perception {
     std::map<Key,Actor> actors_;
     std::map<TeamKey,Remembered> remembered_;
     std::map<TeamKey,Observation> observations_;
+    // The retained control core freezes baseline poses by observation time.
+    // Keep the applied body alongside that same observation, never a newer row.
+    std::map<std::pair<Key,double>,Pose> sampled_poses_;
     std::uint64_t phase_=0;
     bool open_=false;
     offline_visibility::FrontierActor frontier(const Actor&)const;

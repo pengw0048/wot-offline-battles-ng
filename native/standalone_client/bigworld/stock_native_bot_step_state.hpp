@@ -12,7 +12,11 @@ struct AimPose {
     Point position{};
     double yaw = 0, pitch = 0, roll = 0;
     double turret_yaw = 0, gun_pitch = 0, aim_yaw = 0;
+    std::optional<std::array<double, 8>> hydraulic_body;
+    bool require_hydraulic_body=false;
 };
+// Resolve an exact applied Human receipt without changing its baseline owner.
+AimPose applied_aim_pose(const AimPose&);
 
 // All offsets come from the installed vehicle descriptor, not a proxy muzzle.
 struct GunMount {

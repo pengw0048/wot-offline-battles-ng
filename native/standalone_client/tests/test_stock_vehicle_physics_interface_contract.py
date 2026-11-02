@@ -1,4 +1,4 @@
-"""Required #1513 physics consumers must resolve against the NG Python types.
+"""Stock-client and configured-simulation physics surfaces are distinct.
 
 This checks the registered NG surface, not names in WorldOfTanks.exe. The
 recorded stock references can also be re-derived from the pinned bytecode.
@@ -86,8 +86,7 @@ def registered_surface(source, type_name):
 
 
 def native_physics_references(source):
-    # In siegePose, py::optional is lookup syntax, not an optional capability:
-    # the following callable guard throws when this method is unavailable.
+    # Detect simulation-only calls accidentally restored on client-only physics.
     source = without_comments(source)
     return set(re.findall(
         r'py::optional\(\s*physics\.get\(\)\s*,\s*"(\w+)"\s*\)', source))
@@ -105,18 +104,17 @@ def require_members(registered, consumers):
 class StockVehiclePhysicsInterfaceContractTests(unittest.TestCase):
     def setUp(self):
         self.binding = (ROOT / 'bigworld/vehicle_physics_binding.cpp').read_text()
-        remote = (ROOT / 'bigworld/stock_native_battle_remote_vehicle.cpp').read_text()
+        self.remote = (ROOT / 'bigworld/stock_native_battle_remote_vehicle.cpp').read_text()
         self.consumers = dict(STOCK_REFERENCES)
-        self.consumers['native_battle::vehicles::siegePose'] = native_physics_references(remote)
+        self.consumers['configured simulation aiming contract'] = ['setHullAimingAnglesDelta']
 
     def test_required_consumers_have_registered_ng_members(self):
-        self.assertIn('setHullAimingAnglesDelta',
-                      self.consumers['native_battle::vehicles::siegePose'])
+        self.assertNotIn('setHullAimingAnglesDelta', native_physics_references(self.remote))
         require_members(registered_surface(self.binding, 'PyWGVehiclePhysics'), self.consumers)
         self.assertRegex(without_comments(self.binding),
                          r'PY_FACTORY_NAMED\(\s*PyWGVehiclePhysics\s*,\s*"WGVehiclePhysics"\s*,\s*BigWorld\s*\)')
-        # The required physics object is obtained through this independently
-        # registered filter interface; None before stock physics startup is legal.
+        # Stock client startup installs ground-placement springs only. It does
+        # not configure the simulation Tank the separate aiming API requires.
         filter_source = (ROOT / 'bigworld/stock_vehicle_filter.cpp').read_text()
         self.assertIn('getVehiclePhysics', registered_surface(filter_source, 'PyWGVehicleFilter')['METHODS'])
 
@@ -136,8 +134,7 @@ class StockVehiclePhysicsInterfaceContractTests(unittest.TestCase):
                                   'PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )\n'
                                   'PY_ATTRIBUTE( setHullAimingAnglesDelta )\n'
                                   '// PY_METHOD( setHullAimingAnglesDelta )')
-        # The real method body and its dynamic py::optional consumer still
-        # exist, but neither one registers the callable on the NG Python type.
+        # A declaration or property does not register the configured API call.
         with self.assertRaisesRegex(AssertionError, 'missing NG WGVehiclePhysics members: setHullAimingAnglesDelta'):
             require_members(registered_surface(changed, 'PyWGVehiclePhysics'), self.consumers)
 

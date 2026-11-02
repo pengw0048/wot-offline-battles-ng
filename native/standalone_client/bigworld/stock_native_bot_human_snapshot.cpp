@@ -128,6 +128,8 @@ bool readHumanDescriptor(const Value& source,PyObject* descriptor,HumanDescripto
  const auto& raw=source.resolved();
  try {
   HumanDescriptor out;
+  auto siege=value(descriptor,"hasSiegeMode");const int requires_body=siege.get()==Py_None?0:PyObject_IsTrue(siege.get());
+  if(requires_body<0)throw Error("human hydraulic descriptor flag is unavailable");out.requires_hydraulic_body=requires_body!=0;
   auto descriptor_physics=value(descriptor,"physics"),descriptor_weight=value(descriptor_physics.get(),"weight");out.contact_mass=number(descriptor_weight.get());if(out.contact_mass<=0.)throw Error("human contact mass unavailable");
   const auto body=stock_native_bot_descriptor::bodyBounds(descriptor);out.body_minimum=body.minimum;out.body_maximum=body.maximum;out.shape=stock_native_bot_descriptor::chassisShape(descriptor);pivotGeometry(descriptor,out);tacticalMetadata(descriptor,out);
   out.id=idfield(raw,"network_id",idfield(raw,"id"));if(out.id<=0)throw Error("human identity invalid");out.vehicle=vtext(vfield(raw,"vehicle"));if(out.vehicle.empty()){out.class_tag="unknown";out.armor=0.;}
@@ -174,7 +176,10 @@ bool readHumanInput(const Value& source,const HumanDescriptor& descriptor,HumanI
   out.human.contact_rotation_speed=descriptor.contact_rotation_speed;out.human.pivot_available=descriptor.pivot_available;
   out.human.rotation_around_center=descriptor.rotation_around_center;out.human.track_center=descriptor.track_center;out.human.perception=descriptor.template_actor;
   auto& perceive=out.human.perception;perceive.config=projection.config;perceive.config.team=team;perceive.config.slot=slot;
-  perceive.identity=descriptor.record_revision;perceive.target_available=descriptor.target_available;
+  const auto hydraulic_body=stock_native_client_state::hydraulicBody(raw);
+  const bool body_ready=!descriptor.requires_hydraulic_body||hydraulic_body.has_value();
+  perceive.hydraulic_body=hydraulic_body;perceive.require_hydraulic_body=descriptor.requires_hydraulic_body;
+  perceive.identity=descriptor.record_revision;perceive.target_available=descriptor.target_available&&body_ready;
   const int radio=module_state(critical,"radioHealth",descriptor.radio_maximum);perceive.config.radio*=radio==2?.25:radio==1?.5:1.;
   auto& sample=perceive.sample;sample.key={offline_simulation::ActorKind::Human,id};sample.alive=alive;
   sample.last_effort=projection.last_effort;sample.designated=projection.designated;sample.decision_due=true;sample.has_selected=false;
@@ -186,6 +191,8 @@ bool readHumanInput(const Value& source,const HumanDescriptor& descriptor,HumanI
   for(int i=0;i<3;++i)sample.pose.values[10+i]=velocity[i];
   auto& observer=perceive.observer_pose;observer.position=p;observer.yaw=yaw;observer.pitch=pitch;observer.roll=roll;
   auto turret_value=vfield(raw,"turret_yaw");observer.relative_turret_yaw=present(turret_value)?num(raw,"turret_yaw"):num(raw,"aim_yaw",yaw)-yaw;perceive.target_pose=observer;
+  if(hydraulic_body){const auto& applied=*hydraulic_body;
+   observer.position={applied[0],applied[1],applied[2]};observer.yaw=applied[3];observer.pitch=applied[4];observer.roll=applied[5];observer.relative_turret_yaw=applied[6];perceive.target_pose=observer;}
   auto& human=out.human.contacts;human.network_id=id;human.acknowledged_ram_sequence=std::max<ID>(0,idfield(raw,"ram_contact_resolved_seq"));human.profile=descriptor.ram;
   auto& body=human.body;body.id=id;body.team=team;body.flags=offline_contact::HasY|offline_contact::HasGrip;
   if(alive)body.flags|=offline_contact::Alive;else body.flags|=offline_contact::Immovable;
@@ -214,9 +221,12 @@ bool readHumanInput(const Value& source,const HumanDescriptor& descriptor,HumanI
   observation.target.class_tag=descriptor.class_tag;observation.target.armor=descriptor.armor;observation.target.speed=speed;
   observation.pose.position=p;observation.pose.yaw=yaw;observation.pose.pitch=pitch;observation.pose.roll=roll;
   observation.pose.aim_yaw=num(raw,"aim_yaw",yaw);observation.pose.turret_yaw=observer.relative_turret_yaw;observation.pose.gun_pitch=num(raw,"gun_pitch");observation.speed=speed;
+  observation.pose.hydraulic_body=hydraulic_body;
+  observation.pose.require_hydraulic_body=descriptor.requires_hydraulic_body;
   out.target.target.kind="human";out.target.target.id=id;out.target.target.position=p;
   out.target.target.velocity=present(raw_velocity)?velocity:Point{std::sin(yaw)*speed,0.,std::cos(yaw)*speed};
-  out.target.pose=observation.pose;out.target.alive=alive;out.target.available=descriptor.target_available&&nav.world_pose;out.target.record_revision=descriptor.record_revision;
+  out.target.pose=observation.pose;out.target.alive=alive;out.target.available=descriptor.target_available&&nav.world_pose&&body_ready;out.target.record_revision=descriptor.record_revision;
+  out.geometry_available=descriptor.target_available&&nav.world_pose;
   out.target.descriptor_revision=descriptor.descriptor_revision;out.target.samples=descriptor.aim_samples;
   out.radius=std::hypot(descriptor.shape[0],descriptor.shape[1]);output=std::move(out);return true;
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
