@@ -93,6 +93,21 @@ def sdk_edits(sdk_root, edit):
     drop_shadow_edits(sdk_root, edit)
     bitmap_lifetime_edits(sdk_root, edit)
     tracer_merge_edits(sdk_root, edit)
+    d3d9_mask_state_edits(sdk_root, edit)
+
+
+def d3d9_mask_state_edits(sdk_root, edit):
+    # Original ARIE scene passes publish their complete stencil descriptor,
+    # including a zero write mask when stencil is disabled. The public HAL
+    # changes the read mask in PushMask, but assumes a writable stencil buffer.
+    # Establish that prerequisite at each HAL scene, including DrawableImage.
+    edit(sdk_root / 'Src/Render/D3D9/D3D9_HAL.cpp',
+         '    // Blending render states.\n',
+         '    // The external scene may leave stencil enabled or its write mask at zero.\n'
+         '    pDevice->SetRenderState(D3DRS_STENCILENABLE, FALSE);\n'
+         '    pDevice->SetRenderState(D3DRS_STENCILWRITEMASK, 0xFF);\n\n'
+         '    // Blending render states.\n',
+         'D3D9 HAL scene stencil ownership')
 
 
 def html_default_format_edits(sdk_root, edit):

@@ -23,7 +23,7 @@ SDK_FILES = ('Src/GFx/AMP/Amp_Server.h', '3rdParty/libpng-1.5.13/png.h', 'Src/Ke
              'Src/GFx/AS3/Obj/Filters/AS3_Obj_Filters_DropShadowFilter.cpp',
              'Src/GFx/AS3/Obj/Display/AS3_Obj_Display_BitmapData.cpp',
              'Src/GFx/GFx_Loader.cpp', 'Src/GFx/GFx_LoaderImpl.cpp', 'Src/GFx/AS3/AS3_Tracer.cpp',
-             'Src/GFx/GFx_TextField.cpp')
+             'Src/GFx/GFx_TextField.cpp', 'Src/Render/D3D9/D3D9_HAL.cpp')
 BODIES = (('    void MovieClip::currentLabelsGet(', '    void MovieClip::enabledGet('),
           ('    void MovieClip::scenesGet(', '    void MovieClip::totalFramesGet('),
           ('    SPtr<Instances::fl_display::Scene> MovieClip::CreateFakeScene()',
