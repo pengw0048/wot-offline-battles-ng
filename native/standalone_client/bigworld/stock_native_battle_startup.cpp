@@ -915,16 +915,17 @@ void maybeSendBattleReady(Battle& b) {
             ready = p::flag(py::optional(client, "ready").get());
             detail = p::string(py::optional(client, "last_error").get());
         }
-        std::string reason = !connected ? "LAN connection closed before battle readiness could be queued" :
-            source_round != std::to_string(b.round_id) ? "Battle readiness belongs to a different LAN round" :
-            phase != "loading" ? "LAN loading phase ended before battle readiness could be queued" :
-            !ready ? "LAN endpoint is not ready to queue battle readiness" : "LAN transport could not queue battle readiness";
-        reason += " (role=" + std::string(b.worker ? "worker" : "player") + " round=" + std::to_string(b.round_id) +
+        const std::string reason = !connected ? "LAN connection closed before the battle finished loading" :
+            source_round != std::to_string(b.round_id) ? "The LAN battle changed before loading finished" :
+            phase != "loading" ? "The LAN battle is no longer loading" :
+            !ready ? "The LAN connection is not ready to finish loading" : "Could not send the battle loading confirmation";
+        std::string diagnostic = reason + " (role=" + std::string(b.worker ? "worker" : "player") + " round=" + std::to_string(b.round_id) +
             " source_round=" + source_round + " client_phase=" + phase + " transport=" + (connected ? "connected" : "closed") +
             " ready=" + (ready ? "true" : "false");
-        if (!combat_phase.empty()) reason += " combat_phase=" + combat_phase;
-        if (!detail.empty()) reason += " detail=" + detail;
-        throw p::Error(reason + ")");
+        if (!combat_phase.empty()) diagnostic += " combat_phase=" + combat_phase;
+        if (!detail.empty()) diagnostic += " detail=" + detail;
+        log("battle readiness send refused: " + diagnostic + ")");
+        throw p::Error(reason);
     };
     if (b.worker) {
         // The worker's readiness carries the same base rows through its native link.
