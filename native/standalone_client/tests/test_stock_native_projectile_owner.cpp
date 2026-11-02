@@ -20,8 +20,53 @@ struct PlayerWorld:World {
     bool pipelined(const Launch&)const override{return true;}
     std::optional<double> localLaunchTime(const Launch&,double now)const override{return now;}
 };
+struct HydraulicWorld:World {
+    bool siege_vehicle=true;
+    int queries=0;
+    bool liveGeometry(const Record&,const Pose&)const override{return false;}
+    CollisionQuery collide(const Record&r,const Point&a,const Point&b,const std::optional<Pose>&historic)override{
+        ++queries;CollisionQuery out;out.start=a;out.end=b;out.length=length(a,b);
+        // Reproduce the production geometry readiness guard. An unknown
+        // Human body is an unavailable query, never an empty successful hit set.
+        out.valid=(historic?*historic:r.current).body_available(siege_vehicle);return out;
+    }
+};
 Launch launch(const char*id){Launch l;l.id=id;l.vehicle="ussr:T-34";l.source_signature="frozen";l.shooter=1;l.sequence=l.group_sequence=1;l.burst_count=1;l.velocity=l.segment_velocity={0,0,100};l.gravity=10;l.maximum_distance=10000;l.maximum_ms=1000;l.penetration_factor=1;l.shot.shell.kind="ARMOR_PIERCING";return l;}
 int main(){
+    for(unsigned mode=0;mode<3;++mode){
+        HydraulicWorld query;query.siege_vehicle=mode!=1;
+        Record target;target.key="player:2";target.id=2;
+        target.human=mode!=2;target.ready=target.started=target.alive=true;
+        target.current.position={0,0,2.5};target.current.require_hydraulic_body=target.human;
+        query.targets.push_back(target);Owner guarded(query);assert(guarded.observe(1,0,0,0));
+        assert(guarded.launch(launch("unknown-body"),0));
+        auto other=launch("independent");other.shooter=3;other.origin=other.range_origin=other.segment_origin={1000,0,0};
+        assert(guarded.launch(other,0)&&guarded.advance(.05));assert(query.queries>0);
+        assert(!guarded.flights().at("independent").terminal);
+        if(mode==0){const auto&failed=guarded.flights().at("unknown-body");assert(failed.terminal&&failed.terminal->outcome=="expired");assert(failed.meta.failure_boundary=="historic_component_matrix_unavailable");}
+        else {assert(!guarded.flights().at("unknown-body").terminal);assert(guarded.metrics().local_failures==0);}
+    }
+    {
+        World rounds;Record human;human.key="player:2";human.id=2;
+        human.human=human.ready=human.started=human.alive=true;
+        human.current.require_hydraulic_body=true;
+        human.current.hydraulic_body=std::array<double,8>{0,1,0,0,.2,0,0,.1};
+        rounds.targets.push_back(human);Owner fenced(rounds);
+        assert(fenced.observe(10,0,0,0)&&fenced.sample(0)&&fenced.sample(1));
+        assert(fenced.historic(human.key,.5)->hydraulic_body);
+        assert(fenced.launch(launch("epoch-shot"),1)&&fenced.advance(1.1));
+        const auto before=fenced.dispatches();assert(!before.empty());
+        // Repeated current-epoch observations preserve both history and the
+        // existing shot/outbox bookkeeping; only an actual owner change clears.
+        assert(fenced.observe(10,1100,1.1,1.1));
+        assert(fenced.historic(human.key,.5)->hydraulic_body);
+        assert(fenced.flights().count("epoch-shot")&&fenced.dispatches().size()==before.size());
+        assert(fenced.observe(11,2000,2,2));
+        assert(!fenced.historic(human.key,.5)&&fenced.flights().empty()&&fenced.dispatches().empty());
+        assert(fenced.observe(11,2000,2,2)&&!fenced.historic(human.key,.5));
+        rounds.targets.front().current.hydraulic_body.reset();assert(fenced.sample(2));
+        const auto fresh=fenced.historic(human.key,2);assert(fresh&&!fresh->body_available(true));
+    }
     {
         World measured;Record target;target.key="player:1";target.id=1;
         target.human=target.ready=target.started=target.alive=true;target.current.position={0,0,5};

@@ -5,7 +5,11 @@
 #include <stdexcept>
 namespace stock_native_projectile {
 namespace {constexpr double pi=3.14159265358979323846;constexpr double epsilon=1e-9;
-double travel(const Pose&a,const Pose&b){return std::abs(angle_delta(a.yaw,b.yaw))+std::abs(angle_delta(a.pitch,b.pitch))+std::abs(angle_delta(a.roll,b.roll))+std::abs(angle_delta(a.turret_yaw,b.turret_yaw))+std::abs(angle_delta(a.gun_pitch,b.gun_pitch));}
+double travel(const Pose&a,const Pose&b){
+    double result=std::abs(angle_delta(a.yaw,b.yaw))+std::abs(angle_delta(a.pitch,b.pitch))+std::abs(angle_delta(a.roll,b.roll))+std::abs(angle_delta(a.turret_yaw,b.turret_yaw))+std::abs(angle_delta(a.gun_pitch,b.gun_pitch));
+    if(a.hydraulic_body&&b.hydraulic_body)for(unsigned i=3;i<8;++i)result+=std::abs(angle_delta((*a.hydraulic_body)[i],(*b.hydraulic_body)[i]));
+    return result;
+}
 int cell(double v){if(!std::isfinite(v)||v/64.<std::numeric_limits<int>::min()||v/64.>std::numeric_limits<int>::max())throw std::invalid_argument("invalid projectile cell");return int(std::floor(v/64.));}
 }
 double angle_delta(double from,double to){double value=std::fmod(to-from+pi,2*pi);if(value<0)value+=2*pi;return value-pi;}
@@ -26,6 +30,12 @@ std::optional<Pose> History::at(const std::string& key,double wanted)const{
     const double f=std::max(0.,std::min(1.,(wanted-left.at)/(right.at-left.at)));Pose p=a->second;p.position=interpolate(p.position,b->second.position,f);
     p.yaw+=angle_delta(p.yaw,b->second.yaw)*f;p.pitch+=angle_delta(p.pitch,b->second.pitch)*f;p.roll+=angle_delta(p.roll,b->second.roll)*f;
     p.turret_yaw+=angle_delta(p.turret_yaw,b->second.turret_yaw)*f;p.gun_pitch+=angle_delta(p.gun_pitch,b->second.gun_pitch)*f;
+    p.require_hydraulic_body=p.require_hydraulic_body||b->second.require_hydraulic_body;
+    // Never borrow a receipt from one endpoint or from the latest native model.
+    if(p.hydraulic_body&&b->second.hydraulic_body){auto&body=*p.hydraulic_body;const auto&next=*b->second.hydraulic_body;
+        for(unsigned i=0;i<3;++i)body[i]+=(next[i]-body[i])*f;
+        for(unsigned i=3;i<8;++i)body[i]+=angle_delta(body[i],next[i])*f;
+    }else p.hydraulic_body.reset();
     return p;
 }
 std::optional<std::vector<double>> History::sweep(const std::string&key,double start,double end)const{

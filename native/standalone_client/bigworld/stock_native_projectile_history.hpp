@@ -1,7 +1,13 @@
 #pragma once
 #include "stock_native_projectile_cursor.hpp"
 namespace stock_native_projectile {
-struct Pose {Point position{};double yaw=0,pitch=0,roll=0,turret_yaw=0,gun_pitch=0;int siege=0;};
+struct Pose {
+    Point position{};double yaw=0,pitch=0,roll=0,turret_yaw=0,gun_pitch=0;int siege=0;
+    // The body and relative gun angles accepted with this baseline pose sample.
+    std::optional<std::array<double,8>> hydraulic_body;
+    bool require_hydraulic_body=false;
+    bool body_available(bool siege_vehicle)const{return !require_hydraulic_body||!siege_vehicle||hydraulic_body.has_value();}
+};
 using Poses=std::map<std::string,Pose>;
 struct PoseSample {double at=0;Poses poses;};
 class History {

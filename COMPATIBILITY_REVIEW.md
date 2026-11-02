@@ -4024,15 +4024,42 @@ remain separate from these host checks. Neither the port nor its fixtures
 establish unexercised vehicle/map behavior or reconstruct the complete retail
 native physics engine.
 
-`test_stock_vehicle_physics_interface_contract.py` separately closes the
-required Python interface surface against NG's actual `PY_METHOD` and
-`PY_ATTRIBUTE` registration blocks. It covers the exact stock configuration,
-client startup and suspension-state consumers, plus the current C++ remote
-hydraulic caller. Removing a required registration fails even if its C++ body
+`test_stock_vehicle_physics_interface_contract.py` separately checks the
+reviewed required physics interface against NG's actual `PY_METHOD` and
+`PY_ATTRIBUTE` registration blocks. Its stock scope is configuration,
+client startup and suspension-state consumers. Removing a required registration
+fails even if its C++ body
 or original-executable symbol still exists. With `WOT_0922_CLIENT`, CPython 2.7
 re-derives the recorded stock references from the exact bytecode. A registered
 name alone does not prove that its implementation advances physical state or
 that Windows rendering, collision and firing consume the resulting state.
+
+The older checks have different scopes: `inspect_client.py` examines the
+retail EXE's reviewed filter names, `audit_client_abi.py` and
+`audit_client_lifecycle.py` examine stock PYC/XML contracts, and
+`audit_native_resource_ownership.py` examines Python adapter ownership. They
+do not compare the NG C++ registration tables with every battle consumer.
+Focused native tests cover individual providers, filters and cameras; these
+checks are not a complete SDK or gameplay-interface closure audit.
+
+Two registered retail replay interfaces, `WGReplayController.beginTimeWarp`
+and `getAimClipPosition`, explicitly raise `NotImplementedError`. Exact stock
+consumers are `BattleReplay.__timeWarp` (playing and time-warp enabled) and
+`ArcadeCamera.__cameraUpdate` (playing and controlling the camera). The replay
+method-table test proves that their names are registered, not that these
+operations work. The LAN `.wotlanreplay` reader has a separate owner; these
+retail packet-replay stubs do not establish a missing live-LAN battle method.
+
+Projectile target history retains each accepted Human hydraulic body and gun
+receipt with its baseline pose, using the same interpolation fraction and
+wrapped angles. A missing endpoint cannot borrow a previous or latest native
+body. Such a target remains a collision candidate: an unavailable required
+body fails only the affected projectile query rather than proving a miss.
+Ordinary Humans and canonical Bots retain their existing paths. An actual
+authority-epoch change clears pose history along with the existing projectile
+state; repeated observations of the same epoch retain both. Host tests exercise
+the production receipt converters, historical sampling and local terminal
+containment. Windows hit geometry and rendering still require native acceptance.
 
 ### Native visible-client hot paths and snapshot ownership
 

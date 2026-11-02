@@ -47,5 +47,35 @@ int main(){
     assert(history.at("x",1)->siege==2);assert(history.sweep("x",0,1)->size()<=17);
     b.position={40,0,0};history.sample(1,{{"x",b}});assert(history.samples().size()==2);assert(history.at("x",1)->position[0]==40);
     history.sample(25,{{"x",b}});assert(history.samples().size()==2);
+    {
+        // A hydraulic body belongs to the same sample and interpolation
+        // fraction as the baseline; no current native pose may replace it.
+        History body_history;Pose start,end;
+        start.require_hydraulic_body=end.require_hydraulic_body=true;
+        start.hydraulic_body=std::array<double,8>{1,2,3,3.1,.1,.2,3.1,-.1};
+        end.position={20,0,0};end.siege=2;
+        end.hydraulic_body=std::array<double,8>{21,6,7,-3.1,.5,.6,-3.1,.3};
+        body_history.sample(0,{{"human",start}});body_history.sample(1,{{"human",end}});
+        auto mid=body_history.at("human",.5);assert(mid&&mid->position[0]==10&&mid->siege==0);
+        assert(mid->body_available(true)&&mid->hydraulic_body);
+        const auto&body=*mid->hydraulic_body;
+        assert(body[0]==11&&body[1]==4&&body[2]==5);
+        assert(std::abs(body[3]-3.141592653589793)<1e-12);
+        assert(std::abs(body[4]-.3)<1e-12&&std::abs(body[5]-.4)<1e-12);
+        assert(std::abs(body[6]-3.141592653589793)<1e-12&&std::abs(body[7]-.1)<1e-12);
+        assert(body_history.sweep("human",0,1)->size()>2);
+        // A missing endpoint invalidates this receipt, including a same-time
+        // sample replacement. It must not carry the earlier body forward.
+        end.hydraulic_body.reset();body_history.sample(1,{{"human",end}});
+        mid=body_history.at("human",.5);assert(mid&&!mid->hydraulic_body);
+        assert(!mid->body_available(true)&&mid->body_available(false));
+        start.hydraulic_body.reset();end.hydraulic_body=std::array<double,8>{21,6,7,0,.5,.6,0,.3};
+        body_history.sample(2,{{"human",start}});body_history.sample(3,{{"human",end}});
+        assert(!body_history.at("human",2.5)->hydraulic_body);
+        // Ordinary Humans need no receipt. Canonical Bots retain their own
+        // existing hydraulic owner rather than requiring a Human wire field.
+        Pose bot;assert(bot.body_available(true)&&bot.body_available(false));
+        assert(start.body_available(false)&&!start.body_available(true));
+    }
     return 0;
 }

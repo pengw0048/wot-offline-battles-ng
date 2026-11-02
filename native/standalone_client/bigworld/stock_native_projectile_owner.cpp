@@ -28,7 +28,7 @@ bool same_launch(const Launch&a,const Launch&b){
 }
 bool Owner::setEpoch(std::int64_t epoch,double now){
     if(epoch<0||!std::isfinite(now))return false;if(epoch_&&*epoch_==epoch)return true;
-    if(!cursors_.reset(std::max(now,cursors_.now())))return false;epoch_=epoch;flights_.clear();terminals_.clear();outbox_.clear();terminal_fence_.clear();resolution_fence_.clear();terminal_fifo_.clear();resolution_fifo_.clear();next_progress_=now;last_now_=now;return true;
+    if(!cursors_.reset(std::max(now,cursors_.now())))return false;epoch_=epoch;history_.clear();flights_.clear();terminals_.clear();outbox_.clear();terminal_fence_.clear();resolution_fence_.clear();terminal_fifo_.clear();resolution_fifo_.clear();next_progress_=now;last_now_=now;return true;
 }
 bool Owner::observe(std::optional<std::int64_t> epoch,std::optional<std::int64_t> server,double local,double now){
     if(!std::isfinite(now)||!std::isfinite(local)||local<0||(server&&*server<0)||(epoch&&*epoch<0))return false;
