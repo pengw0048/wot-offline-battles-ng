@@ -1329,7 +1329,8 @@ class PayloadStagingTest(unittest.TestCase):
 
     def test_the_server_stages_its_binary_wire_modules(self):
         for name in ("battle_wire_codec.py", "battle_wire_schema.py",
-                     "battle_wire_replica.py"):
+                     "battle_wire_replica.py", "battle_wire_ram_motion.py",
+                     "battle_wire_bot_state_codec.py"):
             self.assertTrue(os.path.isfile(os.path.join(
                 self.target, "0.9.22", "server", name)), name)
 

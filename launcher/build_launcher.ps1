@@ -33,7 +33,8 @@ New-Item -ItemType Directory -Force -Path $SpecRoot | Out-Null
 python (Join-Path $LauncherRoot "stage_payload.py") `
     --output $PayloadRoot `
     --source $RepoRoot `
-    --ng-client $NgClient
+    --ng-client $NgClient `
+    --verify-servers
 if ($LASTEXITCODE -ne 0) {
     throw "Payload staging failed with exit code $LASTEXITCODE"
 }

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -18,6 +19,8 @@ NG_CLIENT_DIR = "ng-client"
 PAYLOAD_FILES = {
     "0.9.22": (
         "server/battle_wire_codec.py",
+        "server/battle_wire_bot_state_codec.py",
+        "server/battle_wire_ram_motion.py",
         "server/battle_wire_replica.py",
         "server/battle_wire_schema.py",
         "server/lan_battle_server.py",
@@ -145,6 +148,18 @@ def stage_servers(target_root, source_root=None):
     return written
 
 
+def verify_servers(target_root):
+    """Import the staged server in isolation, without checkout fallbacks."""
+    for port_version in PAYLOAD_FILES:
+        directory = os.path.abspath(os.path.join(target_root, port_version, "server"))
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); import lan_battle_server",
+             directory], cwd=directory, capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError("Staged server import failed: %s" % result.stderr.strip())
+
+
 def launcher_version(source_root=None):
     source_root = source_root or repository_root()
     with open(os.path.join(source_root, "launcher", "wot_launcher.py"),
@@ -219,11 +234,15 @@ def main(argv=None):
                         help="NG client package directory (bwclient_h.exe)")
     parser.add_argument("--servers-only", action="store_true",
                         help="stage the LAN servers without the NG client")
+    parser.add_argument("--verify-servers", action="store_true",
+                        help="import the staged servers without checkout fallbacks")
     arguments = parser.parse_args(argv)
     try:
         written = stage(arguments.output, arguments.source,
                         include_clients=not arguments.servers_only,
                         ng_client=arguments.ng_client)
+        if arguments.verify_servers:
+            verify_servers(os.path.join(arguments.output, SERVER_DIR))
     except ValueError as error:
         sys.stderr.write("%s\n" % error)
         return 1
