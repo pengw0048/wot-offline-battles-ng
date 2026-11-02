@@ -263,6 +263,11 @@ struct Visual { struct PrimitiveGroup { ComplexEffectMaterialPtr material_; }; }
 }
 """
         state = r"""
+bool customizationMask=false;
+Moo::ComplexEffectMaterialPtr selectionMaterial=new Moo::ComplexEffectMaterial();
+bool stockCustomizationMaskActive() { return customizationMask; }
+Moo::ComplexEffectMaterialPtr stockCustomizationMaskMaterial(
+    const Moo::ComplexEffectMaterialPtr&,bool,bool) { return selectionMaterial; }
 struct Handler { void apply(Moo::EffectMaterial&,MaterialPropertyCache&) {} };
 struct HandlerEntry { std::shared_ptr<Handler> state; };
 struct VehicleFashionState {
@@ -271,7 +276,7 @@ struct VehicleFashionState {
     std::vector<HandlerEntry> handlers;
     unsigned hiddenTracks=0;
     float alpha=1.f;
-    bool trackConfigured=true,crashed=false,tracksBeyondLod=false;
+    bool trackConfigured=true,crashed=false,tracksBeyondLod=false,nodeless=false;
     float crashCoefficient[2]={0.25f,0.75f};
     struct { float left=0.125f,right=-0.375f; } tracks;
 """
@@ -346,6 +351,12 @@ int main() {
     fashion.hiddenTracks=0;fashion.crashed=true;fashion.dress();
     assert(farGroup.material_==distant);
     assert(distant->baseMaterial()->getProperty("crash_coefficient")->value.w==0.75f);
+    customizationMask=true;fashion.dress();
+    assert(nearGroup.material_==selectionMaterial && farGroup.material_==selectionMaterial);
+    fashion.undress();
+    assert(nearGroup.material_==original && farGroup.material_==distant);
+    customizationMask=false;fashion.dress();
+    assert(nearGroup.material_==first && farGroup.material_==distant);
     fashion.undress();
     assert(nearGroup.material_==original && farGroup.material_==distant);
     assert(!first->baseMaterial()->absentWrites && !alpha->baseMaterial()->absentWrites &&

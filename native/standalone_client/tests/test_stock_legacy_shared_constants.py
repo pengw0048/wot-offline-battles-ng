@@ -43,6 +43,7 @@ HOST = r'''
 #include <map>
 #include <string>
 #include <vector>
+#include "wot/stock_antialiasing.hpp"
 #define BW_GUARD
 #define ERROR_MSG(...) assert(false)
 using UINT=unsigned;using uint32=unsigned;using BOOL=int;
@@ -50,6 +51,9 @@ constexpr int FALSE=0,TRUE=1;
 namespace BW {using string=std::string;}
 struct Vector2 {float x=0,y=0;Vector2()=default;Vector2(float a,float b):x(a),y(b){};};
 Vector2 operator*(Vector2 a,Vector2 b){return {a.x*b.x,a.y*b.y};}
+Vector2 operator*(float scale,Vector2 value){return {scale*value.x,scale*value.y};}
+Vector2 operator+(Vector2 a,Vector2 b){return {a.x+b.x,a.y+b.y};}
+Vector2& operator-=(Vector2& a,Vector2 b){a.x-=b.x;a.y-=b.y;return a;}
 struct Vector3 {float x=0,y=0,z=0;Vector3()=default;Vector3(float a,float b,float c):x(a),y(b),z(c){};
 float length()const{return std::sqrt(x*x+y*y+z*z);}};
 Vector3 operator+(Vector3 a,Vector3 b){return {a.x+b.x,a.y+b.y,a.z+b.z};}
@@ -59,7 +63,7 @@ Vector3 lerp(Vector3 a,Vector3 b,float t){return a*(1-t)+b*t;}
 struct Vector4 {float x=0,y=0,z=0,w=0;Vector4()=default;
 Vector4(float a,float b,float c,float d):x(a),y(b),z(c),w(d){}
 Vector4(Vector3 a,float b):x(a.x),y(a.y),z(a.z),w(b){}
-Vector3 xyz()const{return {x,y,z};}Vector2 xy()const{return {x,y};}};
+Vector3 xyz()const{return {x,y,z};}Vector2 xy()const{return {x,y};}Vector2 zw()const{return {z,w};}};
 Vector4 lerp(Vector4 a,Vector4 b,float t){return {a.x*(1-t)+b.x*t,a.y*(1-t)+b.y*t,a.z*(1-t)+b.z*t,a.w*(1-t)+b.w*t};}
 struct Matrix {Vector4 rows[4];Matrix()=default;Matrix(Vector4 a,Vector4 b,Vector4 c,Vector4 d):rows{a,b,c,d}{}
 Vector4 row(unsigned i)const{return rows[i];}Vector4 operator[](unsigned i)const{return rows[i];}
@@ -117,11 +121,12 @@ struct ManagedEffect : ::ManagedEffect {bool reload(){ID3DXEffect* pEffect=effec
 }
 // The public shadow passes both consume this real HLSL function. Adapt only
 // HLSL type/swizzle syntax; keep reconstruction arithmetic unchanged.
-Vector4 g_cameraPos,g_farPlane,stockSceneDRR(1,1,0,0);Matrix g_cameraDirs;
+Vector4 g_cameraPos,g_farPlane,stockSceneDRR(1,1,0,0),stockSceneTAA;Matrix g_cameraDirs;
 int stockLinearDepthSampler=0;float sampleDepth=.02f;
-Vector4 tex2D(int,Vector2){return {sampleDepth,0,0,0};}
+Vector2 sampledDepthUV;Vector4 tex2D(int,Vector2 uv){sampledDepthUV=uv;return {sampleDepth,0,0,0};}
 Vector2 stereoToMonoUV(Vector2 uv,float){return uv;}
 @WORLD_POSITION@
+@OLD_PIXEL_POSITION@
 Vector3 reconstruct(ID3DXEffect& effect,Vector2 uv){
 const auto assign=[&](const char* name,void* value,unsigned size){auto& p=effect.named(name);std::memset(value,0,size);if(!p.bytes.empty()){assert(p.bytes.size()==size);std::memcpy(value,p.bytes.data(),size);}};
 assign("g_cameraPos",&g_cameraPos,sizeof(g_cameraPos));assign("g_farPlane",&g_farPlane,sizeof(g_farPlane));assign("g_cameraDirs",&g_cameraDirs,sizeof(g_cameraDirs));
@@ -149,6 +154,22 @@ const auto brokenLeft=reconstruct(brokenEffect,{0,0}),brokenRight=reconstruct(br
 // View and resource changes use the same registered producer pointers.
 visual.view.rows[3]={41,12,-18,1};visual.cam.far=500;pipeline.texture=&secondTexture;visual.sun.m_color.x=.4f;fixed.setAutoConstants();
 const auto moved=reconstruct(effect,{.5f,.5f});assert(close(moved.x,41)&&close(moved.y,12)&&close(moved.z,-8));assert(effect.named("g_bufferTex").texture==&secondTexture);for(unsigned i=0;i<5;++i)assert(effect.parameters[i].writes==2);
+// TAA moves the raster UV; the unchanged CameraDirs producer must recover
+// the same world point at every phase. Depth keeps the jittered UV and DRR.
+for(float width:{1280.f,1920.f,3840.f})for(float height:{720.f,1080.f})
+for(float scale:{.5f,.75f,1.f})for(unsigned samples:{1u,2u,3u,4u,8u}){
+stockSceneDRR=Vector4(scale,scale,0,0);stockSceneTAA=Vector4();
+const auto fixedPoint=reconstruct(effect,{.3f,.7f});wot::StockTemporalAAFrame frame;
+for(unsigned phase=0;phase<19;++phase){frame.advance(samples,true,false);
+stockSceneTAA=Vector4(frame.jitterX/(width*scale),frame.jitterY/(height*scale),1.f/(width*scale),1.f/(height*scale));
+const Vector2 raster(.3f+stockSceneTAA.x+.5f*stockSceneTAA.z,.7f+stockSceneTAA.y+.5f*stockSceneTAA.w);
+const auto point=reconstruct(effect,raster);
+assert(close(point.x,fixedPoint.x)&&close(point.y,fixedPoint.y)&&close(point.z,fixedPoint.z));
+const auto wrongPixelRay=g_buffer_readWorldPosOldHalf(raster,false);
+assert(std::fabs(wrongPixelRay.x-fixedPoint.x)>.00001f||std::fabs(wrongPixelRay.y-fixedPoint.y)>.00001f);
+assert(close(sampledDepthUV.x,raster.x*scale)&&close(sampledDepthUV.y,raster.y*scale));
+}}
+stockSceneTAA=Vector4();stockSceneDRR=Vector4(1,1,0,0);
 // ARIE shared constants remain solely owned by UniformContext; legacy
 // pools retain their previous branch, including unused shared parameters.
 auto arieEffect=makeEffect(true);ManagedEffect arie;arie.effect=&arieEffect;assert(arie.load("original.fx"));assert(arie.mappedConstants_.size()==1);arie.setAutoConstants();for(unsigned i=0;i<5;++i)assert(arieEffect.parameters[i].writes==0);assert(arieEffect.named("nonshared").writes==1);
@@ -213,15 +234,20 @@ class LegacySharedConstantsTests(unittest.TestCase):
             reconstruction = reconstruction.split('#if 1', 1)[0] + reconstruction.split('#if 1', 1)[1].split('#else', 1)[0] + '\n}'
             reconstruction = re.sub(r'\bin\s+', '', reconstruction)
             reconstruction = reconstruction.replace('float3', 'Vector3').replace('float2', 'Vector2')
-            reconstruction = re.sub(r'\.(xyz|xy)\b', r'.\1()', reconstruction)
+            reconstruction = re.sub(r'\.(xyz|xy|zw)\b', r'.\1()', reconstruction)
             reconstruction = reconstruction.replace(').r ', ').x ')
             source = HOST.replace('@PROVIDERS@', providers).replace('@HELPERS@', helpers)
             source = source.replace('@REGISTRATION@', registration(patched)).replace('@ORIGINAL_REGISTRATION@', registration(managed))
             source = source.replace('@LOAD@', function(managed, 'bool ManagedEffect::load('))
             source = source.replace('@SET_CONSTANTS@', function(managed, 'void ManagedEffect::setAutoConstants()').replace('pEffect_.pComObject()', 'pEffect()'))
             source = source.replace('@WORLD_POSITION@', reconstruction)
+            old_pixel = reconstruction.replace('g_buffer_readWorldPos(', 'g_buffer_readWorldPosOldHalf(', 1)
+            self.assertIn('uv -= stockSceneTAA.xy() + .5f * stockSceneTAA.zw();', old_pixel)
+            old_pixel = old_pixel.replace('uv -= stockSceneTAA.xy() + .5f * stockSceneTAA.zw();',
+                                          'uv -= stockSceneTAA.xy();')
+            source = source.replace('@OLD_PIXEL_POSITION@', old_pixel)
             (root/'probe.cpp').write_text(source)
-            result = subprocess.run(['c++','-std=c++14','-Wall','-Wextra','-Werror','-Wno-reorder',str(root/'probe.cpp'),'-o',str(root/'probe')], capture_output=True, text=True)
+            result = subprocess.run(['c++','-std=c++14','-Wall','-Wextra','-Werror','-Wno-reorder','-I',str(ROOT/'include'),str(root/'probe.cpp'),'-o',str(root/'probe')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(root/'probe')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

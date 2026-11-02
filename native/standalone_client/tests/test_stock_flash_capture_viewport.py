@@ -37,7 +37,9 @@ class FlashCaptureViewportTests(unittest.TestCase):
             (sdk / PATCH.HAL_HEADER).write_text(PATCH.HAL_CONTRACT)
             header = root / 'lib/scaleform/manager.hpp'
             header.parent.mkdir(parents=True)
-            header.write_text('\t\tvoid createUnmanagedObjects();')
+            header.write_text('#include "loader.hpp"\n\t\tvoid createUnmanagedObjects();\n'
+                              '\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }\n'
+                              '\t\tRender::D3D9::TextureManager *pTexMgr_;')
             for relative, edits in PATCH.EDITS.items():
                 (root / relative).write_text('\n'.join(old for old, unused in edits))
             PATCH.patch(root, sdk)
@@ -48,7 +50,7 @@ class FlashCaptureViewportTests(unittest.TestCase):
             for relative, edits in PATCH.EDITS.items():
                 text = expected[relative]
                 for unused, previous in edits:
-                    ordered = PATCH.render_job_ownership(PATCH.viewport_before_capture(previous))
+                    ordered = PATCH.overlay_surface_ownership(PATCH.render_job_ownership(PATCH.viewport_before_capture(previous)))
                     if ordered != previous:
                         self.assertEqual(text.count(ordered), 1)
                         text = text.replace(ordered, previous)

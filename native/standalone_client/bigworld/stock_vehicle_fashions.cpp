@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_vehicle_fashions.hpp"
+#include "stock_customization_helper.hpp"
 #include "stock_vehicle_spline_tracks.hpp"
 #include "stock_vehicle_components.hpp"
 #include "app.hpp"
@@ -414,6 +415,7 @@ struct VehicleFashionState
     bool tracksBeyondLod = false;
     bool alphaInitialised = false;
     bool camouflage = false;
+    bool nodeless = false;
 
     bool rebuild()
     {
@@ -427,6 +429,7 @@ struct VehicleFashionState
         bool foundCrash[2] = { false, false };
         float originalCrash[2] = { 0.f, 0.f };
         SuperModel & super = *owner->pSuperModel();
+        nodeless = super.nModels() && super.topModel( 0 )->nodeless();
         super.localBoundingBox( bounds );
         for (int part = 0; part < super.nModels(); ++part)
         {
@@ -514,6 +517,12 @@ struct VehicleFashionState
                 // patch_vehicle_fashions adds the public renderer's matching
                 // primitive skip before dereferencing that material.
                 binding.group->material_ = NULL;
+                continue;
+            }
+            if (stockCustomizationMaskActive())
+            {
+                binding.group->material_ = stockCustomizationMaskMaterial(
+                    binding.original, nodeless, binding.trackSide != 0 );
                 continue;
             }
             Moo::ComplexEffectMaterialPtr material = alpha != 1.f && binding.alpha ?

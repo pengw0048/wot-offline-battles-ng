@@ -94,6 +94,167 @@ def sdk_edits(sdk_root, edit):
     bitmap_lifetime_edits(sdk_root, edit)
     tracer_merge_edits(sdk_root, edit)
     d3d9_mask_state_edits(sdk_root, edit)
+    d3d9_mask_filter_state_edits(sdk_root, edit)
+    image_mip_decode_edits(sdk_root, edit)
+
+
+RAW_IMAGE_DECODE_BEFORE = '''bool RawImage::Decode(ImageData* pdest, CopyScanlineFunc copyScanline, void* arg) const
+{
+    ImagePlane  splane, dplane;
+    ImageFormat format           = Data.GetFormat();
+    unsigned    formatPlaneCount = ImageData::GetFormatPlaneCount(format);
+    unsigned    planeCount       = Data.GetPlaneCount(),
+                destPlaneCount   = pdest->GetPlaneCount();
+    unsigned    i;
+
+    if (Data.IsHWSpecific())
+    {
+        // HW-Specific formats are handled as a unit; they must have\x20
+        // have matching size.
+        SF_ASSERT((Data.GetFormatNoConv() == pdest->GetFormat()) &&
+                  (Data.GetSize() == pdest->GetSize()) &&
+                  (planeCount == destPlaneCount));
+
+        for (i = 0; i< planeCount; i++)
+        {
+            Data.GetPlane(i, &splane);
+            pdest->GetPlane(i, &dplane);
+            memcpy(dplane.pData, splane.pData, splane.DataSize);
+        }
+        return true;
+    }
+
+    // Generic format have looser constraints as they support data
+    // conversion by relying on the provided copyScanline function.
+    SF_ASSERT(//(Data.GetFormatNoConv() == pdest->GetFormatNoConv()) && ???
+              (Data.GetWidth() <= pdest->GetWidth()) &&
+              (Data.GetHeight() <= pdest->GetHeight()) &&
+              (formatPlaneCount <= destPlaneCount));
+\x20\x20\x20\x20
+    planeCount = Alg::Min(planeCount, destPlaneCount);
+\x20\x20\x20\x20\x20\x20\x20\x20
+    for (i = 0; i< planeCount; i++)
+    {
+        unsigned planeIndex    = planeCount % formatPlaneCount;
+
+        // If there are separate mipmaps, or they only have one level, do a simple scanline copy.
+        if ( (Data.HasSeparateMipmaps() ||  Data.GetMipLevelCount() == 1) &&
+             (pdest->HasSeparateMipmaps() || pdest->GetMipLevelCount() == 1) )
+        {
+            Data.GetPlane(i, &splane);
+            pdest->GetPlane(i, &dplane);
+
+            // Get number of scan-lines. Typically this is the same
+            // as Height but is different for compressed formats.
+            UByte*   psource = splane.pData;
+            UByte*   pdestin = dplane.pData;
+            UPInt    scanlineCount = ImageData::GetFormatScanlineCount(format, splane.Height, planeIndex);
+            unsigned linesize = (splane.Width * Data.GetBitsPerPixel()) / 8;
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20
+            for (UPInt j = 0; j < scanlineCount; j++, psource += splane.Pitch, pdestin += dplane.Pitch)
+                copyScanline(pdestin, psource, linesize, Data.pPalette.GetPtr(), arg);
+        }
+        else
+        {
+            UByte*   psource = 0;
+            UByte*   pdestin = 0;
+
+            // There mip maps are all contained on one plane, copy all of them to the destination plane.
+            for (unsigned level =0; level < Alg::Min(Data.LevelCount,pdest->LevelCount); level++ )
+            {
+                if ( Data.HasSeparateMipmaps() )
+                {
+                    Data.GetPlane(planeIndex + formatPlaneCount * level, &splane);
+                    psource = psource ? psource : splane.pData;
+                }
+                else
+                {
+                    Data.GetPlane(formatPlaneCount * level + i, &splane);
+                    psource = splane.pData;
+                }
+
+                if ( pdest->HasSeparateMipmaps() )
+                {
+                    pdest->GetPlane(planeIndex + formatPlaneCount * level, &dplane);
+                    pdestin = pdestin ? pdestin : dplane.pData;
+                }
+                else
+                {
+                    pdest->GetPlane(formatPlaneCount * level + i, &dplane);
+                    pdestin = dplane.pData;
+                }
+
+                // Get number of scan-lines. Typically this is the same
+                // as Height but is different for compressed formats.
+                UPInt    scanlineCount = ImageData::GetFormatScanlineCount(format, splane.Height, planeIndex);
+
+                unsigned linesize = (splane.Width * Data.GetBitsPerPixel()) / 8;
+                for (UPInt j = 0; j < scanlineCount; j++, psource += splane.Pitch, pdestin += dplane.Pitch)
+                    copyScanline(pdestin, psource, linesize, Data.pPalette.GetPtr(), arg);
+            }
+        }
+    }
+    return true;
+}'''
+
+RAW_IMAGE_DECODE_AFTER = '''bool RawImage::Decode(ImageData* pdest, CopyScanlineFunc copyScanline, void* arg) const
+{
+    const ImageFormat format = Data.GetFormat();
+    const unsigned formatPlaneCount = ImageData::GetFormatPlaneCount(format);
+    if (Data.IsHWSpecific())
+    {
+        const unsigned planeCount = Data.GetPlaneCount();
+        SF_ASSERT((Data.GetFormatNoConv() == pdest->GetFormat()) &&
+                  (Data.GetSize() == pdest->GetSize()) &&
+                  (planeCount == pdest->GetPlaneCount()));
+        for (unsigned i = 0; i < planeCount; ++i)
+        {
+            ImagePlane splane, dplane;
+            Data.GetPlane(i, &splane);
+            pdest->GetPlane(i, &dplane);
+            memcpy(dplane.pData, splane.pData, splane.DataSize);
+        }
+        return true;
+    }
+
+    // Each mip owns its pointer and pitch, whether levels share CPU memory
+    // or D3D LockRect returned independent allocations.
+    SF_ASSERT(formatPlaneCount <= ImageData::GetFormatPlaneCount(pdest->GetFormat()));
+    const unsigned levels = Alg::Min<unsigned>(Data.LevelCount, pdest->LevelCount);
+    const unsigned baseFormat = unsigned(format) & ImageFormat_Mask;
+    const bool blockCompressed = baseFormat == Image_DXT1 ||
+        baseFormat == Image_DXT3 || baseFormat == Image_DXT5;
+    for (unsigned level = 0; level < levels; ++level)
+    {
+        for (unsigned plane = 0; plane < formatPlaneCount; ++plane)
+        {
+            ImagePlane splane, dplane;
+            Data.GetMipLevelPlane(level, plane, &splane);
+            pdest->GetMipLevelPlane(level, plane, &dplane);
+            SF_ASSERT(splane.Width <= dplane.Width && splane.Height <= dplane.Height);
+            const UPInt rows = ImageData::GetFormatScanlineCount(format, splane.Height, plane);
+            // DXT rows contain whole blocks even for mips narrower than four
+            // texels. Other copy functions consume pixel payload bytes.
+            const UPInt rowBytes = blockCompressed ?
+                ImageData::GetFormatPitch(format, splane.Width, plane) :
+                (splane.Width * ImageData::GetFormatBitsPerPixel(format, plane)) / 8;
+            const UByte* source = splane.pData;
+            UByte* destination = dplane.pData;
+            for (UPInt row = 0; row < rows; ++row)
+            {
+                copyScanline(destination, source, rowBytes, Data.pPalette.GetPtr(), arg);
+                source += splane.Pitch;
+                destination += dplane.Pitch;
+            }
+        }
+    }
+    return true;
+}'''
+
+
+def image_mip_decode_edits(sdk_root, edit):
+    edit(sdk_root / 'Src/Render/Render_Image.cpp', RAW_IMAGE_DECODE_BEFORE,
+         RAW_IMAGE_DECODE_AFTER, 'RawImage per-mip allocation and block-row ownership')
 
 
 def d3d9_mask_state_edits(sdk_root, edit):
@@ -108,6 +269,107 @@ def d3d9_mask_state_edits(sdk_root, edit):
          '    pDevice->SetRenderState(D3DRS_STENCILWRITEMASK, 0xFF);\n\n'
          '    // Blending render states.\n',
          'D3D9 HAL scene stencil ownership')
+
+
+def d3d9_mask_filter_state_edits(sdk_root, edit):
+    # cacheAsBitmap on a mask temporarily enables color writes on its source
+    # target. Restore the parent's stencil-only contract before compositing,
+    # not after the cached mask has already painted its red fill on screen.
+    seam = '    // Now actually draw the filtered sub-scene to the target below.\n'
+    edit(sdk_root / 'Src/Render/D3D9/D3D9_HAL.cpp', seam,
+         '    // The parent mask owns stencil writes; its final composite must not write color.\n'
+         '    if ( HALState & HS_DrawingMask )\n'
+         '        pDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0);\n\n' + seam,
+         'D3D9 uncached mask filter final-composite color ownership')
+
+
+PROTOCOL_IMAGE_COPY_BEFORE = '''\t\tDX::Texture* tex = static_cast<DX::Texture*>(pTex->pTexture());
+\t\tif (tex)
+\t\t{
+\t\t\tD3DLOCKED_RECT rect;
+\t\t\tif (D3D_OK == tex->LockRect(0, &rect, NULL, D3DLOCK_READONLY))
+\t\t\t{
+\t\t\t\tRender::ImageData imgData;
+\t\t\t\tif (pimage->GetImageData(&imgData))
+\t\t\t\t{
+\t\t\t\t\tRender::ImagePlane imgPlane0;
+\t\t\t\t\timgData.GetPlane(0, &imgPlane0);
+\t\t\t\t\tmemcpy(imgPlane0.pData, rect.pBits, DX::surfaceSize(width, height, pTex->format()));
+\t\t\t\t\tpimage->AddRef();
+\t\t\t\t}
+\t\t\t\ttex->UnlockRect(0);
+\t\t\t}
+\t\t}
+
+\t\treturn pimage;'''
+PROTOCOL_IMAGE_COPY_PREVIOUS = PROTOCOL_IMAGE_COPY_BEFORE.replace(
+    '\t\tif (tex)', '\t\tbool copied = false;\n\t\tif (tex && pimage)').replace(
+    '\t\t\t\t\tpimage->AddRef();', '\t\t\t\t\tpimage->AddRef();\n\t\t\t\t\tcopied = true;').replace(
+    '\t\treturn pimage;', '\t\treturn copied ? pimage.GetPtr() : NULL;')
+PROTOCOL_IMAGE_COPY_AFTER = '''\t\tDX::Texture* tex = static_cast<DX::Texture*>(pTex->pTexture());
+\t\tbool copied = false;
+\t\tif (tex && pimage)
+\t\t{
+\t\t\tD3DLOCKED_RECT rect;
+\t\t\tif (D3D_OK == tex->LockRect(0, &rect, NULL, D3DLOCK_READONLY))
+\t\t\t{
+\t\t\t\tRender::ImageData imgData;
+\t\t\t\tif (pimage->GetImageData(&imgData))
+\t\t\t\t{
+\t\t\t\t\tRender::ImagePlane imgPlane0;
+\t\t\t\t\timgData.GetPlane(0, &imgPlane0);
+\t\t\t\t\t// D3D locks and RawImage planes own independent row strides.
+\t\t\t\t\t// Compressed formats advance by block rows, not texel rows.
+\t\t\t\t\tconst UPInt rowBytes = Render::ImageData::GetFormatPitch(fmt, width);
+\t\t\t\t\tconst UPInt rows = Render::ImageData::GetFormatScanlineCount(fmt, height);
+\t\t\t\t\tif (rect.pBits && imgPlane0.pData && width && height && rows && rowBytes &&
+\t\t\t\t\t\trect.Pitch > 0 && static_cast<UPInt>(rect.Pitch) >= rowBytes &&
+\t\t\t\t\t\timgPlane0.Width == width && imgPlane0.Height == height &&
+\t\t\t\t\t\timgPlane0.Pitch >= rowBytes && imgPlane0.DataSize >= rowBytes &&
+\t\t\t\t\t\trows - 1 <= (imgPlane0.DataSize - rowBytes) / imgPlane0.Pitch &&
+\t\t\t\t\t\trows - 1 <= (SF_MAX_UPINT - rowBytes) / static_cast<UPInt>(rect.Pitch))
+\t\t\t\t\t{
+\t\t\t\t\t\tconst UByte* source = static_cast<const UByte*>(rect.pBits);
+\t\t\t\t\t\tfor (UPInt row = 0; row < rows; ++row)
+\t\t\t\t\t\t\tmemcpy(imgPlane0.pData + row * imgPlane0.Pitch,
+\t\t\t\t\t\t\t\tsource + row * static_cast<UPInt>(rect.Pitch), rowBytes);
+\t\t\t\t\t\tpimage->AddRef();
+\t\t\t\t\t\tcopied = true;
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\ttex->UnlockRect(0);
+\t\t\t}
+\t\t}
+
+\t\treturn copied ? pimage.GetPtr() : NULL;'''
+
+
+def protocol_image_copy_edits(engine_root, edit):
+    path = engine_root / 'lib/scaleform/loader.cpp'
+    upgrade(edit, path, PROTOCOL_IMAGE_COPY_PREVIOUS, PROTOCOL_IMAGE_COPY_AFTER,
+            'protocol image pitched rows upgrade')
+    edit(path, PROTOCOL_IMAGE_COPY_BEFORE, PROTOCOL_IMAGE_COPY_AFTER,
+         'protocol image pitched rows and retained ownership')
+
+
+def protocol_camouflage_image_edits(engine_root, edit):
+    path = engine_root / 'lib/scaleform/loader.cpp'
+    # The public archive uses Loader.hpp; prepared case-sensitive trees
+    # normalize that filename and its include to loader.hpp.
+    try:
+        edit(path, '#include "Loader.hpp"',
+             '#include "Loader.hpp"\n#include "stock_flash_camouflage_loader.hpp"',
+             'original generated camouflage image producer include')
+    except ValueError:
+        edit(path, '#include "loader.hpp"',
+             '#include "loader.hpp"\n#include "stock_flash_camouflage_loader.hpp"',
+             'prepared generated camouflage image producer include')
+    before = ('\tRender::Image *BWToGFxImageLoader::LoadProtocolImage(const GFx::ImageCreateInfo& info, const GString& url)\n'
+              '\t{\n\t\tBW_GUARD;')
+    edit(path, before, before + '\n'
+         '\t\tif (wot::flash_camouflage::hasProtocol(static_cast<const char*>(url)))\n'
+         '\t\t\treturn loadStockFlashCamouflage(static_cast<const char*>(url));',
+         'original generated camouflage image producer dispatch')
 
 
 def html_default_format_edits(sdk_root, edit):
@@ -924,16 +1186,8 @@ def patch_engine(engine_root, sdk_root):
          '\t\t\taudio->GetRenderer()->SetMasterVolume(mute ? 0.0f : 1.0f);\n\t\t}',
          'abstract audio owner mute')
 
-    # The upstream raw-pointer return outlives its local Ptr only after a
-    # successful copy added a reference. Failed texture locks must return NULL.
-    loader = engine_root / 'lib/scaleform/loader.cpp'
-    edit(loader, '\t\tif (tex)\n', '\t\tbool copied = false;\n\t\tif (tex && pimage)\n',
-         'protocol image allocation guard')
-    edit(loader, '\t\t\t\t\tpimage->AddRef();',
-         '\t\t\t\t\tpimage->AddRef();\n\t\t\t\t\tcopied = true;',
-         'protocol image retained ownership')
-    edit(loader, '\t\treturn pimage;', '\t\treturn copied ? pimage.GetPtr() : NULL;',
-         'failed protocol image ownership')
+    protocol_image_copy_edits(engine_root, edit)
+    protocol_camouflage_image_edits(engine_root, edit)
 
     sdk_edits(sdk_root, edit)
     for path, source in changes.items():

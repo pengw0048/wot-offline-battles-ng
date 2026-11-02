@@ -2,6 +2,7 @@
 #define STOCK_SCALEFORM_RENDER_THREAD_HPP
 
 #include "stock_d3d9_render_thread.hpp"
+#include "stock_flash_overlay_target.hpp"
 
 namespace BW { namespace ScaleformBW {
 

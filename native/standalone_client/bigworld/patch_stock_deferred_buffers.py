@@ -151,6 +151,28 @@ def apply(root):
          '                        m_dynamicShadowMapSize, m_dynamicShadowMapSize);')
     edit(cpp, '        m_dynamicShadowMapAtlas = NULL;',
          '        m_dynamicShadowMapAtlas = NULL;\n        m_stockShadowDepthBiases.clear();')
+    edit(cpp, '    void DynamicShadow::deleteUnmanagedObjects()\n    {',
+         '    void DynamicShadow::deleteUnmanagedObjects()\n    {\n'
+         '        // Legacy D3DX SetTexture retains the DEFAULT-pool atlas.\n'
+         '        if (m_fillScreenMap && m_fillScreenMap->pEffect())\n'
+         '        {\n'
+         '            ID3DXEffect* effect = m_fillScreenMap->pEffect()->pEffect();\n'
+         '            if (effect) effect->SetTexture("g_shadowMapAtlas", NULL);\n'
+         '        }')
+    edit('lib/moo/semi_dynamic_shadow.cpp',
+         'void SemiDynamicShadow::Impl::deleteUnmanagedObjects()\n{\n    BW_GUARD;',
+         'void SemiDynamicShadow::Impl::deleteUnmanagedObjects()\n{\n    BW_GUARD;\n'
+         '    // Retire the legacy receiver COM references before their targets.\n'
+         '    if (m_receiveEM && m_receiveEM->pEffect())\n'
+         '    {\n'
+         '        ID3DXEffect* effect = m_receiveEM->pEffect()->pEffect();\n'
+         '        if (effect)\n'
+         '        {\n'
+         '            const char* inputs[] = {"g_indirectionMapProj", "g_indirectionMapTc",\n'
+         '                "g_shadowMapHeight", "g_shadowMapLow"};\n'
+         '            for (const char* input : inputs) effect->SetTexture(input, NULL);\n'
+         '        }\n'
+         '    }')
     edit(cpp, '        if (m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)',
          '        if (numSplit == 0 || m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)')
     edit(cpp, '            effect->SetFloat("g_splitCount", (float)m_shadowQuality.m_numSplit);',
@@ -320,6 +342,18 @@ sampler stockLinearDepthSampler = sampler_state
     MINFILTER = POINT; MAGFILTER = POINT; MIPFILTER = NONE;
     ADDRESSU = CLAMP; ADDRESSV = CLAMP;
 };''', 'texture stockLinearDepthMap : HierarchicalZMap;')
+    edit(reader, 'float4 stockSceneDRR : DRRParams;',
+         'float4 stockSceneDRR : DRRParams;\nfloat4 stockSceneTAA : TAAParams;')
+    edit(reader, '\tfloat3 dir_l = lerp(g_cameraDirs[0], g_cameraDirs[1], uv.y).xyz;',
+         '\t// Original VS0 keeps the ray at the raster point while its texture\n'
+         '\t// UV receives FSQuadTCAdjust. Legacy i.tc/SC2TC already contain that\n'
+         '\t// half texel: remove it and temporal jitter from the ray only.\n'
+         '\tuv -= stockSceneTAA.xy;\n'
+         '\tfloat3 dir_l = lerp(g_cameraDirs[0], g_cameraDirs[1], uv.y).xyz;',
+         'stockSceneTAA.xy')
+    # Upgrade already-patched resources as well as fresh public trees.
+    edit(reader, '\tuv -= stockSceneTAA.xy;',
+         '\tuv -= stockSceneTAA.xy + .5f * stockSceneTAA.zw;')
     text = pending.get(reader, (root / reader).read_text(encoding='latin1'))
     text = text.replace('unpackFloatFromVec3(tex2D(g_GBufferChannel0Sml, uv).rgb)',
                         'tex2D(stockLinearDepthSampler, uv).r')
@@ -346,8 +380,78 @@ sampler stockLinearDepthSampler = sampler_state
     shadow = 'shaders/shadow/dynamic_resolve.fx'
     edit(shadow, 'float\t\tg_splitCount;',
          'float\t\tg_splitCount;\nfloat stockShadowDepthBiases[MaxNumSplits];')
-    edit(shadow, '\t\tsmTC.z,',
-         '\t\tsmTC.z - stockShadowDepthBiases[split],')
+    edit(shadow, '#include "read_g_buffer.fxh"',
+         '#include "read_g_buffer.fxh"\n#include "stock_directional_shadow.fxh"')
+    text = pending.get(shadow, (root / shadow).read_text(encoding='latin1'))
+    start = text.index('float rotated_PCF_filter(')
+    end = text.index('//-- Sampling appropriate split.', start)
+    if 'stockShadowReceiverDepth(' not in text[start:end]:
+        text = text[:start] + '''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
+    float zReceiver, float2 depthGradient, int split, const int samplesCount)
+{
+    // Splits occupy a horizontal atlas, not a square 2x2 allocation.
+    float2 dimensions = float2(g_dynamicShadowMapResolution * g_splitCount,
+                               g_dynamicShadowMapResolution);
+    float2 texel = 1.f / dimensions;
+    float2 lower = float2(split / g_splitCount, 0.f) + .5f * texel;
+    float2 upper = float2((split + 1.f) / g_splitCount, 1.f) - .5f * texel;
+    float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+    float2 noise = tex2D(noiseMapSampler, noiseUV).rg;
+    float2x2 rotation = {noise.r, -noise.g, noise.g, noise.r};
+    float blurFactor = lerp(2.f, 1.f, split / g_splitCount);
+    float sum = 0.f;
+    [unroll]
+    for (int i = 0; i < samplesCount; ++i)
+    {
+        float2 coords = mul(poissonDisk[i], rotation);
+        float2 uv = clamp(shadowUV + coords * (.5f * texel) * blurFactor, lower, upper);
+        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);
+    }
+    return sum / samplesCount;
+}
+
+''' + text[end:]
+    pending[shadow] = text
+    edit(shadow, 'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);',
+         'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);\n'
+         '\tfloat3 worldDx = ddx(wPos);\n\tfloat3 worldDy = ddy(wPos);',
+         'float3 worldDx = ddx(wPos);')
+    edit(shadow, 'float3 smTC = sp.xyz / sp.w;',
+         'float3 smTC = sp.xyz / sp.w;\n'
+         '\tfloat3 shadowDx = mul(float4(worldDx, 0.f), g_textureMatrices[split]).xyz;\n'
+         '\tfloat3 shadowDy = mul(float4(worldDy, 0.f), g_textureMatrices[split]).xyz;\n'
+         '\tfloat2 depthGradient = stockShadowDepthGradient(shadowDx, shadowDy);',
+         'float2 depthGradient = stockShadowDepthGradient(shadowDx, shadowDy);')
+    edit(shadow, '\t\tsmTC.z,', '\t\tsmTC.z - stockShadowDepthBiases[split],')
+    edit(shadow, '\t\tsplit / g_splitCount,', '\t\tdepthGradient,\n\t\tsplit,')
+
+    semi = 'shaders/shadow/semi_resolve.fx'
+    edit(semi, '#include "read_g_buffer.fxh"',
+         '#include "read_g_buffer.fxh"\n#include "stock_directional_shadow.fxh"')
+    text = pending.get(semi, (root / semi).read_text(encoding='latin1'))
+    # Original asm.receive writes BLUE, which the original SUN consumes with
+    # RED dynamic coverage. GREEN is not a separate terrain-shadow input.
+    text = re.sub(r'z > (tex2D\([^;]+?\)\.rg)',
+                  r'stockShadowStaticCoverage(\1, z)', text)
+    text = text.replace('return float4(0, t, 0);', 'return float4(0, 0, t.x, 0);')
+    text = text.replace('COLORWRITEENABLE = GREEN | BLUE;', 'COLORWRITEENABLE = BLUE;')
+    pending[semi] = text
+    helper = 'shaders/std_effects/shadow_helpers.fxh'
+    text = (root / helper).read_text(encoding='latin1')
+    if 'stockShadowCombinedCoverage(' not in text:
+        start = text.index('\t\t// Channels: r - dynamic; g - semi terrain; b - semi object')
+        end = text.index('\n\t}', start)
+        text = text[:start] + '''\t\t// Original #1513 SSSM: RED dynamic coverage, BLUE static coverage.
+\t\thalf3 shadows = tex2D(g_ssShadowMapSml, tc).rgb;
+\t\treturn min(1.0h - stockShadowCombinedCoverage(shadows.r, shadows.b), backedShadow);''' + text[end:]
+        text = '#include "stock_directional_shadow.fxh"\n' + text
+    # EffectIncludes resolves nested includes relative to the main effect,
+    # not to this helper (e.g. the water effect lives in shaders/water).
+    text = text.replace('#include "stock_directional_shadow.fxh"',
+                        '#include "shaders/shadow/stock_directional_shadow.fxh"')
+    pending[helper] = text
 
     ssao = 'shaders/ssao/ssao.fx'
     edit(ssao, 'texture g_depth;', 'texture g_depth;\nfloat2 stockDepthUVScale = float2(1.f,1.f);',
@@ -428,6 +532,8 @@ sampler stockLinearDepthSampler = sampler_state
     for relative, text in pending.items():
         (root / relative).write_text(text,encoding='latin1')
     (root / 'shaders/std_effects/stock_deferred_legacy_decal.fxh').write_text(legacy)
+    (root / 'shaders/shadow/stock_directional_shadow.fxh').write_text(
+        Path(__file__).with_name('stock_directional_shadow.fxh').read_text())
 
 
 if __name__ == '__main__':

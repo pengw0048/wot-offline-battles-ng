@@ -445,6 +445,39 @@ def render_job_ownership(text):
         '\t\t\t};')
 
 
+def overlay_surface_ownership(text):
+    if 'struct DisplayJob' in text:
+        text = text.replace('\t\tGFx::MovieDisplayHandle handle;',
+                            '\t\tGFx::MovieDisplayHandle handle;\n\t\tbool overlay;')
+        text = text.replace('\tjob->renderer = pRenderer;',
+                            '\tjob->renderer = pRenderer;\n\tjob->overlay = overlay;')
+    if any(marker in text for marker in ('struct GlobalMoviesJob', 'struct DisplayJob', 'struct TextDisplayJob')):
+        overlay = 'true' if 'struct GlobalMoviesJob' in text else 'overlay'
+        indent = '\t\t\t\t' if 'struct GlobalMoviesJob' in text else '\t\t\t'
+        frame = indent + 'if (!renderer->BeginFrame()) return;'
+        scope = (indent + 'StockFlashOverlayTarget::Scope target(Manager::instance().overlayTarget(),\n' +
+                 indent + '\tstatic_cast<Render::D3D9::HAL*>(renderer->GetHAL()), Moo::rc().device(), ' + overlay + ');\n' +
+                 indent + 'if (!target) return;\n')
+        text = text.replace(frame, scope + frame)
+    text = text.replace('auto drain = []() {};', 'auto drain = [this]() { overlayTarget_.reset(); };')
+    return text.replace('auto job = [hal]() { hal->PrepareForReset(); };',
+                        'auto job = [hal, this]() { overlayTarget_.reset(); hal->PrepareForReset(); };')
+
+
+def patch_overlay_lifecycle(root):
+    path = Path(root) / 'lib/scaleform/manager.hpp'
+    text = path.read_text()
+    for before, after in (
+            ('#include "loader.hpp"', '#include "loader.hpp"\n#include "stock_flash_overlay_target.hpp"'),
+            ('\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }',
+             '\t\tStockFlashOverlayTarget& overlayTarget() { return overlayTarget_; }\n'
+             '\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }'),
+            ('\t\tRender::D3D9::TextureManager *pTexMgr_;',
+             '\t\tRender::D3D9::TextureManager *pTexMgr_;\n\t\tStockFlashOverlayTarget overlayTarget_;')):
+        text = replace_once(text, before, after, 'Scaleform overlay surface lifecycle')
+    path.write_text(text)
+
+
 def patch(root, scaleform_root):
     # Display jobs rely on the D3D9 HAL accepting the render thread at init.
     if HAL_CONTRACT not in (Path(scaleform_root) / HAL_HEADER).read_text():
@@ -455,13 +488,15 @@ def patch(root, scaleform_root):
         text = path.read_text()
         for old, new in edits:
             viewport_ordered = viewport_before_capture(new)
-            ordered = render_job_ownership(viewport_ordered)
+            render_owned = render_job_ownership(viewport_ordered)
+            ordered = overlay_surface_ownership(render_owned)
             # Upgrade the preceding render-thread adapter in cached SDK trees.
-            for previous in (new, viewport_ordered):
+            for previous in (new, viewport_ordered, render_owned):
                 if ordered != previous and previous in text:
                     text = replace_once(text, previous, ordered, relative)
             text = replace_once(text, old, ordered, relative)
         path.write_text(text)
+    patch_overlay_lifecycle(root)
 
 
 def patch_reset_lifecycle(root):

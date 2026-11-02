@@ -253,6 +253,7 @@ private:
   StockEffectSharedContext &context_;
   StockEffectReflection reflection_;
   std::unique_ptr<StockDx9EffectMaterial> material_;
+  bool definitionDefaultReads_ = true;
   // Filled once by initialise(); handles point into this contiguous storage.
   std::vector<Destination> destinations_;
   std::size_t first_resource_ = 0;
@@ -280,7 +281,8 @@ StockEffectAdapter::StockEffectAdapter(
       context_owner_(std::move(context)), context_(*context_owner_),
       reflection_(reflection),
       material_(
-          new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)) {
+          new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)),
+      definitionDefaultReads_(false) {
   initialise();
 }
 StockEffectAdapter::StockEffectAdapter(const StockEffectAdapter &source)
@@ -289,7 +291,7 @@ StockEffectAdapter::StockEffectAdapter(const StockEffectAdapter &source)
       reflection_(source.reflection_),
       material_(new StockDx9EffectMaterial(*source.material_,
                                            context_.impl_->uniforms)),
-      technique_(source.technique_) {
+      definitionDefaultReads_(false), technique_(source.technique_) {
   initialise();
 }
 StockEffectAdapter::StockEffectAdapter(
@@ -458,9 +460,58 @@ HRESULT StockEffectAdapter::read(D3DXHANDLE parameter, void *data, UINT size,
       std::memcpy(data, annotation->value.data(), size);
     return S_OK;
   }
-  return reflection_.default_value(parameter_number(parameter), data, size)
-             ? S_OK
-             : E_INVALIDARG;
+  // Reflection owns immutable Definition defaults. D3DX material callers,
+  // however, read the Binding they just changed, not that default template.
+  const StockEffectUniform* uniform = nullptr;
+  const std::vector<unsigned char>* bytes = nullptr;
+  std::shared_ptr<StockEffectUniformStorage> storage;
+  if (const auto* target = destination(parameter)) {
+    if (target->resource) return E_INVALIDARG;
+    uniform = &definition_->uniform_buffers[target->owner].uniforms[target->member];
+    storage = context_.impl_->uniforms.shared(target->declaration);
+  } else if (material_ && !definitionDefaultReads_) {
+    const auto* reference = reflection_.parameter_reference(parameter_number(parameter));
+    if (!reference || (reference->kind != StockEffectParameterKind::uniform &&
+        reference->kind != StockEffectParameterKind::uniform_buffer)) return E_INVALIDARG;
+    const auto& buffer = definition_->uniform_buffers[reference->owner];
+    if (reference->kind == StockEffectParameterKind::uniform)
+      uniform = &buffer.uniforms[reference->member];
+    if (buffer.name == "$Selection") bytes = &material_->binding().selection();
+    else storage = material_->binding().uniform_buffer(reference->owner);
+  } else {
+    // Definition adapters and internal provider default-property reads keep
+    // the original immutable contract, even when their template defaults
+    // differ from a previously registered Binding-pool declaration.
+    return reflection_.default_value(parameter_number(parameter), data, size)
+               ? S_OK : E_INVALIDARG;
+  }
+  if (storage) bytes = &storage->bytes();
+  if (!bytes) return E_INVALIDARG;
+  const std::size_t offset = uniform ? uniform->byte_offset : 0;
+  if (uniform && uniform->element_padding && uniform->elements > 1) {
+    const auto& type = definition_->types[uniform->type_index];
+    const std::uint64_t elementSize = type.byte_size;
+    const std::uint64_t stride = elementSize + uniform->element_padding;
+    if (!elementSize || size > elementSize * uniform->elements) return E_INVALIDARG;
+    const std::uint64_t last = size ? (size - 1) / elementSize : 0;
+    const std::uint64_t end = offset + last * stride + (size ? (size - 1) % elementSize + 1 : 0);
+    if (end > bytes->size()) return E_INVALIDARG;
+    // SetValue and typed array setters accept tightly packed logical elements;
+    // their matching getters skip the UBB's inter-element storage padding.
+    auto* output = static_cast<unsigned char*>(data);
+    std::size_t copied = 0;
+    while (copied < size) {
+      const std::size_t count = (std::min)(std::size_t(elementSize), std::size_t(size) - copied);
+      std::memcpy(output + copied, bytes->data() + offset + (copied / elementSize) * stride, count);
+      copied += count;
+    }
+  } else {
+    // Preserve the original caller-selected byte width and enclosing UBB bound
+    // for scalar/vector/matrix and whole-buffer reads.
+    if (offset > bytes->size() || size > bytes->size() - offset) return E_INVALIDARG;
+    if (size) std::memcpy(data, bytes->data() + offset, size);
+  }
+  return S_OK;
 }
 bool StockEffectAdapter::update_resources() {
   capture_error_.clear();
@@ -957,12 +1008,18 @@ HRESULT STDMETHODCALLTYPE StockEffectAdapter::GetTexture(
   if (!texture)
     return E_POINTER;
   *texture = nullptr;
-  const auto *reference =
-      reflection_.parameter_reference(parameter_number(parameter));
-  if (!material_ || !reference ||
-      reference->kind != StockEffectParameterKind::resource_view)
-    return E_INVALIDARG;
-  *texture = material_->texture(reference->owner);
+  if (!material_) return E_INVALIDARG;
+  std::size_t index;
+  if (const auto* target = destination(parameter)) {
+    if (!target->resource) return E_INVALIDARG;
+    index = target->owner;
+  } else {
+    const auto* reference = reflection_.parameter_reference(parameter_number(parameter));
+    if (!reference || reference->kind != StockEffectParameterKind::resource_view)
+      return E_INVALIDARG;
+    index = reference->owner;
+  }
+  *texture = material_->texture(index);
   if (*texture)
     (*texture)->AddRef();
   return S_OK;

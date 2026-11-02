@@ -105,9 +105,29 @@ template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
     }
     return ctx.r;
 }
+static HRESULT reportResult(const char* name, HRESULT result) {
+    // Device execution is serialized on its owner. Keep one record per failure
+    // kind, with a fixed bound, so a rejected draw cannot flood the log.
+    struct Failure { const char* name; HRESULT result; };
+    static Failure failures[64]; static unsigned count;
+    if (FAILED(result) && count < 64) {
+        for (unsigned i = 0; i < count; ++i)
+            if (failures[i].result == result && !strcmp(failures[i].name, name)) return result;
+        failures[count++] = {name, result};
+        if (FILE* log = reportLog()) {
+            fprintf(log, "device_failure operation=%s hr=%08lx thread=%lu\n",
+                name, static_cast<unsigned long>(result), GetCurrentThreadId());
+            fflush(log);
+        }
+    }
+    return result;
+}
 template<class F> HRESULT async(F&& f, const char* name) {
-    if (onMain()) { post(std::forward<F>(f)); return D3D_OK; }
-    return sync([&]() -> HRESULT { f(); return D3D_OK; }, name);
+    if (onMain() && !mainOwnsDevice()) {
+        post([call = std::forward<F>(f), name]() mutable { reportResult(name, call()); });
+        return D3D_OK; // Admission only; execution failures are recorded above.
+    }
+    return sync([&]() -> HRESULT { return reportResult(name, f()); }, name);
 }
 
 // Retirement: a wrapper's real object is released after every command that may still use it.
@@ -327,7 +347,7 @@ HRESULT WDevice::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* p) { *p = 
 HRESULT WDevice::GetDirect3D(IDirect3D9** o) { *o = g_d3d; g_d3d->AddRef(); return D3D_OK; }
 
 // ------------------------------------------------------------------ device: recorded state
-#define ASYNC(name, body) rt::async([=]() { body; }, name)
+#define ASYNC(name, body) rt::async([=]() -> HRESULT { return body; }, name)
 static void markQueuedUse(IDirect3DBaseTexture9* t) {
     if (t && rt::isWrapper(t) && t->GetType() == D3DRTYPE_TEXTURE) InterlockedExchange(&static_cast<WTexture*>(static_cast<IDirect3DTexture9*>(t))->queuedUse, 1);
 }
@@ -377,8 +397,8 @@ HRESULT WDevice::SetSoftwareVertexProcessing(BOOL b) { auto r = REAL; return ASY
 #define CONSTS(Name, T, W) \
 HRESULT WDevice::Name(UINT s, const T* v, UINT c) { \
     auto r = REAL; \
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->Name(s, v, c); }, #Name); \
-    rt::postData(v, c * W, [r, s, c](const uint8_t* d) { r->Name(s, reinterpret_cast<const T*>(d), c); }); return D3D_OK; }
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult(#Name, r->Name(s, v, c)); }, #Name); \
+    rt::postData(v, c * W, [r, s, c](const uint8_t* d) { rt::reportResult(#Name, r->Name(s, reinterpret_cast<const T*>(d), c)); }); return D3D_OK; }
 CONSTS(SetVertexShaderConstantF, float, 16) CONSTS(SetVertexShaderConstantI, int, 16) CONSTS(SetVertexShaderConstantB, BOOL, 4)
 CONSTS(SetPixelShaderConstantF, float, 16) CONSTS(SetPixelShaderConstantI, int, 16) CONSTS(SetPixelShaderConstantB, BOOL, 4)
 HRESULT WDevice::SetStreamSource(UINT n, IDirect3DVertexBuffer9* b, UINT o, UINT s) {
@@ -419,8 +439,8 @@ HRESULT WDevice::SetLight(DWORD i, const D3DLIGHT9* l) { auto r = REAL; D3DLIGHT
 HRESULT WDevice::LightEnable(DWORD i, BOOL e) { auto r = REAL; return ASYNC("LightEnable", r->LightEnable(i, e)); }
 HRESULT WDevice::Clear(DWORD n, const D3DRECT* rects, DWORD f, D3DCOLOR c, float z, DWORD s) {
     auto r = REAL; if (!rects) n = 0;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->Clear(n, rects, f, c, z, s); }, "Clear");
-    rt::postData(rects, n * sizeof(D3DRECT), [r, n, f, c, z, s](const uint8_t* d) { r->Clear(n, n ? reinterpret_cast<const D3DRECT*>(d) : nullptr, f, c, z, s); });
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("Clear", r->Clear(n, rects, f, c, z, s)); }, "Clear");
+    rt::postData(rects, n * sizeof(D3DRECT), [r, n, f, c, z, s](const uint8_t* d) { rt::reportResult("Clear", r->Clear(n, n ? reinterpret_cast<const D3DRECT*>(d) : nullptr, f, c, z, s)); });
     return D3D_OK;
 }
 HRESULT WDevice::BeginScene() { auto r = REAL; return ASYNC("BeginScene", r->BeginScene()); }
@@ -433,17 +453,17 @@ static UINT vertsFor(D3DPRIMITIVETYPE t, UINT c) {
 }
 HRESULT WDevice::DrawPrimitiveUP(D3DPRIMITIVETYPE t, UINT c, const void* v, UINT stride) {
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->DrawPrimitiveUP(t, c, v, stride); }, "DrawPrimitiveUP");
-    rt::postData(v, vertsFor(t, c) * stride, [r, t, c, stride](const uint8_t* d) { r->DrawPrimitiveUP(t, c, d, stride); });
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("DrawPrimitiveUP", r->DrawPrimitiveUP(t, c, v, stride)); }, "DrawPrimitiveUP");
+    rt::postData(v, vertsFor(t, c) * stride, [r, t, c, stride](const uint8_t* d) { rt::reportResult("DrawPrimitiveUP", r->DrawPrimitiveUP(t, c, d, stride)); });
     sh::set(sh::vb[0], (IDirect3DVertexBuffer9*)nullptr); sh::off[0] = 0; sh::stride[0] = 0;
     return D3D_OK;
 }
 HRESULT WDevice::DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t, UINT minV, UINT nV, UINT c, const void* idx, D3DFORMAT f, const void* v, UINT stride) {
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->DrawIndexedPrimitiveUP(t, minV, nV, c, idx, f, v, stride); }, "DrawIndexedPrimitiveUP");
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("DrawIndexedPrimitiveUP", r->DrawIndexedPrimitiveUP(t, minV, nV, c, idx, f, v, stride)); }, "DrawIndexedPrimitiveUP");
     const UINT ib = vertsFor(t, c) * (f == D3DFMT_INDEX32 ? 4 : 2), ibA = (ib + 7) & ~7u, vb = (minV + nV) * stride;
     std::vector<uint8_t> buf(ibA + vb); memcpy(buf.data(), idx, ib); memcpy(buf.data() + ibA, v, vb);
-    rt::postData(buf.data(), UINT(buf.size()), [r, t, minV, nV, c, f, stride, ibA](const uint8_t* d) { r->DrawIndexedPrimitiveUP(t, minV, nV, c, d, f, d + ibA, stride); });
+    rt::postData(buf.data(), UINT(buf.size()), [r, t, minV, nV, c, f, stride, ibA](const uint8_t* d) { rt::reportResult("DrawIndexedPrimitiveUP", r->DrawIndexedPrimitiveUP(t, minV, nV, c, d, f, d + ibA, stride)); });
     sh::set(sh::vb[0], (IDirect3DVertexBuffer9*)nullptr); sh::off[0] = 0; sh::stride[0] = 0; sh::set(sh::ib, (IDirect3DIndexBuffer9*)nullptr);
     return D3D_OK;
 }
@@ -613,11 +633,11 @@ static bool lockDirect(WTexture* w, UINT l) {
     auto c = lookup(g_levels, (void*)w); return l < c.levels.size() && c.levels[l].Pool != D3DPOOL_DEFAULT;
 }
 HRESULT WTexture::LockRect(UINT l, D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { if (lockDirect(this, l)) return real->LockRect(l, lr, x, f); return rt::sync([&]() -> HRESULT { return real->LockRect(l, lr, x, f); }, "Texture.LockRect"); }
-HRESULT WTexture::UnlockRect(UINT l) { if (lockDirect(this, l)) return real->UnlockRect(l); auto r = real; return rt::async([r, l] { r->UnlockRect(l); }, "Texture.UnlockRect"); }
+HRESULT WTexture::UnlockRect(UINT l) { if (lockDirect(this, l)) return real->UnlockRect(l); auto r = real; return rt::async([r, l] { return r->UnlockRect(l); }, "Texture.UnlockRect"); }
 HRESULT WCube::LockRect(D3DCUBEMAP_FACES face, UINT l, D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { return rt::sync([&]() -> HRESULT { return real->LockRect(face, l, lr, x, f); }, "Cube.LockRect"); }
-HRESULT WCube::UnlockRect(D3DCUBEMAP_FACES face, UINT l) { auto r = real; return rt::async([r, face, l] { r->UnlockRect(face, l); }, "Cube.UnlockRect"); }
+HRESULT WCube::UnlockRect(D3DCUBEMAP_FACES face, UINT l) { auto r = real; return rt::async([r, face, l] { return r->UnlockRect(face, l); }, "Cube.UnlockRect"); }
 HRESULT WSurface::LockRect(D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { return rt::sync([&]() -> HRESULT { return real->LockRect(lr, x, f); }, "Surface.LockRect"); }
-HRESULT WSurface::UnlockRect() { auto r = real; return rt::async([r] { r->UnlockRect(); }, "Surface.UnlockRect"); }
+HRESULT WSurface::UnlockRect() { auto r = real; return rt::async([r] { return r->UnlockRect(); }, "Surface.UnlockRect"); }
 static HRESULT wrapContainer(IUnknown* c, REFIID riid, void** o) {
     if (!c) { *o = nullptr; return E_NOINTERFACE; }
     if (riid == __uuidof(IDirect3DTexture9) || riid == __uuidof(IDirect3DBaseTexture9) || riid == __uuidof(IDirect3DCubeTexture9) || riid == __uuidof(IDirect3DVolumeTexture9) || riid == __uuidof(IDirect3DResource9)) {
@@ -653,13 +673,13 @@ template<class W> static HRESULT bufferUnlock(W* w) {
         Mirror* mp = static_cast<Mirror*>(w->ext);
         if (mp && mp->pending) {
             Mirror& m = *mp; m.pending = false; const UINT off = m.off, len = m.len; const DWORD flags = m.flags;
-            rt::postData(m.data.data() + off, len, [r, off, len, flags](const uint8_t* d) { void* p = nullptr; if (SUCCEEDED(r->Lock(off, len, &p, flags)) && p) { memcpy(p, d, len); r->Unlock(); } });
+            rt::postData(m.data.data() + off, len, [r, off, len, flags](const uint8_t* d) { void* p = nullptr; if (SUCCEEDED(rt::reportResult("Buffer.Lock", r->Lock(off, len, &p, flags))) && p) { memcpy(p, d, len); rt::reportResult("Buffer.Unlock", r->Unlock()); } });
             return D3D_OK;
         }
         if (mp && mp->real) { Mirror& m = *mp; if (m.off + m.len <= m.data.size()) memcpy(m.data.data() + m.off, m.real, m.len); m.real = nullptr; }
-        rt::post([r] { r->Unlock(); }); return D3D_OK;
+        rt::post([r] { rt::reportResult("Buffer.Unlock", r->Unlock()); }); return D3D_OK;
     }
-    return rt::sync([&]() -> HRESULT { return r->Unlock(); }, "Buffer.Unlock");
+    return rt::sync([&]() -> HRESULT { return rt::reportResult("Buffer.Unlock", r->Unlock()); }, "Buffer.Unlock");
 }
 HRESULT WVB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_vbDesc, (void*)this)); }
 HRESULT WVB::Unlock() { return bufferUnlock(this); }
@@ -779,8 +799,9 @@ static IDirect3DDevice9Ex* wrapDevice(IDirect3DDevice9* real, bool isEx) {
 // Post runs fn on the render thread in queue order, then restores every shadowed binding, so the
 // main thread's view of the device stays true. Run executes fn there and waits.
 static void restoreShadowed(IDirect3DDevice9Ex* r, const sh::Snapshot& s, IDirect3DSurface9* const* rts) {
-    for (DWORD i = 0; i < 4 && i < g_caps.NumSimultaneousRTs; ++i) if (rts[i] || i) r->SetRenderTarget(i, rt::unwrap(rts[i]));
-    r->SetDepthStencilSurface(rt::unwrap(s.ds)); r->SetViewport(&s.vp); r->SetScissorRect(&s.scissor);
+    for (DWORD i = 0; i < 4 && i < g_caps.NumSimultaneousRTs; ++i) if (rts[i] || i) rt::reportResult("Post.RestoreRenderTarget", r->SetRenderTarget(i, rt::unwrap(rts[i])));
+    rt::reportResult("Post.RestoreDepthStencilSurface", r->SetDepthStencilSurface(rt::unwrap(s.ds)));
+    rt::reportResult("Post.RestoreViewport", r->SetViewport(&s.vp)); r->SetScissorRect(&s.scissor);
     for (UINT n = 0; n < 16; ++n) { r->SetStreamSource(n, rt::unwrap(s.vb[n]), s.off[n], s.stride[n]); r->SetStreamSourceFreq(n, s.freq[n] ? s.freq[n] : 1); }
     r->SetIndices(rt::unwrap(s.ib));
     if (s.declKnown) r->SetVertexDeclaration(rt::unwrap(s.decl)); else if (s.fvfKnown) r->SetFVF(s.fvf);

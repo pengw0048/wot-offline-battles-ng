@@ -143,6 +143,8 @@ int main(){
  // to approximateVelocity and never allocates an unused full-resolution MRT.
  owner.configure(wot::stockCustomAAMode(0,true));assert(owner.beginFrame(true)&&owner.beginOpaque());
  assert(!owner.temporalEnabled()&&owner.scalarEnabled()&&!owner.velocityTexture());
+ assert(owner.parameters().x==0.f&&owner.parameters().y==0.f);
+ const Matrix disabledJitter=owner.jitter();assert(disabledJitter.v[12]==0.f&&disabledJitter.v[13]==0.f);
  events.clear();assert(owner.prepareVelocity(&depth,true,true));
  assert((events==std::vector<std::string>{"approximateVelocity"}));owner.endFrame();
  assert(owner.beginFrame(false)&&!owner.temporalEnabled()&&!owner.scalarEnabled());owner.endFrame();

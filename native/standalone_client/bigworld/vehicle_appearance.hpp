@@ -5,8 +5,13 @@
 #include "romp/py_resource_refs.hpp"
 #include "math/boundbox.hpp"
 #include "pyscript/script_math.hpp"
+#include <functional>
 
 BW_BEGIN_NAMESPACE
+class PyModel;
+// Visit evaluated parts without exposing mutable compound ownership.
+bool stockVisitVehicleCompoundParts( PyObject * compound,
+    const std::function<void( PyModel *, const Matrix &, int )> & visitor );
 
 // Referenced by the standalone bootstrap when linking the stock appearance
 // factories into a client that does not otherwise reference their classes.

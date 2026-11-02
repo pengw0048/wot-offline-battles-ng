@@ -53,12 +53,16 @@ DUMP_ROLES = (
     ROLE_VISIBLE_CLIENT,
     ROLE_HIDDEN_WORKER,
 )
+_RENDER_LOG_ROLES = {
+    "visible-client-d3d9": ROLE_VISIBLE_CLIENT,
+    "hidden-worker-d3d9": ROLE_HIDDEN_WORKER,
+}
 _SOURCE_ORDER = (
     ROLE_LAUNCHER,
     ROLE_SERVER,
     ROLE_VISIBLE_CLIENT,
     ROLE_HIDDEN_WORKER,
-)
+) + tuple(_RENDER_LOG_ROLES)
 # Each NG instance writes its own python.log and recreates it on every start.
 _GAME_LOG_FILENAME = "python.log"
 _GAME_LOG_ROLES = (ROLE_VISIBLE_CLIENT, ROLE_HIDDEN_WORKER)
@@ -67,6 +71,8 @@ _ARCHIVE_FILENAMES = {
     ROLE_SERVER: "server.log",
     ROLE_VISIBLE_CLIENT: "visible-client.log",
     ROLE_HIDDEN_WORKER: "hidden-worker.log",
+    "visible-client-d3d9": "visible-client.d3d9.log",
+    "hidden-worker-d3d9": "hidden-worker.d3d9.log",
 }
 _DUMP_FILENAMES = {
     ROLE_VISIBLE_CLIENT: "visible-client.dmp",
@@ -459,6 +465,11 @@ def begin_session(game_root, needs_worker=False, local_server=False,
         path = _game_log_path(game_root, role)
         _rotate_previous_log(path)
         sources[role] = _checkpoint(path, "game")
+        for render_role, owner_role in _RENDER_LOG_ROLES.items():
+            if owner_role == role:
+                render_path = _render_log_path(game_root, role)
+                _rotate_previous_log(render_path)
+                sources[render_role] = _checkpoint(render_path, "render")
     session = {
         "schema": SESSION_SCHEMA,
         "id": session_id,
@@ -514,12 +525,19 @@ def _game_log_path(game_root, role):
     return os.path.join(root, _GAME_LOG_FILENAME)
 
 
+def _render_log_path(game_root, role):
+    return os.path.join(os.path.dirname(_game_log_path(game_root, role)),
+                        "d3d9_render_thread.log")
+
+
 def _source_path(session, role, source):
     kind = source.get("kind")
     if kind == "launcher" and role == ROLE_LAUNCHER:
         return core.launcher_log_path()
     if kind == "game" and role in _GAME_LOG_ROLES:
         return _game_log_path(session["gameRoot"], role)
+    if kind == "render" and role in _RENDER_LOG_ROLES:
+        return _render_log_path(session["gameRoot"], _RENDER_LOG_ROLES[role])
     if kind == "launcher-server" and role == ROLE_SERVER:
         return core.server_log_path()
     if kind == "session-server" and role == ROLE_SERVER:

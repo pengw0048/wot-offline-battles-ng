@@ -187,6 +187,35 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.assertEqual(manifest['files'], len(shipped))
         self.assertEqual(manifest['adapted'], sorted(p.as_posix() for p in ADAPTERS))
 
+    def test_staged_customization_style_zero_is_a_terminal_uninstall(self):
+        # The NG root gameplay tree is older than this pinned runtime. Exercise
+        # the prepared file, not a same-named method from the root checkout.
+        runtime = self.runtime()
+        source = runtime / NATIVE_MODULE_ROOT / 'account_rpc/garage.py'
+        tree = ast.parse(source.read_text())
+        owner = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                     and node.name == 'GarageState')
+        method = next(node for node in owner.body if isinstance(node, ast.FunctionDef)
+                      and node.name == 'apply_style')
+        namespace = {'_int': int, 'GarageError': ValueError,
+                     'CUSTOMIZATION_ALL_SEASONS': 15}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
+        record = {'vehicleTypeCompactDescr': 50001,
+                  'outfits': {15: (b'style:7', True), 2: (b'outfit:summer', True)}}
+        published = []
+        state = types.SimpleNamespace(_record=lambda inventory_id, touch: record,
+            _touched=set(), revision=3,
+            report_customization=lambda vehicle_type, phase: published.append((vehicle_type, phase)))
+        for expected_revision in (4, 5):
+            self.assertIs(namespace['apply_style'](state, 9, 0), record)
+            self.assertEqual(record['outfits'], {2: (b'outfit:summer', True)})
+            self.assertEqual(state.revision, expected_revision)
+            self.assertEqual(state._touched, {9})
+            self.assertEqual(published[-1], (50001, 'equip_staged'))
+        with self.assertRaises(ValueError):
+            namespace['apply_style'](state, 9, -1)
+        self.assertEqual(state.revision, 5)
+
     def test_runtime_keeps_pinned_gameplay_rather_than_root_source(self):
         runtime = self.runtime() / 'scripts/client/gui/mods'
         bootstrap = (runtime / 'offline_lan_0922/bootstrap.py').read_text()

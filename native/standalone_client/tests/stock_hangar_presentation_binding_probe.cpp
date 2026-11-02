@@ -130,6 +130,30 @@ void uniforms(Probe & probe, wot::StockDx9EffectMaterial & definition)
         check(probe.bytes(other, "g_colorMask", 16) == initial, "g_colorMask: another binding is unchanged");
         std::cout << "g_colorMask/depthFunc/edgeDetectOccluded: successive members reach the binding\n";
     }
+    if (probe.parameter("g_selectionMode"))
+    {
+        const char * integers[] = { "g_selectionMode", "g_partIndex", "g_numParts" };
+        for (const char * name : integers)
+        {
+            const int value = 3;
+            probe.write(binding, name, &value, 4, 1);
+            check(probe.bytes(binding, name, 4) == raw(&value, 4), name);
+        }
+        const int depthOnly = 1;
+        probe.write(binding, "g_depthOnly", &depthOnly, 4, 4);
+        const float cursor[4] = { .3f, .7f, 0.f, 0.f };
+        const float selected[4] = { 65.f / 255.f, 0.f, 0.f, 0.f };
+        probe.write(binding, "g_cursorPos", cursor, 16, 3);
+        probe.write(binding, "g_selectedRegion", selected, 16, 3);
+        for (const char * name : { "g_stripeColor", "g_blurColor", "g_selectedEdgeColor" })
+            probe.write(binding, name, cursor, 16, 3);
+        check(probe.bytes(binding, "g_cursorPos", 8) == raw(cursor, 8), "cursor reaches selector");
+        check(probe.bytes(binding, "g_selectedRegion", 16) == raw(selected, 16), "region reaches selector");
+        for (const char * name : { "RENDER_MASK", "RENDER_MASK_SKINNED", "RENDER_MASK_TRACKS",
+            "EDGE_DETECT", "READBACK_SELECTION", "BLUR_MASK", "SELECTED_REGION" })
+            check(probe.reflection->technique_by_name(name), name);
+        std::cout << "customization: part, mode, cursor and original selector techniques are bound\n";
+    }
     if (probe.parameter("g_edgeColors"))
     {
         const auto initial = probe.bytes(definition, "g_edgeColors", 64);
@@ -165,6 +189,8 @@ int main(int argc, char ** argv)
                 wot::StockDx9EffectMaterial definition(probe.runtime, probe.context);
                 textures(probe, definition, "inputTexture");
                 textures(probe, definition, "g_edgeDetectedMap");
+                textures(probe, definition, "g_colorIdMap");
+                textures(probe, definition, "g_metallicGlossMap");
                 uniforms(probe, definition);
             }
             probe.reflection.reset();
