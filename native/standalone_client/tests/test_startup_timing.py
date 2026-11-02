@@ -7,6 +7,8 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
@@ -30,6 +32,56 @@ def method(source, signature):
 
 
 class StartupTimingTests(unittest.TestCase):
+    def test_actual_python_stdout_emitter_reaches_existing_player_and_worker_report(self):
+        python27 = os.environ.get('WOT_PYTHON27')
+        if not python27:
+            self.skipTest('WOT_PYTHON27 is required for the real stdout C API')
+        from launcher import core, error_reports
+        include = subprocess.check_output([python27, '-c',
+            'from distutils.sysconfig import get_python_inc; print(get_python_inc())'], text=True).strip()
+        emitter = load('patch_startup_timing').STARTUP_REPORT
+        with tempfile.TemporaryDirectory(prefix='startup-python-report-') as directory:
+            root = Path(directory)
+            (root / 'probe.cpp').write_text(r'''
+#include <Python.h>
+#include <string>
+#include <vector>
+namespace wot_startup {
+struct Record { std::string stage; unsigned calls; double wall_ms, cpu_ms, worst_ms; };
+std::vector<Record> finish() { return {{"driver.pixel_shader_create", 17, 123.5, 120.25, 8.75}}; }
+}
+PyObject* emit(PyObject*, PyObject*) {
+@EMITTER@
+    Py_RETURN_NONE;
+}
+PyMethodDef methods[] = {{"emit", emit, METH_NOARGS, NULL}, {NULL, NULL, 0, NULL}};
+PyMODINIT_FUNC init_startup_report_probe() { Py_InitModule("_startup_report_probe", methods); }
+'''.replace('@EMITTER@', emitter))
+            built = subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++14', '-shared', '-fPIC',
+                '-undefined', 'dynamic_lookup', '-Wall', '-Wextra', '-Werror', '-Wno-register', '-I' + include,
+                str(root / 'probe.cpp'), '-o', str(root / '_startup_report_probe.so')],
+                capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            game = root / 'instances/player'
+            game.mkdir(parents=True)
+            with mock.patch.object(core, 'settings_path', return_value=str(root / 'state/launcher.json')), \
+                 mock.patch.object(core, 'server_log_path', return_value=str(root / 'state/server.log')):
+                session = error_reports.begin_session(str(game), needs_worker=True)
+                for role in (error_reports.ROLE_VISIBLE_CLIENT, error_reports.ROLE_HIDDEN_WORKER):
+                    path = Path(error_reports._game_log_path(str(game), role))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    result = subprocess.run([python27, '-c',
+                        'import sys; sys.path.insert(0,sys.argv[1]); import _startup_report_probe as p; '
+                        'sys.stdout=open(sys.argv[2],"w"); p.emit(); sys.stdout.close()', str(root), str(path)],
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                error_reports.finalize_session(session)
+                report = error_reports.create_report()
+                with zipfile.ZipFile(report['path']) as archive:
+                    for name in ('visible-client.log', 'hidden-worker.log'):
+                        self.assertIn(b'STARTUP stage=driver.pixel_shader_create calls=17 wall_ms=123.500 '
+                                      b'cpu_ms=120.250 worst_ms=8.750 inclusive=1\n', archive.read(name))
+
     def test_pinned_patch_and_native_nested_failure_accounting(self):
         if not ARCHIVE.exists():
             self.skipTest('Pinned public engine source archive is required')
@@ -52,6 +104,7 @@ class StartupTimingTests(unittest.TestCase):
             app = (root / 'client/app.cpp').read_text()
             self.assertLess(app.index('if (!initLoggers())'), app.index('wot_startup::finish()'))
             self.assertLess(app.index('wot_startup::finish()'), app.index('RecreateDeviceCallback::createInstance();'))
+            self.assertIn(load('patch_startup_timing').STARTUP_REPORT, app)
             compiler = (root / 'lib/moo/effect_compiler.cpp').read_text()
             self.assertIn('"fx.source_compile"', compiler)
             self.assertIn('"fx.original_read"', compiler)

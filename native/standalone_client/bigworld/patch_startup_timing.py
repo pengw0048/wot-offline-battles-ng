@@ -4,6 +4,15 @@
 import argparse
 from pathlib import Path
 
+STARTUP_REPORT = '''\t// Script/App has installed Python stdout before task initialization returns.
+\t// Use that route so these lines reach the python.log collected by reports.
+\t// All task times are inclusive; overlapping totals must not be added.
+\tfor (const auto& stage : wot_startup::finish())
+\t\tPySys_WriteStdout( "STARTUP stage=%s calls=%u wall_ms=%.3f cpu_ms=%.3f "
+\t\t\t"worst_ms=%.3f inclusive=1\\n", stage.stage.c_str(), stage.calls,
+\t\t\tstage.wall_ms, stage.cpu_ms, stage.worst_ms );
+'''
+
 
 def replace_once(source, before, after):
     if source.count(before) != 1:
@@ -37,11 +46,7 @@ def patch(engine):
     ])
     edit('client/app.cpp', [
         ('\tRecreateDeviceCallback::createInstance();',
-         '\t// All task times are inclusive; overlapping totals must not be added.\n'
-         '\tfor (const auto& stage : wot_startup::finish())\n'
-         '\t\tINFO_MSG( "STARTUP stage=%s calls=%u wall_ms=%.3f cpu_ms=%.3f "\n'
-         '\t\t\t"worst_ms=%.3f inclusive=1\\n", stage.stage.c_str(), stage.calls,\n'
-         '\t\t\tstage.wall_ms, stage.cpu_ms, stage.worst_ms );\n\n'
+         STARTUP_REPORT + '\n'
          '\tRecreateDeviceCallback::createInstance();'),
     ])
     edit('lib/moo/effect_compiler.cpp', [
