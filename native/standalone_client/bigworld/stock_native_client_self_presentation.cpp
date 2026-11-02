@@ -111,7 +111,8 @@ struct Owner {
         math(obj(b.engine.math)),bigworld(obj(b.engine.bigworld)),
         camera(number(b.engine.constants.get(),"SERVER_TICK_LENGTH")) {
         const auto*actor=shared->find("player:"+std::to_string(shared->local_player_id));
-        if(!actor||!actor->local||!actor->has_current)throw p::Error("Native self presentation has no admitted player");
+        // Countdown binds the placed body before the first motion receipt exists.
+        if(!actor||!actor->local)throw p::Error("Native self presentation has no local player");
         // The camera history starts at the spawn pose the local presentation attached at.
         camera.reset(b.local->position);velocity=b.local->camera_velocity;
         move_seconds=swing_move_seconds;rotate_seconds=swing_rotate_seconds;report_limit=swing_report_limit;rpm_seconds=rpm_presentation_seconds;
