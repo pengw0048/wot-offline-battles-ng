@@ -268,23 +268,33 @@ public:
         // 00af4619: without the target (e.g. a 0x0 back buffer) the pass is silently skipped.
         if (closed || (members[0].empty() && members[1].empty()) || !ready()) return true;
         bool success = false;
-        if (target->push())
+        // World owns the completed scene depth at this boundary. A reuseZ
+        // target can retain a different surface captured during allocation;
+        // comparing that surface with the frame's entry depth cannot establish
+        // which depth the opaque scene actually populated.
+        ComObjectWrap<DX::Surface> sceneDepth;
+        if (SUCCEEDED( Moo::rc().device()->GetDepthStencilSurface( &sceneDepth ) ) &&
+            sceneDepth && target->push())
         {
-            success = SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
-            Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );
-            context.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
-            context.pushImmediateMode();
-            context.pushOverrideBlock( zPass.get() );
-            for (const auto & list : members)
-                for (const EdgeMember & member : list)
-                {
-                    if (!parameters( member )) { success = false; continue; }
-                    member.embodiment->draw( context );
-                }
-            context.popOverrideBlock( zPass.get() );
-            context.popImmediateMode();
-            context.end( Moo::DrawContext::ALL_CHANNELS_MASK );
-            context.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
+            success = SUCCEEDED( Moo::rc().device()->SetDepthStencilSurface( sceneDepth.pComObject() ) ) &&
+                SUCCEEDED( Moo::rc().device()->Clear( 0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0 ) );
+            if (success)
+            {
+                Moo::DrawContext context( Moo::RENDERING_PASS_COLOR );
+                context.begin( Moo::DrawContext::ALL_CHANNELS_MASK );
+                context.pushImmediateMode();
+                context.pushOverrideBlock( zPass.get() );
+                for (const auto & list : members)
+                    for (const EdgeMember & member : list)
+                    {
+                        if (!parameters( member )) { success = false; continue; }
+                        member.embodiment->draw( context );
+                    }
+                context.popOverrideBlock( zPass.get() );
+                context.popImmediateMode();
+                context.end( Moo::DrawContext::ALL_CHANNELS_MASK );
+                context.flush( Moo::DrawContext::ALL_CHANNELS_MASK );
+            }
             target->pop();
         }
         // #1513 af41e6..af4210 defers nonzero-mode colour draws;

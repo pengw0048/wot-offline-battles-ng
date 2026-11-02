@@ -447,7 +447,8 @@ def frame(members, colours):
     normal = (['context.begin:7', 'context.pushImmediateMode'] +
               ['embodiment.draw:%s:plain' % name for name in deferred] +
               ['context.popImmediateMode', 'context.end:7', 'context.flush:7']) if deferred else []
-    return (['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+    return (['device.GetDepthStencilSurface:scene', 'target.push:stock/Edge detect',
+             'device.SetDepthStencilSurface:scene', 'device.Clear:1:0:1:0', 'context.begin:7',
              'context.pushImmediateMode', 'context.pushOverrideBlock'] + members +
             ['context.popOverrideBlock', 'context.popImmediateMode', 'context.end:7', 'context.flush:7',
              'target.pop:stock/Edge detect'] + normal + [
@@ -525,9 +526,32 @@ failed = host.calls()
 assert 'embodiment.draw:player:plain' in failed
 assert not any(call.startswith('fsQuad.drawChecked:') for call in failed)
 host.setSelectFails(0)
+# Failed depth acquisition/binding cannot draw a mask against stale depth.
+# The deferred original-colour submission still runs and restores the scene.
+for read, bind in ((1, 0), (0, 1)):
+    host.setDepthFails(read, bind)
+    check(host.drawEdges(), False)
+    failed = host.calls()
+    assert 'embodiment.draw:player:plain' in failed
+    assert not any(call.startswith('fsQuad.drawChecked:') for call in failed)
+    assert not any(':depthFunc=' in call and call.startswith('embodiment.draw:') for call in failed)
+    assert ('target.pop:stock/Edge detect' in failed) == bool(bind)
+host.setDepthFails(0, 0)
+check(host.drawEdges(), True)
+check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS + member_calls('1,0,0,0', 3, 1, 'player'), battle_colours))
 own.deactivate()
 check(host.deferEntity(own_vehicle), (False,))
 assert own._Highlighter__vehicle is None
+
+# The same active scene-depth contract applies to rigid/skinned members and
+# all three modes; no stale allocation-time target depth may reach either draw.
+skinned = host.makeEntity('vehicleSkinned')
+for mode, depth, occluded in ((0, 0, 0), (1, 3, 1), (2, 1, 0)):
+    BigWorld.wgAddEdgeDetectEntity(skinned, 0, mode, True)
+    check(host.drawEdges(), True)
+    check(host.calls(), frame(ENEMY_CALLS + ALLY_CALLS +
+                             member_calls('1,0,0,0', depth, occluded, 'vehicleSkinned'), battle_colours))
+BigWorld.wgDelEdgeDetectEntity(skinned)
 
 # Invalid values warn and are still added; an index past 3 has no mask bit.
 result, text = warnings_of(BigWorld.wgAddEdgeDetectEntity, own_vehicle, 7, 5, True)
@@ -587,7 +611,8 @@ check(host.calls()[-2], 'effect.SetVectorArray:%s:g_edgeColors:1,0,1,1|0,0,0,0|0
 # A failed binding selection skips the member and reports the pass as failed.
 host.setSelectFails(1)
 check(host.drawEdges(), False)
-check(host.calls(), ['target.push:stock/Edge detect', 'device.Clear:1:0:1:0', 'context.begin:7',
+check(host.calls(), ['device.GetDepthStencilSurface:scene', 'target.push:stock/Edge detect',
+                     'device.SetDepthStencilSurface:scene', 'device.Clear:1:0:1:0', 'context.begin:7',
                      'context.pushImmediateMode', 'context.pushOverrideBlock', 'context.popOverrideBlock',
                      'context.popImmediateMode', 'context.end:7', 'context.flush:7',
                      'target.pop:stock/Edge detect'])
