@@ -76,6 +76,19 @@ bad=request(1);bad['first']['x']=float('nan')
 b=battle([bad,request(2)]);rows,errors,queries=native.run(b,0)
 assert [r['seq'] for r in rows]==[2] and len(errors)==1 and queries==1
 rows,errors,queries=native.run(battle([request()]),3);assert rows==[] and errors and queries==1
+# Exercise the current typed result/status contract and the production native
+# entity guards, independently of the retained Python oracle.
+rows,errors,queries=native.run(battle([request()]),2)
+assert rows==[dict(seq=1,first_id=1,second_id=2,available=False)] and not errors and queries==1
+for pending in (Box(isStarted=False,typeDescriptor=object()),Box(isStarted=True,typeDescriptor=None)):
+    b=battle([request()]);b._remote_factory._vehicles={1:pending,2:entity}
+    rows,errors,queries=native.run(b,0);assert rows==[] and not errors and queries==0
+b=battle([request(1),request(1),request(2)])
+rows,errors,queries=native.run(b,0)
+assert [r['seq'] for r in rows]==[1,2] and len(errors)==1 and queries==2
+for malformed in ({},[request()]*65):
+    b=battle(malformed);rows,errors,queries=native.run(b,0)
+    assert rows==[] and len(errors)==1 and queries==0
 # The exact boundaries invoke native entity ownership, never these helpers.
 b=battle([request()]);b._server_entity=lambda *a:(_ for _ in ()).throw(AssertionError('Python callback'))
 assert native.run(b,0)[0][0]['available'] is True
@@ -89,8 +102,8 @@ class HumanRam(unittest.TestCase):
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='human-ram-') as directory:
             folder=Path(directory);script=folder/'fixture.py';script.write_text(FIXTURE)
-            sources=[ROOT/'bigworld/stock_native_human_ram.cpp',ROOT/'bigworld/stock_native_bot_armor_geometry.cpp',ROOT/'bigworld/stock_native_bot_resource_lifecycle.cpp',ROOT/'tests/stock_native_human_ram_host.cpp']
-            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),*[str(p) for p in sources],'-o',str(folder/'human_ram_test.so')]
+            sources=[ROOT/'bigworld/stock_native_human_ram.cpp',ROOT/'bigworld/stock_native_bot_armor_geometry.cpp',ROOT/'bigworld/stock_native_bot_resource_lifecycle.cpp',ROOT/'bigworld/stock_native_client_state.cpp',ROOT/'tests/stock_native_human_ram_host.cpp']
+            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD','-DWOT_CLIENT_REPLICA_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),*[str(p) for p in sources],'-o',str(folder/'human_ram_test.so')]
             result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
             result=subprocess.run([py27,'-B',str(script),source],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr);self.assertIn('human ram ingress passed',result.stdout)
 if __name__=='__main__':unittest.main()
