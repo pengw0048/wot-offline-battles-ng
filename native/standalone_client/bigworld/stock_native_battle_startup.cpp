@@ -882,7 +882,9 @@ void startTeamChatWhenRosterReady(Battle& b) {
 // Open the countdown once the complete line-up has entered.
 void maybeSendBattleReady(Battle& b) {
     auto& s = *b.startup;
-    if (s.battle_ready_sent || b.live) return;
+    // A terminal loading snapshot already owns the outcome. Do not replace
+    // its upstream failure reason with a refused, now-obsolete ready send.
+    if (s.battle_ready_sent || b.live || b.result.resolved().kind != Value::Kind::Null) return;
     std::size_t players = 0, bots_count = 0;
     for (auto& entry : b.vehicles->actors) {
         Actor& v = *entry.second;
@@ -893,6 +895,37 @@ void maybeSendBattleReady(Battle& b) {
     if (players != field(b.start, "players").resolved().array.size()) return;
     if (bots_count != field(b.start, "bots").resolved().array.size() || !b.roster->pending_order.empty() || !b.roster->pending_bot_creates.empty())
         return;
+    // The sender reports local enqueue admission, not a server acknowledgement.
+    auto refused = [&] {
+        std::string phase, source_round, detail, combat_phase;
+        bool connected = false, ready = false;
+        if (b.worker) {
+            phase = link::phase();
+            const auto round = link::roundId(b);
+            source_round = round ? std::to_string(*round) : "none";
+            connected = link::connected();
+            ready = link::authority();
+        } else {
+            PyObject* client = b.engine.client.get();
+            phase = p::string(py::optional(client, "phase").get());
+            combat_phase = p::string(py::optional(client, "combat_phase").get());
+            auto round = py::optional(client, "round_id");
+            source_round = p::string(p::Ref(PyObject_Str(round.get())).get());
+            connected = p::flag(py::optional(client, "connected").get());
+            ready = p::flag(py::optional(client, "ready").get());
+            detail = p::string(py::optional(client, "last_error").get());
+        }
+        std::string reason = !connected ? "LAN connection closed before battle readiness could be queued" :
+            source_round != std::to_string(b.round_id) ? "Battle readiness belongs to a different LAN round" :
+            phase != "loading" ? "LAN loading phase ended before battle readiness could be queued" :
+            !ready ? "LAN endpoint is not ready to queue battle readiness" : "LAN transport could not queue battle readiness";
+        reason += " (role=" + std::string(b.worker ? "worker" : "player") + " round=" + std::to_string(b.round_id) +
+            " source_round=" + source_round + " client_phase=" + phase + " transport=" + (connected ? "connected" : "closed") +
+            " ready=" + (ready ? "true" : "false");
+        if (!combat_phase.empty()) reason += " combat_phase=" + combat_phase;
+        if (!detail.empty()) reason += " detail=" + detail;
+        throw p::Error(reason + ")");
+    };
     if (b.worker) {
         // The worker's readiness carries the same base rows through its native link.
         Value message;
@@ -919,7 +952,7 @@ void maybeSendBattleReady(Battle& b) {
                 list.array.push_back(std::move(row));
             }
         }
-        if (!link::send(b, message)) throw p::Error("LAN server did not accept battle readiness");
+        if (!link::send(b, message)) refused();
     } else {
         auto ready = py::optional(b.engine.client.get(), "send_battle_ready");
         if (!py::callable(ready)) return;
@@ -932,7 +965,7 @@ void maybeSendBattleReady(Battle& b) {
                 PyDict_SetItem(bases.get(), p::integer(team).get(), rows.get());
             }
         }
-        if (!p::flag(py::invoke(ready.get(), bases.get()).get())) throw p::Error("LAN server did not accept battle readiness");
+        if (!p::flag(py::invoke(ready.get(), bases.get()).get())) refused();
     }
     s.battle_ready_sent = true;
     if (b.roster->bot_create_started) {
