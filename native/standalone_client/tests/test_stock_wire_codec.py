@@ -197,7 +197,7 @@ for frame, age, native in received:
     view, complete = wire.replica_message(native), wire.complete_snapshot(native)
     assert view['type'] == 'snapshot' and view['bots'] == [] and len(view['players']) == 1, view
     assert view['_native_snapshot'] is native and complete['bots'], complete
-assert replicas == 1, replicas
+assert replicas == sum(wire.decode(frame)['type'] == 'replica_snapshot' for frame in frames), replicas
 wire.net_record(sock._handle, None)
 assert wire.replay_count(writer) == len(frames) and wire.replay_finish(writer)[0]
 reader = wire.replay_reader(sys.argv[1] + '/frames.wotlanreplay')

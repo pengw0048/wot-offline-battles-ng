@@ -1,5 +1,4 @@
 """Inventory the shipped producers, rather than the retired Python battle path."""
-import ast
 import os
 from pathlib import Path
 import re
@@ -10,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'wire'))
 from schema import SCHEMA  # noqa: E402
 from codec import WireError  # noqa: E402
+import gen_cpp  # noqa: E402
 
 
 class ClientWireContract(unittest.TestCase):
@@ -21,17 +21,7 @@ class ClientWireContract(unittest.TestCase):
         import prepare_offline_fork
         path = prepare_offline_fork.NATIVE_MATH_PATH.with_name('lan_client.py')
         source = prepare_offline_fork.ADAPTERS[path]((Path(fork) / path).read_text())
-        producers = {}
-        for method in ast.walk(ast.parse(source)):
-            if not isinstance(method, ast.FunctionDef):
-                continue
-            for node in ast.walk(method):
-                if not isinstance(node, ast.Dict):
-                    continue
-                for key, value in zip(node.keys, node.values):
-                    if (isinstance(key, ast.Constant) and key.value == 'type' and
-                            isinstance(value, ast.Constant) and isinstance(value.value, str)):
-                        producers.setdefault(value.value, set()).add(method.name)
+        producers = gen_cpp.check_client(source)
         self.assertIn('select_vehicle', producers)
         self.assertNotIn('fire_intent', producers, 'Retired battle producers must stay retired')
         missing = {kind: sorted(methods) for kind, methods in producers.items()

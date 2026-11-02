@@ -9,6 +9,8 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 
 _spec = importlib.util.spec_from_file_location(
@@ -318,6 +320,12 @@ def stage_runtime(source, staged):
             shutil.copyfile(path, output)
     if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
         raise ValueError('The pinned payload is missing an adapted consumer')
+    check = subprocess.run([
+        sys.executable, str(Path(__file__).parent.parent / 'wire/gen_cpp.py'),
+        '--check-client', str(runtime / NATIVE_MATH_PATH.relative_to(PINNED_RESOURCES).with_name('lan_client.py')),
+    ], capture_output=True, text=True)
+    if check.returncode:
+        raise ValueError(check.stderr.strip() or 'Wire schema integrity check failed')
     for path in sorted(runtime.rglob('*.py')):
         imported = retired_imports(path, path.read_text(encoding='utf-8'))
         if imported:
