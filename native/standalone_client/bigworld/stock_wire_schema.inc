@@ -342,7 +342,7 @@ static const FieldDesc fields[] = {
     {"equipment_states",17,0},
     {"round_id",5,0},
     {"authority_epoch",5,1},
-    {"sample_time_us",5,0},
+    {"sample_time_us",5,1},
     {"source_batch_horizon_us",5,1},
     {"rows",19,0},
     {"human_ram_armors",21,1},
@@ -1458,7 +1458,7 @@ static const RecordDesc records[] = {
     {"BotRosterRow",20,4,0},
     {"BotRow",24,68,26},
     {"BotRowFull",92,68,26},
-    {"BotState",160,9,6},
+    {"BotState",160,9,7},
     {"BotStateRow",169,52,26},
     {"CaptureBase",221,4,0},
     {"Critical",225,7,7},
@@ -1578,5 +1578,10 @@ static const MessageDesc messages[] = {
     {"battle_result",0,0,0},
     {"descriptor_catalog",0,0,0},
     {"start_battle",0,0,0},
+    {"select_vehicle",0,0,0},
+    {"select_team",0,0,0},
+    {"set_team_size",0,0,0},
+    {"set_bot_tier_mode",0,0,0},
+    {"set_bot_skill_mode",0,0,0},
 };
-static const uint32_t message_count = 52;
+static const uint32_t message_count = 57;
