@@ -3731,10 +3731,10 @@ checks.
 The native Scaleform manager supplies the same render-command queue to its HAL
 and every Movie instance. This enables real DrawableImage allocation for the
 stock damage panel's BitmapData atlas, preserving SDK completion events and
-references through synchronous readback and shutdown. The current engine's
-Movie creation, advancement and retirement all execute on the render thread;
-the queue retains that boundary and uses Moo's nested scene owner while
-preserving device state. A Windows D3D9/SDK probe reproduces the missing image
+references through synchronous readback and shutdown. Movie advancement and
+Capture execute on the caller thread; retained HAL display jobs execute on the
+render thread. Creation/retirement and queued resource ownership preserve that
+separation, using Moo's nested scene owner and explicit device-state restoration. A Windows D3D9/SDK probe reproduces the missing image
 without the queue, then checks atlas copyPixels, exact pixel values, disposal,
 two Movie rounds and three SDK lifecycles with it. TextFieldEx also exposes the
 original vertical autosize setter/getter and delegates layout to the existing
@@ -4224,3 +4224,164 @@ terrain collision. Bounded MOBILITY state transitions additionally preserve
 module, input, support and contact evidence for future damage-related stops.
 Status/repair-owner regressions cover independent track, turret and engine
 conditions; they do not establish the cause of a session without module events.
+
+### Reproducible native, renderer and GUI baseline review
+
+`tools/audit_native_baseline.py` is the repeatable entry point for the reviewed
+#1513 census and the related contract regressions. Its checked-in review data is
+`tools/evidence/native_baseline_0922/reviewed.json`; generated code-object,
+registration and shader inventories stay outside the repository. The baseline
+records observed evidence classifications and remaining defects. It is not a
+claim of complete native, GPU or gameplay parity.
+
+Run the host/optional-data contract group with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B tools/audit_native_baseline.py \
+  --mode contracts --output-dir "$AUDIT_OUTPUT/contracts"
+```
+
+The report aggregates actual unittest test/failure/error/skip counts and retains
+per-test skip reasons alongside both command logs. A completed run with skips
+is labeled explicitly. Exact-client
+instruction/consumer tests additionally use `WOT_0922_CLIENT`, `WOT_PYTHON27`
+(and `PY27` for the retained water fixture); SDK host tests use
+`WOT_PUBLIC_ENGINE_ARCHIVE`, `WOT_SCALEFORM_SDK_GIT` and, where required,
+`WOT_PUBLIC_RESOURCES`. Missing optional inputs are skipped evidence, not native
+success. This mode does not run a Windows client or collect a current runtime
+snapshot.
+
+Repeat the full static census with explicit original resources, a compatible
+CPython 2.7 interpreter, public source archive, reviewed original native API
+inventory, and an actual NG runtime module/type snapshot:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B tools/audit_native_baseline.py \
+  --mode capture --client "$WOT_0922_CLIENT" \
+  --python27 "$WOT_PYTHON27" --sdk-archive "$WOT_PUBLIC_ENGINE_ARCHIVE" \
+  --original-api "$ORIGINAL_NATIVE_API_INVENTORY" \
+  --runtime-snapshot "$NG_NATIVE_API_SNAPSHOT" --output-dir "$AUDIT_OUTPUT"
+```
+
+Both collectors run the exact-client inspector before using original data.
+`audit_native_interfaces.py` reads every PYC through CPython 2.7, retains exact
+member/code-path/bytecode-offset and guard evidence, inventories source
+registrations and inherited class schemas, and lets actual runtime `dir`
+observations override source candidates. Only positively reviewed original
+registrations/schemas are baseline evidence; old NG implementation labels from
+an external inventory are ignored. Original export gaps require current PE
+registration instruction/name/binding validation. A registration that fails
+that verification remains unconfirmed. Positive reviewed member tables are
+identified separately from verified export instructions.
+
+`audit_renderer_abi.py` decodes every `.10.dx9.fxo` and `.11.dx9.fxo` effect in
+the original shader package through the repository's actual effect decoder.
+It records uniform/resource layout, shader usage, literal source provider and
+manual setter candidates, target formats, resource mount candidates, and the
+public Scaleform binding declaration schemas. Source literals in pristine SDK
+files and old/new patch anchors are candidates, not a census of final linked
+owners. Shader records are scanned with default selector bindings; alternative selector
+combinations are not exhaustively enumerated. Compiled shader use is not proof
+that a live technique is selected.
+
+The review gate rejects lost runtime evidence, a formerly covered name becoming
+missing/unresolved, new missing or unresolved consumers, disappeared reviewed
+exact-client demand, effect decode failures, new unexplained used semantics,
+and public Scaleform declaration/schema drift. A new available name or a
+resolved gap still does not prove behavior. Reviewed residual gaps remain in
+`baseline-review.json`. Existing reports can be checked with `--mode review
+--native-report ... --renderer-report ...`; that mode does not refresh them.
+The report preserves source revision/worktree status and input paths. Capture
+also preserves snapshot binary/stage labels literally: a caller-supplied label
+is not proof that the snapshot matches the current source or executable.
+
+The reviewed 2026-11-02 capture covers 3,943 PYC members, 80,523 code objects,
+6,142 extracted references and 871 distinct required native paths, with 464
+original effects decoded. These are bounded census results, not all dynamic
+`getattr`, native-internal calls, arbitrary return-object schemas or live
+resource mounts. Its snapshot contains runtime observations for BigWorld,
+GUI and Math; other modules can retain source-only evidence. The supplied
+snapshot identifies itself as `diagnostic-garage-probe1`, `garage-ready`, even
+when stored in a later probe directory. That label alone is not fresh binary acceptance.
+
+The residual native census contains 64 missing-name candidates: 33 exports
+with verified original registrations, five positive reviewed original members,
+four exports whose original registration instruction check remains unresolved,
+and 22 candidates lacking a reviewed original export/member baseline. Another
+14 dynamic members and 44 unresolved member schemas require instance/schema
+review. The feature classifications distinguish ordinary UI, downloaded image
+memory, map-selected areas/activities, physics setup, replay/seasonal metadata,
+external online/browser services, bootcamp, development logging, hardware
+peripherals and selected camera configuration. A dormant or offline-bypassed
+consumer is not automatically a current gameplay defect; it must not receive
+a fabricated successful native implementation.
+
+The renderer/GUI classifications also preserve these limits and known gaps:
+
+- Dynamic shadow plane/filtering, legacy reconstruction, static shadow channel,
+  D3DX current-value reads and atlas retirement have source/host regressions.
+  Their moving vehicle-surface stripe diagnosis and Windows image acceptance
+  remain unproved. Static ASM terrain depth bias, cascade equivalence and
+  activated ASM semantics on water/vegetation require separate evidence.
+- The source census retains 12 unexplained used semantics as provider/live
+  variant candidates. No literal provider alone is insufficient to diagnose a
+  selected material. ST6/Flora-ST6, original bloom/lens-flare/dirt/god-ray owners
+  and SSR have explicit capability differences; tPS external/nested emitters
+  are rejected with diagnostics. These are not attributed to the reported
+  firing line or heap failure without an exercised path.
+- The Scaleform overlay's former INTZ/D24S8 owner split is repaired within a
+  bounded Windows trace: 35 top-level scene entries and 3,464 default-target
+  operations show matching D24S8 ownership. That trace spans 1.422 seconds;
+  visible flicker, reset and lifecycle stress require separate acceptance.
+- Protocol image upload has real RGBA/DXT row/block-stride and bounds tests.
+  The former 3x5 RGBA copy could copy 512 bytes into 60 bytes. The camouflage
+  URI path has exact Python producer, original x86 compositor/SetPixel and
+  installed Windows ResIL/ILU CPU-buffer evidence, including a 16,384-pixel
+  comparison. The controlled SWF thumbnail and actual style preview/apply-exit
+  now have separate matching VM evidence, bounded to the exercised scene.
+- Downloaded memory-texture APIs remain separate original export gaps. Legacy
+  sticker production remains a placeholder without a confirmed original PYC
+  producer; authored SWF literals are not yet closed. Public Movie/DisplayInfo,
+  font/DPI/CJK/tooltip/filter-cache and retirement tests do not certify every
+  original argument/default/error conversion or visual lifecycle.
+- Pre-mip-repair probe6 still faulted in `CreateTexture`/`prl_umdd` after the
+  row-copy and overlay repairs. The pinned SDK `RawImage::Decode` separately
+  carried a destination pointer between mip levels although mapped mips can
+  have independent allocations. Actual SDK geometry/decoder tests reject the
+  old writes and exercise three original emblem/inscription DDS resources;
+  the repair selects and bounds each destination mip independently.
+- The rebuilt `garage-probe3` package, identified by the runner as
+  `vm-93d69269-202611021305`, completed the later
+  `acceptance-probe8-complete` Windows journey with exit 0: 148 hover inputs,
+  repeated emblem/inscription/paint/style/camouflage transitions, an actual
+  style outfit change from styleId 0 to 1, stock `buyAndExit` with one pending
+  purchase and view closure, two battle shots, return to garage and normal
+  quit. The test restored the user's saved garage bytes. Its driver deliberately
+  entered hidden paint tabs with zero items; that is not a product defect.
+  This bounded run did not reproduce the previous emblem crash. It does not
+  diagnose every driver fault, certify future crash freedom, or replace
+  controlled SWF-thumbnail and moving-shadow image acceptance.
+
+The follow-up mask/filter review closes another producer-consumer boundary:
+`battle.swf` enables `cacheAsBitmap` on `entriesContainerMask`, but the public
+D3D9 HAL temporarily enables color writes for an uncached mask and formerly
+restored the parent stencil-only contract after its final composite. This could
+paint the mask shader's fixed red fill into scene color. The patch restores
+color writes to zero after returning to the parent target and before that
+composite. Extracted production functions cover 48 cached/uncached, nested,
+stencil/depth and filter cases: eight baseline leaks, zero patched leaks.
+A matching diagnostic Windows battle records five uncached mask passes and
+2,490 parent mask composites over 23.516 seconds, all with actual hardware
+`COLORWRITEENABLE=0`. Normal non-mask color rendering remains enabled. This is
+bounded runtime state evidence; it does not certify all future minimap frames.
+
+The controlled camouflage-grid run clears the original filters and records
+actual AS3 requests for all 12 images. An early provider-ACK screenshot was
+blank, but that acknowledgement precedes completed image presentation. The
+full display tree subsequently contains twelve opaque 128x128 BitmapData
+objects. Separate readback, no-readback and finally no-display-tree-inspection
+controls all visibly render the camouflage grid and filter icons after normal
+frame progression. No WeakRef, Loader constructor, forced queue flush or GPU
+upload workaround was added for that premature observation. The exercised VM
+scene has rendered-thumbnail evidence; provider requests alone remain
+insufficient as image-complete or render acknowledgement.
