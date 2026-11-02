@@ -1030,7 +1030,6 @@ void scheduleLobbyRestore(Battle& b, bool report_failure, bool) {
     s.restore_callback = own(schedule(b, 0., [report_failure](Battle& battle) {
         auto& state = *battle.startup;
         if (!state.restore_pending) return;
-        state.restore_pending = false;
         state.restore_callback = Object();
         bool restored = false;
         try {
@@ -1052,6 +1051,9 @@ void scheduleLobbyRestore(Battle& b, bool report_failure, bool) {
         if (report_failure) {
             try { reportFailure(battle, restored); } catch (const std::exception& e) { log("deferred lobby completion failed: " + describe(e)); }
         }
+        // Restoration and its completion report can synchronously re-enter.
+        // Keep this Battle alive until the callback has finished using it.
+        state.restore_pending = false;
     }));
 }
 
