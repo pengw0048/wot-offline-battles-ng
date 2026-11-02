@@ -166,7 +166,7 @@ struct Plan {
 };
 std::optional<Plan> prepareCanonical(Battle& b, const TurretPresentation& t, PyObject* entity) {
     if (t.closed || !p::flag(field(entity, "isStarted").get())) return std::nullopt;
-    auto descriptor = field(entity, "typeDescriptor");
+    auto raw_descriptor = field(entity, "typeDescriptor"), descriptor = p::vehicleDescriptor(raw_descriptor.get());
     if (!exploded(field(descriptor.get(), "turret").get()) || !exploded(field(descriptor.get(), "gun").get())) return std::nullopt;
     try {
         Plan plan;
@@ -400,7 +400,7 @@ void attach(Battle& b, TurretPresentation& t) {
     t.accepted_order.clear();
     const Actor* local = b.localVehicle();
     auto entity = local ? b.entity(local->engine_id) : p::retain(Py_None);
-    auto descriptor = field(entity.get(), "typeDescriptor"), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
+    auto raw_descriptor = field(entity.get(), "typeDescriptor"), descriptor = p::vehicleDescriptor(raw_descriptor.get()), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
     auto tag = p::text("SPG");
     t.spg = tags.get() != Py_None && PySequence_Contains(tags.get(), tag.get()) == 1;
     auto input = field(b.engine.modules.get(), "avatar_input_handler"), modes = field(input.get(), "_CTRL_MODE");

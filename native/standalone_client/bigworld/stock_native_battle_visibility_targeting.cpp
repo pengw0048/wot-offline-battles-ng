@@ -122,7 +122,7 @@ bool monitor(Battle& b, VisibilityCore& c, ID target, const std::string& reason)
     return changes.accepted;
 }
 const std::map<std::string, int>& extraMap(VisibilityCore& c, const std::shared_ptr<Actor>& a, PyObject* e) {
-    auto resource = field(e, "typeDescriptor");
+    auto raw_resource = field(e, "typeDescriptor"), resource = p::vehicleDescriptor(raw_resource.get());
     if (resource.get() == Py_None) throw p::Error("Native Expert descriptor is unavailable");
     auto& cache = c.extras[a->engine_id];
     if (cache.actor == a && cache.revision == a->descriptor_revision && cache.descriptor.get() == resource.get()) return cache.values;

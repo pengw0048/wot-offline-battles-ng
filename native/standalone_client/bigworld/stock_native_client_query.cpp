@@ -265,7 +265,7 @@ PyObject* ingest(PyObject*,PyObject*args){PyObject*c,*battle;if(!PyArg_ParseTupl
             auto id_object=p::integer(id);PyObject*raw=PyDict_Check(vehicles.get())?PyDict_GetItem(vehicles.get(),id_object.get()):nullptr;
             p::Ref entity(raw?p::retain(raw):p::call(bw.get(),"entity",p::Ref(PyTuple_Pack(1,id_object.get())).get()));
             if(entity.get()==Py_None||!engineOwns(id,entity.get())){o.entries.erase(id);a->geometry.reset();continue;}
-            auto d=field(entity.get(),"typeDescriptor"),ap=field(entity.get(),"appearance");
+            auto raw_descriptor=field(entity.get(),"typeDescriptor"),d=p::vehicleDescriptor(raw_descriptor.get()),ap=field(entity.get(),"appearance");
             if(!record)throw p::Error("Native query lifecycle record is missing");
             auto resource_stamp=resourceStamp(battle,entity.get(),d.get());
             auto found=o.entries.find(id);
@@ -421,7 +421,7 @@ std::vector<OutlineFailure> ingestFor(PyObject*c,native_battle::Battle& b){
         const auto id=a->engine_id;seen.insert(id);try{
             auto entity=b.entity(id);
             if(entity.get()==Py_None||!engineOwns(id,entity.get())){o.entries.erase(id);a->geometry.reset();continue;}
-            auto d=field(entity.get(),"typeDescriptor"),ap=field(entity.get(),"appearance");
+            auto raw_descriptor=field(entity.get(),"typeDescriptor"),d=p::vehicleDescriptor(raw_descriptor.get()),ap=field(entity.get(),"appearance");
             auto resource_stamp=resourceStamp(b.engine.shell.get(),entity.get(),d.get());
             auto found=o.entries.find(id);
             if(found!=o.entries.end()&&found->second->actor==a&&found->second->entity.get()==entity.get()&&

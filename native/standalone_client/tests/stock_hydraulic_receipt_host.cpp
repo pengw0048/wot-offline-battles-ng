@@ -15,7 +15,8 @@ struct Battle {Local* local;};
 struct Owner {std::shared_ptr<cs::State> shared; p::Ref math; bool current()const{return true;}};
 p::Ref field(PyObject*o,const char*n){return !o||o==Py_None?p::retain(Py_None):p::value(o,n);}
 double number(PyObject*o,const char*n){return p::scalar(field(o,n).get());}
-cs::Point xyz(PyObject*o){return p::numbers<3>(o);}
+using Point=cs::Point;
+#include "hydraulic_receipt_xyz.inc"
 p::Ref matrix(PyObject*math,PyObject*provider){auto factory=field(math,"Matrix");p::Ref args(PyTuple_Pack(1,provider));return p::Ref(PyObject_CallObject(factory.get(),args.get()));}
 p::Ref poseProvider(Battle&b,const char*){return p::retain(b.local->body.get());}
 #include "hydraulic_receipt_sampler.inc"

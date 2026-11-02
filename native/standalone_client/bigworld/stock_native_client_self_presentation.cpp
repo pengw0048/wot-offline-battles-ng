@@ -134,6 +134,7 @@ void optional(Owner&owner,Battle&b,const char*feature,const std::function<void()
     catch(const std::exception&e) {if(!owner.current()){PyErr_Clear();return;}b.warn(feature,native_battle::describe(e));}
 }
 void readPitch(Owner&o,PyObject*d) {
+    auto selected=p::vehicleDescriptor(d);d=selected.get();
     if(o.descriptor&&o.descriptor->get()==d)return;
     o.descriptor.reset(new p::Ref(p::retain(d)));o.pitch_valid=false;
     try {
@@ -150,6 +151,7 @@ void readPitch(Owner&o,PyObject*d) {
     }catch(const std::exception&){PyErr_Clear();}
 }
 std::array<double,2> targetAngles(Owner&o,Battle&b,PyObject*d,const Point&point,PyObject*flat) {
+    auto selected=p::vehicleDescriptor(d);d=selected.get();
     auto hull=field(d,"hull"),positions=field(hull.get(),"turretPositions"),origin=p::item(positions.get(),0);
     auto chassis=field(d,"chassis"),offset=field(chassis.get(),"hullPosition");p::Ref turretOffs(PyNumber_Add(origin.get(),offset.get()));
     auto turret=field(d,"turret"),gunOffs=field(turret.get(),"gunPosition"),shot=field(d,"shot");
@@ -169,7 +171,7 @@ world::TurretPose turretPose(Owner&o,Battle&b,const PlayerState&s,double correct
     auto position=field(base.get(),"translation");result.hull_position=xyz(position.get());result.hull_yaw=number(base.get(),"yaw");result.hull_pitch=number(base.get(),"pitch");result.hull_roll=number(base.get(),"roll");result.separate_hull=true;return result;
 }
 void hydraulic(Owner&o,Battle&b,PyObject*e,PlayerDriver&driver,double elapsed) {
-    auto aim=obj(b.local->siege_aim_matrix),descriptor=field(e,"typeDescriptor");
+    auto aim=obj(b.local->siege_aim_matrix),raw=field(e,"typeDescriptor"),descriptor=p::vehicleDescriptor(raw.get());
     if(aim.get()==Py_None||!driver.descriptor().hydraulic)return;
     readPitch(o,descriptor.get());const auto current=double(b.local->siege_aim_pitch);double correction=0.;
     if(o.pitch_valid) {
@@ -203,7 +205,7 @@ void sniper(Owner&o,Battle&b,PyObject*e,double previous_yaw,double yaw) {
     auto runtime=obj(b.engine.modules),avatar=obj(b.engine.avatar),handler=field(avatar.get(),"inputHandler");
     auto input=field(runtime.get(),"avatar_input_handler"),modes=field(input.get(),"_CTRL_MODE"),name=field(handler.get(),"_AvatarInputHandler__ctrlModeName"),expected=field(modes.get(),"SNIPER");
     if(handler.get()==Py_None||modes.get()==Py_None||PyObject_RichCompareBool(name.get(),expected.get(),Py_EQ)!=1)return;
-    auto descriptor=[&]{auto value=obj(b.local->descriptor);return value.get()==Py_None?field(e,"typeDescriptor"):std::move(value);}();auto gun=field(descriptor.get(),"gun"),limits=field(gun.get(),"turretYawLimits");
+    auto descriptor=[&]{auto value=obj(b.local->descriptor);return p::vehicleDescriptor(value.get()==Py_None?field(e,"typeDescriptor").get():value.get());}();auto gun=field(descriptor.get(),"gun"),limits=field(gun.get(),"turretYawLimits");
     if(gun.get()==Py_None||limits.get()!=Py_None)return;
     auto control=field(handler.get(),"_AvatarInputHandler__curCtrl");
     auto camera=field(control.get(),"_cam"),aiming=field(camera.get(),"_SniperCamera__aimingSystem");
@@ -213,7 +215,7 @@ void sniper(Owner&o,Battle&b,PyObject*e,double previous_yaw,double yaw) {
     double turret=number(inverse.get(),"yaw"),pitch=number(inverse.get(),"pitch");
     put(aiming.get(),"_SniperAimingSystem__idealTurretYaw",p::number(turret));put(aiming.get(),"_SniperAimingSystem__idealGunPitch",p::number(pitch));
     auto yawLimits=field(aiming.get(),"_SniperAimingSystem__yawLimits");if(yawLimits.get()!=Py_None){const auto bounds=p::numbers<2>(yawLimits.get());turret=std::min(bounds[1],std::max(bounds[0],turret));}
-    auto type=field(aiming.get(),"_SniperAimingSystem__vehicleTypeDescriptor"),activeGun=field(type.get(),"gun"),combined=field(activeGun.get(),"combinedPitchLimits");
+    auto raw_type=field(aiming.get(),"_SniperAimingSystem__vehicleTypeDescriptor"),type=p::vehicleDescriptor(raw_type.get()),activeGun=field(type.get(),"gun"),combined=field(activeGun.get(),"combinedPitchLimits");
     auto low=field(combined.get(),"minPitch"),high=field(combined.get(),"maxPitch"),turretValue=p::number(turret);p::Ref args(PyTuple_Pack(3,turretValue.get(),low.get(),high.get()));
     auto range=invoke(o.bigworld.get(),"wg_calcGunPitchLimits",args.get());auto lower=p::item(range.get(),0),upper=p::item(range.get(),1);const std::array<double,2> bounds={p::scalar(lower.get()),p::scalar(upper.get())};
     auto oscillator=field(aiming.get(),"_SniperAimingSystem__returningOscillator"),deviation=field(oscillator.get(),"deviation");const double adjustment=std::max(0.,number(deviation.get(),"y"));
@@ -267,7 +269,7 @@ std::uint64_t packAux(const std::array<double,6>&values) {
 }
 void rpm(Owner&o,Battle&b,PyObject*e,PyObject*appearance,const PlayerDriver&driver,double now) {
     if(now<double(b.local->next_rpm_time))return;
-    auto descriptor=obj(b.local->descriptor);if(descriptor.get()==Py_None)throw p::Error("Native RPM descriptor is unavailable");
+    auto raw_descriptor=obj(b.local->descriptor),descriptor=p::vehicleDescriptor(raw_descriptor.get());if(descriptor.get()==Py_None)throw p::Error("Native RPM descriptor is unavailable");
     auto physics=field(descriptor.get(),"physics"),limits=field(physics.get(),"speedLimits");
     auto forward=p::item(limits.get(),0),reverse=p::item(limits.get(),1);const double range=(std::abs(p::scalar(forward.get()))+std::abs(p::scalar(reverse.get())))/3.;
     if(range<=0.)throw p::Error("Native RPM speed range is invalid");

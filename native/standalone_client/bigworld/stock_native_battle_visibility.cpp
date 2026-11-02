@@ -147,6 +147,7 @@ std::optional<bool> sight(Battle& b, VisibilityCore& c, const env::ActorView& ob
 }
 
 env::Profile profile(Battle& b, const Actor& a, PyObject* d) {
+    auto selected = p::vehicleDescriptor(d); d = selected.get();
     env::Profile out;
     out.requires_hydraulic_body = a.kind == "player" && p::flag(field(d, "hasSiegeMode").get());
     const auto checkpoints = stock_native_bot_descriptor::checkpoints(d);
@@ -464,7 +465,7 @@ void bind(Battle& b) {
         c.query = own(p::Ref(query::createFor(b)));
         if (const auto* local = b.localVehicle()) {
             auto entity = b.entity(local->engine_id);
-            auto descriptor = field(entity.get(), "typeDescriptor"), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
+            auto raw_descriptor = field(entity.get(), "typeDescriptor"), descriptor = p::vehicleDescriptor(raw_descriptor.get()), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
             auto spg = p::text("SPG");
             c.spg = tags.get() != Py_None && PySequence_Contains(tags.get(), spg.get()) == 1;
         }
@@ -634,6 +635,7 @@ void disableSpaceVisibility(Battle& b) {
 p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local) { return params::spottingProfile(b, descriptor, local); }
 
 double visionRadius(Battle& b, PyObject* descriptor, const Actor* vehicle, double still_seconds, bool local) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto spotting_profile = spottingProfile(b, descriptor, local);
     env::Profile view;
     auto turret = field(descriptor, "turret"), misc = field(descriptor, "miscAttrs");
@@ -648,6 +650,7 @@ double visionRadius(Battle& b, PyObject* descriptor, const Actor* vehicle, doubl
 }
 
 std::array<double, 2> baseInvisibility(PyObject* descriptor, PyObject* spotting_profile, PyObject* camouflage_id) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto crew_factor = p::value(spotting_profile, "camouflage_factor");
     auto calculator = field(descriptor, "computeBaseInvisibility");
     if (PyCallable_Check(calculator.get())) {
@@ -679,6 +682,7 @@ std::array<double, 2> baseInvisibility(PyObject* descriptor, PyObject* spotting_
 }
 
 double shotInvisibilityFactor(PyObject* descriptor) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto gun = field(descriptor, "gun");
     return std::max(0., std::min(1., number(gun.get(), "invisibilityFactorAtShot", 1.)));
 }

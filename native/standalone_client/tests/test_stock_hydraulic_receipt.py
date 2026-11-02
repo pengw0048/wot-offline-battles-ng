@@ -29,7 +29,12 @@ from gui.mods.offline_lan_0922 import lan_client as lan
 class O(object):
  def __init__(self,**values):self.__dict__.update(values)
 # Providers are deliberately unrelated to baseline pose and raw aiming intent.
-body=O(translation=(11.,12.25,13.5),yaw=.7,pitch=-.3,roll=.2)
+class NativeVector(object):
+ __slots__=('x','y','z')
+ def __init__(self,x,y,z):self.x,self.y,self.z=x,y,z
+ def __len__(self):raise AssertionError('Native Vector3 is not a tuple/list')
+ def __getitem__(self,index):raise AssertionError('Native Vector3 must be read through x/y/z')
+body=O(translation=NativeVector(11.,12.25,13.5),yaw=.7,pitch=-.3,roll=.2)
 turret=O(yaw=-.4);gun=O(pitch=.15);entity=O(appearance=O(turretMatrix=turret,gunMatrix=gun))
 math=O(Matrix=lambda provider:provider)
 expected=(11.,12.25,13.5,.7,-.3,.2,-.4,.15)
@@ -164,6 +169,7 @@ class HydraulicReceiptTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             sampler = block((ROOT / 'bigworld/stock_native_client_self_presentation.cpp').read_text(), 'void sampleHydraulicBody(')
             (folder / 'hydraulic_receipt_sampler.inc').write_text(sampler)
+            (folder / 'hydraulic_receipt_xyz.inc').write_text(block((ROOT / 'bigworld/stock_native_client_self_presentation.cpp').read_text(), 'Point xyz('))
             sources = ['tests/stock_hydraulic_receipt_host.cpp', 'bigworld/stock_native_client_state.cpp',
                        'bigworld/stock_native_client_drive_publication.cpp', 'bigworld/stock_native_client_input.cpp',
                        'bigworld/stock_native_client_landing.cpp']

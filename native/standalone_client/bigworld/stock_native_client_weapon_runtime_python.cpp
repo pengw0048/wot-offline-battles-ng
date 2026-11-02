@@ -58,6 +58,7 @@ bool active(const Battle&b,const RuntimeOwner&o){
     if(!entity||entity->isDestroyed()||!entity->isInWorld())return false;p::Ref python(entity->pPyEntity().newRef());return python.get()==o.entity.get();
 }
 Metadata metadata(Battle&b,PyObject*d,PyObject*gun_object){
+    auto selected=p::vehicleDescriptor(d);d=selected.get();
     Metadata out;out.maximum_health=p::numeric(d,"maxHealth");auto chassis=field(d,"chassis"),gun=field(d,"gun"),turret=field(d,"turret"),chassis_factors=field(chassis.get(),"shotDispersionFactors"),gun_factors=field(gun.get(),"shotDispersionFactors"),loadout=p::value(gun_object,"loadout");
     const auto factors=p::numbers<2>(chassis_factors.get());out.descriptor_factors={factors[0],factors[1],p::numeric(gun_factors.get(),"turretRotation")};out.raw_dispersion=p::numeric(gun.get(),"shotDispersionAngle");if(out.raw_dispersion<=0.)throw p::Error("#1513 installed gun dispersion is unavailable");
     out.turret_speed=p::numeric(turret.get(),"rotationSpeed");out.gun_speed=p::numeric(gun.get(),"rotationSpeed");out.crew_factor=std::max(0.,p::numeric(loadout.get(),"crew_factor",1.));out.gun_rotation_factor=std::max(0.,p::numeric(loadout.get(),"gun_rotation_factor",out.crew_factor));
@@ -75,7 +76,7 @@ std::shared_ptr<RuntimeOwner> install(Battle&b,PyObject*entity){
     std::shared_ptr<shared::Actor> actor;for(const auto&row:state->actors)if(row.second->local){actor=row.second;break;}if(!actor)throw p::Error("Native local weapon actor is unavailable");
     if(!b.gun->gun)throw p::Error("Native player gun must be installed before its runtime");auto*gun=stock_native_client_weapon::gun(b.gun->gun.get());
     auto*shell=b.engine.shell.get();p::Ref actual(entity&&entity!=Py_None?p::retain(entity):p::Ref(stock_native_bot::readNativeEntity(shell,actor->engine_id)));
-    if(actual.get()==Py_None)throw p::Error("Native player weapon entity is unavailable");auto descriptor=p::Ref(stock_native_bot::readNativeEntityField(shell,actual.get(),"typeDescriptor"));
+    if(actual.get()==Py_None)throw p::Error("Native player weapon entity is unavailable");auto raw_descriptor=p::Ref(stock_native_bot::readNativeEntityField(shell,actual.get(),"typeDescriptor"));auto descriptor=p::vehicleDescriptor(raw_descriptor.get());
     auto o=std::make_shared<RuntimeOwner>(state,actor,b.generation,actual.get(),b.gun->gun.get(),descriptor.get());
     o->descriptor_revision=actor->descriptor_revision;o->runtime=std::make_unique<Runtime>(*gun,metadata(b,descriptor.get(),b.gun->gun.get()));
     o->runtime->lastTick(b.gun->last_tick);o->runtime->seedReload(b.gun->reload_event);o->runtime->seedTargeting(b.gun->targeting_signature);
@@ -87,7 +88,8 @@ std::shared_ptr<RuntimeOwner> ensure(Battle&b,PyObject*entity=nullptr){
 }
 void refreshOwner(Battle&b,RuntimeOwner&o,double now){
     drive::synchronizeStatus(b,now);if(!active(b,o))throw p::Error("Native player weapon retired during status synchronization");
-    auto*d=stock_native_client_query::descriptor(*o.actor);if(!d)throw p::Error("Native player weapon descriptor resources are not installed");
+    auto*raw=stock_native_client_query::descriptor(*o.actor);if(!raw)throw p::Error("Native player weapon descriptor resources are not installed");
+    auto selected=p::vehicleDescriptor(raw);auto*d=selected.get();
     if(o.descriptor.get()!=d||o.descriptor_revision!=o.actor->descriptor_revision){auto value=metadata(b,d,o.gun_object.get());o.runtime->metadata(std::move(value));replace(o.descriptor,p::retain(d));o.descriptor_revision=o.actor->descriptor_revision;}
     if(o.accepted_revision==o.state->revision&&o.have_equipment)return;
     const auto&rows=o.actor->state.get("equipment_states").resolved();
