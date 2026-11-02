@@ -186,9 +186,22 @@ bool siegeActive(const RemoteVehicle& rv) {
     return value == siege_enabled || value == siege_switching_off;
 }
 
-// Feeds #1513 hydraulics while preserving its body/ground split (authority geometry only).
+bool canonicalBotPose(const Battle& b, const RemoteVehicle& rv) {
+    if (!b.worker) return false;
+    const Actor* actor = b.vehicleByEngine(rv.engine_id);
+    return actor && actor->kind == "bot";
+}
+
+// Publish the Bot's canonical local aim, or retain the human native body/ground contract.
 bool siegePose(Battle& b, RemoteVehicle& rv) {
     if (!rv.authority_geometry || !hasSiege(rv)) return false;
+    // The worker's WeaponRuntime already owns the hydraulic body pitch and
+    // local gun angle. A filter target here would introduce a second owner,
+    // and subtracting rv.pitch again would corrupt that local gun angle.
+    if (canonicalBotPose(b, rv)) {
+        if (rv.aim_desired_gun_pitch) writeAimPitch(rv, *rv.aim_desired_gun_pitch);
+        return true;
+    }
     prepareSiegePose(b, rv);
     const bool active = siegeActive(rv);
     auto desired = rv.aim_desired_gun_pitch;
@@ -403,7 +416,6 @@ void attachVehicle(Battle& b, RemoteVehicle& rv, PyObject* entity) {
     py::invoke(setup.get(), rv.aim.get());
     bindStockMotion(b, rv);
     if (rv.authority_geometry && hasSiege(rv)) {
-        prepareSiegePose(b, rv);
         siegePose(b, rv);
     }
     const std::int64_t id = rv.engine_id;
@@ -695,7 +707,8 @@ std::optional<std::pair<Object, Object>> collisionMatrices(Battle& b, std::int64
     RemoteVehicle* rv = vehicle(b, engine_id);
     if (!rv || !rv->entity) return std::nullopt;
     const Object canonical = ground ? borrow(ground) : rv->matrix;
-    if (!rv->authority_geometry || !hasSiege(*rv) || !siegeActive(*rv)) return std::make_pair(canonical, canonical);
+    if (canonicalBotPose(b, *rv) || !rv->authority_geometry || !hasSiege(*rv) || !siegeActive(*rv))
+        return std::make_pair(canonical, canonical);
     prepareSiegePose(b, *rv);
     const Object body = ground ? relativeBody(b, rv->siege_relative_body.get(), ground) : rv->siege_body;
     return std::make_pair(body, canonical);

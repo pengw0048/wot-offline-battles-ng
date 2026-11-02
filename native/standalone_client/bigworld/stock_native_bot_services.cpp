@@ -81,7 +81,11 @@ void NativeServices::bind(Runtime& runtime){if(runtime_&&runtime_!=&runtime)thro
 void NativeServices::updatePose(ServiceEntity& e,const step::AimPose& pose,bool alive){
  e.target.pose=pose;e.target.target.position=pose.position;e.target.alive=alive;e.alive=alive;
  GeometryRow row;row.key=e.key;row.pose=geomPose(pose);row.pose.siege=e.mode==1?2:0;row.team=e.team;row.alive=alive;row.available=e.available;
- row.pose.native_components=true;row.pose.native_hydraulics=true;
+ // Bot motion and aim are authoritative before the render-frame publication.
+ // Neither old filter compensation nor last frame's native gun/turret angles
+ // may overwrite that canonical query pose. Human inputs retain their
+ // existing chassis-pose/aim contract.
+ row.pose.native_components=row.pose.native_hydraulics=e.key.kind==offline_simulation::ActorKind::Human;
  rows_[plannerId(e.key)]=row;
 }
 void NativeServices::updateHuman(Key key,const step::WeaponTarget& target,int team,bool alive,bool available,double radius){
