@@ -49,13 +49,33 @@ std::int64_t integer(const Value&object,const char*key){
 bool flag(const Value&object,const char*key,bool fallback=false){const auto*v=member(object,key);return v?v->truth():fallback;}
 Point xyz(PyObject*value){if(PyTuple_Check(value)||PyList_Check(value))return p::numbers<3>(value);return {{p::numeric(value,"x"),p::numeric(value,"y"),p::numeric(value,"z")}};}
 double angle(double a,double b){constexpr double pi=3.14159265358979323846;double out=std::fmod(b-a+pi,2.*pi);if(out<0.)out+=2.*pi;return out-pi;}
-bool statePose(const Value&state,LaunchInput&input){
+bool statePose(const Value&state,LaunchInput&input,bool require_body=false){
     const auto&s=state.resolved();if(s.kind!=Value::Kind::Object)return false;
     for(const char*key:{"x","y","z"})if(!s.object.count(key))return false;
     input.position={{number(s,"x"),number(s,"y"),number(s,"z")}};
     input.attitude={{number(s,"yaw"),number(s,"pitch"),number(s,"roll")}};
     input.turret_yaw=number(s,"turret_yaw",angle(input.attitude[0],number(s,"aim_yaw",input.attitude[0])));
+    if(require_body){
+        const auto body=cs::hydraulicBody(s);if(!body)return false;
+        input.position={{(*body)[0],(*body)[1],(*body)[2]}};
+        input.attitude={{(*body)[3],(*body)[4],(*body)[5]}};
+        input.turret_yaw=(*body)[6];
+    }
     return true;
+}
+std::optional<VehiclePose> playerSupportPose(const Value&player,bool require_body){
+    VehiclePose pose;pose.position={{number(player,"x"),number(player,"y"),number(player,"z")}};
+    pose.attitude={{number(player,"yaw"),number(player,"terrain_pitch",number(player,"pitch")-number(player,"suspension_pitch")),number(player,"roll")}};
+    pose.separate_hull=true;pose.hull_position=pose.position;pose.hull_attitude={{pose.attitude[0],number(player,"pitch"),pose.attitude[2]}};
+    pose.aim_yaw=number(player,"aim_yaw",pose.attitude[0]);pose.gun_pitch=number(player,"gun_pitch");
+    if(require_body){
+        const auto body=cs::hydraulicBody(player);if(!body)return {};
+        pose.hull_position={{(*body)[0],(*body)[1],(*body)[2]}};
+        pose.hull_attitude={{(*body)[3],(*body)[4],(*body)[5]}};
+        // vehicleSupportBoxes subtracts chassis yaw before applying the hull frame.
+        pose.aim_yaw=pose.attitude[0]+(*body)[6];pose.gun_pitch=(*body)[7];
+    }
+    return pose;
 }
 }
 class NativeOwner::Impl:public LaunchSource {
@@ -65,7 +85,7 @@ class NativeOwner::Impl:public LaunchSource {
         VehicleGeometry geometry;
         std::vector<Component> components;
         double mass=0.;
-        bool support_valid=false,complete=false,pending=false;stock_native_bot::ResourceStamp stamp;
+        bool has_siege=false,support_valid=false,complete=false,pending=false;stock_native_bot::ResourceStamp stamp;
     };
     stock_native_bot::Runtime& bots_;
     stock_native_bot_geometry::Vehicles& vehicles_;
@@ -98,7 +118,7 @@ class NativeOwner::Impl:public LaunchSource {
     Cached& installEntity(Owner key,PyObject*entity){
         auto&cached=cache_[key];auto descriptor=p::Ref(stock_native_bot::readNativeEntityField(nullptr,entity,"typeDescriptor"));
         stock_native_bot::ResourceStamp stamp;require(stock_native_bot::readResourceStamp(entity,{descriptor.get()},stamp),"Detached turret resource stamp");const bool pending=resourcePending(descriptor.get());if(cached.entity&&cached.entity->get()==entity&&cached.descriptor&&cached.descriptor->get()==descriptor.get()&&cached.stamp==stamp&&(cached.complete||(cached.pending&&pending)))return cached;
-        Cached result;result.stamp=std::move(stamp);result.entity=std::make_unique<p::Ref>(p::retain(entity));result.descriptor=std::make_unique<p::Ref>(p::retain(descriptor.get()));result.pending=pending;if(pending){cached=std::move(result);return cached;}
+        Cached result;bool has_siege=false;result.has_siege=p::flag(resourceField(descriptor.get(),"hasSiegeMode",has_siege).get());result.stamp=std::move(stamp);result.entity=std::make_unique<p::Ref>(p::retain(entity));result.descriptor=std::make_unique<p::Ref>(p::retain(descriptor.get()));result.pending=pending;if(pending){cached=std::move(result);return cached;}
         try{require(readLaunchGeometry(descriptor.get(),result.launch),"Detached turret launch geometry");}catch(const std::exception&e){note(e);}
         try{require(readComponents(descriptor.get(),result.components),"Detached turret mass geometry");}catch(const std::exception&e){note(e);}
         try{require(readVehicleGeometry(descriptor.get(),result.geometry),"Detached turret support geometry");auto physics=p::value(descriptor.get(),"physics");result.mass=p::numeric(physics.get(),"weight");if(result.mass<=0.)throw p::Error("Vehicle collision mass is unavailable");result.support_valid=true;}catch(const std::exception&e){note(e);}
@@ -106,9 +126,12 @@ class NativeOwner::Impl:public LaunchSource {
     }
     std::optional<LaunchInput> pose(Owner key,const Actor&record,PyObject*entity,const Value*state){
         auto&cached=installEntity(key,entity);auto input=cached.launch;input.ready=record.ready;input.detached=p::flag(p::Ref(stock_native_bot::readNativeEntityField(nullptr,entity,"isTurretDetached")).get());
-        if(state&&statePose(*state,input))return input;
+        const bool require_body=key.human&&cached.has_siege;
+        // A supplied frozen state must not be completed from a different sample.
+        if(state){if(statePose(*state,input,require_body))return input;if(require_body)return {};}
         if(!key.human){const auto found=bots_.actors().find(key.id);if(found!=bots_.actors().end()){const auto&a=found->second;input.position=a.motion.position;input.attitude={{a.motion.yaw,a.motion.pitch,a.motion.roll}};input.turret_yaw=bots_.weapons().at({offline_simulation::ActorKind::Bot,key.id}).aim.turret_yaw;return input;}}
-        if(statePose(record.state,input))return input;
+        if(statePose(record.state,input,require_body))return input;
+        if(require_body)return {};
         auto position=p::Ref(stock_native_bot::readNativeEntityField(nullptr,entity,"position")),matrix=p::Ref(stock_native_bot::readNativeEntityField(nullptr,entity,"matrix"));if(position.get()==Py_None||matrix.get()==Py_None)return {};input.position=xyz(position.get());input.attitude={{p::numeric(matrix.get(),"yaw"),p::numeric(matrix.get(),"pitch"),p::numeric(matrix.get(),"roll")}};
         input.turret_yaw=nativeTurretYaw(vehicles_,key).value_or(0.);return input;
     }
@@ -128,7 +151,7 @@ class NativeOwner::Impl:public LaunchSource {
         turrets.rows[key]=row;turrets.geometry.erase(key);
     }
     void bodies(const Battle&b,double server_ms){
-        std::vector<Vehicle> vehicles;std::vector<PlayerImpulse> impulses;auto physical_order=p::dict();
+        std::vector<Vehicle> vehicles;std::vector<PlayerImpulse> impulses;auto physical_order=p::dict();bool support_available=true;
         static const Value none;
         const auto&players=b.startup?b.startup->last_snapshot.get("players").resolved():none;
         if(players.kind!=Value::Kind::Null&&players.kind!=Value::Kind::Array)throw p::Error("Detached turret snapshot players are invalid");
@@ -137,12 +160,12 @@ class NativeOwner::Impl:public LaunchSource {
             std::string failure;if(!readPlayerImpulses(id,member(player,"turret_pushes"),impulses,&failure))throw p::Error("Detached turret input: "+failure);
             const Owner owner{true,id};auto order_key=p::text(name(owner));if(PyDict_SetItem(physical_order.get(),order_key.get(),Py_None)<0)throw p::Error("Detached turret player order allocation failed");
             auto cached=cache_.find(owner);if(cached==cache_.end()||!cached->second.support_valid)continue;
-            VehiclePose pose;pose.position={{number(player,"x"),number(player,"y"),number(player,"z")}};
-            pose.attitude={{number(player,"yaw"),number(player,"terrain_pitch",number(player,"pitch")-number(player,"suspension_pitch")),number(player,"roll")}};
-            pose.separate_hull=true;pose.hull_position=pose.position;pose.hull_attitude={{pose.attitude[0],number(player,"pitch"),pose.attitude[2]}};
-            pose.aim_yaw=number(player,"aim_yaw",pose.attitude[0]);pose.gun_pitch=number(player,"gun_pitch");
-            auto input=lookup(owner);
-            if(input)vehicles.push_back(vehicle(owner,cached->second.geometry,pose,cached->second.mass,number(player,"speed"),number(player,"push_x"),number(player,"push_z"),flag(player,"alive",true),!input->detached));
+            const auto pose=playerSupportPose(player,cached->second.has_siege);
+            if(!pose){support_available=false;continue;}
+            // Support uses this snapshot's pose; lookup() may hold a different
+            // record sample while ingress is reconciling it.
+            const bool detached=p::flag(p::Ref(stock_native_bot::readNativeEntityField(nullptr,cached->second.entity->get(),"isTurretDetached")).get());
+            vehicles.push_back(vehicle(owner,cached->second.geometry,*pose,cached->second.mass,number(player,"speed"),number(player,"push_x"),number(player,"push_z"),flag(player,"alive",true),!detached));
         }catch(const std::exception&e){note(e);}
         for(const auto&entry:bots_.actors())try{const Owner owner{false,entry.first};auto input=lookup(owner);auto cached=cache_.find(owner);if(!input||cached==cache_.end()||!cached->second.support_valid)continue;const auto&a=entry.second;VehiclePose pose;pose.position=a.motion.position;pose.attitude={{a.motion.yaw,a.motion.terrain_pitch,a.motion.roll}};pose.separate_hull=true;pose.hull_position=pose.position;pose.hull_attitude={{a.motion.yaw,a.motion.pitch,a.motion.roll}};pose.aim_yaw=a.weapon.aim_yaw;pose.gun_pitch=bots_.weapons().at({offline_simulation::ActorKind::Bot,entry.first}).aim.gun_pitch;vehicles.push_back(vehicle(owner,cached->second.geometry,pose,cached->second.mass,a.motion.speed,a.motion.push_x,a.motion.push_z,a.motion.alive,!input->detached));}catch(const std::exception&e){note(e);}
         // Reproduce states=dict(player generator); states.update(bot generator)
@@ -151,7 +174,10 @@ class NativeOwner::Impl:public LaunchSource {
         // callback from the rigid solver or an invented ID sort.
         for(const auto&entry:bots_.actors()){auto order_key=p::text(name({false,entry.first}));if(PyDict_SetItem(physical_order.get(),order_key.get(),Py_None)<0)throw p::Error("Detached turret Bot order allocation failed");}
         std::map<std::string,Vehicle> by_name;for(auto&v:vehicles)by_name.emplace(name(v.owner),std::move(v));vehicles.clear();Py_ssize_t order_cursor=0;PyObject*order_key,*order_value;while(PyDict_Next(physical_order.get(),&order_cursor,&order_key,&order_value)){const auto found=by_name.find(p::string(order_key));if(found!=by_name.end())vehicles.push_back(std::move(found->second));}
-        for(const auto owner:bodies_.order)try{auto input=lookup(owner);bodies_.available(owner,bool(input));const auto c=cache_.find(owner);if(c!=cache_.end())bodies_.components(owner,c->second.components);}catch(const std::exception&e){bodies_.available(owner,false);note(e);}
+        // Unknown Human body geometry cannot prove absence of support for any
+        // detached body. Defer each existing owner slice, retaining its time bank
+        // and impulse acknowledgements; never substitute an empty vehicle set.
+        for(const auto owner:bodies_.order)try{auto input=lookup(owner);bodies_.available(owner,bool(input)&&support_available);const auto c=cache_.find(owner);if(c!=cache_.end())bodies_.components(owner,c->second.components);}catch(const std::exception&e){bodies_.available(owner,false);note(e);}
         for(auto&row:bodies_.update(server_ms,vehicles,impulses,world_))launches_->proposal(std::move(row));for(const auto&failure:bodies_.failures)errors_.push_back(failure.reason);
     }
 public:
@@ -173,7 +199,7 @@ public:
     }
     bool queue(Battle&b,const Actor&record,PyObject*entity,const Value*state,double now){
         current(b);if(!std::isfinite(now))throw p::Error("Detached turret launch time is invalid");
-        const auto key=identity(record);auto input=pose(key,record,entity,state);if(!input)return false;
+        const auto key=identity(record);auto input=pose(key,record,entity,state);if(!input){launches_->retryAt(key,now+.25);return false;}
         world_.now(now);return launches_->queue(key,*input,now,world_);
     }
     std::optional<LaunchInput> lookup(Owner owner)override{
