@@ -1,5 +1,6 @@
 """Exercise the real fixed-source preparation, its payload and consumers."""
 import ast
+import builtins
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,41 @@ ROOT_COMPAT = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_092
 
 
 class OfflineForkCommandTests(unittest.TestCase):
+    def test_native_runtime_exports_existing_siege_hint_owner(self):
+        from stock_native_battle_shell import SHELL
+        indicator = type('SiegeModeIndicator', (), {})
+        imports = []
+
+        class StockModule:
+            def __init__(self, name):
+                self.name = name
+
+            def __getattr__(self, name):
+                if self.name == 'gui.Scaleform.daapi.view.battle.shared.indicators' and name == 'SiegeModeIndicator':
+                    return indicator
+                return StockModule(self.name + '.' + name)
+
+        def stock_import(name, globals=None, locals=None, fromlist=(), level=0):
+            imports.append((name, tuple(fromlist or ())))
+            return StockModule(name)
+
+        tree = ast.parse(SHELL)
+        loader = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_load_runtime')
+        namespace = {'__builtins__': dict(vars(builtins), __import__=stock_import)}
+        exec(compile(ast.Module(body=[loader], type_ignores=[]), 'native-runtime-loader', 'exec'), namespace)
+        runtime = namespace['_load_runtime']()
+        self.assertIs(getattr(runtime, 'siege_mode_indicator_type', None), indicator)
+        self.assertIn(('gui.Scaleform.daapi.view.battle.shared.indicators', ('SiegeModeIndicator',)), imports)
+        consumer = (ROOT / 'bigworld/stock_native_battle_local.cpp').read_text()
+        local_keys = set(re.findall(r'py::(?:attr|optional)\(b\.engine\.modules\.get\(\),\s*"([^"]+)"', consumer))
+        self.assertIn('siege_mode_indicator_type', local_keys)
+        self.assertTrue(local_keys <= set(vars(runtime)), local_keys - set(vars(runtime)))
+        if PY27.is_file():
+            parsed = subprocess.run([str(PY27), '-B', '-c',
+                                     "import sys;compile(sys.stdin.read(), 'native-battle-shell', 'exec')"],
+                                    input=SHELL, text=True, capture_output=True)
+            self.assertEqual(parsed.returncode, 0, parsed.stdout + parsed.stderr)
+
     def test_isolated_help_from_unrelated_directory(self):
         with tempfile.TemporaryDirectory(prefix='wot-fork-command-') as directory:
             completed = subprocess.run([

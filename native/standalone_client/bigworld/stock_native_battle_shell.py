@@ -32,6 +32,7 @@ def _load_runtime():
     from gui.app_loader import g_appLoader
     from gui.app_loader.settings import GUI_GLOBAL_SPACE_ID
     from gui.battle_control.battle_constants import FEEDBACK_EVENT_ID, VEHICLE_VIEW_STATE
+    from gui.Scaleform.daapi.view.battle.shared.indicators import SiegeModeIndicator
     from gui.mods.offline_lan_0922 import native_mapping_mask
     from gui.mods.offline_lan_0922.compat import g_compatibility
     from gui.shared.utils import HangarSpace
@@ -68,6 +69,7 @@ def _load_runtime():
     runtime.math = Math
     runtime.nations = nations
     runtime.offline_map_creator = g_offlineMapCreator
+    runtime.siege_mode_indicator_type = SiegeModeIndicator
     runtime.tank_part_names = TankPartNames
     runtime.vehicle_view_state = VEHICLE_VIEW_STATE
     runtime.vehicles = vehicles
