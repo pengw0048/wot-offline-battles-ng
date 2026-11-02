@@ -62,7 +62,9 @@ struct StockChunkModel : ChunkItem {
     bool known = true;
     StockObstacleIdentity value{4, 9, "objects/wall.model", 99};
     bool identity(StockObstacleIdentity& output) const {
-        if (!known) return false; output = value; return true;
+        if (!known) return false;
+        output = value;
+        return true;
     }
 };
 namespace CompiledSpace {
