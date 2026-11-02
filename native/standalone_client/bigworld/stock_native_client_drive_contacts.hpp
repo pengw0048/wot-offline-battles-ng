@@ -14,6 +14,7 @@ struct ContactPeer {
     std::shared_ptr<stock_native_client_state::Actor> actor;
     const PlayerDescriptor* parameters=nullptr;
     std::optional<std::array<double,21>> ram_witness;
+    std::optional<std::array<double,8>> ram_hydraulic_body;
     std::optional<std::int64_t> ram_sequence;
 };
 struct PushCheckpoint {ID actor=0,sequence=0;std::array<double,5> totals{};};

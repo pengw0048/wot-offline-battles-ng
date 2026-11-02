@@ -57,6 +57,8 @@ struct Remote {
 };
 
 namespace remote {
+// Process shutdown; release global presentation handles while Python is alive.
+void finaliseScriptOwners();
 // Creates the Remote subsystem for this round (visible client: interpolation off, worker: authority geometry).
 void install(Battle& b, bool interpolate_motion, bool authority_geometry);
 
@@ -89,6 +91,10 @@ bool setInterpolateMotion(Battle& b, std::int64_t engine_id, bool enabled);
 bool setPose(Battle& b, std::int64_t engine_id, const Point& position, double yaw, double pitch, double roll,
              std::optional<double> relax_time, std::optional<double> now);
 bool setAim(Battle& b, std::int64_t engine_id, double hull_yaw, double aim_yaw, double gun_pitch);
+// Exact body/component receipt from the same admitted human chassis sample.
+bool setHydraulicBody(Battle& b, std::int64_t engine_id, const std::optional<Pose>& body);
+// Missing Human receipts hold the last complete visual sample, never query evidence.
+bool hydraulicBodyPending(const Battle& b, std::int64_t engine_id);
 bool settleMotion(Battle& b, std::int64_t engine_id, std::optional<double> now);
 bool updateSiegePose(Battle& b, std::int64_t engine_id);
 // Unblended (body, ground) authority matrices; nullopt when the vehicle has no attached presentation.

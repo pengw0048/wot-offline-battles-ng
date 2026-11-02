@@ -227,10 +227,12 @@ aligns before applying forward torque to a meaningful ascent. The navigation
 guard preserves a turn immediately before a climb in baked smoothing, live
 reach, lookahead and partial-path continuation.
 
-No native predecessor `WGVehicleFilter`/physics experiment is present here.
-The SPG boundary also remains unchanged from 0.3.70: a rear route anchor and
-arrival hold are implemented, but open-sky proof, ballistic trajectory and arc
-collision, indirect-hit resolution and stun are not. Exact Windows #1513
+At the historical 0.3.70 boundary, SPGs had only a rear route anchor and
+arrival hold. The current native worker has artillery arc/clearance proof,
+ballistic advancement, indirect-hit resolution and stun producers and consumers
+(`stock_native_bot_artillery`, `stock_native_projectile_damage`, and the combat
+and equipment owners). Fixed-source host fixtures cover those paths; their
+presence does not prove every vehicle's Windows behavior. Exact Windows #1513
 remains the acceptance boundary for native motion/contact feel, viewpoint
 switching and repeated-round lifecycle safety.
 
@@ -3107,17 +3109,22 @@ The source audit deliberately keeps the following differences visible:
   delay; the camouflage paint bonus
   (`invisibilityDeltas['camouflageBonus']`) is included in the client's own
   `computeBaseInvisibility` pair and keeps the exact GUI consumer's shot
-  factor, while `invisibilityDeltas` `firePenalty` and radio-range gating of
-  the team's shared intelligence are still not applied;
+  factor. The separate `invisibilityDeltas['firePenalty']` contract is not
+  established here. Current native perception does apply radio-range gating:
+  descriptor radio distance and crew/module factors feed the recipient contact
+  and radio-connectivity queries in `stock_native_bot_observation_runtime`;
 - the server publishes terminal winner/reason/base team plus live frags and the
   human team-killer flag, but not the retired predecessor's complete
   `personal`/`players`/`vehicles` battle-result record;
-- the complete stun penalty/medical-kit loop remains open. Bot movement and
-  both Bot and human projectile trajectories run in the mandatory hidden
-  native worker, while the LAN server admits their ordered results and shared
-  ledgers. Each human client still originates its own input, pose and gun-state
-  checkpoint. This is a trusted-LAN architecture, not an anti-cheat design or
-  a claim that every calculation runs inside the Python server.
+- the current native path carries stun outcomes through shared combat state,
+  local drive/weapon factors and medical-kit clearing, with host coverage of
+  those transitions. This is implementation and contract evidence, not Windows
+  acceptance of the complete loop. The hidden worker owns Bot movement and Bot
+  projectiles; the visible client advances its player's projectiles, and the
+  LAN server admits their ordered results and shared ledgers. Each human client
+  originates its own input, pose and gun-state checkpoint. This is a trusted-LAN
+  architecture, not an anti-cheat design or a claim that every calculation runs
+  inside the Python server.
 
 The local player path does include server-relayed critical state, fire,
 drowning, exact fall/landing attribution, small repair/medkit/extinguisher
@@ -4016,6 +4023,53 @@ resource-dependent comparisons ran. Windows build and live-profile evidence
 remain separate from these host checks. Neither the port nor its fixtures
 establish unexercised vehicle/map behavior or reconstruct the complete retail
 native physics engine.
+
+`test_stock_vehicle_physics_interface_contract.py` separately checks the
+reviewed required physics interface against NG's actual `PY_METHOD` and
+`PY_ATTRIBUTE` registration blocks. Its stock scope is configuration,
+client startup and suspension-state consumers. Removing a required registration
+fails even if its C++ body
+or original-executable symbol still exists. With `WOT_0922_CLIENT`, CPython 2.7
+re-derives the recorded stock references from the exact bytecode. A registered
+name alone does not prove that its implementation advances physical state or
+that Windows rendering, collision and firing consume the resulting state.
+
+The older checks have different scopes: `inspect_client.py` examines the
+retail EXE's reviewed filter names, `audit_client_abi.py` and
+`audit_client_lifecycle.py` examine stock PYC/XML contracts, and
+`audit_native_resource_ownership.py` examines Python adapter ownership. They
+do not compare the NG C++ registration tables with every battle consumer.
+Focused native tests cover individual providers, filters and cameras; these
+checks are not a complete SDK or gameplay-interface closure audit.
+
+Two registered retail replay interfaces, `WGReplayController.beginTimeWarp`
+and `getAimClipPosition`, explicitly raise `NotImplementedError`. Exact stock
+consumers are `BattleReplay.__timeWarp` (playing and time-warp enabled) and
+`ArcadeCamera.__cameraUpdate` (playing and controlling the camera). The replay
+method-table test proves that their names are registered, not that these
+operations work. The LAN `.wotlanreplay` reader has a separate owner; these
+retail packet-replay stubs do not establish a missing live-LAN battle method.
+
+Projectile target history retains each accepted Human hydraulic body and gun
+receipt with its baseline pose, using the same interpolation fraction and
+wrapped angles. A missing endpoint cannot borrow a previous or latest native
+body. Such a target remains a collision candidate: an unavailable required
+body fails only the affected projectile query rather than proving a miss.
+Ordinary Humans and canonical Bots retain their existing paths. An actual
+authority-epoch change clears pose history along with the existing projectile
+state; repeated observations of the same epoch retain both. Host tests exercise
+the production receipt converters, historical sampling and local terminal
+containment. Windows hit geometry and rendering still require native acceptance.
+
+The separate server-owned Human-versus-Human historical ram armor probe still
+carries only chassis pose and shape, without a request-bound hydraulic body
+receipt. For a `hasSiegeMode` participant its native worker adapter returns the
+explicit terminal `available=false`; resource readiness is unchanged, so the
+server can finish that probe without fabricating an armor result or waiting
+forever. A latest receipt is not substituted, even for identical chassis
+coordinates. Ordinary Human pairs and other queries that already freeze their
+applied body receipt retain their paths. Full hydraulic Human-versus-Human
+historical ram armor is not supported by this baseline-only probe contract.
 
 ### Native visible-client hot paths and snapshot ownership
 

@@ -9,13 +9,13 @@ using Point=std::array<double,3>;
 using Critical=wot::offline_bot_step::CriticalState;
 using Event=wot::offline_bot_step::CriticalEvent;
 struct Pose {Point position{};double yaw=0.,pitch=0.,roll=0.;};
-struct Metadata {Point minimum{},maximum{},mount{};std::map<std::string,double> maxima;std::set<std::string> crew;};
-struct Player {std::int64_t id=0,input_sequence=0;bool native_remote=false;int siege_state=0;Pose pose;Metadata descriptor;Critical critical;};
+struct Metadata {Point minimum{},maximum{},mount{};std::map<std::string,double> maxima;std::set<std::string> crew;bool requires_hydraulic_body=false;};
+struct Player {std::int64_t id=0,input_sequence=0;bool native_remote=false;int siege_state=0;Pose pose;Metadata descriptor;Critical critical;std::optional<Pose> applied_body;};
 struct Proposal {Critical state;std::vector<Event> events;};
 struct Observation {std::int64_t id=0,input_sequence=0;int level=0;std::optional<Proposal> drowning;};
 struct Batch {std::int64_t sequence=0;std::vector<Observation> observations;};
 class World {public:virtual ~World()=default;
- // The native remote hydraulic body pose, if available; absent uses the copied pose.
+ // Applied same-sample body. Required but absent bodies skip this observation.
  virtual std::optional<Pose> bodyPose(const Player&)=0;
  // Returns -1 for an unavailable/missing water hit, as the fixed source does.
  virtual double waterDepth(const Point&)=0;

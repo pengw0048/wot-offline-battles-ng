@@ -202,6 +202,8 @@ p::Ref localFactors(Battle& b, PyObject* descriptor);
 Value acceptedLocalEffectiveParams(Battle& b);
 // The cold equipment restore: contract, quantity and activation-result changes, repair-kit acknowledgement.
 bool restoreEquipmentCold(Battle& b, const Value& snapshot, bool present);
+// Publish the accepted ledger at a cold-start or recorded replay presentation boundary.
+bool presentEquipment(Battle& b, double now);
 }
 
 struct Params {

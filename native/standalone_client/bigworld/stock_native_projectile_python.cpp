@@ -36,9 +36,9 @@ Point rounded(Point p){for(auto&v:p)v=float(v);return p;}
 BW::Vector3 vector(const Point&p){return BW::Vector3(float(p[0]),float(p[1]),float(p[2]));}
 Point point(const BW::Vector3&p){return {p.x,p.y,p.z};}
 Point xyz(PyObject*raw){if(PyList_Check(raw)||PyTuple_Check(raw))return p::numbers<3>(raw);return {p::numeric(raw,"x"),p::numeric(raw,"y"),p::numeric(raw,"z")};}
-geo::Pose geometryPose(const Pose&p,bool frozen){geo::Pose out;out.position=p.position;out.yaw=p.yaw;out.pitch=p.pitch;out.roll=p.roll;out.turret_yaw=p.turret_yaw;out.gun_pitch=p.gun_pitch;out.siege=p.siege;out.native_components=!frozen;out.native_hydraulics=!frozen;return out;}
-Pose plainPose(const stock_native_client_state::Value&state,const Point&position){Pose out;out.position=position;const auto&s=state.resolved();
-    if(s.kind==stock_native_client_state::Value::Kind::Object){if(s.object.count("x")&&s.object.count("y")&&s.object.count("z"))out.position={s.get("x").numeric(),s.get("y").numeric(),s.get("z").numeric()};out.yaw=s.get("yaw").numeric();out.pitch=s.get("pitch").numeric();out.roll=s.get("roll").numeric();out.turret_yaw=s.get("turret_yaw").numeric(angle_delta(out.yaw,s.get("aim_yaw").numeric(out.yaw)));out.gun_pitch=s.get("gun_pitch").numeric();out.siege=int(s.get("siege_state").numeric());}
+geo::Pose geometryPose(const Pose&p,bool frozen){geo::Pose out;out.position=p.position;out.yaw=p.yaw;out.pitch=p.pitch;out.roll=p.roll;out.turret_yaw=p.turret_yaw;out.gun_pitch=p.gun_pitch;out.siege=p.siege;out.hydraulic_body=p.hydraulic_body;out.require_hydraulic_body=p.require_hydraulic_body;out.native_components=!frozen;out.native_hydraulics=!frozen;return out;}
+Pose plainPose(const stock_native_client_state::Value&state,const Point&position,bool human){Pose out;out.position=position;out.require_hydraulic_body=human;const auto&s=state.resolved();
+    if(s.kind==stock_native_client_state::Value::Kind::Object){if(s.object.count("x")&&s.object.count("y")&&s.object.count("z"))out.position={s.get("x").numeric(),s.get("y").numeric(),s.get("z").numeric()};out.yaw=s.get("yaw").numeric();out.pitch=s.get("pitch").numeric();out.roll=s.get("roll").numeric();out.turret_yaw=s.get("turret_yaw").numeric(angle_delta(out.yaw,s.get("aim_yaw").numeric(out.yaw)));out.gun_pitch=s.get("gun_pitch").numeric();out.siege=int(s.get("siege_state").numeric());out.hydraulic_body=cs::hydraulicBody(s);}
     return out;
 }
 Value shotWire(const damage::LaunchDescriptor&d){
@@ -99,7 +99,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
             if(!entry.second)continue;const auto&a=*entry.second;Record r;r.key=entry.first;r.local=a.local;r.tombstone=a.tombstone;r.ready=a.ready;if(r.local||r.tombstone)continue;
             if(a.kind!="bot"&&a.kind!="player")continue;r.human=a.kind=="player";r.id=a.id;r.engine_id=a.engine_id;if(r.id<=0||r.engine_id<=0)continue;
             p::Ref entity(bots::readNativeEntity(nullptr,r.engine_id));if(entity.get()==Py_None)continue;r.started=p::flag(nativeField(entity.get(),"isStarted").get());if(!r.started)continue;
-            const auto&state=a.state.resolved();auto position=nativeField(entity.get(),"position");r.current=plainPose(state,xyz(position.get()));
+            const auto&state=a.state.resolved();auto position=nativeField(entity.get(),"position");r.current=plainPose(state,xyz(position.get()),r.human);
             // Native Runtime owns the worker Bot transform and aim. Its frozen
             // state is the unblended authority frame presented by the factory.
             if(!r.human){const auto bot=runtime.actors().find(r.id);if(bot!=runtime.actors().end()){const auto&a=bot->second;r.current.position=a.motion.position;r.current.yaw=a.motion.yaw;r.current.pitch=a.motion.pitch;r.current.roll=a.motion.roll;r.current.siege=a.siege.mode;r.current.turret_yaw=runtime.weapons().at(actor(r)).aim.turret_yaw;r.current.gun_pitch=runtime.weapons().at(actor(r)).aim.gun_pitch;}}
@@ -108,11 +108,11 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         }catch(const std::exception&e){++record_failures;error("record",e);}
     }
     std::vector<Record> records()override{return record_order;}
-    bool liveGeometry(const Record&r,const Pose&pose)const override{const auto*s=services.find(actor(r));return r.detached||(s&&s->pitch_hull_aiming[pose.siege==2?1:0]);}
+    bool liveGeometry(const Record&r,const Pose&pose)const override{const auto*s=services.find(actor(r));if(s&&s->geometry[pose.siege==2?1:0].has_siege&&pose.require_hydraulic_body)return false;return r.detached||(!pose.hydraulic_body&&s&&s->pitch_hull_aiming[pose.siege==2?1:0]);}
     CollisionQuery collide(const Record&r,const Point&a,const Point&b,const std::optional<Pose>&historic)override{
         CollisionQuery out;out.start=rounded(a);out.end=rounded(b);out.length=double((vector(out.end)-vector(out.start)).length());const auto*s=service(r);const auto&pose=historic?*historic:r.current;
         if(!s){out.valid=false;return out;}auto geometry=s->geometry[pose.siege==2?1:0];geometry.detached=r.detached;
-        if(!geometry.ready){out.valid=false;return out;}
+        if(!geometry.ready||!pose.body_available(geometry.has_siege)){out.valid=false;return out;}
         for(const auto&hit:geo::intersections(geometry,geometryPose(pose,bool(historic)),out.start,out.end)){Collision c;c.distance=hit.distance;c.cosine=hit.angle_cosine;c.component=hit.component;c.material_kind=hit.material_kind;c.material=hit.material;c.local_point=hit.local_point;c.world_point=hit.world_point;c.world_normal=hit.world_normal;out.collisions.push_back(c);}
         // Material pointers belong to the installed mode, not the temporary
         // detached flag copy used by the geometry traversal.

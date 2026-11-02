@@ -3,6 +3,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_remote_internal.hpp"
+#include "stock_native_battle_compat.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <functional>
@@ -565,20 +566,19 @@ void publishOverlay(PyObject* vehicle, const OverlayPose& pose) {
     row.fields["turn_speed"] = own(p::number(pose.turn_speed));
     if (!row.fields.count("speedInfo")) {
         Battle* b = current();
-        PyObject* compat = b && b->engine.compatibility ? b->engine.compatibility.get() : nullptr;
-        auto getter = compat ? py::optional(compat, "_original_vehicle_getattribute") : p::retain(Py_None);
-        if (py::callable(getter)) {
-            PyObject* stock = PyObject_CallFunctionObjArgs(getter.get(), vehicle, p::text("speedInfo").get(), nullptr);
-            if (!stock) {
+        if (b && b->compat && b->compat->active) {
+            p::Ref stock(p::retain(Py_None));
+            try { replace(stock, compat::nativeVehicleAttribute(vehicle, "speedInfo")); }
+            catch (const std::exception&) {
                 // A partially constructed Vehicle has no stock provider yet.
                 if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw p::Error("speedInfo");
                 PyErr_Clear();
-            } else if (stock == Py_None) Py_DECREF(stock);
-            else {
+            }
+            if (stock.get() != Py_None) {
                 initTypes();
                 auto* info = PyObject_New(SpeedInfo, &SpeedInfoType);
-                if (!info) { Py_DECREF(stock); throw p::Error("speedInfo allocation"); }
-                info->source = stock;
+                if (!info) throw p::Error("speedInfo allocation");
+                info->source = stock.release();
                 info->vehicle = vehicle;
                 row.fields["speedInfo"] = Object(reinterpret_cast<PyObject*>(info));
             }
@@ -917,5 +917,18 @@ p::Ref collideAtMatrix(Battle& b, PyObject* vehicle, PyObject* vehicle_matrix, P
     for (const auto& hit : hits) p::append(out.get(), p::retain(hit.second.get()));
     return out;
 }
+
+void finaliseScriptOwners() {
+    // A failed stock unsubscribe must not strand all other Python owners.
+    std::string error;
+    try { uninstallEngineAudio(); } catch (const std::exception& e) { error = describe(e); }
+    audio.clear();
+    relays.clear();
+    overlays.clear();
+    decal_gates.clear();
+    installed_assemble = installed_subscribe = original_assemble = original_subscribe = Object();
+    if (!error.empty()) throw p::Error(error);
+}
+
 }
 }

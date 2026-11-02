@@ -310,14 +310,19 @@ The build uses source-built Scaleform and a privately supplied licensed Wwise
 2017.1.9 SDK. Set `WOT_WWISE_SDK_ROOT` to that SDK when building locally. SDK
 inputs are not included in the output package. The engine embeds Python 2.7
 and runs the original installed client scripts through the restored native
-interfaces; it never starts the original executable or a hidden client.
+interfaces; it never starts the original executable. The NG launcher uses the
+same native executable for the visible player and its hidden simulation worker.
 
-The download includes `Start-Client.cmd` and a portable resource preparation
+The standalone development download includes `Start-Client.cmd` and a portable resource preparation
 runtime. Run it on Windows and enter your installed Chinese HD #1513 client
 path. Preparation retains the installed HD package precedence and original
 `game` personality, entity table, GUI and audio configuration. Native adapters
 and public engine resources are lower-priority additions. The original
 installation stays read only, and its game assets are not redistributed.
+
+The player launcher prepares these paths in its own Python runtime. Its package
+omits the development interpreter, authoring tools and unused SDK example
+resources; the standalone development download retains them.
 
 For path preparation without launching:
 

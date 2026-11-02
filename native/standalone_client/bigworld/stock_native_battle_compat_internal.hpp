@@ -30,10 +30,9 @@ struct Stock {
     // Every class/module attribute this layer replaced: (owner, name, value before the native install).
     struct Patch { Object owner; std::string name; Object previous; };
     std::vector<Patch> patches;
-    // The Python wrappers the lobby-wide install placed in ProjectileMover's importers.
-    Object python_collidable_entities;
 };
 Stock& stock();
+void replaceCollidableEntities(PyObject* replacement);
 Scopes& mutableScopes();
 // The configured battle of this round, or null when hooks must behave as stock.
 Battle* battle();

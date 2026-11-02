@@ -160,7 +160,15 @@ bool teamChat(Battle& b, const Value& message) {
     const std::int64_t sequence = integer(field(message, "chat_seq"));
     auto& seen = b.startup->chat_seen[key];
     if (sequence <= seen) return false;
-    const bool shown = p::flag(py::call(server::radio(b), "receive_team_chat", toPython(field(message, "text")).get(), issuer->second.get()).get());
+    // The wire owns UTF-8 bytes; the retained stock chat adapter accepts
+    // Unicode plaintext, as the former JSON decoder delivered on Python 2.
+    // Generic value conversion deliberately retains byte strings elsewhere.
+    const auto& text_value = field(message, "text").resolved();
+    if (text_value.kind != Value::Kind::Text) return false;
+    PyObject* decoded = PyUnicode_DecodeUTF8(text_value.text.data(), Py_ssize_t(text_value.text.size()), "strict");
+    if (!decoded) { PyErr_Clear(); return false; }
+    p::Ref plaintext(decoded);
+    const bool shown = p::flag(py::call(server::radio(b), "receive_team_chat", plaintext.get(), issuer->second.get()).get());
     if (shown) seen = sequence;
     return shown;
 }
@@ -223,15 +231,22 @@ constexpr double kLocalRowSeconds = 1. / 30.;
 p::Ref replayModule() { return module("gui.mods.offline_lan_0922.offline_replay"); }
 }
 
-// The native recorder starts once per round, after the client is ready and the battle-ready barrier was sent.
+// Start after the accepted live barrier, so it is owned by the header before raw recording attaches.
 void ensureRecording(Battle& b) {
-    if (b.worker) return;
+    if (b.worker || !b.running()) return;
     PyObject* client = b.engine.client.get();
     auto replay = replayModule();
     py::call(replay.get(), "poll_process_status", client);
     auto& s = *b.startup;
     if (b.worker || p::flag(py::optional(client, "is_offline_replay").get()) || !s.client_ready_received || !s.battle_ready_sent) return;
     p::Ref round(toPython(field(b.start, "round_id")));
+    if (round.get() == Py_None) return;
+    auto live = py::optional(client, "_offline_replay_live"), last = py::optional(client, "last_snapshot");
+    if (!PyDict_Check(live.get()) || !PyDict_Check(last.get())) return;
+    for (const auto& row : {std::make_pair(live.get(), "battle_live"), std::make_pair(last.get(), "snapshot")}) {
+        if (PyObject_RichCompareBool(p::value(row.first, "type").get(), p::text(row.second).get(), Py_EQ) != 1 ||
+            PyObject_RichCompareBool(p::value(row.first, "round_id").get(), round.get(), Py_EQ) != 1) return;
+    }
     if (PyObject_RichCompareBool(py::optional(client, "_offline_replay_attempted").get(), round.get(), Py_EQ) == 1) return;
     py::set(client, "_offline_replay_attempted", round.get());
     auto mode = py::call(replay.get(), "native_recording_mode");
@@ -240,7 +255,6 @@ void ensureRecording(Battle& b) {
         auto header = p::dict();
         p::set(header.get(), "welcome", py::optional(client, "_offline_replay_welcome"));
         p::set(header.get(), "start", py::call(replay.get(), "capture_message", toPython(b.start).get()));
-        auto last = py::optional(client, "last_snapshot");
         p::set(header.get(), "snapshot", py::call(replay.get(), "capture_message", p::flag(last.get()) ? last.get() : p::dict().get()));
         auto config = p::dict();
         auto keys = py::attr(replay.get(), "CONFIG_KEYS");
@@ -253,7 +267,7 @@ void ensureRecording(Battle& b) {
         if (PyErr_Occurred()) throw p::Error("config keys");
         p::set(header.get(), "config", config);
         p::set(header.get(), "player_id", p::integer(b.local_player));
-        p::set(header.get(), "live", py::optional(client, "_offline_replay_live"));
+        p::set(header.get(), "live", live);
         if (!PyDict_Check(PyDict_GetItemString(header.get(), "welcome"))) throw p::Error("recording has no negotiated welcome");
         py::call(PyDict_GetItemString(header.get(), "snapshot"), "setdefault", p::text("type").get(), p::text("snapshot").get());
         auto os = module("os");

@@ -860,6 +860,17 @@ float VehiclePhysics::hull_com_z() const {
     return mean_road_wheel_position(tank_->current_chassis());
 }
 
+void VehiclePhysics::set_hull_aiming_delta(const VehicleMatrix& rotation) {
+    if (!tank_) throw std::logic_error("WGVehiclePhysics is not configured");
+    // f898d0 copies Chassis +0x94 (the live hull transform), clears its
+    // translation and uses f705c0's three-term, non-accumulating product.
+    VehicleMatrix target = body_.transform;
+    target.rows[3][0] = target.rows[3][1] = target.rows[3][2] = 0.0f;
+    target.rows[3][3] = 1.0f;
+    multiply_vehicle_rotation_rows(target, rotation, target);
+    tank_->chassis.matrix_d0 = target;
+}
+
 void VehiclePhysics::set_tank_transform(const VehicleMatrix& transform,
                                         const VehicleNativeMath& math) {
     if (!tank_) throw std::logic_error("WGVehiclePhysics is not configured");

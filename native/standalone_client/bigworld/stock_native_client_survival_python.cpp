@@ -95,7 +95,7 @@ void present(NativeOwner&o,const Battle&b,bool drown,int level,double now){
     p::Ref result(PyObject_CallObject(callback.get(),args.get()));
 }
 bool metadata(NativeOwner&o){
-    auto descriptor=field(o.entity.get(),"typeDescriptor");
+    auto raw=field(o.entity.get(),"typeDescriptor"),descriptor=p::vehicleDescriptor(raw.get());
     if(o.metadata_valid&&o.descriptor&&o.descriptor->get()==descriptor.get()&&o.descriptor_revision==o.actor->descriptor_revision)return true;
     o.metadata_valid=false;
     try{auto hull=field(descriptor.get(),"hull"),tester=field(hull.get(),"hitTester"),bbox=field(tester.get(),"bbox"),low=p::item(bbox.get(),0),high=p::item(bbox.get(),1),chassis=field(descriptor.get(),"chassis"),mount=field(chassis.get(),"hullPosition");

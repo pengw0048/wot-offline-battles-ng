@@ -247,13 +247,13 @@ std::optional<Value> ramBotState(const Battle& b, std::int64_t bot_id, std::int6
             ? (plain(after->state->resolved().get(axis)) - plain(before->state->resolved().get(axis))) * 1000000. / span : 0.;
         out.object[std::string("ram_v") + axis] = number(v);
     }
-    // Contact motion rows (21 wide): the newest sequence per actor at or before the receipt time.
+    // Contact motion keeps 21 baseline values and the frozen body tail; select the newest non-future sequence.
     std::map<std::int64_t, const Value*> motion;
     for (const Value* list : {l.time == r.time ? nullptr : &left.get("ram_motion"), &right.get("ram_motion")}) {
         if (!list || list->resolved().kind != Kind::Array) continue;
         for (const auto& raw : list->resolved().array) {
             const auto& row = raw.resolved();
-            if (row.kind != Kind::Array || row.array.size() != 21) continue;
+            if (row.kind != Kind::Array || row.array.size() != 22) continue;
             const auto& id = row.array[0].resolved();
             const auto& seq = row.array[1].resolved();
             const auto& stamp = row.array[2].resolved();

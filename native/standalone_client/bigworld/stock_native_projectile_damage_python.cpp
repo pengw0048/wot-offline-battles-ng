@@ -2,6 +2,7 @@
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
+#include "stock_native_battle_critical_state.hpp"
 #include "stock_native_wire_value.hpp"
 #include <algorithm>
 namespace stock_native_projectile_damage {
@@ -137,10 +138,12 @@ bool readProjectileTargetState(PyObject* battle,bool human,std::int64_t network_
  Target out;out.identity={human,network_id};out.config=descriptor.critical;out.spall=descriptor.spall;out.crew_roster=descriptor.crew_roster;
  out.track_front=descriptor.front_bound;out.track_rear=descriptor.rear_bound;out.track_bulk=descriptor.bulk_factor;out.stun_config.resist_duration=descriptor.stun_resistance_duration;out.stun_config.resist_effect=descriptor.stun_resistance_effect;
  out.critical_target_base_revision=w::integral(state,human?"critical_base_revision":"combat_base_revision",-1);out.critical_target_ack_sequence=w::integral(state,human?"critical_ack_seq":"combat_ack_seq",-1);
- auto field=[&](const char* name){return p::Ref(stock_native_bot::readNativeEntityField(battle,entity,name));};auto native_health=field("health");out.config.health=int(p::wide(native_health.get()));auto hp=field("devices_hp"),destroyed=field("_destroyed_devices"),yellow=field("_critical_devices"),crew=field("_crew_ko");out.critical.fire=p::flag(field("is_on_fire").get());out.critical.ammo_rack_death=p::flag(field("_ammo_rack_death").get());
- auto names=[](PyObject* object){std::set<std::string> result;if(object==Py_None)return result;if(!PyList_CheckExact(object)&&!PyTuple_CheckExact(object)&&Py_TYPE(object)!=&PySet_Type&&Py_TYPE(object)!=&PyFrozenSet_Type)throw p::Error("Projectile critical list invalid");p::Ref iter(PyObject_GetIter(object));while(auto* value=PyIter_Next(iter.get())){p::Ref v(value);result.insert(p::string(value));}if(PyErr_Occurred())throw p::Error("Projectile critical list invalid");return result;};
- auto dead=names(destroyed.get()),damaged=names(yellow.get());out.critical.crew_ko=names(crew.get());if(hp.get()!=Py_None){if(!PyDict_Check(hp.get()))throw p::Error("Projectile device state invalid");Py_ssize_t i=0;PyObject *key=nullptr,*value=nullptr;while(PyDict_Next(hp.get(),&i,&key,&value)){const auto name=p::string(key);auto& d=out.critical.devices[name];d.hp=p::scalar(value);const auto m=descriptor.critical.maxima.find(name);if(m!=descriptor.critical.maxima.end())d.maximum=m->second;}}
- for(const auto& name:dead)out.critical.devices[name].destroyed=true;for(const auto& name:damaged)if(!dead.count(name))out.critical.devices[name].critical=true;
+ auto* current=native_battle::current();
+ auto entity_id=p::value(entity,"id");const auto engine_id=p::wide(entity_id.get());
+ const auto* actor=current?current->vehicleByEngine(engine_id):nullptr;
+ if(!actor||actor->id!=network_id||actor->kind!=(human?"player":"bot"))throw p::Error("Projectile target identity is stale");
+ out.critical=native_battle::critical::simulationState(*actor,entity,descriptor.critical.maxima);
+ auto native_health=p::Ref(stock_native_bot::readNativeEntityField(battle,entity,"health"));out.config.health=int(p::wide(native_health.get()));
  const auto& equipment=state.get("equipment_states").resolved();if(equipment.kind!=Kind::Null){w::size(equipment);for(const auto& value:equipment.array){const auto& row=value.resolved();if(row.kind!=Kind::Object)continue;const auto& contract=row.get("equipment").resolved();if(contract.kind!=Kind::Object)continue;const auto equipment_kind=w::string(contract.get("kind"));const auto uses=w::integral(row,"usesLeft",-1);if(equipment_kind=="extinguisher")out.config.fire_chance_factor*=std::max(0.,w::numeric(contract,"fireStartingChanceFactor",1.));else if(equipment_kind=="medkit"&&uses!=0)out.config.medkit_bonus+=w::numeric(contract,"bonusValue");if(uses!=0){out.stun_config.resist_duration+=w::numeric(contract,"stunResistanceDuration");out.stun_config.resist_effect+=w::numeric(contract,"stunResistanceEffect");}}}
  out.stun_config.resist_duration=std::max(0.,std::min(1.,out.stun_config.resist_duration));out.stun_config.resist_effect=std::max(0.,std::min(1.,out.stun_config.resist_effect));
  const auto& dynamic=state.get("effective_params").resolved().get("crew").resolved().get("dynamic_spotting").resolved();const auto& roster=dynamic.get("crew").resolved();const auto& states=dynamic.get("states").resolved();std::uint64_t mask=0;if(roster.kind!=Kind::Null&&w::size(roster)<=63)for(std::size_t i=0;i<roster.array.size();++i){if(out.critical.crew_ko.count(w::string(roster.array[i])))mask|=std::uint64_t(1)<<i;}

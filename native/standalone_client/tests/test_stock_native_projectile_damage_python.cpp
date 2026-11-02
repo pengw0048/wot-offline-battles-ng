@@ -103,7 +103,10 @@ he_expected=r.he_blast_contact(he_shell,(0.,0.,0.),(0.,0.,0.),(0.,0.,10.),[(2.,1
 entity=target
 entity._critical_devices=set();entity._crew_ko=set(['driver']);entity.is_on_fire=False
 record={'kind':'player','network_id':2,'state':{'health':500,'critical_base_revision':4,'critical_ack_seq':5,'equipment_states':[{'equipment':{'kind':'extinguisher','fireStartingChanceFactor':.8},'usesLeft':0},{'equipment':{'kind':'medkit','bonusValue':.3,'stunResistanceDuration':.1},'usesLeft':1}], 'effective_params':{'crew':{'dynamic_spotting':{'crew':['driver'],'states':{'1:0':{'battle_factors':{'engine_fire_factor':.5}}}}}}}}
-)PY";if(PyRun_SimpleString(target_script)){PyErr_Print();return 8;}Target parsed;if(!readProjectileTargetState(nullptr,true,2,stock_native_client_state::read(PyDict_GetItemString(PyDict_GetItemString(globals,"record"),"state")),PyDict_GetItemString(globals,"entity"),descriptor,parsed)){PyErr_Print();return 9;}assert(parsed.identity.human&&parsed.identity.id==2&&parsed.critical_target_base_revision==4&&parsed.critical_target_ack_sequence==5);assert(std::abs(parsed.config.fire_chance_factor-.4)<1.e-12&&std::abs(parsed.config.medkit_bonus-.3)<1.e-12&&std::abs(parsed.stun_config.resist_duration-.2)<1.e-12);
+)PY";if(PyRun_SimpleString(target_script)){PyErr_Print();return 8;}Target parsed;parsed.config.health=999;
+ // A bare entity fixture has no current native battle/critical owner and must not fabricate target state.
+ assert(!readProjectileTargetState(nullptr,true,2,stock_native_client_state::read(PyDict_GetItemString(PyDict_GetItemString(globals,"record"),"state")),PyDict_GetItemString(globals,"entity"),descriptor,parsed));PyErr_Clear();assert(parsed.config.health==999);
+
  const char* extra=R"PY(
 critical_cases=[]
 for name,hp in [('engineHealth',100.),('fuelTankHealth',50.),('ammoBayHealth',50.),('leftTrackHealth',70.),('commanderHealth',0.)]:

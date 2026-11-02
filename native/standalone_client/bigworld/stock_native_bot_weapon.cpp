@@ -89,6 +89,15 @@ std::vector<AimSample> vehicle_aim_samples(const std::vector<AimBox>& boxes) {
     centres.insert(centres.end(),edges.begin(),edges.end());return centres;
 }
 Point vehicle_aim_point(const AimSample& sample,const AimPose& pose) {
+    if(pose.hydraulic_body) {
+        const auto& body=*pose.hydraulic_body;auto applied=pose;
+        applied.hydraulic_body.reset();applied.require_hydraulic_body=false;applied.position={body[0],body[1],body[2]};
+        applied.yaw=body[3];applied.pitch=body[4];applied.roll=body[5];
+        applied.turret_yaw=body[6];applied.gun_pitch=body[7];
+        auto applied_sample=sample;applied_sample.static_yaw.reset();
+        return vehicle_aim_point(applied_sample,applied);
+    }
+    if(pose.require_hydraulic_body)throw std::runtime_error("human hydraulic aim sample is unavailable");
     auto p=sample.point;
     if (sample.turret) {const double a=sample.static_yaw.value_or(pose.turret_yaw),c=std::cos(a),s=std::sin(a);
         p={c*p[0]+s*p[2],p[1],-s*p[0]+c*p[2]};}

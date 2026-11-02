@@ -60,6 +60,7 @@ struct Value {
 };
 // Keep passive Actor/State consumers independent of the Python data decoder.
 inline ObjectFields::~ObjectFields()=default;
+std::optional<std::array<double,8>> hydraulicBody(const Value&);
 struct Sample {double time=0.;std::optional<std::int64_t> revision;Pose value{};Value state;};
 // Accepted contact history owns exactly the newest 512 revisions. Physical
 // slots stay fixed; chronological indexes follow head across wraparound.
@@ -133,6 +134,16 @@ struct Presentation {
     std::optional<std::array<std::int64_t,4>> health;   // health, display health, crew active, death reason
     Value critical;
     std::int64_t critical_revision=-1,critical_base_revision=0,critical_ack_seq=0;
+    // Accepted simulation state is independent of successful stock HUD delivery.
+    struct CriticalNotification {
+        Value event;
+        std::int64_t attacker=0,index=0,extra=0;
+    };
+    std::map<std::string,CriticalNotification> critical_hud_pending;
+    std::vector<std::string> critical_hud_order;
+    Handle critical_hud_entity;
+    std::int64_t critical_hud_engine_id=0;
+    std::uint64_t critical_hud_epoch=0;
     bool critical_layout_prewarmed=false;
     std::string ammo_death_cause;
     // Pose, aim, settle and track writes already made, so unchanged samples cost no engine call.
@@ -151,6 +162,7 @@ struct Actor {
     std::uint64_t revision=0,descriptor_revision=0;
     bool local=false,has_current=false,has_target=false,missing=false;
     Pose current{},target{},velocity{};
+    std::optional<std::array<double,8>> hydraulic_body,target_hydraulic_body;
     std::vector<Sample> samples;ReceiptHistory receipts;
     double target_time=0.,sample_time=0.,anchor_time=0.,anchor_local=0.,ideal=0.,delay=0.,observed=0.;
     std::optional<double> cursor,snapshot_interval,previous_sample;
@@ -171,6 +183,13 @@ struct Actor {
     double probe_max_gap_ms=0.;
     Presentation presented;
 };
+// Freeze a receipt only when its applied terrain sample is the requested pose.
+// A later current receipt cannot fill a historical or speculative proposal.
+inline std::optional<std::array<double,8>> hydraulicBodyAt(const Actor&a,const std::array<double,6>&baseline){
+    if(!a.has_current)return {};
+    for(unsigned i=0;i<6;++i)if(a.current[i]!=baseline[i])return {};
+    return a.hydraulic_body;
+}
 struct Event {Value payload;};
 static_assert(std::is_nothrow_move_constructible<Value>::value,"Value relocation must not copy nested data");
 static_assert(std::is_nothrow_move_constructible<Sample>::value,"Sample relocation must not copy accepted state");

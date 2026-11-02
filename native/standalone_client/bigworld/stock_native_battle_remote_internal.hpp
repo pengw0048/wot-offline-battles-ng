@@ -37,7 +37,8 @@ struct RemoteVehicle {
     std::optional<std::array<double, 6>> render_from, render_to;
     double render_started = 0., render_duration = 0.;
     std::optional<double> aim_relative_yaw, aim_gun_pitch, aim_desired_gun_pitch;
-    Object siege_relative_body, siege_body;
+    Object hydraulic_matrix;
+    std::optional<Pose> hydraulic_body;
     Object entity, model_changed, track_scroll, speed_link, rotation_link;
     std::optional<std::array<int, 2>> track_mode;   // (power, movement flags)
     std::optional<std::array<double, 4>> track_feed;   // rounded left, right, power, flags (contacts folded below)

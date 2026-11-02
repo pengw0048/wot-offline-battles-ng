@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace stock_native_bot_python {
@@ -64,6 +65,35 @@ inline std::int64_t wide(PyObject*p){
 #endif
     if(PyLong_Check(p)){auto n=PyLong_AsLongLong(p);if(PyErr_Occurred())throw Error("Native Bot integer overflow");return n;}
     const double v=scalar(p);if(v<-9223372036854775808.||v>=9223372036854775808.||std::floor(v)!=v)throw Error("Native Bot integer invalid");return std::int64_t(v);
+}
+// #1513 CompositeVehicleDescriptor forwards through __getattr__, whereas entity
+// reads deliberately bypass dynamic fallback. Freeze its concrete current-mode
+// descriptor once at the descriptor boundary, retaining it across native reentry.
+inline Ref vehicleDescriptor(PyObject*object){
+    checked(object);
+#if PY_MAJOR_VERSION < 3
+    if(PyInstance_Check(object)||PyClass_Check(object))return retain(object);
+#endif
+    const auto direct=[&](const char*name){
+        auto key=text(name);auto*value=PyObject_GenericGetAttr(object,key.get());
+        if(!value&&PyErr_ExceptionMatches(PyExc_AttributeError)){PyErr_Clear();return retain(Py_None);}
+        return Ref(value);
+    };
+    auto mode=direct("_CompositeVehicleDescriptor__vehicleMode");
+    auto normal=direct("_CompositeVehicleDescriptor__vehicleDescr");
+    auto siege=direct("_CompositeVehicleDescriptor__siegeDescr");
+    if(mode.get()==Py_None&&normal.get()==Py_None&&siege.get()==Py_None)return retain(object);
+    if(mode.get()==Py_None||PyBool_Check(mode.get()))
+        throw Error("#1513 Composite vehicle descriptor is incomplete");
+    bool integer=PyLong_CheckExact(mode.get());
+#if PY_MAJOR_VERSION < 3
+    integer=integer||PyInt_CheckExact(mode.get());
+#endif
+    if(!integer)throw Error("#1513 Composite vehicle mode is not an integer");
+    const auto current=wide(mode.get());
+    if(current!=0&&current!=1)throw Error("#1513 Composite vehicle mode is invalid");
+    if((current==1?siege.get():normal.get())==Py_None)throw Error("#1513 selected vehicle descriptor is unavailable");
+    return current==1?std::move(siege):std::move(normal);
 }
 inline bool flag(PyObject*p){if(!p||p==Py_None)return false;int v=PyObject_IsTrue(p);if(v<0)throw Error("Native Bot boolean invalid");return v!=0;}
 inline std::string string(PyObject*p){

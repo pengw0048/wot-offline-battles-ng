@@ -98,20 +98,38 @@ bool readVehicle(PyObject * descriptor,PyObject * entity,bool authority,std::uin
         if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return false;
     }
 }
+std::optional<std::array<double,8>> rebaseHydraulicBody(const std::array<double,8>&body,
+    const std::array<double,6>&baseline,const std::array<double,6>&proposal){
+    if(baseline==proposal)return body;
+    BW::Matrix before,after,applied,inverse;
+    before.setRotate(float(baseline[3]),float(baseline[4]),float(baseline[5]));before.translation(native({baseline[0],baseline[1],baseline[2]}));
+    after.setRotate(float(proposal[3]),float(proposal[4]),float(proposal[5]));after.translation(native({proposal[0],proposal[1],proposal[2]}));
+    applied.setRotate(float(body[3]),float(body[4]),float(body[5]));applied.translation(native({body[0],body[1],body[2]}));
+    if(!inverse.invert(before))return {};
+    const auto rebased=product(product(applied,inverse),after);const auto point=rebased.applyToOrigin();
+    auto out=body;out[0]=point.x;out[1]=point.y;out[2]=point.z;out[3]=rebased.yaw();out[4]=rebased.pitch();out[5]=rebased.roll();return out;
+}
 Frames frames(const Vehicle& v,const Pose& p)
 {
     Frames out;out.chassis.setRotate(float(p.yaw),float(p.pitch),float(p.roll));out.chassis.translation(native(p.position));out.body=out.chassis;
-    if(p.native_hydraulics&&v.authority_geometry&&v.has_siege&&(p.siege==2||p.siege==3)&&v.native_body&&v.native_ground) {
+    if(v.has_siege && p.require_hydraulic_body && !p.hydraulic_body)
+        throw std::runtime_error("human hydraulic body sample is unavailable");
+    if(p.hydraulic_body) {
+        const auto& body=*p.hydraulic_body;
+        out.body.setRotate(float(body[3]),float(body[4]),float(body[5]));
+        out.body.translation(native({body[0],body[1],body[2]}));
+    } else if(p.native_hydraulics&&v.authority_geometry&&v.has_siege&&(p.siege==2||p.siege==3)&&v.native_body&&v.native_ground) {
         BW::Matrix body,ground,inverse;v.native_body->matrix(body);v.native_ground->matrix(ground);
         if(!inverse.invert(ground))throw std::runtime_error("native hydraulic ground matrix is singular");
         out.body=product(product(body,inverse),out.chassis);
     }
     if(!out.body_inverse.invert(out.body)||!out.chassis_inverse.invert(out.chassis))throw std::runtime_error("native vehicle matrix is singular");
-    double turret_yaw=v.static_turret_yaw.value_or(p.turret_yaw),gun_pitch=v.static_gun_pitch.value_or(p.gun_pitch);
+    double turret_yaw=p.hydraulic_body?(*p.hydraulic_body)[6]:v.static_turret_yaw.value_or(p.turret_yaw),
+           gun_pitch=p.hydraulic_body?(*p.hydraulic_body)[7]:v.static_gun_pitch.value_or(p.gun_pitch);
     // The fixed worker reads the native component providers at the query
     // boundary, independently of its unblended canonical ground placement.
-    if(p.native_components&&v.native_turret){BW::Matrix sampled;v.native_turret->matrix(sampled);turret_yaw=sampled.yaw();}
-    if(p.native_components&&v.native_gun){BW::Matrix sampled;v.native_gun->matrix(sampled);gun_pitch=sampled.pitch();}
+    if(!p.hydraulic_body&&p.native_components&&v.native_turret){BW::Matrix sampled;v.native_turret->matrix(sampled);turret_yaw=sampled.yaw();}
+    if(!p.hydraulic_body&&p.native_components&&v.native_gun){BW::Matrix sampled;v.native_gun->matrix(sampled);gun_pitch=sampled.pitch();}
     BW::Matrix hull,turret,gun,rotation;
     hull.setTranslate(-native(v.hull_offset));
     turret.setTranslate(-native(v.hull_offset)-native(v.turret_offset));rotation.setRotateY(-float(turret_yaw));turret.postMultiply(rotation);

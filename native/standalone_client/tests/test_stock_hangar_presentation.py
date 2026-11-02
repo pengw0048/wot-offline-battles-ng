@@ -88,7 +88,7 @@ def generated_source(sources):
     return text
 
 
-def build_host(test, directory, sources):
+def build_host(test, directory, sources, production=None):
     python = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
     config = python.with_name('python2.7-config')
     if not config.exists():
@@ -97,7 +97,12 @@ def build_host(test, directory, sources):
         (directory / 'include' / fake).parent.mkdir(parents=True, exist_ok=True)
         (directory / 'include' / fake).write_text('#pragma once\n')
     source = directory / 'host.cpp'
-    source.write_text(generated_source(sources))
+    text = generated_source(sources)
+    if production is not None:
+        local = directory / 'stock_hangar_presentation_mutant.cpp'
+        local.write_text(production)
+        text = text.replace('#include "stock_hangar_presentation.cpp"', '#include "%s"' % local)
+    source.write_text(text)
     flags = [flag for flag in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
              if flag != '-DNDEBUG']
     libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
@@ -217,6 +222,19 @@ class StockHangarPresentationTest(unittest.TestCase):
             self.assertIn('colour grading: repeated original BattleLoading reaches the native absent-owner binding',
                           result.stdout)
             print(result.stdout.strip())
+            # Negative control: keep allocation-time reuseZ depth instead of
+            # explicitly rebinding the active scene. The submission fake models
+            # the distinct captured/active surfaces observed on Windows.
+            production = (ROOT / 'bigworld/stock_hangar_presentation.cpp').read_text()
+            binding = 'SUCCEEDED( Moo::rc().device()->SetDepthStencilSurface( sceneDepth.pComObject() ) )'
+            self.assertEqual(production.count(binding), 1)
+            mutant = Path(directory) / 'negative'
+            mutant.mkdir()
+            binary = build_host(self, mutant, sources, production.replace(binding, 'true'))
+            result = subprocess.run([str(binary), str(ROOT / 'tests/stock_hangar_presentation_consumer.py'),
+                                     str(package)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, 'Stale captured depth was silently accepted')
+            self.assertIn('depth == &Moo::rc().device()->scene', result.stderr)
 
     def test_production_material_binding_owns_presentation_parameters(self):
         client = os.environ.get('WOT_0922_CLIENT')

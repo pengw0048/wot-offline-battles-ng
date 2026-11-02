@@ -14,6 +14,8 @@ std::vector<stock_native_bot_armor::Layer> layers(const std::vector<geometry::Hi
 }
 geometry::Pose pose(geometry::Pose p,const stock_native_bot_armor::Body& b)
 {p.position={{b.x,b.y,b.z}};p.yaw=b.yaw;p.pitch=b.pitch;p.roll=b.roll;return p;}
+bool bodyKnown(const geometry::Vehicle* vehicle,const geometry::Pose& p)
+{return vehicle&&(!vehicle->has_siege||!p.require_hydraulic_body||p.hydraulic_body.has_value());}
 }
 const GeometryRow* NativeWeaponWorld::row(std::int64_t id)const
 {const auto it=context_.rows.find(id);return it==context_.rows.end()?nullptr:&it->second;}
@@ -46,6 +48,9 @@ bool NativeWeaponWorld::barrel_under_water(const step::Point& start)
 bool NativeWeaponWorld::vehicle_segment(const step::LaneBody& body,const step::Point& start,const step::Point& end)
 {
     const auto actor=row(body.id);if(!actor||!actor->available)return false;
+    // The bool admission API cannot prove a clear lane with unknown geometry.
+    // Hold this launch; do not manufacture an intersection or damage result.
+    if(!bodyKnown(context_.vehicles.find(actor->key),actor->pose))return true;
     return !intersections(*actor,actor->pose,start,end).empty();
 }
 bool NativeWeaponWorld::debris_segment(const step::Point& start,const step::Point& end)
@@ -59,7 +64,7 @@ bool NativeWeaponWorld::wreck_segment_blocked(const step::Point& start,const ste
 {
     for(const auto id:context_.wrecks) {
         if(id==source_||id==target_)continue;
-        const auto actor=row(id);if(actor&&!intersections(*actor,actor->pose,start,end).empty())return true;
+        const auto actor=row(id);if(actor&&(!bodyKnown(context_.vehicles.find(actor->key),actor->pose)||!intersections(*actor,actor->pose,start,end).empty()))return true;
     }
     return debris_segment(start,end);
 }
@@ -81,7 +86,7 @@ step::ArcQuery NativeWeaponWorld::segment(const step::Point& start,const step::P
     // Arc work has no source/target exclusion: the original queue shares its
     // chord service across all guns and tests the complete retained wreck set.
     for(const auto id:context_.wrecks) {
-        const auto actor=row(id);if(actor&&!intersections(*actor,actor->pose,start,finish).empty())return step::ArcQuery::failed;
+        const auto actor=row(id);if(actor&&(!bodyKnown(context_.vehicles.find(actor->key),actor->pose)||!intersections(*actor,actor->pose,start,finish).empty()))return step::ArcQuery::failed;
     }
     if(debris_segment(start,finish))return step::ArcQuery::failed;
     point=finish;return result==stock_native_world::QueryStatus::Found?step::ArcQuery::hit:step::ArcQuery::clear;
@@ -89,7 +94,7 @@ step::ArcQuery NativeWeaponWorld::segment(const step::Point& start,const step::P
 bool NativeWeaponWorld::ready(const stock_native_bot_armor::Body& body)
 {
     const auto actor=row(body.id);if(!actor||!actor->available)return false;
-    const auto vehicle=context_.vehicles.find(actor->key);return vehicle&&vehicle->ready;
+    const auto vehicle=context_.vehicles.find(actor->key);return vehicle&&vehicle->ready&&bodyKnown(vehicle,actor->pose);
 }
 stock_native_bot_armor::Body NativeWeaponWorld::physical_body(const stock_native_bot_armor::Body&body)
 {

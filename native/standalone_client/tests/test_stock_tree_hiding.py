@@ -228,7 +228,7 @@ class OriginalHidingInstructionTests(unittest.TestCase):
         original = json.loads(run.stdout)
         with tempfile.TemporaryDirectory() as folder:
             source = PROBE.replace('#include "stock_tree_hiding.hpp"',
-                                   (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text())
+                                   (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text(encoding='utf-8'))
             binary = compile_host(Path(folder), source, 'hiding_probe')
             result = subprocess.run([str(binary)], input=probe_input(cases), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -667,7 +667,7 @@ REOPEN = r"""
 
 
 def lifecycle_source(engine_root):
-    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
     state = scene[scene.index('struct TreeCollisionBodyState'):]
     state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
     tree = '\n'.join(function(scene, signature) for signature in (
@@ -681,17 +681,17 @@ def lifecycle_source(engine_root):
         'void StockTreeSceneHandler::unload()'))
     tree = tree.replace('void StockTreeSceneHandler::unload()',
                         'void CompiledSpace::StockTreeSceneHandler::unload()')
-    camera = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text()
+    camera = (ROOT / 'bigworld/stock_cursor_camera.cpp').read_text(encoding='utf-8')
     published = '\n'.join(function(camera, signature) for signature in (
         'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )',
         'void initStockCursorCameraHiding()', 'void finiStockCursorCameraHiding()'))
-    patched = (engine_root / 'lib/camera/cursor_camera.cpp').read_text()
+    patched = (engine_root / 'lib/camera/cursor_camera.cpp').read_text(encoding='utf-8')
     members = '\n'.join(function(patched, signature) for signature in (
         'CursorCamera::~CursorCamera()', 'void CursorCamera::sptHiding( bool value )'))
     update = function(patched, 'void CursorCamera::updateStock( float deltaTime, bool stablePass )')
     statement = '\tpublishStockCursorCameraHiding( pTarget_.get(), sptHiding_ );'
     assert update.count(statement) == 1, 'The patched update publishes once per pass'
-    header = (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text()
+    header = (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text(encoding='utf-8')
     return (LIFECYCLE_HOST.replace('#include "stock_tree_hiding.hpp"', header)
             .replace('@TREE_STATE@', state).replace('@TREE_FUNCTIONS@', tree)
             .replace('@CAMERA_FUNCTIONS@', published)
@@ -814,7 +814,7 @@ class SemitransparentEffectTests(unittest.TestCase):
                         effects[-1].write_bytes(outer.read('effect'))
             output = subprocess.run([str(folder / 'probe')] + [str(e) for e in effects], capture_output=True,
                                     text=True, check=True).stdout
-        source = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        source = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
         for variant in output.split('-\n')[:2]:
             techniques = dict(line.split()[1:] for line in variant.splitlines() if line.startswith('T '))
             uniforms = dict(line.split()[1:] for line in variant.splitlines() if line.startswith('U '))
@@ -992,14 +992,14 @@ def script_macros():
 
 
 def api_host_source():
-    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
     state = scene[scene.index('struct TreeCollisionBodyState'):]
     state = state[:state.index('\n}\n', state.index('TreeHidingState & treeHiding()')) + 3]
     functions = scene[scene.index('void wg_enableTreeHiding( bool enable )'):]
     functions = functions[:functions.index('\n', functions.index('PY_AUTO_MODULE_FUNCTION( RETVOID, wg_enableTreeTransparency')) + 1]
     fade = function(scene, 'bool fadeTreeInstance( TreeInstance & instance, const wot::StockTreeFadeInput & input )')
     d3dx = PROBE[PROBE.index('struct HostD3DX'):PROBE.index('int main()')].replace('struct HostD3DX', 'struct TreeHidingD3DX')
-    return (API_HOST.replace('#include "stock_tree_hiding.hpp"', (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text())
+    return (API_HOST.replace('#include "stock_tree_hiding.hpp"', (ROOT / 'bigworld/stock_tree_hiding.hpp').read_text(encoding='utf-8'))
             .replace('@MACROS@', script_macros()).replace('@D3DX@', d3dx).replace('@STATE@', state)
             .replace('@FUNCTIONS@', functions).replace('@FADE@', fade))
 
@@ -1298,7 +1298,7 @@ int main()
 
 
 def stage_host_source():
-    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+    scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
     start = scene.index('namespace\n{\nclass HidingTargetScope')
     helpers = scene[start:scene.index('// #1513 009c4ed0. Near-camera')]
     stage = function(scene, 'void drawStockTreeSemitransparentStage( bool skipDrawing, bool optimiser, bool blur )')
@@ -1409,7 +1409,7 @@ class OptimiserStageTests(unittest.TestCase):
                 not case.get('clear', True), not case.get('blurred', True), case.get('technique', 0)))
         with tempfile.TemporaryDirectory() as folder:
             source = stage_host_source().replace('#include "wot/stock_dynamic_resolution.hpp"',
-                                                 (ROOT / 'include/wot/stock_dynamic_resolution.hpp').read_text())
+                                                 (ROOT / 'include/wot/stock_dynamic_resolution.hpp').read_text(encoding='utf-8'))
             binary = compile_host(Path(folder), '#include <array>\n' + source, 'tree_hiding_stage')
             result = subprocess.run([str(binary)], input='\n'.join(rows) + '\n', capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1576,7 +1576,7 @@ class HidingTargetPoolTests(unittest.TestCase):
                 expected.append([texture[1], texture[2], D3D_FORMATS[wg[texture[6]]], D3D_FORMATS[depth], 0,
                                  target['clear'][0]])
         self.assertEqual(original[0][0]['calls'][1][1:3], [400, 225])
-        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
         body = function(scene, 'void createHidingTargets()')
         with tempfile.TemporaryDirectory() as folder:
             binary = compile_host(Path(folder), POOL_HOST.replace('@MEMBERS@', '').replace('@BODY@', body).replace(
@@ -1615,7 +1615,7 @@ RESET_MAIN = """
 class HidingTargetResetTests(unittest.TestCase):
     def test_device_reset_recreates_and_failed_init_clears_the_targets(self):
         requirements(self, oracle=False)
-        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text()
+        scene = (ROOT / 'bigworld/stock_tree_scene.cpp').read_text(encoding='utf-8')
         body = '\n'.join(function(scene, signature) for signature in (
             'virtual void deleteUnmanagedObjects()', 'virtual void createUnmanagedObjects()',
             'void createHidingTargets()'))
@@ -1708,7 +1708,7 @@ class UnrestoredFocusConsumerGraphTests(unittest.TestCase):
 class HidingConsumerReachabilityTests(unittest.TestCase):
     def test_every_published_target_has_a_production_reader(self):
         """The base adapter stored targets that no production code read."""
-        sources = {path.name: path.read_text() for path in (ROOT / 'bigworld').glob('*.cpp')}
+        sources = {path.name: path.read_text(encoding='utf-8') for path in (ROOT / 'bigworld').glob('*.cpp')}
         publish = function(sources['stock_cursor_camera.cpp'],
                            'void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )')
         self.assertIn('setStockTreeCameraTarget( enabled ? target : NULL );', publish)
@@ -1725,7 +1725,7 @@ class HidingConsumerReachabilityTests(unittest.TestCase):
         draw = function(scene, 'virtual void doDraw( const SceneDrawContext & context, const SceneObject * objects, size_t count )')
         self.assertIn('fadeTreeInstance( *instance, input )', draw)
         self.assertIn('owner->semitransparent.push_back( item )', draw)
-        trees = (ROOT / 'bigworld/patch_stock_space_trees.py').read_text()
+        trees = (ROOT / 'bigworld/patch_stock_space_trees.py').read_text(encoding='utf-8')
         self.assertEqual(trees.count('drawStockTreeSemitransparent( false )'), 1)
         self.assertEqual(trees.count('drawStockTreeSemitransparentStage('), 1)
 

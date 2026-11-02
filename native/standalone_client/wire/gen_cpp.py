@@ -1,5 +1,9 @@
-"""Emit the C++ tables for stock_wire_codec from schema.py (python3 gen_cpp.py OUTPUT)."""
+"""Emit C++ wire tables (gen_cpp.py OUTPUT), or validate final client producers and tables."""
+import argparse
+import ast
+import importlib.util
 import os
+from pathlib import Path
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -89,7 +93,7 @@ def enum_value(value):
     return '{4,0,%s}' % cstr(value)
 
 
-def emit(schema, path):
+def render(schema):
     t = Tables(schema)
     messages = []
     for name, mid in sorted(schema.message_ids.items(), key=lambda item: item[1]):
@@ -121,9 +125,80 @@ def emit(schema, path):
         'static const MessageDesc messages[] = {']
     lines += ['    {%s,%d,%d,%d},' % (cstr(n), lay, a, b) for n, lay, a, b in messages]
     lines += ['};', 'static const uint32_t message_count = %d;' % len(messages), '']
+    return '\n'.join(lines)
+
+
+def emit(schema, path):
     with open(path, 'w') as target:
-        target.write('\n'.join(lines))
+        target.write(render(schema))
+
+
+def client_producers(source):
+    """Extract message literals from the final, adapted LAN client methods."""
+    clients = [node for node in ast.parse(source).body
+               if isinstance(node, ast.ClassDef) and node.name == 'LANClient']
+    if len(clients) != 1:
+        raise ValueError('Expected one final LANClient declaration')
+    producers = {}
+    for method in clients[0].body:
+        if not isinstance(method, ast.FunctionDef):
+            continue
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if (isinstance(key, ast.Constant) and key.value == 'type' and
+                        isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                    producers.setdefault(value.value, set()).add(method.name)
+    if not producers:
+        raise ValueError('The final LANClient has no message producers')
+    return producers
+
+
+def check_client(source, schema=SCHEMA, table=None):
+    """Fail staging if a shipped producer or the compiled table drifts."""
+    producers = client_producers(source)
+    missing = sorted(kind for kind in producers if kind not in schema.messages)
+    if missing:
+        raise ValueError('LANClient messages missing from the wire schema: ' + ', '.join(
+            '%s (%s)' % (kind, ', '.join(sorted(producers[kind]))) for kind in missing))
+    table = Path(table) if table is not None else Path(HERE).parent / 'bigworld/stock_wire_schema.inc'
+    if table.read_text(encoding='utf-8') != render(schema):
+        raise ValueError('Generated wire table is stale: regenerate stock_wire_schema.inc with gen_cpp.py')
+    return producers
+
+
+def adapted_client(fork):
+    """Use the package's own adapter when checking the launcher source pin."""
+    path = Path(HERE).parent / 'bigworld/prepare_offline_fork.py'
+    spec = importlib.util.spec_from_file_location('wire_prepare_offline_fork', path)
+    prepare = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prepare)
+    relative = prepare.NATIVE_MATH_PATH.with_name('lan_client.py')
+    return prepare.ADAPTERS[relative]((Path(fork) / relative).read_text(encoding='utf-8'))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('output', nargs='?')
+    checks = parser.add_mutually_exclusive_group()
+    checks.add_argument('--check-client', help='final adapted lan_client.py')
+    checks.add_argument('--check-fork-source', help='pinned source to adapt and validate')
+    args = parser.parse_args(argv)
+    if bool(args.output) == bool(args.check_client or args.check_fork_source):
+        parser.error('Choose OUTPUT or one client integrity check')
+    try:
+        if args.output:
+            emit(SCHEMA, args.output)
+        else:
+            source = (Path(args.check_client).read_text(encoding='utf-8') if args.check_client
+                      else adapted_client(args.check_fork_source))
+            check_client(source)
+    except (OSError, SyntaxError, ValueError) as error:
+        print('Wire schema integrity failed: %s' % error, file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    emit(SCHEMA, sys.argv[1])
+    sys.exit(main())

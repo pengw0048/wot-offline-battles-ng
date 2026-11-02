@@ -209,7 +209,7 @@ p::Ref get(PyObject* compatibility, PyObject* vehicle, PyObject* key, PyObject* 
     const auto name = p::string(key);
     const bool overlays = named(name, {"health", "isCrewActive", "position", "yaw", "matrix", "speedInfo"});
     if ((!overlays && !named(name, {"filter", "cell", "show", "guiSessionProvider"})) ||
-        !p::truth(compatibility, "_battle_active")) return original(compatibility, vehicle, key);
+        !compat::active()) return original(compatibility, vehicle, key);
     if (overlays) {
         auto* row = overlay(compatibility, vehicle); auto* value = field(row, name.c_str());
         if (!value) return original(compatibility, vehicle, key);
@@ -280,12 +280,6 @@ PyObject* callOriginal(PyObject* compatibility, PyObject* getter, PyObject* self
     PyObject* value = PyObject_CallFunctionObjArgs(get, self, key, nullptr);
     Py_DECREF(get); return value;
 }
-int battleActive(PyObject* compatibility) {
-    static PyObject* key;
-    PyObject* value = interned(key, "_battle_active") ? PyObject_GetAttr(compatibility, key) : nullptr;
-    if (!value) return -1;
-    const int active = PyObject_IsTrue(value); Py_DECREF(value); return active;
-}
 bool isName(PyObject* key, const char* name) {
     if (PyString_Check(key)) return std::strcmp(PyString_AS_STRING(key), name) == 0 &&
         std::size_t(PyString_GET_SIZE(key)) == std::strlen(name);
@@ -300,8 +294,7 @@ PyObject* avatarGet(PyObject* compatibility, PyObject* avatar, PyObject* key) {
     const bool server = isName(key, "base") || isName(key, "cell") || isName(key, "server") || isName(key, "bwProto");
     const bool vehicle = !server && isName(key, "vehicle");
     if (!server && !vehicle) return callOriginal(compatibility, original_key, avatar, key);
-    const int active = battleActive(compatibility);
-    if (active < 0) return nullptr;
+    const bool active = compat::active();
     if (active && server) {
         auto fake = p::text("fakeServer");
         if (PyObject* value = callOriginal(compatibility, original_key, avatar, fake.get())) return value;
@@ -341,8 +334,7 @@ PyObject* compoundGet(PyObject* compatibility, PyObject* appearance, PyObject* k
     PyObject* value = callOriginal(compatibility, interned(original_name, "_original_compound_getattribute"), appearance, key);
     if (!value || !isName(key, "_CompoundAppearance__filter")) return value;
     p::Ref held(value);
-    const int active = battleActive(compatibility);
-    if (active < 0) return nullptr;
+    const bool active = compat::active();
     // Only the direct LOAD_ATTR in the original __onModelsRefresh gets the proxy.
     if (!active || !same(compatibility, "_compound_refreshing_models", appearance) ||
         !same(compatibility, "_compound_models_refresh_code", callerCode())) return held.release();
@@ -390,7 +382,7 @@ PyObject* hookCall(PyObject* self, PyObject* args, PyObject* kwargs) {
                 if (count - offset) { PyErr_SetString(PyExc_TypeError, "Duplicate instantaneous argument"); return nullptr; }
                 instantaneous = PyDict_GetItemString(kwargs, "get_instantaneous");
             }
-            if (p::truth(compatibility, "_battle_active")) {
+            if (compat::active()) {
                 Overlay* row = [&]() -> Overlay* {
                     try {
                         auto getter = attr(compatibility, "_original_avatar_getattribute"); auto name = p::text("playerVehicleID");
@@ -414,7 +406,7 @@ PyObject* hookCall(PyObject* self, PyObject* args, PyObject* kwargs) {
         }
         if (hook->kind == 1) {
             auto* key = PyTuple_GET_ITEM(args, offset); auto* value = PyTuple_GET_ITEM(args, offset + 1); const auto name = p::string(key);
-            if (p::truth(compatibility, "_battle_active") && named(name, {"health", "isCrewActive", "position", "yaw", "matrix"})) {
+            if (compat::active() && named(name, {"health", "isCrewActive", "position", "yaw", "matrix"})) {
                 const bool mandatory = name == "health" || name == "isCrewActive"; auto* row = overlay(compatibility, vehicle, mandatory);
                 if (mandatory || activePose(row)) {
                     row->fields[name] = native_battle::borrow(value);
@@ -424,7 +416,7 @@ PyObject* hookCall(PyObject* self, PyObject* args, PyObject* kwargs) {
             auto setter = attr(compatibility, "_original_vehicle_setattr");
             return PyObject_CallFunctionObjArgs(setter.get(), vehicle, key, value, nullptr);
         }
-        if (p::truth(compatibility, "_battle_active")) {
+        if (compat::active()) {
             auto* row = overlay(compatibility, vehicle); auto* value = field(row, "speed");
             if (activePose(row) && value) return p::retain(value).release();
         }

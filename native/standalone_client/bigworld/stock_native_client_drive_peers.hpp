@@ -5,6 +5,7 @@ namespace stock_native_client_drive {
 struct HistoricalMotion {
     Point velocity{};
     std::optional<std::array<double,21>> witness;
+    std::optional<std::array<double,8>> hydraulic_body;
     std::optional<std::array<ID,4>> bracket;
 };
 std::optional<HistoricalMotion> historicalMotion(const stock_native_client_state::Actor&,double cursor,ID player);

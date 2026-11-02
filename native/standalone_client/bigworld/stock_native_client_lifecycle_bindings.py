@@ -282,11 +282,23 @@ RECORDING_PORTS = ('poll_process_status(client)', 'ensure_recording(runtime)', '
 
 def offline_replay(source):
     """Route the per-frame offline replay recording functions to their native ports."""
+    tree = ast.parse(source)
+    lines = source.splitlines(True)
+    edits = []
     for call in RECORDING_PORTS:
         definition = 'def %s:\n' % call
         if source.count(definition) != 1:
             raise ValueError('The pinned replay recording seam changed: ' + call)
-        source = source.replace(definition, definition + '    return _offline_lifecycle_native.%s, globals())\n' % call[:-1])
+        nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name == call.split('(')[0]]
+        if len(nodes) != 1:
+            raise ValueError('The pinned replay recording function seam changed: ' + call)
+        node = nodes[0]
+        edits.append((node.body[0].lineno - 1, node.end_lineno,
+                      '    return _offline_lifecycle_native.%s, globals())\n' % call[:-1]))
+    for start, end, body in sorted(edits, reverse=True):
+        lines[start:end] = [body]
+    source = ''.join(lines)
     future = 'from __future__ import print_function\n'
     if source.count(future) != 1:
         raise ValueError('The pinned replay recording import seam changed')
@@ -307,18 +319,26 @@ LAN_POLL_PORTS = (
 
 def lan_client(source):
     """Route the transport timing and the main-thread poll chain to their native ports."""
-    seam = '\n\ntry:\n    string_types = (basestring,)\n'
-    if source.count(seam) != 1 or source.count('class _TransportPerformance(object):') != 1:
+    tree = ast.parse(source)
+    performance = [node for node in tree.body if isinstance(node, ast.ClassDef)
+                   and node.name == '_TransportPerformance']
+    clients = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'LANClient']
+    if len(performance) != 1 or len(clients) != 1:
         raise ValueError('The pinned transport performance seam changed')
-    source = source.replace(seam, '\n\ndef _TransportPerformance(generation):\n'
-                                  '    return _offline_lifecycle_native.TransportPerformance(globals(), generation)\n' + seam)
+    lines = source.splitlines(True)
+    edits = [(performance[0].lineno - 1, performance[0].end_lineno,
+              'def _TransportPerformance(generation):\n'
+              '    return _offline_lifecycle_native.TransportPerformance(globals(), generation)\n')]
     for name, call in LAN_POLL_PORTS:
-        pattern = r'(^    def ' + re.escape(name) + r'\(self[^:]*\):\n)'
-        matches = list(re.finditer(pattern, source, re.M))
-        if len(matches) != 1:
+        nodes = [node for node in clients[0].body if isinstance(node, ast.FunctionDef) and node.name == name]
+        if len(nodes) != 1 or not nodes[0].args.args or nodes[0].args.args[0].arg != 'self':
             raise ValueError('The pinned LAN poll seam changed: ' + name)
-        index = matches[0].end()
-        source = source[:index] + '        return _offline_lifecycle_native.' + call + '\n' + source[index:]
+        node = nodes[0]
+        edits.append((node.body[0].lineno - 1, node.end_lineno,
+                      '        return _offline_lifecycle_native.' + call + '\n'))
+    for start, end, body in sorted(edits, reverse=True):
+        lines[start:end] = [body]
+    source = ''.join(lines)
     future = 'from __future__ import print_function\n'
     if not source.startswith(future):
         raise ValueError('The pinned transport performance import seam changed')

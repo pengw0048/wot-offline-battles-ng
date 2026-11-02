@@ -96,7 +96,8 @@ public:
             FAILED( effect->SetInt( "particleQuality", parameters.quality ) ) ||
             FAILED( effect->SetInt( "particleTransformMode", parameters.transformMode ) ) ||
             FAILED( effect->SetInt( "particleDebugMode", parameters.debugMode ) ) ||
-            FAILED( effect->SetInt( "g_offscreenMode", parameters.offscreenMode ) ) ||
+            // #1513 f99f4b..f99f59 uses the boolean setter for this selector.
+            FAILED( effect->SetBool( "g_offscreenMode", parameters.offscreenMode ) ) ||
             FAILED( effect->SetInt( "particleTransparencyMode", parameters.transparencyMode ) ) ||
             FAILED( effect->SetFloat( aspect, parameters.aspectRatio ) ) ||
             FAILED( effect->SetFloat( colour, parameters.colourMultiplier ) ) ||

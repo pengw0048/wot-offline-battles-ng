@@ -103,6 +103,28 @@ void uniforms(Probe & probe, wot::StockDx9EffectMaterial & definition)
             check(probe.bytes(binding, "depthFunc", 4) == raw(&depth, 4), "member depthFunc reaches the draw");
             check(probe.bytes(binding, "edgeDetectOccluded", 4) == raw(&occluded, 4),
                   "member occlusion reaches the draw");
+            if (occluded)
+            {
+                wot::StockDx9PassSelection pass;
+                std::vector<wot::StockDx9StateValue> states;
+                std::string error;
+                check(binding.binding().select_pass(0, 0, pass, error) && pass.render_state &&
+                      wot::stock_dx9_render_states(probe.effect->render_states[*pass.render_state], states, error), error);
+                unsigned function = 0, biasBits = 0;
+                for (const auto & state : states)
+                {
+                    if (state.state == 23) function = state.value;
+                    if (state.state == 195) biasBits = state.value;
+                }
+                float bias;std::memcpy(&bias, &biasBits, 4);
+                check(function == 5 && bias == -.002f, "Original own edge uses GREATER and negative bias");
+                // The old order lets the rear of a vehicle fail against its
+                // own front depth. Deferring its colour leaves only scenery
+                // in this test: an open view has no edge, an occluder has one.
+                const float rear = .7f, ownFront = .65f, openScene = 1.f, occluder = .6f;
+                check(rear + bias > ownFront && !(rear + bias > openScene) && rear + bias > occluder,
+                      "Own geometry must not become its own occluder");
+            }
         }
         check(probe.bytes(definition, "g_colorMask", 16) == initial, "g_colorMask: the definition is unchanged");
         check(probe.bytes(other, "g_colorMask", 16) == initial, "g_colorMask: another binding is unchanged");

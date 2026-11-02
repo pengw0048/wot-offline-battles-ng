@@ -76,7 +76,7 @@ bool presentationChanged(const Value&first,const Value&second){
     if(a.kind!=Value::Kind::Object||b.kind!=Value::Kind::Object)return a!=b;
     if(&a==&b)return false;
     static const std::unordered_set<std::string>native={
-        "x","y","z","yaw","pitch","roll","aim_yaw","gun_pitch","speed","movement_dir","rotation_dir","airborne","vertical_speed","ram_vx","ram_vy","ram_vz","ram_motion","ram_motion_seq","contact_push_acks","push_x","push_z","push_yaw","input_seq","last_input_seq",
+        "hydraulic_body","x","y","z","yaw","pitch","roll","aim_yaw","gun_pitch","speed","movement_dir","rotation_dir","airborne","vertical_speed","ram_vx","ram_vy","ram_vz","ram_motion","ram_motion_seq","contact_push_acks","push_x","push_z","push_yaw","input_seq","last_input_seq",
         "forward","turn","up_cosine","reload_time","siege_time_left_ms","combat_fire_elapsed","combat_fire_timer","gun_checkpoint","gun_checkpoint_seq",
         "input_processed_seq","landing_observation_seq","ram_contact_admitted_seq","ram_contact_resolved_seq","destructible_contact_admitted_seq","destructible_contact_resolved_seq","destructible_contact_resolved_seqs","destructible_contact_rejected_seqs","ram_contact","ram_contacts","destructible_contacts"};
     // Unknown fields stay conservative: only the reviewed native consumers
@@ -106,23 +106,31 @@ bool setTarget(Actor&a,const Pose&v,double now,std::optional<std::int64_t> sampl
         if(a.receipts.empty()||a.receipts.back().revision!=revision)a.receipts.push_back(a.samples.back());
     }
     a.target=v;a.has_target=true;a.target_time=now;a.sample_time=sample?double(*sample):0.;a.previous_sample=sample?std::optional<double>(double(*sample)):std::nullopt;a.sample_revision=revision;a.timed=timed;
-    if(!a.has_current||stale){a.current=v;a.has_current=true;return true;}return false;
+    if(!a.has_current||stale){a.current=v;a.hydraulic_body=a.target_hydraulic_body;a.has_current=true;return true;}return false;
 }
 void upsert(State&s,const std::string&kind,const Value&state,double now,std::vector<Event>&events,bool update,std::optional<std::int64_t> sample,std::optional<std::int64_t> motion,double anchor,bool live,std::optional<std::int64_t> revision,const Value&cadence){
-    auto entry=install(s,kind,state,events);if(!entry)return;auto&a=*entry;const bool dirty=presentationChanged(a.state,state);const auto v=pose(state);const bool alive=state.get("alive").truth(true);
+    auto entry=install(s,kind,state,events);if(!entry)return;auto&a=*entry;const bool dirty=presentationChanged(a.state,state);const auto body=hydraulicBody(state);const bool body_changed=a.target_hydraulic_body!=body;const auto v=pose(state);const bool alive=state.get("alive").truth(true);
     // Pure native callers may donate an ordinary owned Value. Retain a frozen
     // copy once; the Python admission bridge already donates shared rows.
-    if(state.reference)a.state=state;else{Value accepted;accepted.kind=Value::Kind::Shared;accepted.reference=std::make_shared<const Value>(state);a.state=std::move(accepted);}a.revision=++s.revision;a.speed=state.get("speed").numeric();a.drive=state.get("movement_dir").numeric();a.rotation=state.get("rotation_dir").numeric();a.alive=alive&&state.get("health").numeric(1.)>0.;a.airborne=state.get("airborne").truth();a.siege_state=std::int64_t(state.get("siege_state").numeric());a.missing=false;
-    if(!alive){if(!a.dead){a.dead=true;a.settled=true;if(v){a.current=a.target=*v;a.has_current=a.has_target=true;}auto event=base(a,"destroy");event.object["reason"]=text("dead");event.object["keep_corpse"]=boolean(true);event.object["state"]=state;emit(events,std::move(event));return;}
-        if(v&&a.has_current){a.target=*v;a.has_target=true;a.target_time=now;a.timed=false;}if(dirty){auto event=base(a,"update");event.object["state"]=state;event.object["pose"]=Value{};event.object["remote"]=boolean(true);emit(events,std::move(event));}return;}
+    if(state.reference)a.state=state;else{Value accepted;accepted.kind=Value::Kind::Shared;accepted.reference=std::make_shared<const Value>(state);a.state=std::move(accepted);}a.revision=++s.revision;a.speed=state.get("speed").numeric();a.drive=state.get("movement_dir").numeric();a.rotation=state.get("rotation_dir").numeric();a.alive=alive&&state.get("health").numeric(1.)>0.;a.airborne=state.get("airborne").truth();a.siege_state=std::int64_t(state.get("siege_state").numeric());a.missing=false;a.target_hydraulic_body=body;
+    if(!a.local&&!a.target_hydraulic_body)a.hydraulic_body.reset();
+    if(!alive){a.hydraulic_body=a.target_hydraulic_body;if(!a.dead){a.dead=true;a.settled=true;if(v){a.current=a.target=*v;a.has_current=a.has_target=true;}auto event=base(a,"destroy");event.object["reason"]=text("dead");event.object["keep_corpse"]=boolean(true);event.object["state"]=state;emit(events,std::move(event));return;}
+        if(v&&a.has_current){a.target=*v;a.has_target=true;a.target_time=now;a.timed=false;}if(dirty||body_changed){auto event=base(a,"update");event.object["state"]=state;event.object["pose"]=Value{};event.object["remote"]=boolean(true);emit(events,std::move(event));}return;}
     if(a.dead)return;
     if(a.local){if(v&&!a.has_current){a.current=*v;a.has_current=true;}if(dirty){auto event=base(a,"update");event.object["state"]=state;event.object["pose"]=v?poseValue(*v):Value{};event.object["correction"]=boolean(true);emit(events,std::move(event));}return;}
     if(sample){if(a.has_anchor&&motion&&*motion>a.anchor_time)a.snapshot_interval=*motion-a.anchor_time;a.anchor_time=double(motion.value_or(*sample));a.anchor_local=anchor;a.has_anchor=true;}
     a.coalesced_timing=cadence;const bool snapped=v&&(update||!a.has_target)&&setTarget(a,*v,now,sample,live,revision);
-    if(dirty||snapped){auto event=base(a,"update");event.object["state"]=state;event.object["pose"]=snapped?poseValue(a.current):Value{};event.object["target"]=a.has_target?poseValue(a.target):Value{};event.object["remote"]=boolean(true);event.object["snap"]=boolean(snapped);emit(events,std::move(event));}
+    if(dirty||snapped||body_changed){auto event=base(a,"update");event.object["state"]=state;event.object["pose"]=snapped?poseValue(a.current):Value{};event.object["target"]=a.has_target?poseValue(a.target):Value{};event.object["remote"]=boolean(true);event.object["snap"]=boolean(snapped);emit(events,std::move(event));}
 }
 constexpr const char* capsule_name="offline.client.state";
 void destroy(PyObject*object){auto*value=static_cast<std::shared_ptr<State>*>(PyCapsule_GetPointer(object,capsule_name));if(value)delete value;else PyErr_Clear();}
+}
+std::optional<std::array<double,8>> hydraulicBody(const Value&state){
+    const auto&raw=state.get("hydraulic_body").resolved();
+    if(raw.kind!=Value::Kind::Array||raw.array.size()!=8)return {};
+    std::array<double,8> out{};
+    for(unsigned i=0;i<8;++i){const auto&v=raw.array[i].resolved();if(v.kind!=Value::Kind::Number&&v.kind!=Value::Kind::Integer)return {};out[i]=v.numeric(std::numeric_limits<double>::quiet_NaN());if(!std::isfinite(out[i]))return {};}
+    return out;
 }
 Handle::Handle(const Handle&v):object_(v.object_){Py_XINCREF(object_);}
 Handle& Handle::operator=(const Handle&v){if(this!=&v){Py_XINCREF(v.object_);Handle old(std::move(*this));object_=v.object_;}return *this;}
@@ -149,10 +157,11 @@ PyObject* write(const Value&v){if(v.reference)return write(*v.reference);switch(
 void State::reset(Value value){
     // The local player's actor is installed by the round that owns this state before its first manifest.
     for(auto i=actors.begin();i!=actors.end();)if(i->second&&i->second->local)++i;else i=actors.erase(i);
+    for(auto&entry:actors){entry.second->hydraulic_body.reset();entry.second->target_hydraulic_body.reset();}
     round=std::move(value);++epoch;++revision;sequence.reset();bot_revision.reset();motion_time.reset();bot_time.reset();order_revision.reset();server_time_ms.reset();received_at=0.;timed_bots.reset();timing_phase.clear();reset_pending=false;last_advance.reset();}
 const Actor* State::find(const std::string&key)const{auto i=actors.find(key);return i==actors.end()?nullptr:i->second.get();}
 Actor* State::find(const std::string&key){auto i=actors.find(key);return i==actors.end()?nullptr:i->second.get();}
-bool State::updateLocal(const Pose&v,const Point&velocity,double speed){if(retired)return false;auto*a=find("player:"+std::to_string(local_player_id));if(!a||!a->local)return false;a->current=v;a->has_current=true;std::copy(velocity.begin(),velocity.end(),a->velocity.begin());a->speed=speed;++a->revision;return true;}
+bool State::updateLocal(const Pose&v,const Point&velocity,double speed){if(retired)return false;auto*a=find("player:"+std::to_string(local_player_id));if(!a||!a->local)return false;a->current=v;a->hydraulic_body.reset();a->has_current=true;std::copy(velocity.begin(),velocity.end(),a->velocity.begin());a->speed=speed;++a->revision;return true;}
 std::vector<Event> manifest(State&s,const Value&message){std::vector<Event> events;const auto&round=message.get("round_id");if(round.kind!=Value::Kind::Null&&round!=s.round)s.reset(round);for(const char*kind:{"player","bot"})for(const auto&row:rows(message.get(std::string(kind)=="player"?"players":"bots"))){auto a=install(s,kind,row,events);if(a)a->manifest=row;}return events;}
 std::vector<Event> snapshot(State&s,const Value&message,double now){
     std::vector<Event> events;if(s.retired)return events;const auto round=message.object.count("round_id")?message.get("round_id"):s.round;if(s.round.kind!=Value::Kind::Null&&round!=s.round)return events;
@@ -164,7 +173,7 @@ std::vector<Event> snapshot(State&s,const Value&message,double now){
     const auto phase=message.get("timing").get("phase").text;const bool entered=phase=="battle"&&(s.timing_phase=="loading"||s.timing_phase=="prebattle");if(entered)s.reset_pending=true;bool live=s.reset_pending&&timed&&update;if(phase=="loading"||phase=="prebattle"||phase=="battle"||phase=="finished")s.timing_phase=phase;
     const double anchor=now-std::max(0.,message.get("_client_dispatch_delay").numeric());if(auto server=exact(message.get("server_time_ms"),2147483647.)){s.server_time_ms=server;s.received_at=anchor;}if(entered&&timed&&!update){bool anchored=false;for(auto&entry:s.actors){auto&a=*entry.second;if(a.kind=="bot"&&!a.dead&&(a.has_target||a.has_current)){liveAnchor(a,double(*motion),anchor);anchored=true;}}if(anchored){s.reset_pending=false;live=false;}}
     std::set<std::string> seen;for(const char*kind:{"player","bot"})for(const auto&row:rows(message.get(std::string(kind)=="player"?"players":"bots"))){const auto name=key(kind,row);if(!name.empty())seen.insert(name);const bool is_bot=std::string(kind)=="bot";upsert(s,kind,row,now,events,!is_bot||update,is_bot?bot:std::optional<std::int64_t>{},is_bot?motion:std::optional<std::int64_t>{},anchor,is_bot&&live,is_bot?revision:std::optional<std::int64_t>{},message.get("_client_coalesced_timing"));}
-    if(live)s.reset_pending=false;for(auto&entry:s.actors){auto&a=*entry.second;if(!seen.count(entry.first)&&!a.dead){a.dead=true;a.missing=true;auto event=base(a,"destroy");event.object["reason"]=text("missing");event.object["keep_corpse"]=boolean(false);emit(events,std::move(event));}}
+    if(live)s.reset_pending=false;for(auto&entry:s.actors){auto&a=*entry.second;if(!seen.count(entry.first)&&!a.dead){a.dead=true;a.missing=true;a.hydraulic_body.reset();a.target_hydraulic_body.reset();auto event=base(a,"destroy");event.object["reason"]=text("missing");event.object["keep_corpse"]=boolean(false);emit(events,std::move(event));}}
     const auto order_revision=exact(message.get("bot_order_revision"));const auto&orders=message.get("bot_orders");if(orders.kind!=Value::Kind::Null&&(!s.order_revision||!order_revision||*order_revision>*s.order_revision)){s.order_revision=order_revision;for(const auto&order:rows(orders))if(order.kind==Value::Kind::Object){auto event=object();event.object["type"]=text("order");event.object["order"]=order;event.object["revision"]=order_revision?integer(*order_revision):Value{};emit(events,std::move(event));}}
     return events;
 }

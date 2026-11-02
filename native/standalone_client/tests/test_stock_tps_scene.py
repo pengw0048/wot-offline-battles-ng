@@ -29,7 +29,7 @@ def make_probe():
 using D3DXHANDLE=const char*;
 struct ID3DXEffect {int SetValue(D3DXHANDLE,const void*,unsigned){return 0;}};
 namespace Moo { namespace DrawContext {
-struct UserDrawItem { virtual ~UserDrawItem() = default;virtual void draw()=0; };
+struct UserDrawItem { virtual ~UserDrawItem() = default;virtual void draw()=0;virtual void fini(){} };
 }
 struct EffectConstantValue {virtual ~EffectConstantValue()=default;virtual bool operator()(ID3DXEffect*,D3DXHANDLE)=0;};
 struct EffectVisualContext {enum{AUTO_CONSTANT_TYPE_PER_FRAME};void unregisterAutoConstant(int,const char*){}};

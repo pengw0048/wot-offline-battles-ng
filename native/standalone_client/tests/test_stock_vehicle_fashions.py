@@ -41,6 +41,7 @@ class VehicleFashionsTest(unittest.TestCase):
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 using uint32=std::uint32_t;
 struct Vector4 {
     float x,y,z,w;
@@ -89,7 +90,6 @@ bool Property::be(const BaseTexturePtr& v) { owner->textures[name]=v;return true
 }
 '''
         cases = r'''
-#include <vector>
 std::map<const Moo::EffectMaterial*,MaterialPropertyCache> caches;
 MaterialPropertyCache& cacheOf(const Moo::EffectMaterial& material) { return caches[&material]; }
 int main() {

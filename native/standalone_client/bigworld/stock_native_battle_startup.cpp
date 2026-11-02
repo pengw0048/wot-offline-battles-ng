@@ -882,7 +882,9 @@ void startTeamChatWhenRosterReady(Battle& b) {
 // Open the countdown once the complete line-up has entered.
 void maybeSendBattleReady(Battle& b) {
     auto& s = *b.startup;
-    if (s.battle_ready_sent || b.live) return;
+    // A terminal loading snapshot already owns the outcome. Do not replace
+    // its upstream failure reason with a refused, now-obsolete ready send.
+    if (s.battle_ready_sent || b.live || b.result.resolved().kind != Value::Kind::Null) return;
     std::size_t players = 0, bots_count = 0;
     for (auto& entry : b.vehicles->actors) {
         Actor& v = *entry.second;
@@ -893,6 +895,38 @@ void maybeSendBattleReady(Battle& b) {
     if (players != field(b.start, "players").resolved().array.size()) return;
     if (bots_count != field(b.start, "bots").resolved().array.size() || !b.roster->pending_order.empty() || !b.roster->pending_bot_creates.empty())
         return;
+    // The sender reports local enqueue admission, not a server acknowledgement.
+    auto refused = [&] {
+        std::string phase, source_round, detail, combat_phase;
+        bool connected = false, ready = false;
+        if (b.worker) {
+            phase = link::phase();
+            const auto round = link::roundId(b);
+            source_round = round ? std::to_string(*round) : "none";
+            connected = link::connected();
+            ready = link::authority();
+        } else {
+            PyObject* client = b.engine.client.get();
+            phase = p::string(py::optional(client, "phase").get());
+            combat_phase = p::string(py::optional(client, "combat_phase").get());
+            auto round = py::optional(client, "round_id");
+            source_round = p::string(p::Ref(PyObject_Str(round.get())).get());
+            connected = p::flag(py::optional(client, "connected").get());
+            ready = p::flag(py::optional(client, "ready").get());
+            detail = p::string(py::optional(client, "last_error").get());
+        }
+        const std::string reason = !connected ? "LAN connection closed before the battle finished loading" :
+            source_round != std::to_string(b.round_id) ? "The LAN battle changed before loading finished" :
+            phase != "loading" ? "The LAN battle is no longer loading" :
+            !ready ? "The LAN connection is not ready to finish loading" : "Could not send the battle loading confirmation";
+        std::string diagnostic = reason + " (role=" + std::string(b.worker ? "worker" : "player") + " round=" + std::to_string(b.round_id) +
+            " source_round=" + source_round + " client_phase=" + phase + " transport=" + (connected ? "connected" : "closed") +
+            " ready=" + (ready ? "true" : "false");
+        if (!combat_phase.empty()) diagnostic += " combat_phase=" + combat_phase;
+        if (!detail.empty()) diagnostic += " detail=" + detail;
+        log("battle readiness send refused: " + diagnostic + ")");
+        throw p::Error(reason);
+    };
     if (b.worker) {
         // The worker's readiness carries the same base rows through its native link.
         Value message;
@@ -919,7 +953,7 @@ void maybeSendBattleReady(Battle& b) {
                 list.array.push_back(std::move(row));
             }
         }
-        if (!link::send(b, message)) throw p::Error("LAN server did not accept battle readiness");
+        if (!link::send(b, message)) refused();
     } else {
         auto ready = py::optional(b.engine.client.get(), "send_battle_ready");
         if (!py::callable(ready)) return;
@@ -932,7 +966,7 @@ void maybeSendBattleReady(Battle& b) {
                 PyDict_SetItem(bases.get(), p::integer(team).get(), rows.get());
             }
         }
-        if (!p::flag(py::invoke(ready.get(), bases.get()).get())) throw p::Error("LAN server did not accept battle readiness");
+        if (!p::flag(py::invoke(ready.get(), bases.get()).get())) refused();
     }
     s.battle_ready_sent = true;
     if (b.roster->bot_create_started) {
@@ -1030,7 +1064,6 @@ void scheduleLobbyRestore(Battle& b, bool report_failure, bool) {
     s.restore_callback = own(schedule(b, 0., [report_failure](Battle& battle) {
         auto& state = *battle.startup;
         if (!state.restore_pending) return;
-        state.restore_pending = false;
         state.restore_callback = Object();
         bool restored = false;
         try {
@@ -1052,6 +1085,9 @@ void scheduleLobbyRestore(Battle& b, bool report_failure, bool) {
         if (report_failure) {
             try { reportFailure(battle, restored); } catch (const std::exception& e) { log("deferred lobby completion failed: " + describe(e)); }
         }
+        // Restoration and its completion report can synchronously re-enter.
+        // Keep this Battle alive until the callback has finished using it.
+        state.restore_pending = false;
     }));
 }
 

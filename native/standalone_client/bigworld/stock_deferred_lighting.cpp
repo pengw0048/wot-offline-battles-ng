@@ -83,6 +83,17 @@ public:
     }
 };
 
+class PbsResourcesReadyConstant : public Moo::EffectConstantValue
+{
+public:
+    virtual bool operator()(ID3DXEffect* effect, D3DXHANDLE handle)
+    {
+        // #1513 9b0240 reads the active space's PBSReady flag. Shader defaults
+        // are true and cannot describe legacy spaces that omit that field.
+        return SUCCEEDED(effect->SetBool(handle, activeSettings.pbsResourcesReady));
+    }
+};
+
 class BrdfLutConstant : public Moo::EffectConstantValue
 {
 public:
@@ -222,6 +233,8 @@ bool initialiseStockForwardLightingConstants()
     {
         Moo::rc().effectVisualContext().registerAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9", new SphericalHarmonicsConstant);
+        Moo::rc().effectVisualContext().registerAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PBSResourcesReady", new PbsResourcesReadyConstant);
         sphericalHarmonicsRegistered = true;
     }
     return true;
@@ -233,6 +246,8 @@ void finaliseStockDeferredLightingConstants()
     {
         Moo::rc().effectVisualContext().unregisterAutoConstant(
             Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "REM_SH9" );
+        Moo::rc().effectVisualContext().unregisterAutoConstant(
+            Moo::EffectVisualContext::AUTO_CONSTANT_TYPE_PER_FRAME, "PBSResourcesReady" );
         sphericalHarmonicsRegistered = false;
     }
     if (constantsRegistered)

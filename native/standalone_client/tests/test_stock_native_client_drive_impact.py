@@ -6,11 +6,14 @@ from test_stock_native_client_drive_contacts import ContactDifferential,ROOT,SOU
 class PlayerImpactDifferential(ContactDifferential):
  def test_landing_and_realized_air_wall_observations(self):
   folder=Path(self.folder.name);py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip();prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip();big=ROOT/'bigworld'
+  from test_stock_vehicle_physics_owner import block
+  (folder/'hydraulic_rebase.inc').write_text(block((big/'stock_native_bot_vehicle_geometry.cpp').read_text(),'std::optional<std::array<double,8>> rebaseHydraulicBody('))
   command=['c++','-std=c++17','-bundle','-undefined','dynamic_lookup','-ffp-contract=off','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-register','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(big),'-I'+str(Path(SOURCE)/'native'),str(ROOT/'tests/stock_native_client_drive_impact_host.cpp')]+[str(big/name)for name in ('stock_native_client_drive_publication.cpp','stock_native_bot_environment.cpp','stock_native_bot_internal_geometry.cpp','stock_native_bot_step_state.cpp','stock_native_bot_combat.cpp')]+['-o',str(folder/'client_impact_test.so')]
   compiled=subprocess.run(command,capture_output=True,text=True);self.assertEqual(compiled.returncode,0,compiled.stderr)
   script=r'''
 import ast,math,random,types
 import client_impact_test as native
+assert native.hydraulic()
 base=SOURCE+'/src/res/scripts/client/gui/mods/offline_lan_0922/';tree=ast.parse(open(base+'battle_runtime.py').read());outer=next(n for n in tree.body if isinstance(n,ast.ClassDef)and n.name=='BattleRuntime');outer.body=[n for n in outer.body if isinstance(n,ast.FunctionDef)and n.name in ('_apply_fall_damage','_apply_landing_impact','_apply_world_contact_impact')];module=ast.Module(body=[outer]);ast.fix_missing_locations(module)
 class O(object):
  def __init__(self,**kw):self.__dict__.update(kw)

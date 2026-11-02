@@ -25,6 +25,84 @@ def number(value):
 def point(values):
     return '{'+','.join(map(number,values))+'}'
 
+
+class HydraulicProjectileConverters(unittest.TestCase):
+    def test_production_current_and_worker_pose_converters(self):
+        """Only the engine-free geometry Pose declaration is extracted.
+
+        Both conversion bodies and the raw receipt decoder are production code;
+        native scene matrices and collision traversal are a separate boundary.
+        """
+        def body(source, signature):
+            start=source.index(signature);end=source.index('{',start);depth=1
+            while depth:
+                end+=1;depth+=(source[end]=='{')-(source[end]=='}')
+            return source[start:end+1]
+        visible=(ROOT/'bigworld/stock_native_client_projectile_world.cpp').read_text()
+        worker=(ROOT/'bigworld/stock_native_projectile_python.cpp').read_text()
+        geometry=(ROOT/'bigworld/stock_native_bot_vehicle_geometry.hpp').read_text()
+        from test_stock_wire_codec import python27_audit_runtime
+        python=python27_audit_runtime()
+        prefix=Path(subprocess.check_output([python,'-c','import sys;print(sys.prefix)'],text=True).strip())
+        program=r'''
+#include "stock_native_projectile_history.hpp"
+#include "stock_native_client_state.hpp"
+#include <cassert>
+#include <cmath>
+#include <iostream>
+namespace cs=stock_native_client_state;
+namespace shot=stock_native_projectile;
+namespace geo {using Point=shot::Point;@GEOMETRY@;}
+using Pose=shot::Pose;using Point=shot::Point;
+using shot::angle_delta;
+@VISIBLE@
+namespace worker {@WORKER@}
+cs::Value number(double n){cs::Value v;v.kind=cs::Value::Kind::Number;v.number=n;return v;}
+int main(){
+ cs::Actor actor;actor.kind="player";actor.current={1,2,3,.4,.1,-.2,.8,.15};actor.siege_state=2;
+ actor.hydraulic_body=std::array<double,8>{11,12,13,.7,.2,-.3,.5,.25};
+ actor.target_hydraulic_body=std::array<double,8>{101,102,103,1,1,1,1,1};
+ const auto current=pose(actor);assert(current.position[0]==1&&current.require_hydraulic_body);
+ assert(current.hydraulic_body==actor.hydraulic_body&&current.hydraulic_body!=actor.target_hydraulic_body);
+ for(bool historical:{false,true}){
+  const auto projected=geometryPose(current,historical);
+  assert(projected.hydraulic_body==current.hydraulic_body&&projected.require_hydraulic_body);
+  assert(projected.position==current.position&&projected.native_components==!historical);
+  assert(projected.native_hydraulics==!historical);
+ }
+ actor.hydraulic_body.reset();const auto missing=pose(actor);
+ assert(!missing.body_available(true)&&missing.body_available(false));
+ actor.kind="bot";assert(pose(actor).body_available(true)&&!pose(actor).require_hydraulic_body);
+ cs::Value raw;raw.kind=cs::Value::Kind::Object;
+ for(const char*name:{"x","y","z","yaw","pitch","roll","turret_yaw","gun_pitch"})raw.object[name]=number(.1);
+ cs::Value receipt;receipt.kind=cs::Value::Kind::Array;
+ for(double n:*current.hydraulic_body)receipt.array.push_back(number(n));
+ raw.object["hydraulic_body"]=receipt;raw.object["siege_state"]=number(2);
+ const auto accepted=worker::plainPose(raw,{999,999,999},true);
+ assert(accepted.position[0]==.1&&accepted.hydraulic_body==current.hydraulic_body&&accepted.require_hydraulic_body);
+ assert(worker::geometryPose(accepted,true).hydraulic_body==current.hydraulic_body);
+ raw.object["hydraulic_body"]=cs::Value{};
+ const auto absent=worker::plainPose(raw,{999,999,999},true);
+ assert(!absent.body_available(true)&&absent.body_available(false));
+ assert(worker::plainPose(raw,{999,999,999},false).body_available(true));
+ raw.object["hydraulic_body"]=receipt;raw.object["hydraulic_body"].array[4]=number(std::nan(""));
+ assert(!worker::plainPose(raw,{999,999,999},true).hydraulic_body);
+ std::cout<<"Production projectile converters preserve current receipt and reject missing/invalid Human bodies\n";
+}
+'''
+        program=program.replace('@GEOMETRY@',body(geometry,'struct Pose {'))
+        program=program.replace('@VISIBLE@',body(visible,'Pose pose(')+'\n'+body(visible,'geo::Pose geometryPose('))
+        program=program.replace('@WORKER@',body(worker,'geo::Pose geometryPose(')+'\n'+body(worker,'Pose plainPose('))
+        with tempfile.TemporaryDirectory(prefix='hydraulic-projectile-converters-') as folder:
+            folder=Path(folder);source=folder/'probe.cpp';source.write_text(program);binary=folder/'probe'
+            command=['c++','-std=c++17','-O0','-ffp-contract=off','-Wall','-Wextra','-Werror',
+                     '-DWOT_CLIENT_REPLICA_HOST_BUILD','-isystem',str(prefix/'include/python2.7'),
+                     '-I'+str(ROOT/'bigworld'),str(source),str(ROOT/'bigworld/stock_native_client_state.cpp'),
+                     str(ROOT/'bigworld/stock_native_projectile_history.cpp'),str(ROOT/'bigworld/stock_native_projectile_cursor.cpp'),
+                     '-L'+str(prefix/'lib'),'-lpython2.7','-Wl,-rpath,'+str(prefix/'lib'),'-o',str(binary)]
+            subprocess.run(command,check=True)
+            subprocess.run([str(binary)],check=True)
+
 @unittest.skipUnless(SOURCE_ROOT, 'fixed gameplay source is required')
 class NativeProjectileCursor(unittest.TestCase):
     def test_cursor_and_history(self):

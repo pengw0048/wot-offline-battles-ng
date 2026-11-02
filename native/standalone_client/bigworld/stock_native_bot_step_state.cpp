@@ -28,13 +28,26 @@ Point transform(const Point& p, const AimPose& pose) {
 }
 }
 
-Point shot_origin(const AimPose& pose, const GunMount& mount) {
+AimPose applied_aim_pose(const AimPose& baseline) {
+    if(!baseline.hydraulic_body) {
+        if(baseline.require_hydraulic_body)throw std::runtime_error("human hydraulic aim sample is unavailable");
+        return baseline;
+    }
+    const auto& body=*baseline.hydraulic_body;auto out=baseline;
+    out.position={body[0],body[1],body[2]};out.yaw=body[3];out.pitch=body[4];out.roll=body[5];
+    out.turret_yaw=body[6];out.gun_pitch=body[7];out.aim_yaw=body[3]+body[6];
+    out.hydraulic_body.reset();out.require_hydraulic_body=false;return out;
+}
+
+Point shot_origin(const AimPose& baseline, const GunMount& mount) {
+    const auto pose=applied_aim_pose(baseline);
     const auto pivot = add(add(mount.hull_position, mount.turret_position),
                            ry(mount.gun_position, pose.turret_yaw));
     return add(pose.position, transform(pivot, pose));
 }
 
-Point shot_direction(const AimPose& pose) {
+Point shot_direction(const AimPose& baseline) {
+    const auto pose=applied_aim_pose(baseline);
     return transform(ry(rx({0., 0., 1.}, pose.gun_pitch), pose.turret_yaw), pose);
 }
 

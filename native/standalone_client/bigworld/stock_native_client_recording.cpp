@@ -78,12 +78,20 @@ PyObject* ensureRecording(PyObject*, PyObject* args) {
     try {
         auto client = attr(runtime, "client");
         if (client.get() != Py_None) callGlobal(g, "poll_process_status", {client.get()});
-        if (truthy(attrOr(runtime, "_worker_mode", Py_False)) || client.get() == Py_None ||
+        if (!equal(attrOr(runtime, "state", Py_None).get(), p::text("running").get()) ||
+            truthy(attrOr(runtime, "_worker_mode", Py_False)) || client.get() == Py_None ||
             truthy(attrOr(client.get(), "is_offline_replay", Py_False)) ||
             !truthy(attrOr(runtime, "_client_ready_received", Py_False)) || !truthy(attrOr(runtime, "_ready_sent", Py_False)))
             Py_RETURN_NONE;
         auto start = attr(runtime, "_start_message");
         auto round_id = method(p::flag(start.get()) ? start.get() : p::dict().get(), "get", p::text("round_id").get());
+        if (round_id.get() == Py_None) Py_RETURN_NONE;
+        auto live = attrOr(client.get(), "_offline_replay_live", Py_None), last = attr(client.get(), "last_snapshot");
+        if (!PyDict_Check(live.get()) || !PyDict_Check(last.get())) Py_RETURN_NONE;
+        for (const auto& row : {std::make_pair(live.get(), "battle_live"), std::make_pair(last.get(), "snapshot")}) {
+            if (!equal(method(row.first, "get", p::text("type").get()).get(), p::text(row.second).get()) ||
+                !equal(method(row.first, "get", p::text("round_id").get()).get(), round_id.get())) Py_RETURN_NONE;
+        }
         if (equal(attrOr(client.get(), "_offline_replay_attempted", Py_None).get(), round_id.get())) Py_RETURN_NONE;
         setAttr(client.get(), "_offline_replay_attempted", round_id.get());
         auto mode = callGlobal(g, "native_recording_mode", {});
@@ -93,7 +101,6 @@ PyObject* ensureRecording(PyObject*, PyObject* args) {
                 auto header = literal(6);
                 put(header.get(), "welcome", attrOr(client.get(), "_offline_replay_welcome", Py_None));
                 put(header.get(), "start", callGlobal(g, "capture_message", {attr(runtime, "_start_message").get()}));
-                auto last = attr(client.get(), "last_snapshot");
                 put(header.get(), "snapshot", callGlobal(g, "capture_message", {p::flag(last.get()) ? last.get() : p::dict().get()}));
                 auto config = p::dict();
                 auto keys = global(g, "CONFIG_KEYS");
@@ -108,7 +115,7 @@ PyObject* ensureRecording(PyObject*, PyObject* args) {
                 if (PyErr_Occurred()) throw p::Error("config keys");
                 put(header.get(), "config", config);
                 put(header.get(), "player_id", p::Ref(PyNumber_Int(attr(client.get(), "player_id").get())));
-                put(header.get(), "live", attrOr(client.get(), "_offline_replay_live", Py_None));
+                put(header.get(), "live", live);
                 if (!PyDict_Check(PyDict_GetItemString(header.get(), "welcome"))) {
                     PyErr_SetString(PyExc_ValueError, "recording has no negotiated welcome");
                     throw p::Error("welcome");

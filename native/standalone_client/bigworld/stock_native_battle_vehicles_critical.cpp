@@ -36,6 +36,85 @@ std::optional<Value> canonicalOf(const Value& payload) {
     return result;
 }
 std::string text(PyObject* v) { return v && v != Py_None ? p::string(p::Ref(PyObject_Str(v)).get()) : std::string(); }
+
+void clearCriticalHUD(cs::Presentation& d) {
+    d.critical_hud_pending.clear();
+    d.critical_hud_order.clear();
+    d.critical_hud_entity = cs::Handle{};
+    d.critical_hud_engine_id = 0;
+    d.critical_hud_epoch = 0;
+}
+
+bool flushCriticalHUD(Battle& b, Actor& v) {
+    auto& d = v.presented;
+    if (d.critical_hud_pending.empty()) { clearCriticalHUD(d); return false; }
+    const auto owner = b.vehicles;
+    if (!owner || owner->retired) { clearCriticalHUD(d); return false; }
+    const auto found = owner->actors.find(v.key);
+    if (found == owner->actors.end() || found->second.get() != &v) {
+        clearCriticalHUD(d); return false;
+    }
+    const auto actor = found->second;
+    const auto epoch = owner->epoch;
+    auto entity = b.entity(v.engine_id);
+    auto current = [&] {
+        return b.phase != Phase::Failed && b.phase != Phase::Stopped && b.phase != Phase::Leaving &&
+            !b.worker && b.vehicles == owner && !owner->retired && owner->epoch == epoch && epoch == d.critical_hud_epoch &&
+            b.vehicle(v.key) == actor.get() && v.local && !v.tombstone && !v.missing &&
+            (!d.health || ((*d.health)[0] > 0 && (*d.health)[2])) &&
+            v.engine_id == d.critical_hud_engine_id && entity.get() != Py_None &&
+            entity.get() == d.critical_hud_entity.get() && b.entity(v.engine_id).get() == entity.get();
+    };
+    if (!current()) { clearCriticalHUD(d); return false; }
+    if (b.phase == Phase::Idle || b.phase == Phase::Loading || !v.ready) return false;
+    bool shown = false;
+    const auto order = d.critical_hud_order;
+    for (const auto& key : order) {
+        if (!current()) { clearCriticalHUD(d); return shown; }
+        if (!v.ready) return shown;
+        const auto at = d.critical_hud_pending.find(key);
+        if (at == d.critical_hud_pending.end()) continue;
+        auto edge = at->second;
+        // The native damage owner may have repaired this device even while the
+        // stock controllers were absent. Never deliver its obsolete red edge.
+        if (!critical::eventCurrent(b, entity.get(), edge.event)) { d.critical_hud_pending.erase(at); continue; }
+        if (!damageInfoServiceable(b)) continue;
+        auto descriptor = py::optional(entity.get(), "typeDescriptor");
+        if (descriptor.get() == Py_None) continue;
+        auto attached = py::optional(b.engine.avatar.get(), "getVehicleAttached");
+        if (py::callable(attached)) {
+            std::optional<std::int64_t> attached_id;
+            if (!b.feature("critical HUD attachment", [&] {
+                    auto vehicle = py::invoke(attached.get());
+                    if (vehicle.get() != Py_None) attached_id = p::wide(py::attr(vehicle.get(), "id").get());
+                }, false) || !attached_id) continue;
+            if (*attached_id != v.engine_id) { clearCriticalHUD(d); return shown; }
+        }
+        const auto& kind = field(edge.event, "kind").resolved().text;
+        if ((kind == "device" || kind == "crew") && !b.feature("critical HUD descriptor", [&] {
+                edge.extra = criticalExtraIndex(descriptor.get(), field(edge.event, "name").resolved().text);
+            }, false)) continue;
+        if (!showDamageInfo(b, v.engine_id, edge.index, edge.extra, edge.attacker)) continue;
+        shown = true;
+        if (!current()) { clearCriticalHUD(d); return shown; }
+        // A stock callback may synchronously install a newer edge on this key.
+        const auto pending = d.critical_hud_pending.find(key);
+        if (pending != d.critical_hud_pending.end() && pending->second.event == edge.event && pending->second.attacker == edge.attacker)
+            d.critical_hud_pending.erase(pending);
+    }
+    d.critical_hud_order.erase(std::remove_if(d.critical_hud_order.begin(), d.critical_hud_order.end(),
+        [&](const std::string& key) { return !d.critical_hud_pending.count(key); }), d.critical_hud_order.end());
+    if (d.critical_hud_pending.empty()) clearCriticalHUD(d);
+    return shown;
+}
+}
+
+void flushCriticalPresentations(Battle& b) {
+    if (!b.vehicles) return;
+    std::vector<std::shared_ptr<Actor>> actors;
+    for (const auto& row : b.vehicles->actors)
+        if (!row.second->presented.critical_hud_pending.empty()) actors.push_back(row.second);
+    for (const auto& actor : actors) flushCriticalHUD(b, *actor);
 }
 
 // BattleRuntime._reconcile_critical_authority: the player's revision contract (native local owner or canonical fallback).
@@ -70,9 +149,9 @@ bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t atta
     if (b.worker || (!v.local && !v.presented.spot_visible)) return false;
     auto entity = b.entity(v.engine_id);
     if (entity.get() == Py_None || py::attr(entity.get(), "typeDescriptor").get() == Py_None) return false;
-    syncFireEffect(b, entity.get());
+    b.feature("critical fire effect", [&] { syncFireEffect(b, entity.get()); }, false);
     const auto& rows = events.resolved().array;
-    if (rows.empty()) return false;
+    if (rows.empty()) return flushCriticalHUD(b, v);
     bool shown = false;
     auto get = [](const Value& row, const char* name) { return field(row, name).resolved().text; };
     for (const auto& row : rows) {
@@ -81,10 +160,15 @@ bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t atta
         if (!py::callable(callback)) throw p::Error("#1513 ammo-bay effect boundary is unavailable");
         auto modes = py::optional(b.engine.constants.get(), "AMMOBAY_DESTRUCTION_MODE");
         if (modes.get() == Py_None || !PyObject_HasAttrString(modes.get(), "HE_DETONATION")) throw p::Error("#1513 ammo-bay destruction mode is unavailable");
-        py::invoke(callback.get(), py::attr(modes.get(), "HE_DETONATION").get(), p::number(0.).get(), p::number(0.).get());
-        shown = true;
+        if (b.feature("ammo-bay effect", [&] {
+                py::invoke(callback.get(), py::attr(modes.get(), "HE_DETONATION").get(), p::number(0.).get(), p::number(0.).get());
+            }, false)) shown = true;
     }
-    if (!v.local || !b.engine.avatar || !damageInfoServiceable(b)) return shown;
+    if (!v.local || !b.engine.avatar) return shown;
+    auto& hud = v.presented;
+    const auto epoch = b.vehicles ? b.vehicles->epoch : 0;
+    if (hud.critical_hud_engine_id != v.engine_id || hud.critical_hud_entity.get() != entity.get() || hud.critical_hud_epoch != epoch)
+        clearCriticalHUD(hud);
     auto indices = py::optional(b.engine.constants.get(), "DAMAGE_INFO_INDICES");
     auto suffix = [](const std::string& cause) -> std::string {
         if (cause == "fire") return "_AT_FIRE";
@@ -122,9 +206,19 @@ bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t atta
         PyObject* index = indices.get() != Py_None ? PyObject_GetItem(indices.get(), p::text(code).get()) : nullptr;
         if (!index) { PyErr_Clear(); throw p::Error("#1513 damage-info index is unavailable: " + code); }
         p::Ref held(index);
-        if (showDamageInfo(b, v.engine_id, p::wide(index), extra, attacker)) shown = true;
+        cs::Presentation::CriticalNotification edge;
+        edge.event = row;
+        edge.attacker = attacker;
+        edge.index = p::wide(index);
+        edge.extra = extra;
+        const std::string key = kind + ":" + get(row, "name");
+        hud.critical_hud_engine_id = v.engine_id;
+        hud.critical_hud_epoch = epoch;
+        hud.critical_hud_entity = cs::Handle(p::retain(entity.get()).release());
+        if (!hud.critical_hud_pending.count(key)) hud.critical_hud_order.push_back(key);
+        hud.critical_hud_pending[key] = std::move(edge);
     }
-    return shown;
+    return flushCriticalHUD(b, v) || shown;
 }
 
 // BattleRuntime._critical_extra_index: the exact descriptor extra index #1513 Avatar uses.

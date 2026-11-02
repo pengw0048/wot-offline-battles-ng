@@ -139,12 +139,17 @@ def stage(output, fork_source=None, revision=None):
                          'tools/packed_xml.py'):
             if not (tree / required).is_file():
                 raise ValueError('The pinned source is missing ' + required)
+        check = subprocess.run([sys.executable, str(WIRE / 'gen_cpp.py'),
+                                '--check-fork-source', str(tree)],
+                               capture_output=True, text=True)
+        if check.returncode:
+            raise ValueError(check.stderr.strip() or 'Wire schema integrity check failed')
         shutil.rmtree(tree / 'launcher')
         shutil.copytree(ROOT / 'launcher', tree / 'launcher', ignore=shutil.ignore_patterns(
             '__pycache__', '*.pyc', '*.pyo', 'build', 'dist'))
         pinned_server = work / 'pinned-server'
         (tree / 'server').rename(pinned_server)
-        stage_server.stage(str(pinned_server), str(tree / 'server'))
+        stage_server.stage(str(pinned_server), str(tree / 'server'), str(tree / 'src/res/scripts/client'))
         _stage_server_port(tree / 'server/windows_server.py')
         record = {'fork_repository': FORK_REPOSITORY, 'fork_revision': revision,
                   'ng_revision': _ng_revision()}

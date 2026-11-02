@@ -67,6 +67,72 @@ class DetachedTurret(unittest.TestCase):
     def tearDownClass(cls):cls.tmp.cleanup()
     def test_transactions_budget_and_impulse_acknowledgements(self):
         subprocess.run([str(self.binary),'scenarios'],check=True,capture_output=True,text=True)
+    def test_same_sample_hydraulic_converters(self):
+        def body(source,signature):
+            start=source.index(signature);end=source.index('{',start);depth=1
+            while depth:
+                end+=1;depth+=(source[end]=='{')-(source[end]=='}')
+            return source[start:end+1]
+        detached=(ROOT/'bigworld/stock_native_detached_turret_python.cpp').read_text()
+        visible=(ROOT/'bigworld/stock_native_battle_visibility.cpp').read_text()
+        prefix=Path(subprocess.check_output([self.py27,'-c','import sys;print(sys.prefix)'],text=True).strip())
+        program=r"""
+#include "stock_native_detached_turret_launch.hpp"
+#include "stock_native_client_environment.hpp"
+#include <cassert>
+#include <cmath>
+#include <stdexcept>
+namespace cs=stock_native_client_state;namespace env=stock_native_client_environment;
+namespace p {using Error=std::runtime_error;}
+using cs::Value;using cs::Actor;using cs::Point;
+using namespace stock_native_detached_turret;
+@CONVERTERS@
+@VISIBLE@
+Value num(double n){Value v;v.kind=Value::Kind::Number;v.number=n;return v;}
+int main(){
+ Value raw;raw.kind=Value::Kind::Object;
+ for(const char*key:{"x","y","z","yaw","pitch","roll","terrain_pitch","aim_yaw","gun_pitch"})raw.object[key]=num(.1);
+ Value receipt;receipt.kind=Value::Kind::Array;
+ for(double v:{11.,12.,13.,.7,.2,-.3,.5,.25})receipt.array.push_back(num(v));
+ raw.object["hydraulic_body"]=receipt;
+ const auto support=playerSupportPose(raw,true);assert(support);
+ assert(support->position[0]==.1&&support->attitude[1]==.1);
+ assert(support->hull_position==Point({11,12,13})&&support->hull_attitude==Point({.7,.2,-.3}));
+ assert(std::abs((support->aim_yaw-support->attitude[0])-.5)<1.e-12&&support->gun_pitch==.25);
+ LaunchInput frozen;assert(statePose(raw,frozen,true));assert(frozen.position==support->hull_position&&frozen.attitude==support->hull_attitude&&frozen.turret_yaw==.5);
+ Actor actor;actor.kind="player";actor.current={.1,.1,.1,.1,.1,.1,.1,.1};actor.hydraulic_body=cs::hydraulicBody(raw);
+ actor.target_hydraulic_body=std::array<double,8>{101,102,103,1,1,1,1,1};
+ env::Profile profile;profile.requires_hydraulic_body=true;auto sight=pose(actor,profile);assert(sight&&sight->position==support->hull_position&&sight->yaw==.7&&sight->relative_turret_yaw==.5);
+ raw.object["hydraulic_body"]=Value{};actor.hydraulic_body.reset();
+ assert(!playerSupportPose(raw,true)&&!statePose(raw,frozen,true)&&!pose(actor,profile));
+ // Ordinary Humans and canonical Bots retain their existing baseline law.
+ assert(playerSupportPose(raw,false)&&statePose(raw,frozen,false));profile.requires_hydraulic_body=false;
+ assert(pose(actor,profile)->position==Point({double(float(.1)),double(float(.1)),double(float(.1))}));
+ actor.local=true;assert(pose(actor,profile)->position==Point({.1,.1,.1}));
+ raw.object["hydraulic_body"]=receipt;raw.object["hydraulic_body"].array[4]=num(std::nan(""));
+ assert(!playerSupportPose(raw,true)&&!statePose(raw,frozen,true));
+}
+"""
+        converters='\n'.join(body(detached,signature) for signature in (
+            'const Value* member(', 'double number(', 'double angle(', 'bool statePose(', 'std::optional<VehiclePose> playerSupportPose('))
+        program=program.replace('@CONVERTERS@',converters).replace('@VISIBLE@',body(visible,'std::optional<native_visibility::Pose> pose('))
+        # Pin the production callers as well as executing their extracted converters.
+        self.assertIn('playerSupportPose(player,cached->second.has_siege)',detached)
+        self.assertIn('bodies_.available(owner,bool(input)&&support_available)',detached)
+        self.assertIn('if(!pose){support_available=false;continue;}',detached)
+        self.assertIn('if(require_body)return {};',detached)
+        self.assertIn('launches_->retryAt(key,now+.25)',detached)
+        self.assertIn('pose(*observer_actor, source)',visible)
+        self.assertIn('pose(*target_actor, profile)',visible)
+        self.assertIn('if (!observer_pose || !target_pose) return {};',visible)
+        self.assertIn('pair.target_checkpoints.static_turret_yaw_present = false',visible)
+        with tempfile.TemporaryDirectory(prefix='hydraulic-body-consumers-') as directory:
+            folder=Path(directory);fixture=folder/'probe.cpp';fixture.write_text(program);binary=folder/'probe'
+            subprocess.run(['c++','-std=c++17','-DWOT_CLIENT_REPLICA_HOST_BUILD','-isystem',str(prefix/'include/python2.7'),
+                '-I'+str(ROOT/'bigworld'),'-I'+str(Path(SOURCE)/'native'),str(fixture),str(ROOT/'bigworld/stock_native_client_state.cpp'),
+                '-L'+str(prefix/'lib'),'-lpython2.7','-Wl,-rpath,'+str(prefix/'lib'),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
     def test_actual_python27_physics(self):
         rng=random.Random(1513);cases=[]
         for index in range(180):

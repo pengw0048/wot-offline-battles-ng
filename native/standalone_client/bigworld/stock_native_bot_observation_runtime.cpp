@@ -20,8 +20,9 @@ double rounded(double value){return std::round(value*1.e6)/1.e6;}
 bool modes(const std::string&s,std::initializer_list<const char*>values){for(auto*v:values)if(s==v)return true;return false;}
 double range(const Actor&a){return a.target.class_tag=="SPG"?2500.:585.;}
 bool wireOrder(Key a,Key b){return std::make_pair(kind(a),a.id)<std::make_pair(kind(b),b.id);}
-perception::Pose frozenPose(const Actor&a){perception::Pose out;out.position=a.pose.position;out.values={a.pose.position[0],a.pose.position[1],a.pose.position[2],a.pose.yaw,a.pose.pitch,a.pose.roll,a.pose.aim_yaw,a.pose.turret_yaw,a.pose.gun_pitch,a.speed,0.,0.,0.};out.mask=(1u<<10)-1;return out;}
+perception::Pose frozenPose(const Actor&a){perception::Pose out;out.position=a.pose.position;out.values={a.pose.position[0],a.pose.position[1],a.pose.position[2],a.pose.yaw,a.pose.pitch,a.pose.roll,a.pose.aim_yaw,a.pose.turret_yaw,a.pose.gun_pitch,a.speed,0.,0.,0.};out.mask=(1u<<10)-1;out.hydraulic_body=a.pose.hydraulic_body;out.require_hydraulic_body=a.pose.require_hydraulic_body;return out;}
 void overlayPose(Actor&a,const perception::Pose&p){a.pose.position=p.position;a.target.position=p.position;
+    a.pose.hydraulic_body=p.hydraulic_body;a.pose.require_hydraulic_body=p.require_hydraulic_body;
     double* fields[]={&a.pose.yaw,&a.pose.pitch,&a.pose.roll,&a.pose.aim_yaw,&a.pose.turret_yaw,&a.pose.gun_pitch,&a.speed};for(unsigned i=0;i<7;++i)if(p.mask&(1u<<(i+3)))*fields[i]=p.values[i+3];a.target.speed=a.speed;}
 struct Exhausted {};
 struct Budget {

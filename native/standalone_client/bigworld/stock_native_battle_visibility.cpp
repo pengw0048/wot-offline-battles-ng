@@ -68,12 +68,19 @@ env::ActorView view(const VisibilityCore::Installed& item) {
     out.next_probe = a.presented.spot_next;
     return out;
 }
-native_visibility::Pose pose(const Actor& a) {
+std::optional<native_visibility::Pose> pose(const Actor& a, const env::Profile& profile) {
+    if (profile.requires_hydraulic_body && !a.hydraulic_body) return {};
     native_visibility::Pose out;
     out.position = a.local ? Point{a.current[0], a.current[1], a.current[2]}
                            : Point{float(a.current[0]), float(a.current[1]), float(a.current[2])};
     out.yaw = a.current[3]; out.pitch = a.current[4]; out.roll = a.current[5];
     out.relative_turret_yaw = a.current[6] - a.current[3];
+    if (profile.requires_hydraulic_body) {
+        const auto& body = *a.hydraulic_body;
+        out.position = {body[0], body[1], body[2]};
+        out.yaw = body[3]; out.pitch = body[4]; out.roll = body[5];
+        out.relative_turret_yaw = body[6];
+    }
     return out;
 }
 double distance(const Point& a, const Point& b) { return std::hypot(a[0] - b[0], a[2] - b[2]); }
@@ -89,7 +96,7 @@ double length(const Point& a, const Point& b) {
     return double(std::sqrt(x * x + y * y + z * z));
 }
 
-bool sight(Battle& b, VisibilityCore& c, const env::ActorView& observer, const env::ActorView& target, const env::Profile& source,
+std::optional<bool> sight(Battle& b, VisibilityCore& c, const env::ActorView& observer, const env::ActorView& target, const env::Profile& source,
            const env::Profile& profile, double local_still, double target_still, bool fired, double now) {
     const double separation = distance(observer.position, target.position);
     if (separation <= 50.) return true;
@@ -98,10 +105,14 @@ bool sight(Battle& b, VisibilityCore& c, const env::ActorView& observer, const e
     const auto* target_actor = b.vehicle(target.key);
     if (!observer_actor || !target_actor) return false;
     native_visibility::PairInput pair;
-    pair.observer = pose(*observer_actor);
-    pair.target = pose(*target_actor);
+    const auto observer_pose = pose(*observer_actor, source), target_pose = pose(*target_actor, profile);
+    if (!observer_pose || !target_pose) return {};
+    pair.observer = *observer_pose;
+    pair.target = *target_pose;
     pair.observer_checkpoints = source.checkpoints;
     pair.target_checkpoints = profile.checkpoints;
+    if (source.requires_hydraulic_body) pair.observer_checkpoints.static_turret_yaw_present = false;
+    if (profile.requires_hydraulic_body) pair.target_checkpoints.static_turret_yaw_present = false;
     const auto server = projectiles::serverTimeMs(b, now);
     pair.observer_phase = server ? std::uint64_t(std::max(0., std::trunc(*server)) / 2000.) : 0;
     auto& d = pair.detection;
@@ -136,7 +147,9 @@ bool sight(Battle& b, VisibilityCore& c, const env::ActorView& observer, const e
 }
 
 env::Profile profile(Battle& b, const Actor& a, PyObject* d) {
+    auto selected = p::vehicleDescriptor(d); d = selected.get();
     env::Profile out;
+    out.requires_hydraulic_body = a.kind == "player" && p::flag(field(d, "hasSiegeMode").get());
     const auto checkpoints = stock_native_bot_descriptor::checkpoints(d);
     if (checkpoints) { out.checkpoints.available = true; out.checkpoints.points = *checkpoints; }
     auto chassis = field(d, "chassis"), hull = field(d, "hull"), turret = field(d, "turret"), gun = field(d, "gun");
@@ -247,6 +260,8 @@ bool runSpotting(Battle& b, VisibilityCore& c, double now, bool hud_only, bool r
         if (found == b.vehicles->actors.end() || found->second != row.second.actor) continue;
         actors.push_back(view(row.second));
         const auto& a = *found->second;
+        const auto profile = c.profiles.find(a.key);
+        actors.back().pose_available = profile == c.profiles.end() || !profile->second.requires_hydraulic_body || bool(a.hydraulic_body);
         if (a.local) {
             input.presentation_origin = {a.current[0], a.current[1], a.current[2]};
             input.local_vision_factor = stock_native_client_drive::statusFactor(a, wot::offline_bot_step::CriticalStat::vision);
@@ -263,13 +278,13 @@ bool runSpotting(Battle& b, VisibilityCore& c, double now, bool hud_only, bool r
     }
     const auto output = c.spotting.frame(input, actors, c.profiles,
         [&](const env::ActorView& observer, const env::ActorView& target, const env::Profile& source, const env::Profile& profile,
-            double local_still, double target_still, bool fired) {
+            double local_still, double target_still, bool fired) -> std::optional<bool> {
             try { return sight(b, c, observer, target, source, profile, local_still, target_still, fired, now); }
             catch (const std::exception& e) {
                 const auto text = describe(e);
                 auto& last = c.sight_failures[target.key];
                 if (last != text) { last = text; log("native spotting " + target.key + ": " + text); }
-                return false;
+                return std::nullopt;
             }
         });
     return apply(b, c, output);
@@ -450,7 +465,7 @@ void bind(Battle& b) {
         c.query = own(p::Ref(query::createFor(b)));
         if (const auto* local = b.localVehicle()) {
             auto entity = b.entity(local->engine_id);
-            auto descriptor = field(entity.get(), "typeDescriptor"), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
+            auto raw_descriptor = field(entity.get(), "typeDescriptor"), descriptor = p::vehicleDescriptor(raw_descriptor.get()), type = field(descriptor.get(), "type"), tags = field(type.get(), "tags");
             auto spg = p::text("SPG");
             c.spg = tags.get() != Py_None && PySequence_Contains(tags.get(), spg.get()) == 1;
         }
@@ -620,6 +635,7 @@ void disableSpaceVisibility(Battle& b) {
 p::Ref spottingProfile(Battle& b, PyObject* descriptor, bool local) { return params::spottingProfile(b, descriptor, local); }
 
 double visionRadius(Battle& b, PyObject* descriptor, const Actor* vehicle, double still_seconds, bool local) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto spotting_profile = spottingProfile(b, descriptor, local);
     env::Profile view;
     auto turret = field(descriptor, "turret"), misc = field(descriptor, "miscAttrs");
@@ -634,6 +650,7 @@ double visionRadius(Battle& b, PyObject* descriptor, const Actor* vehicle, doubl
 }
 
 std::array<double, 2> baseInvisibility(PyObject* descriptor, PyObject* spotting_profile, PyObject* camouflage_id) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto crew_factor = p::value(spotting_profile, "camouflage_factor");
     auto calculator = field(descriptor, "computeBaseInvisibility");
     if (PyCallable_Check(calculator.get())) {
@@ -665,6 +682,7 @@ std::array<double, 2> baseInvisibility(PyObject* descriptor, PyObject* spotting_
 }
 
 double shotInvisibilityFactor(PyObject* descriptor) {
+    auto selected = p::vehicleDescriptor(descriptor); descriptor = selected.get();
     auto gun = field(descriptor, "gun");
     return std::max(0., std::min(1., number(gun.get(), "invisibilityFactorAtShot", 1.)));
 }

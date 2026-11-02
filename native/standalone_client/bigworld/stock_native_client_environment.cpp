@@ -33,13 +33,25 @@ Output Spotting::frame(const Frame&input,const std::vector<ActorView>&actors,con
     if(input.hud_only)return out;
     for(const auto&a:actors){if(a.local||!a.ready||a.missing||a.tombstone||(input.radio_only&&a.team==input.local_team))continue;seed(a);auto&m=memory_.at(a.key);const auto target_profile=profiles.find(a.key);
         bool remembered=false;
+        // Receipt readiness is sampled every frame, including frames between
+        // the staggered ray probes where a spotting lease can expire.
+        const bool unknown_pose=local&&local->alive&&a.alive&&(!local->pose_available||!a.pose_available)
+            &&distance(local->position,a.position)>50.&&distance(local->position,a.position)<=445.;
+        if(unknown_pose)m.sight_unavailable=true;
         if(a.team==input.local_team){remembered=radio_allies_.count(a.key)!=0;if(!local||!local->alive)remembered=true;
-            else if(!remembered){if(due(m.next_probe,a.id,input.now)&&local_profile!=profiles.end()&&target_profile!=profiles.end())m.direct=sight(*local,a,local_profile->second,target_profile->second,local_still,0.,false);remembered=m.direct;}}
+            else if(!remembered){if(!unknown_pose&&due(m.next_probe,a.id,input.now)&&local_profile!=profiles.end()&&target_profile!=profiles.end()){const auto result=sight(*local,a,local_profile->second,target_profile->second,local_still,0.,false);m.sight_unavailable=!result;if(result)m.direct=*result;}remembered=m.direct;}}
         else {
-            if(!input.radio_only&&a.alive&&due(m.next_probe,a.id,input.now)){const double target_still=still(m.still_since,a.speed,input.now);m.direct=local&&local->alive&&local_profile!=profiles.end()&&target_profile!=profiles.end()&&sight(*local,a,local_profile->second,target_profile->second,local_still,target_still,input.now<a.shot_until);
-                if(m.direct)m.until=input.now+10.;}
-            else if(!a.alive)m.direct=false;
+            if(!unknown_pose&&!input.radio_only&&a.alive&&due(m.next_probe,a.id,input.now)){const double target_still=still(m.still_since,a.speed,input.now);const auto result=local&&local->alive&&local_profile!=profiles.end()&&target_profile!=profiles.end()?sight(*local,a,local_profile->second,target_profile->second,local_still,target_still,input.now<a.shot_until):std::optional<bool>(false);m.sight_unavailable=!result;if(result)m.direct=*result;
+                if(result&&m.direct)m.until=input.now+10.;}
+            else if(!a.alive){m.direct=false;m.sight_unavailable=false;}
             remembered=input.now<std::max(m.until,m.radio_until);
+        }
+        // An unavailable native pair is not evidence of occlusion. In particular,
+        // lease expiry between probes must not hide and immediately respot it.
+        if(m.sight_unavailable&&a.alive&&!remembered){
+            if(!m.applied||m.desired_model!=m.applied_model||m.desired_marker!=m.applied_marker)
+                out.transitions.push_back({a.key,a.engine_id,m.desired_model,m.desired_marker});
+            continue;
         }
         if(!a.alive&&a.dead_marker_known)remembered=true;
         const double radius=565.+(m.applied_model?5.:0.);

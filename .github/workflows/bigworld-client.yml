@@ -7,13 +7,6 @@ on:
         description: 'Reuse an existing client artifact for startup debugging'
         required: false
         type: string
-  push:
-    paths:
-      - 'tools/build_bigworld_client.ps1'
-      - 'tools/configure_bigworld_build_cache.py'
-      - 'tools/build_scaleform_sdk.ps1'
-      - 'native/standalone_client/bigworld/**'
-      - 'native/standalone_client/tests/run_stock_replay_file_probe.py'
 
 permissions:
   contents: read

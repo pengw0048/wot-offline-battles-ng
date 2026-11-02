@@ -19,6 +19,8 @@ def client(capabilities=True):
  c=lan.LANClient('localhost',28782,'P','ussr:R11_MS-1');c.phase='battle';c.ready=True;c.round_id=7;c.player_id=1;c.connected=True;c.running=True;c.sock=object();c._stopping=False;c._outbound_accepting=True
  c.capabilities=[lan.HUMAN_RAM_TIMELINE_CAPABILITY,lan.PLAYER_PROJECTILE_OWNER_CAPABILITY] if capabilities else []
  c.server_capabilities=list(c.capabilities);c.landing=[]
+ # This differential isolates the old FIFO; the live native handoff is tested below.
+ c._flush_native_outbound=lambda generation:None
  return c
 def invoke(fn,args,kw):
  try:return ('ok',fn(*args,**kw))
@@ -37,7 +39,6 @@ def run(kw,attrs=None,capabilities=True):
  ra=invoke(a.send_input,(),copy.deepcopy(kw));rb=invoke(native.send_input,(b,),copy.deepcopy(kw));same(ra,rb)
  for k in ('_input_seq_round','_input_seq','_landing_observation_round','_landing_observation_seq','_landing_observation_pending','_landing_observation_queue','_outbound_queue','_outbound_seq','_outbound_bytes','landing'):
   same(getattr(a,k),getattr(b,k))
- same(a._outbound_event.is_set(),b._outbound_event.is_set())
  return a,b
 base=dict(forward=1.,turn=-.3,position=(10.,20.,30.),yaw=7.,pitch=-7.,roll=.1,speed=20.,aim_yaw=8.,gun_pitch=-.2,shell_index=0,next_shell_index=0,shell_change_pending=False,pose_time_us=1234,gun_checkpoint=dict(reload_time=1.,reload_duration=5.,clip=1,clip_size=1,dispersion=.01),ram_contacts=[],tank_pushes=[],turret_pushes=[],destructible_contacts=[],up_cosine=.99)
 random.seed(1513)
@@ -79,6 +80,64 @@ assert native.send(b,{'type':'event','value':[1,2,3]})
 print(json.dumps({'input_frames':300,'invalid_and_edge_cases':len(cases),'ordered_queue_messages':len(b._outbound_queue),'python_business_callbacks':0}))
 '''
 class NativeClientInputTests(unittest.TestCase):
+    def test_native_producers_reach_tcp_without_a_python_ping(self):
+        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        if not source:
+            self.skipTest('Fixed v0.10.1 source input is required')
+        import importlib.util
+        py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()
+        prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
+        bindings = {}
+        for name in ('stock_snapshot_bindings', 'stock_native_client_transport_bindings', 'stock_native_client_wire_bindings'):
+            spec = importlib.util.spec_from_file_location(name, ROOT / 'bigworld' / (name + '.py'))
+            bindings[name] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(bindings[name])
+        client = Path(source) / 'src/res/scripts/client'
+        staged = (client / 'gui/mods/offline_lan_0922/lan_client.py').read_text()
+        import ast
+        original_class = next(node for node in ast.parse(staged).body if isinstance(node, ast.ClassDef) and node.name == 'LANClient')
+        originals = dict((node.name, node) for node in original_class.body if isinstance(node, ast.FunctionDef))
+        for name in bindings:
+            staged = bindings[name].client(staged)
+        generated_class = next(node for node in ast.parse(staged).body if isinstance(node, ast.ClassDef) and node.name == 'LANClient')
+        methods = dict((node.name, node) for node in generated_class.body if isinstance(node, ast.FunctionDef))
+        for name in ('_canonical_runtime_rows', '_load_server_timing', 'send_input',
+                     '_send_pending_landing_observation', '_start_queued_landing_observation', 'send_landing_observation'):
+            method = methods[name]
+            self.assertEqual(ast.dump(method.args), ast.dump(originals[name].args))
+            self.assertEqual(ast.get_docstring(method), ast.get_docstring(originals[name]))
+            statements = method.body[1:] if ast.get_docstring(method) is not None else method.body
+            self.assertIsInstance(statements[-1], ast.Return)
+            self.assertTrue(all(isinstance(node, ast.Import) for node in statements[:-1]), name)
+        for name in ('_sender_worker', '_send_payload'):
+            self.assertNotIn(name, methods)
+        with tempfile.TemporaryDirectory(prefix='native-input-transport-') as directory:
+            folder = Path(directory)
+            (folder / 'pkg').mkdir()
+            (folder / 'pkg/lan_client.py').write_text(staged)
+            (folder / 'pkg/stock_snapshot_static.py').write_text((ROOT / 'bigworld/stock_snapshot_static.py').read_text())
+            (folder / 'offline_client_transport_native.py').write_text(
+                'import offline_client_input_test as _input\n'
+                'def configure_admission(*args):pass\n'
+                'configure_input=_input.configure_input\nlanding_configure=_input.landing_configure\n')
+            common = ['c++', '-std=c++17', '-O1', '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup',
+                      '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld')]
+            input_sources = ['bigworld/stock_native_client_input.cpp', 'bigworld/stock_native_client_landing.cpp',
+                             'tests/stock_native_client_input_host.cpp']
+            result = subprocess.run(common + ['-DWOT_CLIENT_INPUT_HOST_BUILD'] + [str(ROOT / name) for name in input_sources] +
+                                    ['-o', str(folder / 'offline_client_input_test.so')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            wire_sources = ['bigworld/stock_wire_codec.cpp', 'tests/stock_native_client_state_host.cpp',
+                            'bigworld/stock_wire_replay.cpp', 'bigworld/stock_wire_net.cpp',
+                            'bigworld/stock_wire_replica_store.cpp', 'tests/stock_wire_host_client_module.cpp']
+            result = subprocess.run(common + ['-DWOT_WIRE_HOST_BUILD'] + [str(ROOT / name) for name in wire_sources] +
+                                    ['-lz', '-o', str(folder / 'offline_client_wire_native.so')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([py27, '-B', str(ROOT / 'tests/stock_native_client_input_transport_fixture.py'),
+                                     str(folder), str(client)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            print(result.stdout.strip())
+
     def test_native_input_matches_wire_and_queue(self):
         source = os.environ.get('WOT_FORK_0101_SOURCE')
         if not source:

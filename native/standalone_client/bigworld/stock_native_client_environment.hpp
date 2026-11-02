@@ -11,14 +11,14 @@ using Point=stock_native_client_state::Point;
 struct Profile {
     native_visibility::Checkpoints checkpoints;
     double base_view=0.,misc_vision=1.,crew_vision=1.,binocular_factor=1.,binocular_delay=3.;
-    bool binoculars=false,net=false;
+    bool binoculars=false,net=false,requires_hydraulic_body=false;
     double net_delay=3.,shot_factor=1.;
     std::array<double,2> camouflage{},moving_aspect{0.,1.},still_aspect{0.,1.};
     std::vector<std::pair<std::int64_t,double>> optional_devices;
 };
 struct ActorView {
     std::string key;std::int64_t engine_id=0,id=0;int team=0;
-    bool local=false,ready=false,alive=true,missing=false,tombstone=false,dead_marker_known=false;
+    bool local=false,ready=false,alive=true,missing=false,tombstone=false,dead_marker_known=false,pose_available=true;
     Point position{};double speed=0.,shot_until=0.;
     bool model=false,marker=false;double direct_until=0.,radio_until=0.,next_probe=0.;
 };
@@ -36,7 +36,7 @@ struct Output {
 };
 class Spotting {
     struct Memory {
-        bool direct=false,desired_model=false,desired_marker=false,applied_model=false,applied_marker=false,applied=false;
+        bool sight_unavailable=false,direct=false,desired_model=false,desired_marker=false,applied_model=false,applied_marker=false,applied=false;
         double until=0.,radio_until=0.,next_probe=0.;std::optional<double> still_since;
     };
     std::map<std::string,Memory> memory_;
@@ -46,7 +46,8 @@ class Spotting {
     std::map<std::int64_t,bool> devices_;
 public:
     // Native numeric callbacks only. No Python business callable enters a tick.
-    using Sight=std::function<bool(const ActorView&,const ActorView&,const Profile&,const Profile&,double,double,bool)>;
+    // nullopt keeps the last decided presentation until a valid pair probe.
+    using Sight=std::function<std::optional<bool>(const ActorView&,const ActorView&,const Profile&,const Profile&,double,double,bool)>;
     Output frame(const Frame&,const std::vector<ActorView>&,const std::map<std::string,Profile>&,const Sight&);
     void seed(const ActorView&);
     void radio(const std::map<std::string,double>& deadlines,std::set<std::string> allies);

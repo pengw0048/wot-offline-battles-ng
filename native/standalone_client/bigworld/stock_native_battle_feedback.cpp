@@ -48,7 +48,7 @@ void assertPlayerIdentity(Battle& b, std::int64_t expected) {
     if (avatar_vehicle != expected || arena_vehicle != expected)
         throw p::Error("#1513 player identity mismatch: expected=" + std::to_string(expected) + " avatar=" + std::to_string(avatar_vehicle) +
                        " arenaDP=" + std::to_string(arena_vehicle));
-    py::call(b.engine.compatibility.get(), "assert_vehicle_marker_identity", p::integer(expected).get());
+    compat::assertMarkerIdentity(b, expected);
 }
 
 // The module-only stock voice events a confirmed internal penetration replaces (critical_voice.py).
@@ -373,9 +373,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
     const bool enemy = team(target) != team(attacker);
     auto avatar = b.engine.avatar.get();
     if (attacker.local && enemy) {
-        auto assert_damage = py::optional(b.engine.compatibility.get(), "assert_vehicle_marker_damage_type");
-        if (!py::callable(assert_damage)) throw p::Error("#1513 vehicle-marker damage boundary is unavailable");
-        py::invoke(assert_damage.get(), avatar, p::integer(attacker.engine_id).get());
+        compat::assertMarkerDamageType(b, avatar, attacker.engine_id);
     }
     auto output = p::list();
     auto packDamage = [&](std::int64_t amount) {
@@ -392,7 +390,9 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
         if (critical_count > 0) p::append(output.get(), eventRow(types.get(), "CRIT", target.engine_id, packCrits()));
         if (dead) p::append(output.get(), eventRow(types.get(), "KILL", target.engine_id, p::integer(0)));
     }
-    if (attacker.local && source(event) == "shot" && anyHit(text(field(event, "kind")))) {
+    // Shot-result UI/voice is optional; its stock callback must not cost the
+    // confirmed damage rows or the health edge that follows this presenter.
+    if (attacker.local && source(event) == "shot" && anyHit(text(field(event, "kind")))) b.feature("shot result feedback", [&] {
         auto flags_type = py::optional(b.engine.constants.get(), "VEHICLE_HIT_FLAGS");
         if (flags_type.get() == Py_None) throw p::Error("#1513 VEHICLE_HIT_FLAGS are unavailable");
         auto flag = [&](const char* name) { return constant(flags_type.get(), name); };
@@ -459,7 +459,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
             presentCriticalVoice(b, callback.get(), results.get());
         else
             py::invoke(callback.get(), results.get());
-    }
+    }, false);
     if (target.local && (enemy || isTrue(field(event, "push_attributed")))) {
         const std::int64_t blocked = nonNegative(event, "blocked_damage");
         if (blocked > 0) p::append(output.get(), eventRow(types.get(), "TANKING", attacker.engine_id, packDamage(blocked)));
@@ -467,7 +467,7 @@ bool combat(Battle& b, const Value& event, Actor& target, Actor& attacker, std::
         if (critical_count > 0) p::append(output.get(), eventRow(types.get(), "RECEIVED_CRIT", attacker.engine_id, packCrits()));
     }
     const bool any = PyList_GET_SIZE(output.get()) != 0;
-    if (any) py::invoke(battleEventsCallback(b).get(), output.get());
+    if (any) b.feature("combat battle events", [&] { py::invoke(battleEventsCallback(b).get(), output.get()); }, false);
     return any;
 }
 
@@ -480,12 +480,11 @@ bool environment(Battle& b, const Value& event, Actor& target, std::optional<std
     const std::int64_t damage = nonNegative(event, "damage");
     if (damage <= 0) return false;
     auto types = eventTypes(b, "#1513 battle feedback constants are unavailable");
-    auto callback = battleEventsCallback(b);
     auto details = p::integer(toInt(py::call(types.get(), "packDamage", p::integer(damage).get(),
                                              reason ? p::integer(*reason).get() : Py_None).get()));
     auto rows = p::list();
     p::append(rows.get(), eventRow(types.get(), "RECEIVED_DAMAGE", target.engine_id, std::move(details)));
-    py::invoke(callback.get(), rows.get());
+    b.feature("combat battle events", [&] { py::invoke(battleEventsCallback(b).get(), rows.get()); }, false);
     return true;
 }
 
@@ -669,9 +668,8 @@ std::optional<std::string> surfaceMaterial(Battle& b, const Point& at) {
 
 // BattleRuntime._release_target_lock
 bool releaseTargetLock(Battle& b, std::int64_t engine_id) {
-    auto release = py::optional(b.engine.compatibility.get(), "release_target_lock");
-    if (!py::callable(release) || !b.engine.avatar) return false;
-    return p::flag(py::invoke(release.get(), b.engine.avatar.get(), p::integer(engine_id).get()).get());
+    if (!b.engine.avatar) return false;
+    return compat::releaseTargetLock(b, b.engine.avatar.get(), engine_id);
 }
 }
 }

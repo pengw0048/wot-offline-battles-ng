@@ -95,16 +95,25 @@ bool enqueue(PyObject*client,PyObject*message){
         if(PyList_GET_SIZE(queue.get())>=limits.queue_messages||bytes+std::int64_t(frozen.bytes)>limits.queue_bytes)return false;
         const auto seq=p::integral(client,"_outbound_seq")+1;auto seq_value=p::integer(seq),size=p::integer(frozen.bytes);p::Ref item(PyTuple_Pack(3,seq_value.get(),frozen.value.get(),size.get()));p::append(queue.get(),item);attr(client,"_outbound_seq",seq_value);attr(client,"_outbound_bytes",p::integer(bytes+std::int64_t(frozen.bytes)));
     }
-    // This is the existing network thread's synchronization event. Its Python
-    // Condition implementation owns the waiters; no gameplay runs here.
-    auto event=p::value(client,"_outbound_event");p::Ref empty(PyTuple_New(0));p::call(event.get(),"set",empty.get());return true;
+    // The visible transport has no Python sender thread. Hand the FIFO to its
+    // native sender now; there is no intermediate wake event or polling loop.
+    try {
+        p::Ref args(PyTuple_Pack(1,generation.get()));p::call(client,"_flush_native_outbound",args.get());
+    } catch (const std::exception&) {
+        // A failed handoff must not leave a launch queued after its caller rolls back.
+        PyErr_Clear();
+        auto*done=PyObject_CallMethod(client,const_cast<char*>("_abort_outbound"),const_cast<char*>("sO"),"native outbound handoff failed",generation.get());
+        if(done)Py_DECREF(done);else PyErr_Clear();
+        return false;
+    }
+    Lock lock(client);auto current=p::value(client,"_transport_generation");return equal(generation.get(),current.get())&&available(client);
 }
 PyObject*send(PyObject*,PyObject*args){try{PyObject*client,*message;if(!PyArg_ParseTuple(args,"OO",&client,&message))return nullptr;return p::boolean(enqueue(client,message)).release();}catch(const std::exception&){PyErr_Clear();Py_RETURN_FALSE;}}
 PyObject*freeze(PyObject*,PyObject*v){try{std::size_t nodes=0;auto frozen=freezeValue(v,nodes,0);return Py_BuildValue("NK",frozen.value.release(),static_cast<unsigned long long>(frozen.bytes));}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}}
 PyObject*sendInput(PyObject*,PyObject*args,PyObject*kwargs){
-    PyObject *client,*forward,*turn,*aim=Py_None,*pitch=Py_None,*position=Py_None,*yaw=Py_None,*fire=Py_None,*speed=Py_None,*shell=Py_None,*next=Py_None,*pending=Py_None,*pose=Py_None,*ram=Py_None,*tanks=Py_None,*turrets=Py_None,*destructibles=Py_None,*siege=Py_None,*body_pitch=Py_None,*body_roll=Py_None,*gun=Py_None,*up=Py_None;
-    static const char*names[]={"client","forward","turn","aim_yaw","gun_pitch","position","yaw","fire_seq","speed","shell_index","next_shell_index","shell_change_pending","pose_time_us","ram_contacts","tank_pushes","turret_pushes","destructible_contacts","siege_enabled","pitch","roll","gun_checkpoint","up_cosine",nullptr};
-    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OOO|OOOOOOOOOOOOOOOOOOO",const_cast<char**>(names),&client,&forward,&turn,&aim,&pitch,&position,&yaw,&fire,&speed,&shell,&next,&pending,&pose,&ram,&tanks,&turrets,&destructibles,&siege,&body_pitch,&body_roll,&gun,&up))return nullptr;
+    PyObject *client,*forward,*turn,*aim=Py_None,*pitch=Py_None,*position=Py_None,*yaw=Py_None,*fire=Py_None,*speed=Py_None,*shell=Py_None,*next=Py_None,*pending=Py_None,*pose=Py_None,*ram=Py_None,*tanks=Py_None,*turrets=Py_None,*destructibles=Py_None,*siege=Py_None,*body_pitch=Py_None,*body_roll=Py_None,*gun=Py_None,*up=Py_None,*hydraulic_body=Py_None;
+    static const char*names[]={"client","forward","turn","aim_yaw","gun_pitch","position","yaw","fire_seq","speed","shell_index","next_shell_index","shell_change_pending","pose_time_us","ram_contacts","tank_pushes","turret_pushes","destructible_contacts","siege_enabled","pitch","roll","gun_checkpoint","up_cosine","hydraulic_body",nullptr};
+    if(!PyArg_ParseTupleAndKeywords(args,kwargs,"OOO|OOOOOOOOOOOOOOOOOOOO",const_cast<char**>(names),&client,&forward,&turn,&aim,&pitch,&position,&yaw,&fire,&speed,&shell,&next,&pending,&pose,&ram,&tanks,&turrets,&destructibles,&siege,&body_pitch,&body_roll,&gun,&up,&hydraulic_body))return nullptr;
     try{
         if(!p::truth(client,"ready"))Py_RETURN_FALSE;auto phase=p::value(client,"phase");if(p::string(phase.get())!="battle")Py_RETURN_FALSE;
         auto round=p::value(client,"round_id"),input_round=p::value(client,"_input_seq_round"),landing_round=p::value(client,"_landing_observation_round");
@@ -115,6 +124,12 @@ PyObject*sendInput(PyObject*,PyObject*args,PyObject*kwargs){
         auto message=p::dict();p::set(message.get(),"type",p::text("input"));p::set(message.get(),"round_id",round);p::set(message.get(),"forward",p::number(std::clamp(finite(forward),-1.,1.)));p::set(message.get(),"turn",p::number(std::clamp(finite(turn),-1.,1.)));p::set(message.get(),"aim_yaw",p::number(angle(aim)));p::set(message.get(),"gun_pitch",p::number(std::clamp(finite(pitch),-limits.pitch,limits.pitch)));p::set(message.get(),"fire_seq",p::integer(*fire_seq));
         const bool timeline=capability(client,limits.timeline);if(timeline)p::set(message.get(),"input_seq",p::integer(seq));
         if(position!=Py_None&&PySequence_Size(position)>=3){const char*keys[]={"x","y","z"};for(int i=0;i<3;++i){auto v=p::item(position,i);const double n=finite(v.get());if(std::abs(n)>limits.bounds[i])Py_RETURN_FALSE;p::set(message.get(),keys[i],p::number(n));}p::set(message.get(),"yaw",p::number(angle(yaw)));if(body_pitch!=Py_None)p::set(message.get(),"pitch",p::number(angle(body_pitch)));if(body_roll!=Py_None)p::set(message.get(),"roll",p::number(angle(body_roll)));if(up!=Py_None){if(!numeric(up))Py_RETURN_FALSE;const double n=finite(up,2.);if(n< -1.||n>1.)Py_RETURN_FALSE;p::set(message.get(),"up_cosine",p::number(n));}if(timeline&&pose!=Py_None){auto n=exact(pose);if(!n||*n<0||*n>limits.motion_time)Py_RETURN_FALSE;p::set(message.get(),"pose_time_us",p::integer(*n));}}
+        if(hydraulic_body!=Py_None){
+            if(!PyDict_GetItemString(message.get(),"x")||!(PyTuple_Check(hydraulic_body)||PyList_Check(hydraulic_body))||PySequence_Size(hydraulic_body)!=8)Py_RETURN_FALSE;
+            auto body=p::list();const double pi=3.14159265358979323846;
+            for(unsigned i=0;i<8;++i){auto raw=p::item(hydraulic_body,i);if(!numeric(raw.get()))Py_RETURN_FALSE;const double n=finite(raw.get(),std::numeric_limits<double>::quiet_NaN());if(!std::isfinite(n)||std::abs(n)>(i<3?limits.bounds[i]:pi*2.))Py_RETURN_FALSE;p::append(body.get(),p::number(n));}
+            p::set(message.get(),"hydraulic_body",body);
+        }
         if(speed!=Py_None)p::set(message.get(),"speed",p::number(std::clamp(finite(speed),-limits.speed,limits.speed)));
         if(shell!=Py_None){auto n=range(shell,0,9);if(!n)Py_RETURN_FALSE;p::set(message.get(),"shell_index",p::integer(*n));}
         if((next!=Py_None)!=(pending!=Py_None))Py_RETURN_FALSE;if(next!=Py_None){auto n=range(next,0,9);if(!n||!PyBool_Check(pending))Py_RETURN_FALSE;p::set(message.get(),"next_shell_index",p::integer(*n));p::set(message.get(),"shell_change_pending",p::retain(pending));}

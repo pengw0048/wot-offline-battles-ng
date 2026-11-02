@@ -1105,27 +1105,45 @@ bool connect(PyObject* bigworld, const std::string& host, int port, Handler hand
     return true;
 }
 
-void disconnect(bool flush) {
-    if (!link) return;
-    ++link->generation;
-    if (link->poll_id && link->poll_id.get() != Py_None) {
-        PyObject* done = PyObject_CallMethod(link->bigworld.get(), const_cast<char*>("cancelCallback"), const_cast<char*>("O"), link->poll_id.get());
+namespace {
+void disconnectOwned(Link& owner, bool flush) {
+    ++owner.generation;
+    if (owner.poll_id && owner.poll_id.get() != Py_None) {
+        PyObject* done = PyObject_CallMethod(owner.bigworld.get(), const_cast<char*>("cancelCallback"), const_cast<char*>("O"), owner.poll_id.get());
         if (done) Py_DECREF(done); else PyErr_Clear();
     }
-    link->poll_id = Object();
-    link->handler = nullptr;
-    if (link->net) {
-        if (link->connected) {
+    owner.poll_id = Object();
+    owner.handler = nullptr;
+    if (owner.net) {
+        if (owner.connected) {
             Value leave = object();
             leave.object["type"] = text("leave");
             std::string payload, error;
             if (stock_wire::encode_value(leave, payload, error))
-                stock_wire_net::send(*link->net, std::move(payload), "leave", std::nullopt, MAX_OUTBOUND_MESSAGES * 2, MAX_OUTBOUND_BYTES * 2);
+                stock_wire_net::send(*owner.net, std::move(payload), "leave", std::nullopt, MAX_OUTBOUND_MESSAGES * 2, MAX_OUTBOUND_BYTES * 2);
         }
-        stock_wire_net::close(*link->net, flush ? 0.5 : 0.);
+        stock_wire_net::close(*owner.net, flush ? 0.5 : 0.);
     }
-    link->net.reset();
-    link->connected = link->running = false;
+    owner.net.reset();
+    owner.connected = owner.running = false;
+}
+}
+
+void disconnect(bool flush) {
+    if (link) disconnectOwned(*link, flush);
+}
+
+void releaseScriptOwners() {
+    // Detach first: a callback or a Python destructor cannot see the retiring link.
+    // Native's destructor also signals transport close if leave/close throws.
+    auto owner = std::move(link);
+    if (!owner) return;
+    try { disconnectOwned(*owner, false); }
+    catch (...) {
+        // Stop transport before releasing script handles on the failure path too.
+        owner->net.reset();
+        throw;
+    }
 }
 
 bool connected() { return link && link->connected; }

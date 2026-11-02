@@ -29,6 +29,12 @@ Point barrelPoint(const Barrel&mount,const Point&position,const Point&attitude,d
     auto local=add(add(ry(add(rx({0.,0.,mount.length},gun_pitch),mount.gun),turret_yaw),mount.turret),mount.hull);
     return add(ry(rx(rz(local,attitude[2]),attitude[1]),attitude[0]),position);
 }
+std::optional<Point> physicalBarrelPoint(const Barrel&mount,const Point&position,const Point&attitude,
+    double turret_yaw,double gun_pitch,bool require_body,const std::optional<std::array<double,8>>&body){
+    if(body)return barrelPoint(mount,{(*body)[0],(*body)[1],(*body)[2]},{(*body)[3],(*body)[4],(*body)[5]},(*body)[6],(*body)[7]);
+    if(require_body)return {};
+    return barrelPoint(mount,position,attitude,turret_yaw,gun_pitch);
+}
 void normalize(Frozen&frozen){frozen.flight.source_signature=signature(frozen.source);}
 const Frozen* Lifecycle::begin(const Trigger&input,stock_native_client_weapon::Gun&gun,damage::Random&random,const Normalizer&normalizer){
     ++metrics_.triggers;if(pending_||input.round<=0||input.player<=0||input.input_sequence<=0||input.shell!=gun.shot||input.shell<0||input.shell>=int(gun.ammunition.size())||input.mounted.speed<=0.||input.mounted.gravity<=0.||input.mounted.maximum<=0.){++metrics_.rejected;return nullptr;}

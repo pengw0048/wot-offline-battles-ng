@@ -1,9 +1,11 @@
 """Exact worker human-ram ingress/status laws in actual CPython 2.7."""
 import os
+import ast
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 ROOT=Path(__file__).resolve().parents[1]
 FIXTURE=r'''
 import ast,copy,imp,math,os,random,sys,types
@@ -76,12 +78,47 @@ bad=request(1);bad['first']['x']=float('nan')
 b=battle([bad,request(2)]);rows,errors,queries=native.run(b,0)
 assert [r['seq'] for r in rows]==[2] and len(errors)==1 and queries==1
 rows,errors,queries=native.run(battle([request()]),3);assert rows==[] and errors and queries==1
+# Exercise the current typed result/status contract and the production native
+# entity guards, independently of the retained Python oracle.
+rows,errors,queries=native.run(battle([request()]),2)
+assert rows==[dict(seq=1,first_id=1,second_id=2,available=False)] and not errors and queries==1
+# Exercise the actual NativeWorld adapter and results together. Either or both
+# hydraulic participants have ready resources but no request-bound body: publish
+# a terminal unavailable result, never pending and never query the latest body.
+for mode in (5,6,7,9,10):
+    rows,errors,queries=native.run(battle([request()]),mode)
+    assert rows==[dict(seq=1,first_id=1,second_id=2,available=False)] and not errors and queries==0,(mode,rows,errors,queries)
+# Ordinary historical Human pairs retain their existing native geometry path.
+rows,errors,queries=native.run(battle([request()]),8)
+assert rows==[dict(seq=1,first_id=1,second_id=2,available=True,armor_first=40.,armor_second=80.)] and not errors and queries==1
+for pending in (Box(isStarted=False,typeDescriptor=object()),Box(isStarted=True,typeDescriptor=None)):
+    b=battle([request()]);b._remote_factory._vehicles={1:pending,2:entity}
+    rows,errors,queries=native.run(b,0);assert rows==[] and not errors and queries==0
+b=battle([request(1),request(1),request(2)])
+rows,errors,queries=native.run(b,0)
+assert [r['seq'] for r in rows]==[1,2] and len(errors)==1 and queries==2
+for malformed in ({},[request()]*65):
+    b=battle(malformed);rows,errors,queries=native.run(b,0)
+    assert rows==[] and len(errors)==1 and queries==0
 # The exact boundaries invoke native entity ownership, never these helpers.
 b=battle([request()]);b._server_entity=lambda *a:(_ for _ in ()).throw(AssertionError('Python callback'))
 assert native.run(b,0)[0][0]['available'] is True
 print('human ram ingress passed')
 '''
 class HumanRam(unittest.TestCase):
+    def test_unavailable_armor_reply_finishes_server_probe(self):
+        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        if not source:self.skipTest('set WOT_FORK_0101_SOURCE')
+        tree=ast.parse((Path(source)/'server/lan_battle_server.py').read_text())
+        method=next(node for node in ast.walk(tree) if isinstance(node,ast.FunctionDef) and node.name=='_human_ram_contact_armors')
+        namespace={}
+        exec(compile(ast.Module(body=[method],type_ignores=[]),'pinned-human-ram-terminal','exec'),namespace)
+        pair=(1,2);request={'result':{'available':False}}
+        owner=SimpleNamespace(human_ram_probe_requests={pair:request},
+                              _queue_human_ram_probe=lambda *unused:request)
+        self.assertEqual(namespace['_human_ram_contact_armors'](owner,pair,{}, {},123,(-1.,0.)),(None,True))
+        self.assertNotIn(pair,owner.human_ram_probe_requests)
+
     def test_exact_ingress_status_and_local_failures(self):
         source=os.environ.get('WOT_FORK_0101_SOURCE')
         if not source:self.skipTest('set WOT_FORK_0101_SOURCE')
@@ -89,8 +126,8 @@ class HumanRam(unittest.TestCase):
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='human-ram-') as directory:
             folder=Path(directory);script=folder/'fixture.py';script.write_text(FIXTURE)
-            sources=[ROOT/'bigworld/stock_native_human_ram.cpp',ROOT/'bigworld/stock_native_bot_armor_geometry.cpp',ROOT/'bigworld/stock_native_bot_resource_lifecycle.cpp',ROOT/'tests/stock_native_human_ram_host.cpp']
-            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),*[str(p) for p in sources],'-o',str(folder/'human_ram_test.so')]
+            sources=[ROOT/'bigworld/stock_native_human_ram.cpp',ROOT/'bigworld/stock_native_bot_armor_geometry.cpp',ROOT/'bigworld/stock_native_bot_resource_lifecycle.cpp',ROOT/'bigworld/stock_native_client_state.cpp',ROOT/'tests/stock_native_human_ram_host.cpp']
+            command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD','-DWOT_CLIENT_REPLICA_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),*[str(p) for p in sources],'-o',str(folder/'human_ram_test.so')]
             result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
             result=subprocess.run([py27,'-B',str(script),source],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr);self.assertIn('human ram ingress passed',result.stdout)
 if __name__=='__main__':unittest.main()

@@ -82,6 +82,7 @@ void startup::frame(Battle& b) {
         if (b.live && worker) bots::playerEnvironment(b, rule_dt, now);
         stage("sync");
         if (b.live && !worker && !replay) critical::tick(b, rule_dt);
+        if (!worker) vehicles::flushCriticalPresentations(b);
         if (!worker && !replay) b.feature("Expert damaged-device presentation", [&] { visibility::expert(b, now); });
         b.feature("detached turret lifecycle", [&] { world::detachedTurrets(b, now); }, false);
         stage("critical");

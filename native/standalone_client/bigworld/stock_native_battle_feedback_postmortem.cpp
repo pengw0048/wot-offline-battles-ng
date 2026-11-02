@@ -62,8 +62,7 @@ bool switchPostmortemViewpoint(Battle& b, bool is_viewpoint, std::int64_t engine
     auto setter = py::optional(matrices.get(), "_ConsistentMatrices__setTarget");
     auto camera = py::optional(control.get(), "_PostMortemControlMode__cam");
     auto callback = py::optional(avatar, "onSwitchViewpoint");
-    auto attach_vehicle = py::optional(b.engine.compatibility.get(), "set_postmortem_vehicle");
-    if (attached.get() == Py_None || !py::callable(setter) || camera.get() == Py_None || !py::callable(callback) || !py::callable(attach_vehicle))
+    if (attached.get() == Py_None || !py::callable(setter) || camera.get() == Py_None || !py::callable(callback))
         return false;
     PyObject* previous_target = PyObject_GetAttrString(attached.get(), "target");
     PyObject* previous_camera = previous_target ? PyObject_GetAttrString(camera.get(), "vehicleMProv") : nullptr;
@@ -75,14 +74,14 @@ bool switchPostmortemViewpoint(Battle& b, bool is_viewpoint, std::int64_t engine
     p::Ref held_target(previous_target), held_camera(previous_camera);
     auto target_matrix = vehicle->local ? local::bodyPose(b) : py::attr(entity, "matrix");
     if (target_matrix.get() == Py_None) return false;
-    p::Ref previous_vehicle(p::retain(Py_None));
+    std::optional<std::int64_t> previous_vehicle;
     try {
         // A retail cell attachment changes Avatar.vehicle first; copy its Python-visible result, then the stock callback.
         if (!vehicle->local) py::set(entity, "_postmortem_visible", Py_True);
         // #1513 BigWorld.entities has no membership slot; the public lookup is the authoritative identity check.
         if (py::call(b.engine.bigworld.get(), "entity", p::integer(engine_id).get()).get() != entity)
             throw p::Error("#1513 spectator entity lookup was rejected");
-        replace(previous_vehicle, py::invoke(attach_vehicle.get(), p::integer(engine_id).get()));
+        previous_vehicle = compat::setPostmortemVehicle(b, engine_id);
         py::invoke(setter.get(), target_matrix.get(), Py_False);
         if (py::attr(attached.get(), "target").get() != target_matrix.get()) throw p::Error("#1513 spectator matrix attachment was rejected");
         py::set(camera.get(), "vehicleMProv", attached.get());
@@ -93,7 +92,7 @@ bool switchPostmortemViewpoint(Battle& b, bool is_viewpoint, std::int64_t engine
         PyObject *type, *value, *trace;
         PyErr_Fetch(&type, &value, &trace);
         try {
-            if (previous_vehicle.get() != Py_None) py::invoke(attach_vehicle.get(), previous_vehicle.get());
+            if (previous_vehicle) compat::setPostmortemVehicle(b, *previous_vehicle);
             py::invoke(setter.get(), held_target.get(), Py_False);
             py::set(camera.get(), "vehicleMProv", held_camera.get());
         } catch (...) { PyErr_Clear(); }

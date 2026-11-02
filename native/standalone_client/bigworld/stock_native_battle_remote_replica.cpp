@@ -87,6 +87,13 @@ Pose blend(const Pose& a, const Pose& b, double progress) {
     for (unsigned i = 0; i < 8; ++i) out[i] += (i >= 3 && i <= 6 ? wrap(b[i] - a[i]) : b[i] - a[i]) * progress;
     return out;
 }
+
+std::optional<Pose> blendBody(const std::optional<Pose>& a,const std::optional<Pose>& b,double progress) {
+    if(progress<=0.)return a;
+    if(progress>=1.)return b;
+    if(!a||!b)return std::nullopt;
+    return blend(*a,*b,progress);
+}
 Bracket bracket(const Sample& a, const Sample& b) {
     if (!a.revision || !b.revision || *a.revision < 0 || *b.revision < *a.revision || *b.revision > 2147483647 ||
         *b.revision - *a.revision > 255 || a.time < 0. || b.time < a.time || b.time > 9007199254740991. ||
@@ -98,16 +105,18 @@ Bracket bracket(const Sample& a, const Sample& b) {
 // Confirmed-cursor interpolation of one replica actor (delay convergence, consumer pauses, wreck settling, snaps).
 bool interpolate(Actor& a, double now, double render_delta, double alpha, Bracket& presentation, bool& snapped) {
     if (a.dead) {
-        if (a.settled && a.current == a.target) return false;
+        if (a.settled && a.current == a.target && a.hydraulic_body==a.target_hydraulic_body) return false;
         double distance = 0., angle = 0.;
         for (unsigned i = 0; i < 3; ++i) distance += std::pow(a.target[i] - a.current[i], 2.);
         for (unsigned i = 3; i < 8; ++i) angle = std::max(angle, std::abs(i < 7 ? wrap(a.target[i] - a.current[i]) : a.target[i] - a.current[i]));
         a.settled = distance <= .002 * .002 && angle <= .001;
         a.current = a.settled ? a.target : blend(a.current, a.target, alpha);
+        a.hydraulic_body = a.settled ? a.target_hydraulic_body : blendBody(a.hydraulic_body,a.target_hydraulic_body,alpha);
         snapped = a.settled;
         return true;
     }
     Pose desired = a.target;
+    std::optional<Pose> desired_body=a.target_hydraulic_body;
     if (a.timed && a.samples.size() >= 2) {
         if (render_delta >= .1) { a.resume = true; a.resume_sample = a.sample_time; a.has_resume_sample = true; }
         a.render_delta = render_delta;
@@ -144,23 +153,27 @@ bool interpolate(Actor& a, double now, double render_delta, double alpha, Bracke
         for (std::size_t i = 1; i < a.samples.size(); ++i)
             if (*a.cursor <= a.samples[i].time) { first = &a.samples[i - 1]; second = &a.samples[i]; break; }
         presentation = bracket(*first, *second);
-        desired = blend(first->value, second->value, clamp((*a.cursor - first->time) / std::max(1., second->time - first->time), 0., 1.));
+        const double progress=clamp((*a.cursor - first->time) / std::max(1., second->time - first->time), 0., 1.);
+        desired = blend(first->value, second->value, progress);
+        desired_body=blendBody(cs::hydraulicBody(first->state),cs::hydraulicBody(second->state),progress);
     } else if (a.timed) {
-        const Sample endpoint{a.sample_time, a.sample_revision, a.target, {}};
+        const Sample endpoint{a.sample_time, a.sample_revision, a.target, a.state};
         presentation = bracket(endpoint, endpoint);
         if (!a.cursor) a.cursor = a.sample_time;
     } else {
         const double predict = std::min(std::max(0., now - a.target_time), .05);
         for (unsigned i = 0; i < 3; ++i) desired[i] += a.velocity[i] * predict;
+        if(desired_body)for(unsigned i=0;i<3;++i)(*desired_body)[i]+=a.velocity[i]*predict;
     }
     const Pose& snap = a.timed ? (a.teleport ? a.target : desired) : a.target;
     double distance = 0.;
     for (unsigned i = 0; i < 3; ++i) distance += std::pow(snap[i] - a.current[i], 2.);
-    snapped = distance > 625.;
+    snapped = distance > 625. || (!a.timed && !a.hydraulic_body && desired_body.has_value());
     if (snapped) {
         a.current = snap;
+        a.hydraulic_body=(!a.timed||a.teleport)?a.target_hydraulic_body:desired_body;
         if (a.timed) {
-            const Sample endpoint{a.sample_time, a.sample_revision, a.target, {}};
+            const Sample endpoint{a.sample_time, a.sample_revision, a.target, a.state};
             a.samples = {endpoint};
             a.cursor = a.sample_time;
             a.ideal = a.delay = 0.;
@@ -170,7 +183,10 @@ bool interpolate(Actor& a, double now, double render_delta, double alpha, Bracke
             a.warmup_active = false;
             presentation = bracket(endpoint, endpoint);
         }
-    } else a.current = a.timed ? desired : blend(a.current, desired, alpha);
+    } else {
+        a.current = a.timed ? desired : blend(a.current, desired, alpha);
+        a.hydraulic_body=a.timed?desired_body:blendBody(a.hydraulic_body,desired_body,alpha);
+    }
     return true;
 }
 
@@ -229,7 +245,8 @@ void publishMotion(RemoteVehicle& rv, const Point& position, const Point& veloci
     rv.last_pose_time = now;
     rv.yaw = yaw;
     p::Ref at(nativeVector(position)), v(nativeVector(velocity)), acc(nativeVector(acceleration));
-    OverlayPose pose{at.get(), yaw, rv.provider.get(), speed, turn, v.get(), acc.get()};
+    OverlayPose pose{at.get(), yaw, rv.provider.get(), speed, turn, v.get(), acc.get(),
+                     rv.hydraulic_body?rv.matrix.get():nullptr};
     publishOverlay(rv.entity.get(), pose);
 }
 }
@@ -445,6 +462,10 @@ void advance(Battle& b, double now) {
 void presentReplicaPose(Battle& b, ReplicaBinding& e, RemoteVehicle& rv, double now) {
     Actor& a = *e.data;
     const Pose& current = a.current;
+    setHydraulicBody(b,e.engine_id,a.hydraulic_body);
+    // A missing receipt invalidates queries but does not split the last visual
+    // body from newer chassis/aim inputs. The next full sample resumes all three.
+    if (hydraulicBodyPending(b,e.engine_id)) return;
     if (!e.has_written || e.written != current) {
         // Clear before the first native write: a partial failure must retry even when the next sample returns.
         e.has_written = false;
@@ -480,10 +501,13 @@ void presentReplicaPose(Battle& b, ReplicaBinding& e, RemoteVehicle& rv, double 
                (rv.velocity != Point{} || rv.turn_speed != 0.)) {
         publishMotion(rv, rv.position, Point{}, Point{}, 0., 0., rv.yaw, now);
     }
-    const std::array<double, 4> input{current[3], current[4], current[6], current[7]};
+    const double applied_yaw=a.hydraulic_body?current[3]+(*a.hydraulic_body)[6]:current[6];
+    const double applied_pitch=a.hydraulic_body?(*a.hydraulic_body)[7]:current[7];
+    const std::array<double, 4> input{current[3], current[4], applied_yaw, applied_pitch};
     if (!e.has_aim || input != e.last_aim) {
         e.has_aim = false;
-        const double relative = e.static_yaw.value_or(wrap(current[6] - current[3])), pitch = e.static_pitch.value_or(current[7]);
+        const double relative = a.hydraulic_body?(*a.hydraulic_body)[6]:e.static_yaw.value_or(wrap(current[6] - current[3])),
+                     pitch = a.hydraulic_body?(*a.hydraulic_body)[7]:e.static_pitch.value_or(current[7]);
         if (!rv.aim_relative_yaw || *rv.aim_relative_yaw != relative) {
             nativeMatrix(py::attr(rv.aim.get(), "turretMatrix").get(), {}, {relative, 0., 0.}, true);
             rv.aim_relative_yaw = relative;

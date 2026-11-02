@@ -11,6 +11,7 @@ struct HumanDescriptor {
     ID id=0;
     std::uint64_t record_revision=0,descriptor_revision=0;
     bool target_available=false;
+    bool requires_hydraulic_body=false;
     std::string vehicle,class_tag;
     double armor=0.,mass=0.,contact_mass=0.;
     Point body_minimum{},body_maximum{};
@@ -28,7 +29,7 @@ struct HumanDescriptor {
     perception::Actor template_actor;
     std::vector<step::AimSample> aim_samples;
 };
-struct HumanIngress {Human human;step::WeaponTarget target;double radius=0.;};
+struct HumanIngress {Human human;step::WeaponTarget target;double radius=0.;bool geometry_available=false;};
 // Installation may invoke the reviewed descriptor/effective_params producers.
 // It freezes all crew/fire spotting states and retains no interpreter objects.
 // `raw` is the accepted player row; only the descriptor is a #1513 object.

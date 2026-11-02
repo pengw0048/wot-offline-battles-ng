@@ -90,6 +90,57 @@ class NativeClientEnvironmentTest(unittest.TestCase):
         self.assertIn('native_client_environment.radio(self, message, now)', prepared)
         self.assertIn('native_client_environment.activate(self, chunk_id, item_index)', prepared)
 
+    def test_unavailable_pair_preserves_last_decision(self):
+        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        if not source:
+            self.skipTest('fixed gameplay source is required')
+        program = r"""
+#include "stock_native_client_environment.hpp"
+#include <cassert>
+namespace env=stock_native_client_environment;
+int main(){
+ env::Spotting spotting;env::ActorView local,target;
+ local.key="player:1";local.local=local.ready=true;local.team=1;
+ target.key="player:2";target.id=2;target.engine_id=12;target.ready=true;target.team=2;
+ target.position={200,0,0};target.next_probe=.1;
+ env::Frame frame;frame.local_key=local.key;frame.local_team=1;
+ std::map<std::string,env::Profile> profiles{{local.key,{}},{target.key,{}}};
+ std::optional<bool> decision=true;int probes=0;
+ auto sight=[&](const auto&,const auto&,const auto&,const auto&,double,double,bool){++probes;return decision;};
+ auto tick=[&](double now){frame.now=now;auto out=spotting.frame(frame,{local,target},profiles,sight);for(const auto&t:out.transitions)spotting.acknowledge(t);return out;};
+ assert(tick(.1).transitions.size()==1);
+ decision.reset();assert(tick(.6).transitions.empty());
+ // Both normal frames and a much later probe must retain visibility past expiry.
+ assert(tick(10.2).transitions.empty());assert(tick(40.6).transitions.empty());
+ const int before=probes;frame.radio_only=true;assert(tick(41).transitions.empty());assert(probes==before);frame.radio_only=false;
+ decision=true;assert(tick(41.1).transitions.empty()); // no false respotted edge
+ decision=false;auto hidden=tick(52.1);assert(hidden.transitions.size()==1&&!hidden.transitions[0].model&&!hidden.transitions[0].marker);
+ decision.reset();assert(tick(52.6).transitions.empty()); // unknown never invents detection
+ decision=true;assert(tick(53.1).transitions.size()==1);
+ decision.reset();assert(tick(53.6).transitions.empty());target.alive=false;
+ auto dead=tick(70.1);assert(dead.transitions.size()==1&&!dead.transitions[0].marker);
+ // Receipt loss before the next staggered probe must also preserve an
+ // already-visible target whose lease expires on this ordinary frame.
+ env::Spotting between;target.alive=true;target.model=target.marker=true;
+ target.direct_until=1.05;target.next_probe=1.5;target.pose_available=false;
+ frame.now=1.1;assert(between.frame(frame,{local,target},profiles,sight).transitions.empty());
+ frame.now=1.2;assert(between.frame(frame,{local,target},profiles,sight).transitions.empty());
+ target.pose_available=true;decision=false;frame.now=1.5;
+ assert(between.frame(frame,{local,target},profiles,sight).transitions.size()==1);
+ decision.reset();target.direct_until=0.;
+ // Friendly pairs use the same tri-state, without an enemy spotting lease.
+ env::Spotting friendly;target.alive=true;target.team=1;target.model=target.marker=true;target.next_probe=.1;
+ frame.now=.1;auto pending=friendly.frame(frame,{local,target},profiles,sight);assert(pending.transitions.empty());
+ frame.now=20.1;assert(friendly.frame(frame,{local,target},profiles,sight).transitions.empty());
+ decision=false;frame.now=20.6;auto absent=friendly.frame(frame,{local,target},profiles,sight);assert(absent.transitions.size()==1&&!absent.transitions[0].model);
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='spotting-unavailable-') as directory:
+            folder=Path(directory);fixture=folder/'probe.cpp';fixture.write_text(program);binary=folder/'probe'
+            subprocess.run(['c++','-std=c++17','-I'+str(ROOT/'bigworld'),'-I'+str(Path(source)/'native'),
+                            str(fixture),str(ROOT/'bigworld/stock_native_client_environment.cpp'),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
     def test_spotting_differential(self):
         source = os.environ.get('WOT_FORK_0101_SOURCE')
         if not source:

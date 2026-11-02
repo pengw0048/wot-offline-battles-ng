@@ -626,6 +626,11 @@ public:
     void set_tank_transform(const VehicleMatrix& transform,
                             const VehicleNativeMath& math);
 
+    // #1513 f4ae00 -> f898d0: rotation delta * current hull rotation,
+    // written to the chassis aiming target without moving the rigid body.
+    // The binding supplies D3DXMatrixRotationYawPitchRoll(yaw, pitch, 0).
+    void set_hull_aiming_delta(const VehicleMatrix& rotation);
+
     // isFrozen setter 0x00f55d10 without the unexposed onBecameFrozenCb.
     bool frozen() const { return frozen_; }
     bool frozen_during_frame() const { return frozen_during_frame_; }

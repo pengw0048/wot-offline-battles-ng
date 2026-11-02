@@ -9,6 +9,8 @@ FIXTURE=r'''from __future__ import print_function
 import ast,copy,cStringIO,json,math,random,struct,sys,types
 import offline_player_ram_test as native
 assert native.geometry_adapter()
+assert native.hydraulic_adapter()
+assert native.frozen_body_retry()
 sys.path.insert(0,sys.argv[1]+'/src/res/scripts/client')
 for name in ('gui','gui.mods'):
  m=types.ModuleType(name);m.__path__=[sys.path[0]+'/'+name.replace('.','/')];sys.modules[name]=m

@@ -197,13 +197,16 @@ std::optional<step::WeaponTarget> Runtime::target(const decision::Output&decisio
     // The selected target retains this observer's canonical remembered pose.
     const auto& t=i->second;if(t.fresh_visible)return result;
     result->target.position=t.position;result->pose.position=t.position;
+    result->pose.hydraulic_body.reset();
     if(t.observed_pose) {
         const auto&p=*t.observed_pose;const auto&v=p.values;
+        result->pose.hydraulic_body=p.hydraulic_body;result->pose.require_hydraulic_body=p.require_hydraulic_body;
         if(p.mask&(1u<<3))result->pose.yaw=v[3];if(p.mask&(1u<<4))result->pose.pitch=v[4];if(p.mask&(1u<<5))result->pose.roll=v[5];
         if(p.mask&(1u<<6))result->pose.aim_yaw=v[6];if(p.mask&(1u<<7))result->pose.turret_yaw=v[7];if(p.mask&(1u<<8))result->pose.gun_pitch=v[8];
         if(p.mask&(1u<<10))result->target.velocity={{v[10],v[11],v[12]}};
         else{const double speed=p.mask&(1u<<9)?v[9]:t.speed;result->target.velocity={{std::sin(result->pose.yaw)*speed,0.,std::cos(result->pose.yaw)*speed}};}
     }
+    result->available=result->available&&(!result->pose.require_hydraulic_body||result->pose.hydraulic_body.has_value());
     return result;
 }
 void Runtime::humans(std::vector<Human> rows)

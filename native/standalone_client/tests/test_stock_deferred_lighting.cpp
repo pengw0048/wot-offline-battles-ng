@@ -34,7 +34,7 @@ namespace Moo {struct BaseTexture;using BaseTexturePtr=std::shared_ptr<BaseTextu
 struct StockDeferredLightingSettings {
     float sphericalHarmonics[28]={};bool loaded=false;
     std::string pmremResource;Moo::BaseTexturePtr pmrem;float pmremMips[4]={};
-    float forwardMultiplier=1.f;bool forward=false;
+    float forwardMultiplier=1.f;bool forward=false;bool pbsResourcesReady=false;
 };
 bool loadStockDeferredLightingSettings(DataSectionPtr,StockDeferredLightingSettings&,bool forward=false);
 bool initialiseStockForwardLightingConstants();
@@ -61,6 +61,8 @@ struct ID3DXEffect {
     std::vector<float> uniform;
     void* texture=NULL;
     bool fail=false;
+    bool pbsReady=true;
+    int SetBool(D3DXHANDLE handle,bool value){assert(std::string(handle)=="PBSResourcesReady");if(fail)return -1;pbsReady=value;return 0;}
     int SetValue(D3DXHANDLE,const void* data,unsigned bytes){
         if(fail)return -1;
         assert(bytes==112||bytes==16);
@@ -125,29 +127,37 @@ int main(){
     manager->source->gpu=reinterpret_cast<void*>(0x1513);
     assert(initialiseStockDeferredLightingConstants()&&initialiseStockDeferredLightingConstants());
     auto& context=Moo::rc().context;
-    assert(context.constants.size()==4&&context.registrations==4&&!context.constants.count("SpeedTreeMaterials"));
+    assert(context.constants.size()==5&&context.registrations==5&&!context.constants.count("SpeedTreeMaterials"));
     ID3DXEffect effect;
     auto sh=context.constants["REM_SH9"],brdf=context.constants["EnvBRDFLut"];
     auto pmrem=context.constants["PMREM"],mips=context.constants["PMREMMipsNumber"];
+    auto pbs=context.constants["PBSResourcesReady"];
+    assert((*pbs)(&effect,"PBSResourcesReady")&&!effect.pbsReady);
     assert(!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));
     assert(!(*sh)(&effect,"SH"));
     activateStockDeferredLightingSettings(first);assert((*sh)(&effect,"SH"));
+    assert((*pbs)(&effect,"PBSResourcesReady")&&!effect.pbsReady);
     assert(effect.uniform==std::vector<float>(first.sphericalHarmonics,first.sphericalHarmonics+28));
     assert((*brdf)(&effect,"BRDF")&&effect.texture==manager->source->gpu);
     assert((*pmrem)(&effect,"PMREM")&&effect.texture==first.pmrem->pTexture());
     assert((*mips)(&effect,"MIPS")&&effect.uniform==std::vector<float>({7,1,0,0}));
     BWResource::textureExists=false;
-    assert(!initialiseStockDeferredLightingConstants()&&context.constants.size()==4&&!(*brdf)(&effect,"BRDF"));
+    assert(!initialiseStockDeferredLightingConstants()&&context.constants.size()==5&&!(*brdf)(&effect,"BRDF"));
     BWResource::textureExists=true;
-    assert(initialiseStockDeferredLightingConstants()&&context.registrations==4);
+    assert(initialiseStockDeferredLightingConstants()&&context.registrations==5);
     auto other=std::make_shared<DataSection>();other->vectors["sh0"]=Vector3(100,200,300);
     BWResource::resources["actual/two.xml"]=other;environment->strings["PBS/DEFERRED/REM_SH"]="actual/two.xml";
     assert(loadStockDeferredLightingSettings(environment,second)&&second.loaded);
+    second.pbsResourcesReady=true;
+    assert((*pbs)(&effect,"PBSResourcesReady")&&!effect.pbsReady); // Loading is not activation.
     assert((*sh)(&effect,"SH")&&effect.uniform[0]==first.sphericalHarmonics[0]);
     activateStockDeferredLightingSettings(second);second.sphericalHarmonics[0]=999;
+    second.pbsResourcesReady=false;
+    assert((*pbs)(&effect,"PBSResourcesReady")&&effect.pbsReady); // Publication owns the flag too.
     assert((*sh)(&effect,"SH")&&effect.uniform[0]==100); // Publication owns its copy.
-    effect.fail=true;assert(!(*sh)(&effect,"SH")&&!(*brdf)(&effect,"BRDF")&&!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));effect.fail=false;
+    effect.fail=true;assert(!(*sh)(&effect,"SH")&&!(*brdf)(&effect,"BRDF")&&!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS")&&!(*pbs)(&effect,"PBSResourcesReady"));effect.fail=false;
     deactivateStockDeferredLightingSettings();assert(!(*sh)(&effect,"SH")&&!(*pmrem)(&effect,"PMREM")&&!(*mips)(&effect,"MIPS"));
+    assert((*pbs)(&effect,"PBSResourcesReady")&&!effect.pbsReady);
     environment->strings["PBS/DEFERRED/PMREM"]="missing/pmrem.dds";
     assert(loadStockDeferredLightingSettings(environment,second)&&second.pmremResource=="system/maps/PMREM.dds");
     BWResource::pmremExists=false;
@@ -156,14 +166,14 @@ int main(){
     environment->strings.clear();assert(!loadStockDeferredLightingSettings(environment,second)&&!second.loaded);
     activateStockDeferredLightingSettings(second);assert(!(*sh)(&effect,"SH"));
     finaliseStockDeferredLightingConstants();finaliseStockDeferredLightingConstants();
-    assert(context.constants.empty()&&context.removals==4&&!brdfLut);
+    assert(context.constants.empty()&&context.removals==5&&!brdfLut);
     assert(!(*brdf)(&effect,"BRDF"));
     assert(initialiseStockDeferredLightingConstants());finaliseStockDeferredLightingConstants();
-    assert(context.registrations==8&&context.removals==8);
+    assert(context.registrations==10&&context.removals==10);
     // A forward owner neither requires nor creates deferred-only BRDF/PMREM.
     BWResource::textureExists=false;BWResource::pmremExists=false;
     assert(initialiseStockForwardLightingConstants()&&initialiseStockForwardLightingConstants());
-    assert(context.constants.size()==1&&context.constants.count("REM_SH9"));
+    assert(context.constants.size()==2&&context.constants.count("REM_SH9")&&context.constants.count("PBSResourcesReady"));
     environment->strings["PBS/FORWARD/REM_SH"]="actual/forward.xml";
     environment->scalars["PBS/FORWARD/SH_multiplier"]=2.29f;
     BWResource::resources["actual/forward.xml"]=source;
@@ -182,6 +192,6 @@ int main(){
     assert((*sh)(&effect,"SH")&&effect.uniform!=previous);
     first.forwardMultiplier=999;assert((*sh)(&effect,"SH")&&effect.uniform[0]!=999);
     finaliseStockDeferredLightingConstants();finaliseStockDeferredLightingConstants();
-    assert(context.constants.empty()&&context.registrations==9&&context.removals==9);
+    assert(context.constants.empty()&&context.registrations==12&&context.removals==12);
     std::cout<<"Production SH/BRDF load, publication, failures and repeated managed lifecycle passed"<<std::endl;
 }

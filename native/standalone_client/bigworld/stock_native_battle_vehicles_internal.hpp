@@ -37,6 +37,8 @@ bool applyStatistics(Battle& b, Actor& v, const Value& state);
 bool applyStun(Battle& b, Actor& v, const Value& state);
 bool reconcileCriticalAuthority(Battle& b, Actor& v, const Value& source, Value* canonical);
 bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t attacker);
+// Retry only undelivered current critical HUD edges, after the frame's repair step.
+void flushCriticalPresentations(Battle& b);
 std::int64_t criticalExtraIndex(PyObject* descriptor, const std::string& name);
 bool damageInfoServiceable(Battle& b);
 bool showDamageInfo(Battle& b, std::int64_t engine_id, std::int64_t damage_index, std::int64_t extra_index, std::int64_t attacker);
