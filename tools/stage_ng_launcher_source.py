@@ -149,7 +149,7 @@ def stage(output, fork_source=None, revision=None):
             '__pycache__', '*.pyc', '*.pyo', 'build', 'dist'))
         pinned_server = work / 'pinned-server'
         (tree / 'server').rename(pinned_server)
-        stage_server.stage(str(pinned_server), str(tree / 'server'))
+        stage_server.stage(str(pinned_server), str(tree / 'server'), str(tree / 'src/res/scripts/client'))
         _stage_server_port(tree / 'server/windows_server.py')
         record = {'fork_repository': FORK_REPOSITORY, 'fork_revision': revision,
                   'ng_revision': _ng_revision()}

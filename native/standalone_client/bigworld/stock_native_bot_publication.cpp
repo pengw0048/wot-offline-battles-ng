@@ -56,6 +56,7 @@ std::vector<std::optional<double>> edge(const Input& in,double now)
     if(in.flags&RamMotion)for(const auto& m:in.motions) {
         out.push_back(double(m.player));out.push_back(double(m.sequence));out.push_back(double(m.sample_us));
         for(double v:motion_values(m))out.push_back(v);
+        out.push_back(bool(m.player_hydraulic_body));if(m.player_hydraulic_body)for(double v:*m.player_hydraulic_body)out.push_back(v);
     }
     scalar(34);
     out.push_back(double(in.ammunition.size()));for(int v:in.ammunition)out.push_back(v);
@@ -77,8 +78,9 @@ ID fixed(double value,double scale)
 std::vector<ID> encode(const Input& in,double now)
 {
     std::vector<ID> row;row.reserve(120);
+    const bool bodies=bool(in.flags&RamMotion)&&std::any_of(in.motions.begin(),in.motions.end(),[](const auto&m){return m.player_hydraulic_body.has_value();});
     for(std::size_t index=0;index<scales.size();++index) {
-        if(index==1){row.push_back(in.flags);continue;}
+        if(index==1){row.push_back(in.flags|(bodies?RamMotionBodies:0));continue;}
         double value=in.scalars[index];
         if(!std::isfinite(value))throw std::invalid_argument("Nonfinite native bot scalar");
         if((index==35||index==36)&&!(in.flags&ShotAngles)){row.push_back(0);continue;}
@@ -144,6 +146,7 @@ std::vector<ID> encode(const Input& in,double now)
                 if(!std::isfinite(values[i])||std::abs(values[i])>limit)throw std::invalid_argument("Invalid native ram motion value");
                 row.push_back(fixed(values[i],angle?100000.:10000.));
             }
+            if(bodies){row.push_back(m.player_hydraulic_body?1:0);if(m.player_hydraulic_body)for(unsigned i=0;i<8;++i)row.push_back(fixed((*m.player_hydraulic_body)[i],i<3?10000.:100000.));}
         }
     }
     return row;

@@ -183,6 +183,13 @@ struct Actor {
     double probe_max_gap_ms=0.;
     Presentation presented;
 };
+// Freeze a receipt only when its applied terrain sample is the requested pose.
+// A later current receipt cannot fill a historical or speculative proposal.
+inline std::optional<std::array<double,8>> hydraulicBodyAt(const Actor&a,const std::array<double,6>&baseline){
+    if(!a.has_current)return {};
+    for(unsigned i=0;i<6;++i)if(a.current[i]!=baseline[i])return {};
+    return a.hydraulic_body;
+}
 struct Event {Value payload;};
 static_assert(std::is_nothrow_move_constructible<Value>::value,"Value relocation must not copy nested data");
 static_assert(std::is_nothrow_move_constructible<Sample>::value,"Sample relocation must not copy accepted state");

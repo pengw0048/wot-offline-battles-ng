@@ -23,6 +23,7 @@ struct Checkpoint {
 struct RamMotion {
     ID player=0,sequence=0,sample_us=0;
     Point velocity{},position{},angles{},player_position{},player_angles{},player_velocity{};
+    std::optional<std::array<double,8>> player_hydraulic_body;
 };
 struct Actor {
     Motion* motion=nullptr;
@@ -47,6 +48,7 @@ struct Receipt {
 struct Human {
     ID network_id=0,acknowledged_ram_sequence=0;
     Body body;
+    std::optional<std::array<double,8>> hydraulic_body;
     Profile profile;
     bool checkpoint_field_present=false,checkpoints_valid=true;
     std::vector<Checkpoint> checkpoints;

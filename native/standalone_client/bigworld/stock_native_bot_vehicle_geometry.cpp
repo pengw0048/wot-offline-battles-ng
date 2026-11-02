@@ -98,6 +98,17 @@ bool readVehicle(PyObject * descriptor,PyObject * entity,bool authority,std::uin
         if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,error.what());return false;
     }
 }
+std::optional<std::array<double,8>> rebaseHydraulicBody(const std::array<double,8>&body,
+    const std::array<double,6>&baseline,const std::array<double,6>&proposal){
+    if(baseline==proposal)return body;
+    BW::Matrix before,after,applied,inverse;
+    before.setRotate(float(baseline[3]),float(baseline[4]),float(baseline[5]));before.translation(native({baseline[0],baseline[1],baseline[2]}));
+    after.setRotate(float(proposal[3]),float(proposal[4]),float(proposal[5]));after.translation(native({proposal[0],proposal[1],proposal[2]}));
+    applied.setRotate(float(body[3]),float(body[4]),float(body[5]));applied.translation(native({body[0],body[1],body[2]}));
+    if(!inverse.invert(before))return {};
+    const auto rebased=product(product(applied,inverse),after);const auto point=rebased.applyToOrigin();
+    auto out=body;out[0]=point.x;out[1]=point.y;out[2]=point.z;out[3]=rebased.yaw();out[4]=rebased.pitch();out[5]=rebased.roll();return out;
+}
 Frames frames(const Vehicle& v,const Pose& p)
 {
     Frames out;out.chassis.setRotate(float(p.yaw),float(p.pitch),float(p.roll));out.chassis.translation(native(p.position));out.body=out.chassis;

@@ -193,7 +193,7 @@ bool readHumanInput(const Value& source,const HumanDescriptor& descriptor,HumanI
   auto turret_value=vfield(raw,"turret_yaw");observer.relative_turret_yaw=present(turret_value)?num(raw,"turret_yaw"):num(raw,"aim_yaw",yaw)-yaw;perceive.target_pose=observer;
   if(hydraulic_body){const auto& applied=*hydraulic_body;
    observer.position={applied[0],applied[1],applied[2]};observer.yaw=applied[3];observer.pitch=applied[4];observer.roll=applied[5];observer.relative_turret_yaw=applied[6];perceive.target_pose=observer;}
-  auto& human=out.human.contacts;human.network_id=id;human.acknowledged_ram_sequence=std::max<ID>(0,idfield(raw,"ram_contact_resolved_seq"));human.profile=descriptor.ram;
+  auto& human=out.human.contacts;human.hydraulic_body=hydraulic_body;human.network_id=id;human.acknowledged_ram_sequence=std::max<ID>(0,idfield(raw,"ram_contact_resolved_seq"));human.profile=descriptor.ram;
   auto& body=human.body;body.id=id;body.team=team;body.flags=offline_contact::HasY|offline_contact::HasGrip;
   if(alive)body.flags|=offline_contact::Alive;else body.flags|=offline_contact::Immovable;
   human.checkpoint_field_present=vfield(raw,"tank_pushes")!=nullptr;

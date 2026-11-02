@@ -43,7 +43,10 @@ int PlayerImpact::observe(double speed,const std::vector<Point>&witnesses,const 
 }
 int PlayerImpact::landing(PlayerState&s,double speed,bool normal_impact,const std::vector<Point>&witnesses,const Point&normal,std::optional<Point>position){
     const double lateral=std::sqrt(s.air_lateral_x*s.air_lateral_x+s.air_lateral_z*s.air_lateral_z);if(lateral>.01)s.slide_speed=std::max(s.slide_speed,lateral);s.air_lateral_x=s.air_lateral_z=0.;
-    if(!normal_impact)speed=std::sqrt(speed*speed+lateral*lateral);const auto saved=pose_;if(position)pose_.position=*position;
+    if(!normal_impact)speed=std::sqrt(speed*speed+lateral*lateral);const auto saved=pose_;if(position){if(pose_.hydraulic_body)pose_.hydraulic_body=geo::rebaseHydraulicBody(*pose_.hydraulic_body,
+        {pose_.position[0],pose_.position[1],pose_.position[2],pose_.yaw,pose_.pitch,pose_.roll},
+        {(*position)[0],(*position)[1],(*position)[2],s.yaw,s.pitch,s.roll});
+        pose_.position=*position;if(pose_.hydraulic_body){pose_.yaw=s.yaw;pose_.pitch=s.pitch;pose_.roll=s.roll;}}
     try{const int damage=observe(speed,witnesses,normal);pose_=saved;return damage;}catch(...){pose_=saved;throw;}
 }
 double PlayerImpact::world(const PlayerState&s,const ContactTrace&trace,double speed,double yaw,double now){

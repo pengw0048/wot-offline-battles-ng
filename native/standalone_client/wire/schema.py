@@ -117,7 +117,10 @@ EQUIPMENT_STATE = record('EquipmentState', F('equipment', EQUIPMENT_CONTRACT), *
 
 TANK_PUSH = Tuple(I64, I64, F64, F64, F64, F64, F64)
 TURRET_PUSH = Tuple(STR, I64, F64, F64, F64, F64, F64, F64)
-RAM_MOTION_ROW = Tuple(*((I64, I64, I64) + (F64,) * 18))
+# The first 21 values retain their baseline contract; the tail is the same
+# Human sample frozen by the worker contact owner (not the latest player pose).
+RAM_MOTION_BODY = record('RamMotionBody', N('hydraulic_body', HYDRAULIC_BODY))
+RAM_MOTION_ROW = Tuple(*((I64, I64, I64) + (F64,) * 18 + (RAM_MOTION_BODY,)))
 
 BOT_ROW_FIELDS = (
     F('id', I32), F('team', I32), F('slot', I32), F('name', STR), F('vehicle', STR),

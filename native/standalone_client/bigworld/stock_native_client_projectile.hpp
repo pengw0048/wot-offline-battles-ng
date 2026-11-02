@@ -15,6 +15,8 @@ using Point=projectile::Point;
 double wireRound(double);
 struct Barrel {Point hull{},turret{},gun{};double length=0.;};
 Point barrelPoint(const Barrel&,const Point&position,const Point&attitude,double turret_yaw,double gun_pitch);
+std::optional<Point> physicalBarrelPoint(const Barrel&,const Point&position,const Point&attitude,
+    double turret_yaw,double gun_pitch,bool require_body,const std::optional<std::array<double,8>>&body);
 using Normalizer=std::function<Point(Point)>;
 struct Trigger {
     std::int64_t round=0,player=0,input_sequence=0,server_ms=0;

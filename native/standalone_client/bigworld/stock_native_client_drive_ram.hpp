@@ -26,7 +26,8 @@ public:
     virtual ~RamGeometry()=default;
     virtual std::shared_ptr<const RamSurface> capture(
         const std::shared_ptr<stock_native_client_state::Actor>&,
-        const RamPose&,const std::array<double,4>& shape)const=0;
+        const RamPose&,const std::array<double,4>& shape,
+        const std::optional<std::array<double,8>>& hydraulic_body={})const=0;
 };
 // Retains the query owner's exact Model/BSP resources; no Python read occurs.
 std::shared_ptr<const RamGeometry> nativeRamGeometry();
@@ -42,7 +43,8 @@ public:
     PlayerRam&operator=(const PlayerRam&)=delete;
     bool poll(const offline_contact::Body& own,const std::vector<ContactPeer>&,
         double local_pitch,double local_roll,std::optional<std::int64_t> motion_us,
-        const RamProfile&,std::int64_t player_id);
+        const RamProfile&,std::int64_t player_id,
+        const std::optional<std::array<double,8>>& proposal_body={});
     void retry();
     const std::set<std::int64_t>& activeEpisodes()const;
     std::size_t pendingProofs()const;

@@ -289,13 +289,15 @@ class Owner final : public PlayerProjectiles {
         auto unit = direction;
         unit.normalise();
         t.direction = {unit.x, unit.y, unit.z};
-        // The source water gate uses the physical barrel end in the current ground transform,
-        // separately from the stabilised muzzle used for the shot ray.
-        const auto barrel = proj::barrelPoint(water_barrel_, {a.current[0], a.current[1], a.current[2]}, {a.current[3], a.current[4], a.current[5]},
-                                              turret, pitch);
-        const Point up{barrel[0], barrel[1] + .1, barrel[2]};
+        // The water gate samples the applied physical body independently of
+        // the stabilised muzzle used for the shot ray. An unknown body cannot admit a shot.
+        const auto receipt = cs::hydraulicBodyAt(a, {a.current[0], a.current[1], a.current[2], a.current[3], a.current[4], a.current[5]});
+        const auto barrel = proj::physicalBarrelPoint(water_barrel_, {a.current[0], a.current[1], a.current[2]}, {a.current[3], a.current[4], a.current[5]},
+                                                      turret, pitch, g->has_siege, receipt);
+        if (!barrel) return false;
+        const Point up{(*barrel)[0], (*barrel)[1] + .1, (*barrel)[2]};
         double water = 0.;
-        const auto status = scene_.scene->water(barrel, up, water);
+        const auto status = scene_.scene->water(*barrel, up, water);
         if (status == stock_native_world::QueryStatus::Failed || water > 0.) return false;
         const auto server = flights_.serverTime(now);
         if (!server) return false;

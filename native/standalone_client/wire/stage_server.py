@@ -58,6 +58,10 @@ SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=Tr
 '''
 
 EDITS = (
+    ('from gui.mods.offline_lan_0922 import ram_history, ram_motion\n',
+     'from gui.mods.offline_lan_0922 import ram_history\nimport battle_wire_ram_motion as ram_motion\n', 1),
+    ('from gui.mods.offline_lan_0922 import bot_state_codec, tank_contact_ledger, turret_contact_ledger\n',
+     'from gui.mods.offline_lan_0922 import tank_contact_ledger, turret_contact_ledger\nimport battle_wire_bot_state_codec as bot_state_codec\n', 1),
     # Carry the visible native body's applied pose with the accepted input.
     ('            player.vehicle = vehicle\n',
      '            player.vehicle = vehicle\n            player.hydraulic_body = None\n', 1),
@@ -156,7 +160,63 @@ def stage_text(text):
     return text
 
 
-def stage(pinned, output):
+def _receipt_replace(source, before, after, count=1):
+    found = source.count(before)
+    if found != count:
+        raise ValueError('pinned RAM receipt seam changed (%d != %d): %r' % (found, count, before[:80]))
+    return source.replace(before, after, count)
+
+
+def ram_motion_source(source):
+    source = _receipt_replace(source, 'ROW_LENGTH = 21', 'ROW_LENGTH = 22', 1)
+    source = _receipt_replace(source, 'len(row) != ROW_LENGTH', 'len(row) not in (21, ROW_LENGTH)', 1)
+    source = _receipt_replace(source, 'row[3:]', 'row[3:21]', 1)
+    source = _receipt_replace(source, 'result.append([peer, seq, stamp] + values)',
+        'metadata = row[21] if len(row) == ROW_LENGTH else {"hydraulic_body": None}\n'
+        '        if not isinstance(metadata, dict) or set(metadata) != set(("hydraulic_body",)):\n'
+        '            raise ValueError("invalid ram body metadata")\n'
+        '        body = metadata["hydraulic_body"]\n'
+        '        if body is not None:\n'
+        '            if not isinstance(body, (list, tuple)) or len(body) != 8:\n'
+        '                raise ValueError("invalid ram body receipt")\n'
+        '            bounds = (2000., 1000., 2000.) + (2 * math.pi,) * 5\n'
+        '            if any(isinstance(v, bool) or not isinstance(v, INTEGER_TYPES + (float,)) or\n'
+        '                   math.isnan(float(v)) or math.isinf(float(v)) or abs(v) > bound\n'
+        '                   for v, bound in zip(body, bounds)):\n'
+        '                raise ValueError("invalid ram body receipt")\n'
+        '            body = [float(v) for v in body]\n'
+        '        result.append([peer, seq, stamp] + values + [{"hydraulic_body": body}])', 1)
+    return source
+
+
+def bot_state_codec_source(source):
+    source = _receipt_replace(source, 'from gui.mods.offline_lan_0922 import tank_contact_ledger, ram_motion',
+        'from gui.mods.offline_lan_0922 import tank_contact_ledger\nimport battle_wire_ram_motion as ram_motion', 1)
+    source = _receipt_replace(source, 'F_HAS_RAM_MOTION = 1 << 21', 'F_HAS_RAM_MOTION = 1 << 21\nF_HAS_RAM_BODIES = 1 << 22', 1)
+    source = _receipt_replace(source, '    row = []\n    for name, scale in SCALARS:',
+        '    if any(len(m) == 22 and m[21].get("hydraulic_body") is not None for m in state.get("ram_motion", ())):\n'
+        '        flags |= F_HAS_RAM_BODIES\n    row = []\n    for name, scale in SCALARS:', 1)
+    source = _receipt_replace(source, 'zip(motion[3:], ram_motion.SCALES))',
+        'zip(motion[3:21], ram_motion.SCALES))\n'
+        '            if flags & F_HAS_RAM_BODIES:\n'
+        '                body = motion[21]["hydraulic_body"]\n'
+        '                row.append(0 if body is None else 1)\n'
+        '                if body is not None:\n'
+        '                    row.extend(_fixed(v, POSITION_SCALE if i < 3 else ANGLE_SCALE) for i, v in enumerate(body))', 1)
+    source = _receipt_replace(source, '[_real(cursor.take(), scale) for scale in ram_motion.SCALES])',
+        '[_real(cursor.take(), scale) for scale in ram_motion.SCALES])\n'
+        '            body = None\n'
+        '            if flags & F_HAS_RAM_BODIES:\n'
+        '                present = cursor.take()\n'
+        '                if present not in (0, 1):\n'
+        '                    raise BotStateCodecError("invalid ram body presence")\n'
+        '                if present:\n'
+        '                    body = [_real(cursor.take(), POSITION_SCALE if i < 3 else ANGLE_SCALE) for i in range(8)]\n'
+        '            motions[-1].append({"hydraulic_body": body})', 1)
+    return source
+
+
+def stage(pinned, output, client_source=None):
     if os.path.exists(output):
         raise ValueError('output exists: %s' % output)
     shutil.copytree(pinned, output, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -165,6 +225,15 @@ def stage(pinned, output):
         text = source.read()
     with open(path, 'w', encoding='utf-8', newline='') as target:
         target.write(stage_text(text))
+    if client_source is None:
+        client_source = os.path.join(os.path.dirname(pinned), 'src', 'res', 'scripts', 'client')
+    package = os.path.join(client_source, 'gui', 'mods', 'offline_lan_0922')
+    for name, adapt in (('ram_motion', ram_motion_source), ('bot_state_codec', bot_state_codec_source)):
+        with open(os.path.join(package, name + '.py'), encoding='utf-8') as source:
+            adapted = adapt(source.read())
+        compile(adapted, name + '.py', 'exec')
+        with open(os.path.join(output, 'battle_wire_' + name + '.py'), 'w', encoding='utf-8') as target:
+            target.write(adapted)
     shutil.copyfile(os.path.join(HERE, 'codec.py'), os.path.join(output, 'battle_wire_codec.py'))
     with open(os.path.join(HERE, 'schema.py'), encoding='utf-8') as source:
         schema = source.read().replace('from codec import', 'from battle_wire_codec import')

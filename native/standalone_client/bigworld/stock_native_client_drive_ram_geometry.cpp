@@ -17,21 +17,22 @@ class NativeSurface final:public RamSurface {
     std::int64_t engine_;
     bool current()const{return actor_&&!actor_->tombstone&&!actor_->missing&&actor_->ready&&actor_->engine_id==engine_&&actor_->descriptor_revision==descriptor_&&actor_->geometry==geometry_;}
 public:
-    NativeSurface(std::shared_ptr<cs::Actor> actor,const RamPose&p):actor_(std::move(actor)),geometry_(actor_->geometry),vehicle_(stock_native_client_query::geometry(*actor_)),descriptor_(actor_->descriptor_revision),engine_(actor_->engine_id){
+    NativeSurface(std::shared_ptr<cs::Actor> actor,const RamPose&p,const std::optional<std::array<double,8>>&body):actor_(std::move(actor)),geometry_(actor_->geometry),vehicle_(stock_native_client_query::geometry(*actor_)),descriptor_(actor_->descriptor_revision),engine_(actor_->engine_id){
         pose_.position={p[0],p[1],p[2]};pose_.yaw=p[3];pose_.pitch=p[4];pose_.roll=p[5];
-        // The original proof freezes the supplied body matrix, while stock
-        // component providers still supply current turret/gun transforms.
-        pose_.native_hydraulics=false;pose_.native_components=true;
+        // Human receipts freeze both body and component transforms. The
+        // original native component path remains for baseline-only vehicles.
+        pose_.hydraulic_body=body;pose_.require_hydraulic_body=actor_->kind=="player";
+        pose_.native_hydraulics=false;pose_.native_components=!body;
     }
-    bool available()const{return vehicle_&&vehicle_->ready;}
+    bool available()const{return vehicle_&&vehicle_->ready&&(!vehicle_->has_siege||!pose_.require_hydraulic_body||pose_.hydraulic_body.has_value());}
     std::optional<std::array<double,2>>hullSpan()const override{
         if(!current()||!available()||!vehicle_->components[1].bounds_available)return {};
         const auto&hull=vehicle_->components[1];const auto&offset=vehicle_->hull_offset;
-        BW::Matrix matrix;matrix.setRotate(float(pose_.yaw),float(pose_.pitch),float(pose_.roll));
+        BW::Matrix matrix;const auto&body=pose_.hydraulic_body;matrix.setRotate(float(body?(*body)[3]:pose_.yaw),float(body?(*body)[4]:pose_.pitch),float(body?(*body)[5]:pose_.roll));
         const double pitch=matrix.pitch(),roll=matrix.roll();
         const double sp=std::sin(pitch),cp=std::cos(pitch),sr=std::sin(roll),cr=std::cos(roll);
         std::optional<std::array<double,2>>out;
-        for(unsigned ix=0;ix<2;++ix)for(unsigned iy=0;iy<2;++iy)for(unsigned iz=0;iz<2;++iz){const double x=(ix?hull.maximum[0]:hull.minimum[0])+offset[0],y=(iy?hull.maximum[1]:hull.minimum[1])+offset[1],z=(iz?hull.maximum[2]:hull.minimum[2])+offset[2],height=double(float(pose_.position[1]))+cp*(sr*x+cr*y)-sp*z;if(!out)out=std::array<double,2>{height,height};else{(*out)[0]=std::min((*out)[0],height);(*out)[1]=std::max((*out)[1],height);}}
+        for(unsigned ix=0;ix<2;++ix)for(unsigned iy=0;iy<2;++iy)for(unsigned iz=0;iz<2;++iz){const double x=(ix?hull.maximum[0]:hull.minimum[0])+offset[0],y=(iy?hull.maximum[1]:hull.minimum[1])+offset[1],z=(iz?hull.maximum[2]:hull.minimum[2])+offset[2],height=double(float(body?(*body)[1]:pose_.position[1]))+cp*(sr*x+cr*y)-sp*z;if(!out)out=std::array<double,2>{height,height};else{(*out)[0]=std::min((*out)[0],height);(*out)[1]=std::max((*out)[1],height);}}
         return out;
     }
     std::vector<RamLayer>intersections(const cs::Point&a,const cs::Point&b)const override{
@@ -41,7 +42,7 @@ public:
 };
 class NativeGeometry final:public RamGeometry {
 public:
- std::shared_ptr<const RamSurface>capture(const std::shared_ptr<cs::Actor>&actor,const RamPose&pose,const std::array<double,4>&)const override{if(!actor||!actor->geometry)return {};auto out=std::make_shared<NativeSurface>(actor,pose);return out->available()?out:nullptr;}
+ std::shared_ptr<const RamSurface>capture(const std::shared_ptr<cs::Actor>&actor,const RamPose&pose,const std::array<double,4>&,const std::optional<std::array<double,8>>&body)const override{if(!actor||!actor->geometry)return {};auto out=std::make_shared<NativeSurface>(actor,pose,body);return out->available()?out:nullptr;}
 };
 }
 std::shared_ptr<const RamGeometry>nativeRamGeometry(){return std::make_shared<NativeGeometry>();}

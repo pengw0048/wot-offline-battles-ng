@@ -230,7 +230,7 @@ void Contacts::translations(std::map<ID,Actor>& actors,const std::vector<Human>&
             RamMotion r;r.player=human.network_id;r.sequence=++a.ram_motion_sequence;r.sample_us=sample_us;r.velocity=velocity;
             r.position={{start[0]+move.x*hit.second,start[1]+(s.position[1]-start[1])*hit.second,start[2]+move.z*hit.second}};
             r.angles={{s.yaw,s.pitch,s.roll}};r.player_position={{peer.x,peer.y,peer.z}};
-            r.player_angles={{peer.yaw,peer.pitch,peer.roll}};r.player_velocity={{peer.vx,peer.vy,peer.vz}};
+            r.player_angles={{peer.yaw,peer.pitch,peer.roll}};r.player_hydraulic_body=human.hydraulic_body;r.player_velocity={{peer.vx,peer.vy,peer.vz}};
             retained[r.player]=r;
         }
         a.ram_motion=std::move(retained);

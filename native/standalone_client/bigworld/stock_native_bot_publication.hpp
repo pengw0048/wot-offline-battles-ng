@@ -11,7 +11,7 @@ enum Flag:std::uint32_t {
     Equipment=1u<<8,Ammo=1u<<9,Forward=1u<<10,Backward=1u<<11,
     Left=1u<<12,Right=1u<<13,Burst=1u<<14,Clip=1u<<15,Siege=1u<<16,
     ContactMomentum=1u<<17,Airborne=1u<<18,ServiceBrake=1u<<19,
-    RouteWreckBlocked=1u<<20,RamMotion=1u<<21
+    RouteWreckBlocked=1u<<20,RamMotion=1u<<21,RamMotionBodies=1u<<22
 };
 struct EquipmentRow {
     ID contract_revision=0;

@@ -1,5 +1,6 @@
 """The C++ wire codec (Python 2.7 objects) and the schema's Python 3 codec agree byte for byte."""
 import json
+import copy
 import os
 from pathlib import Path
 import shutil
@@ -101,6 +102,11 @@ def samples():
                  and m.get('bots') and m.get('players')), None)
     if tick is not None:
         messages.append(replica_split.encode(tick, None, tick['players'][0]['id'], True)[0])
+        receipt = copy.deepcopy(tick)
+        receipt['bots'][0]['ram_motion'] = [[1, 1, 900000] + [0.] * 18 + [{
+            'hydraulic_body': [1., 2.25, 3.5, .4, .1, -.2, .3, -.1]}]]
+        messages.append(receipt)
+        messages.append(replica_split.encode(receipt, None, tick['players'][0]['id'], True)[0])
     return messages
 
 

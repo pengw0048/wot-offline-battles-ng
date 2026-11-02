@@ -27,7 +27,7 @@ for i in range(32):
  stamp=1000000+i*100000+(0 if i<16 else 25000);state=dict(time_us=stamp,revision=i+1,x=rng.uniform(-10.,10.),y=rng.uniform(0.,1.),z=rng.uniform(-10.,10.),yaw=rng.uniform(-math.pi,math.pi),pitch=0.,roll=0.,alive=True,ram_motion=[[1,i+1,stamp-50000]+[rng.uniform(-1.,1.)for _ in range(18)]])
  rows.append(state);old._ram_bot_history_index[2].append((stamp,i+1));old._ram_bot_history[i+1]={2:state}
 for cursor in [900000,4500000]+[row['time_us']for row in rows]+[row['time_us']+50000 for row in rows]:
- revision=old._ram_bot_revision_at(2,cursor);expected=old._ram_bot_state_at(2,revision,cursor,velocity_only=True)if revision is not None else None;result=native.history(rows,cursor,1)
+ revision=old._ram_bot_revision_at(2,cursor);expected=old._ram_bot_state_at(2,revision,cursor,velocity_only=True)if revision is not None else None;result=native.history([dict(r,ram_motion=[m+[{'hydraulic_body':None}] for m in r['ram_motion']])for r in rows],cursor,1)
  if expected is None:assert result is None,(cursor,result)
  else:
   assert result['velocity']==tuple(expected[k]for k in('ram_vx','ram_vy','ram_vz')),(cursor,result,expected)
@@ -43,7 +43,7 @@ for count in (511,512,513,1027,2049):
  retained=rows[-512:];old._ram_bot_lookup_cache={};old._ram_bot_history_index={2:[(r['time_us'],r['revision'])for r in retained]};old._ram_bot_history=dict((r['revision'],{2:r})for r in retained)
  cursors=[retained[0]['time_us']-1,retained[0]['time_us'],retained[-1]['time_us'],retained[-1]['time_us']+1]
  cursors += [r['time_us']+offset for r in retained[::17]for offset in (0,1)]
- results=native.histories(rows,cursors,1)
+ results=native.histories([dict(r,ram_motion=[m+[{'hydraulic_body':None}] for m in r['ram_motion']])for r in rows],cursors,1)
  for cursor,result in zip(cursors,results):
   revision=old._ram_bot_revision_at(2,cursor);expected=old._ram_bot_state_at(2,revision,cursor,velocity_only=True)if revision is not None else None
   if expected is None:assert result is None,(count,cursor,result)
@@ -51,6 +51,12 @@ for count in (511,512,513,1027,2049):
    assert result['velocity']==tuple(expected[k]for k in('ram_vx','ram_vy','ram_vz')),(count,cursor,result,expected)
    witness=ram.for_player(expected['ram_motion'],1);assert result['witness']==(tuple(witness)if witness else None),(count,cursor,result,expected)
   wrapped_queries+=1
+bodyA=[1.,2.,3.,.1,.2,.3,.4,.5];bodyB=[10.,20.,30.,.2,.3,.4,.5,.6]
+rows=[dict(time_us=1000000,revision=1,x=0.,y=0.,z=0.,ram_motion=[[1,1,900000]+[0.]*18+[{'hydraulic_body':bodyA}]]),dict(time_us=1100000,revision=2,x=0.,y=0.,z=0.,ram_motion=[[1,2,1090000]+[0.]*18+[{'hydraulic_body':bodyB}]])]
+assert native.history(rows,1050000,1)['body']==tuple(bodyA)
+assert native.history(rows,1100000,1)['body']==tuple(bodyB)
+rows[0]['ram_motion'][0][21]['hydraulic_body']=None
+assert native.history(rows,1050000,1)['body'] is None
 print('native peer ACK velocity/history differential passed: 420 predictions, 66 original cursors, %d wrapped cursors'%wrapped_queries)
 '''
 class PlayerPeersDifferential(ContactDifferential):

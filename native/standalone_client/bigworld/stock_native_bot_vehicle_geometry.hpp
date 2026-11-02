@@ -38,6 +38,9 @@ struct Pose {
     std::optional<std::array<double, 8>> hydraulic_body;
     bool require_hydraulic_body=false;
 };
+// Recompose only a same-step local query with an already frozen body transform.
+std::optional<std::array<double,8>> rebaseHydraulicBody(const std::array<double,8>&,
+    const std::array<double,6>&baseline,const std::array<double,6>&proposal);
 struct Frames {
     BW::Matrix body,chassis;
     BW::Matrix body_inverse,chassis_inverse;
