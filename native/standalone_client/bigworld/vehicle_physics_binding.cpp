@@ -736,6 +736,7 @@ public:
     PY_AUTO_METHOD_DECLARE( RETVOID, applyImpulseToCoM, ARG( Vector3, END ) )
 
     PY_METHOD_DECLARE( py_setDamperSpringsLength )
+    PY_METHOD_DECLARE( py_setHullAimingAnglesDelta )
 
     static PyWGVehiclePhysics * New() { return new PyWGVehiclePhysics(); }
     PY_AUTO_FACTORY_DECLARE( PyWGVehiclePhysics, END )
@@ -887,6 +888,23 @@ int PyWGVehiclePhysics::pySet_isFrozen( PyObject * value )
     return 0;
 }
 
+PyObject * PyWGVehiclePhysics::py_setHullAimingAnglesDelta( PyObject * args )
+{
+    float yaw, pitch;
+    if (!PyArg_ParseTuple( args, "ff:setHullAimingAnglesDelta", &yaw, &pitch ))
+        return NULL;
+    // The original dereferences its configured Tank unconditionally. Match
+    // the valid call while containing a partial-startup call as a Python error.
+    if (!core_.tank())
+    {
+        PyErr_SetString( PyExc_ValueError,
+            "setHullAimingAnglesDelta requires a configured WGVehiclePhysics" );
+        return NULL;
+    }
+    core_.set_hull_aiming_delta( stock_vehicle_native_math::hullAimingDelta( yaw, pitch ) );
+    Py_RETURN_NONE;
+}
+
 PY_TYPEOBJECT( PyWGVehiclePhysics )
 PY_BEGIN_METHODS( PyWGVehiclePhysics )
     PY_METHOD( removeAllDamperSprings )
@@ -897,6 +915,7 @@ PY_BEGIN_METHODS( PyWGVehiclePhysics )
     PY_METHOD( setDamperSpringsLength )
     PY_METHOD( setArenaBounds )
     PY_METHOD( configure )
+    PY_METHOD( setHullAimingAnglesDelta )
 PY_END_METHODS()
 PY_BEGIN_ATTRIBUTES( PyWGVehiclePhysics )
     PY_ATTRIBUTE( owner )

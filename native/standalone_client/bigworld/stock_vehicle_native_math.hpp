@@ -75,6 +75,16 @@ inline wot::Vector3 transformNormal( wot::Vector3 value, const wot::VehicleMatri
     return { result.x, result.y, result.z };
 }
 
+inline wot::VehicleMatrix hullAimingDelta( float yaw, float pitch )
+{
+    // Exact #1513 f898d0 calls this D3DX9_43 import with zero roll.
+    D3DXMATRIX native;
+    D3DXMatrixRotationYawPitchRoll( &native, yaw, pitch, 0.0f );
+    wot::VehicleMatrix result;
+    std::memcpy( result.rows, &native, sizeof( result.rows ) );
+    return result;
+}
+
 inline void inverse( wot::VehicleMatrix & destination, const wot::VehicleMatrix & source )
 {
     // Start from the destination: a NULL return must leave it as D3DX left it.
