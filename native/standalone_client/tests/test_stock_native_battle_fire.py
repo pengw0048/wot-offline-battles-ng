@@ -10,6 +10,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from stock_battle_gui_support import client_executable, compiler, python27
 from test_stock_native_battle_radio import SOURCE
+from test_stock_native_battle_critical_order import method
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = r'''
@@ -75,11 +76,6 @@ print('Canonical fire ownership, overrides, identity and partial-startup retries
 '''
 
 
-def method(source, begin, end):
-    start = source.index(begin)
-    return source[start:source.index(end, start)]
-
-
 @unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
 class NativeBattleFireTest(unittest.TestCase):
     def test_production_effect_reads_native_owner_and_retries_readiness(self):
@@ -87,8 +83,8 @@ class NativeBattleFireTest(unittest.TestCase):
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         edges = (ROOT / 'bigworld/stock_native_battle_vehicles_edges.cpp').read_text()
         critical = (ROOT / 'bigworld/stock_native_battle_critical.cpp').read_text()
-        body = method(edges, 'bool syncFireEffect(', '\n// BattleRuntime._stop_remote_visual:')
-        damage = method(critical, 'const VehicleDamage* damage(', '\n// critical_damage.apply_payload:')
+        body = method(edges, 'bool syncFireEffect(')
+        damage = method(critical, 'const VehicleDamage* damage(')
         host = (ROOT / 'tests/stock_native_battle_fire_host.cpp').read_text()
         host = host.replace('@DAMAGE@', damage).replace('@SYNC_FIRE@', body)
         with tempfile.TemporaryDirectory(prefix='battle-fire-') as directory:
@@ -116,7 +112,7 @@ class NativeBattleFireTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('AssertionError', result.stderr)
         # The real producer writes only the native owner; no Python mirror is restored.
-        producer = method(critical, 'Value applyPayload(', '\n// critical_damage.apply_death:')
+        producer = method(critical, 'Value applyPayload(')
         self.assertIn('d.fire = on_fire;', producer)
         self.assertNotIn('is_on_fire', producer)
         self.assertNotIn('is_on_fire', body.replace('// applyPayload owns fire in C++; stock Vehicle has no is_on_fire property.', ''))
