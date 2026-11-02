@@ -334,6 +334,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-ballistics-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_effect_owners.py"),
         $EngineRoot) "stock-effect-owners-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_startup_timing.py"),
+        $EngineRoot) "startup-timing-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_startup_services.py"),
         $EngineRoot) "stock-startup-services-patch.log"
     # App frame pacing for BigWorld.wg_setSpecialFPSMode/wg_setReducedFpsMode.

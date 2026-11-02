@@ -357,6 +357,12 @@ void sampleHydraulicBody(Owner&o,Battle&b,PyObject*e,PlayerDriver&driver) {
     receipt=value;if(actor)actor->hydraulic_body=value;
 }
 }
+void attachSelfPresentation(Battle&b,PyObject*e) {
+    auto owner=acquire(b,e);auto model=obj(b.local->model);
+    if(model.get()==Py_None)throw p::Error("Native self presentation is not attached");
+    auto appearance=field(e,"appearance");
+    optional(*owner,b,"local body swinging",[&]{bindSwing(*owner,b,appearance.get(),model.get());});
+}
 void selfPresentation(Battle&b,PyObject*e,PlayerDriver&driver,double elapsed,const SliceTrace&,bool stopped) {
     auto owner=acquire(b,e);auto&self=*owner;auto root=obj(b.local->matrix),model=obj(b.local->model);
     if(root.get()==Py_None||model.get()==Py_None)throw p::Error("Native self presentation is not attached");

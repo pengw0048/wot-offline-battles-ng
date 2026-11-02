@@ -4,6 +4,7 @@
 #endif
 #include "stock_native_battle_startup_internal.hpp"
 #include "stock_native_battle_local.hpp"
+#include "stock_native_client_self_presentation.hpp"
 #include "stock_native_battle_vehicles.hpp"
 #include "stock_native_battle_projectiles.hpp"
 #include "stock_native_battle_remote.hpp"
@@ -704,6 +705,7 @@ void finishEntityStartup(Battle& b) {
         local::start(b);
         // The visible player's native drive owner, replay included (native_client_drive.prepare at the running edge).
         if (!b.worker) local::prepare(b);
+        if (!b.worker) stock_native_client_drive::attachSelfPresentation(b, b.entity(b.startup->local_vehicle_id).get());
         b.phase = Phase::Running;
         b.startup->stage = Stage::None;
         if (!b.worker) {

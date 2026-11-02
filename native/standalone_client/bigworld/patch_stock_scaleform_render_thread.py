@@ -374,12 +374,22 @@ def patch(root, scaleform_root):
     # Display jobs rely on the D3D9 HAL accepting the render thread at init.
     if HAL_CONTRACT not in (Path(scaleform_root) / HAL_HEADER).read_text():
         raise RuntimeError("Scaleform D3D9 HAL lacks the render thread init parameter")
+    patch_reset_lifecycle(root)
     for relative, edits in EDITS.items():
         path = Path(root) / relative
         text = path.read_text()
         for old, new in edits:
             text = replace_once(text, old, new, relative)
         path.write_text(text)
+
+
+def patch_reset_lifecycle(root):
+    path = Path(root) / 'lib/scaleform/manager.hpp'
+    old = '\t\tvoid createUnmanagedObjects();'
+    new = (old + '\n'
+           '\t\t// ResetEx preserves textures, but replaces HAL backbuffer/render-buffer state.\n'
+           '\t\tbool recreateForD3DExDevice() const override { return true; }')
+    path.write_text(replace_once(path.read_text(), old, new, 'Scaleform ResetEx lifecycle'))
 
 
 def main():

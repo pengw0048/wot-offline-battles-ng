@@ -14,8 +14,8 @@ def replace_once(text, before, after):
 def patch(root):
     root = Path(root)
     paths = [root / 'client/script_bigworld.cpp', root / 'lib/moo/render_context.cpp',
-             root / 'client/bw_winmain.cpp']
-    script, render, window = [path.read_text() for path in paths]
+             root / 'client/bw_winmain.cpp', root / 'client/device_app.cpp', root / 'client/app.cpp']
+    script, render, window, device, app = [path.read_text() for path in paths]
     if '#include "stock_display_modes.hpp"' not in script:
         script = replace_once(script, '#include "pch.hpp"',
                               '#include "pch.hpp"\n#include "stock_display_modes.hpp"')
@@ -77,8 +77,44 @@ PY_AUTO_MODULE_FUNCTION( RETDATA, changeVideoMode, ARG( int, ARG( int, END ) ), 
     window = replace_once(window, '\tstatic bool s_inSizeMove = false;',
         '\tstockDisplayWindowMessage( msg, wParam, lParam );\n\n'
         '\tstatic bool s_inSizeMove = false;')
+    for name, source in (('device', device), ('app', app)):
+        if '#include "stock_display_modes.hpp"' not in source:
+            source = replace_once(source, '#include "pch.hpp"',
+                '#include "pch.hpp"\n#include "stock_display_modes.hpp"')
+        if name == 'device':
+            device = source
+        else:
+            app = source
+    device = replace_once(device, '    bool windowed     = true;',
+        '    const D3DDISPLAYMODE & desktopMode = di.windowedDisplayMode_;\n'
+        '    bool windowed     = false;')
+    device = replace_once(device, '    int fullscreenWidth = 1024;\n    int fullscreenHeight = 768;',
+        '    int fullscreenWidth = desktopMode.Width;\n'
+        '    int fullscreenHeight = desktopMode.Height;\n'
+        '    int fullscreenRefresh = desktopMode.RefreshRate;\n'
+        '    aspectRatio = float(fullscreenWidth) / float(fullscreenHeight);')
+    device = replace_once(device,
+        '            fullscreenHeight = devicePreferences->readInt("fullscreenHeight", fullscreenHeight);',
+        '            fullscreenHeight = devicePreferences->readInt("fullscreenHeight", fullscreenHeight);\n'
+        '            fullscreenRefresh = devicePreferences->readInt("fullscreenRefresh", fullscreenRefresh);')
+    # Keep the SDK fallback for unavailable dimensions, but choose among all
+    # refresh rates after the final adapter and command-line overrides are known.
+    device = replace_once(device, '    modeIndex = std::min(modeIndex, maxModeIndex);',
+        '    const int preferredMode = stockPreferredDisplayMode(deviceIndex,\n'
+        '        fullscreenWidth, fullscreenHeight, fullscreenRefresh);\n'
+        '    if (preferredMode >= 0) modeIndex = preferredMode;\n'
+        '    modeIndex = std::min(modeIndex, maxModeIndex);')
+    device = replace_once(device, '            devPref->writeInt( "fullscreenHeight", mode.Height );',
+        '            devPref->writeInt( "fullscreenHeight", mode.Height );\n'
+        '            devPref->writeInt( "fullscreenRefresh", mode.RefreshRate );')
+    device = replace_once(device,
+        '        const Moo::DeviceInfo& di = Moo::rc().deviceInfo( 0 );',
+        '        const Moo::DeviceInfo& di = Moo::rc().deviceInfo( Moo::rc().deviceIndex() );')
+    app = replace_once(app,
+        '\t\t\t\tMoo::rc().changeMode( Moo::rc().modeIndex(), !Moo::rc().windowed() );',
+        '\t\t\t\tstockToggleFullscreen();')
     # Validate every anchor before mutating any production translation unit.
-    for path, contents in zip(paths, (script, render, window)):
+    for path, contents in zip(paths, (script, render, window, device, app)):
         if path.read_text() != contents:
             path.write_text(contents)
 

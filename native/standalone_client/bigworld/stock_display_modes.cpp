@@ -222,6 +222,33 @@ void stockRememberDisplayWindow()
     rememberNormalWindow();
 }
 
+int stockPreferredDisplayMode( unsigned deviceIndex, int width, int height, int refresh )
+{
+    if (deviceIndex >= Moo::rc().nDevices()) return -1;
+    const Moo::DeviceInfo & info = Moo::rc().deviceInfo( deviceIndex );
+    if (refresh <= 0) refresh = info.windowedDisplayMode_.RefreshRate;
+    int selected = -1;
+    unsigned distance = ~0u;
+    for (unsigned index = 0; index < info.displayModes_.size(); ++index)
+    {
+        const D3DDISPLAYMODE & mode = info.displayModes_[index];
+        if (mode.Width != static_cast<unsigned>( width ) ||
+            mode.Height != static_cast<unsigned>( height ) ||
+            (mode.Format != D3DFMT_X8R8G8B8 && mode.Format != D3DFMT_A8B8G8R8)) continue;
+        const unsigned rate = static_cast<unsigned>( refresh );
+        const unsigned difference = mode.RefreshRate > rate ?
+            mode.RefreshRate - rate : rate - mode.RefreshRate;
+        // Driver enumeration order is not a preference: TV modes may come first.
+        if (selected < 0 || difference < distance ||
+            (difference == distance && mode.RefreshRate > info.displayModes_[selected].RefreshRate))
+        {
+            selected = index;
+            distance = difference;
+        }
+    }
+    return selected;
+}
+
 void stockDisplayWindowMessage( UINT message, WPARAM wParam, LPARAM lParam )
 {
     // BWWndProc can receive final activation messages after Moo::fini().
@@ -541,6 +568,21 @@ bool stockChangeVideoMode( int modeIndex, int mode )
     // No display-state writes may follow a synchronously reentrant callback.
     stockNotifyReadPreferences(windowMode());
     return true;
+}
+
+bool stockToggleFullscreen()
+{
+    if (!Moo::rc().device()) return false;
+    if (!Moo::rc().windowed()) return stockChangeVideoMode( -1, WINDOWED );
+    const unsigned device = Moo::rc().deviceIndex();
+    const D3DDISPLAYMODE & desktop = Moo::rc().deviceInfo( device ).windowedDisplayMode_;
+    const int mode = stockPreferredDisplayMode( device, desktop.Width, desktop.Height, desktop.RefreshRate );
+    if (mode < 0) return false;
+    const float previousRatio = Moo::rc().fullScreenAspectRatio();
+    Moo::rc().fullScreenAspectRatio( float( desktop.Width ) / float( desktop.Height ) );
+    if (stockChangeVideoMode( mode, EXCLUSIVE )) return true;
+    Moo::rc().fullScreenAspectRatio( previousRatio );
+    return false;
 }
 
 void stockResizeWindow( int width, int height )

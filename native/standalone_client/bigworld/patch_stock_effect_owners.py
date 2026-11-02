@@ -375,6 +375,28 @@ def patch(root):
     patch_macro_settings(root)
     patch_renderer_startup(root)
     patch_resource_names(root)
+    patch_parameter_caches(root)
+
+
+def patch_parameter_caches(root):
+    # These public Romp draw owners still cache the definition; water already
+    # selects its private binding in patch_stock_water_ripples.py.
+    # A Definition is immutable draw metadata; manual values must target the
+    # material's private binding, including after recompilation/device reset.
+    apply_file(root, Path('lib/romp/flora_renderer.cpp'), [
+        ('    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
+         '    standardParams_.effect(material_->pEffect()->pEffect());\n'
+         '    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
+         'flora runtime parameter binding'),
+    ])
+    apply_file(root, Path('lib/romp/sky_gradient_dome.cpp'), [
+        ('\t//calculate runtime effect values',
+         '\t// Select the draw binding before writing cached manual constants.\n'
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tparameters_.effect(material_->pEffect()->pEffect());\n\n'
+         '\t//calculate runtime effect values',
+         'sky runtime parameter binding'),
+    ])
 
 
 SHARED_SCREEN_LOOKUP = (
