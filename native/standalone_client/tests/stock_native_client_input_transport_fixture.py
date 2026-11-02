@@ -1,5 +1,6 @@
 """Production native input -> generated FIFO bridge -> real native TCP sender."""
 from __future__ import print_function
+import os
 import socket
 import sys
 import threading
@@ -18,6 +19,8 @@ sys.modules[package.__name__] = package
 from gui.mods.offline_lan_0922 import lan_client as lan
 import offline_client_input_test as native
 import offline_client_wire_native as wire
+sys.path.insert(0, os.path.join(root, '../../../../tests'))
+from effective_params_fixture import effective_params
 
 listener = socket.socket()
 listener.bind(('127.0.0.1', 0))
@@ -95,6 +98,51 @@ def sent(kind, callback, preceding=()):
     assert [value['type'] for value in received[count:]] == list(preceding) + [kind], (kind, received)
 
 
+# Garage changes remain Python-owned after battle-time producers move to C++.
+# Exercise their actual generated methods through the binary TCP sender too.
+live.phase = 'waiting'
+live.host_player_id = live.player_id
+live.server_capabilities += [lan.TEAM_SELECTION_CAPABILITY, lan.TEAM_SIZE_SELECTION_CAPABILITY]
+for outfits in (None, {}):
+    sent('select_vehicle', lambda: live.select_vehicle(
+        'germany:G04_PzVI_Tiger_I', 1500, outfits=outfits,
+        vehicle_compact_descr='AQID', effective_params=effective_params(),
+        marks_on_gun=1 if outfits is None else 2))
+    selection = received[-1]
+    assert ('outfits' in selection) == (outfits is not None), selection
+    assert selection['effective_params']['camouflage']['camouflage_id'] is None
+for team in (0, 1, 2):
+    sent('select_team', lambda: live.select_team(team))
+for team, size in ((1, 1), (2, 15)):
+    sent('set_team_size', lambda: live.set_team_size(team, size))
+for mode in sorted(lan.BOT_TIER_MODES):
+    sent('set_bot_tier_mode', lambda: live.set_bot_tier_mode(mode))
+for mode in sorted(lan.BOT_SKILL_MODES):
+    sent('set_bot_skill_mode', lambda: live.set_bot_skill_mode(mode))
+garage_count = len(received)
+assert garage_count >= 11 and live.connected and live.running
+live.phase = 'battle'
+
+for extra in ({}, {'sample_time_us': 1000, 'source_batch_horizon_us': 2000}):
+    state = dict(type='bot_state', round_id=1, authority_epoch=7,
+                 rows=[], detached_turrets=[])
+    state.update(extra)
+    sent('bot_state', lambda: native.send(live, state))
+    assert ('sample_time_us' in received[-1]) == ('sample_time_us' in extra)
+for invalid in (None, True, 1.5, '1000', 2 ** 63):
+    try:
+        wire.encode(dict(type='bot_state', round_id=1, rows=[], sample_time_us=invalid))
+    except (ValueError, OverflowError):
+        pass
+    else:
+        raise AssertionError('Invalid bot sample timestamp accepted: ' + repr(invalid))
+try:
+    wire.encode({'type': 'unregistered_control_message'})
+except ValueError:
+    pass
+else:
+    raise AssertionError('Unregistered wire type accepted')
+
 checkpoint = dict(reload_time=0., reload_duration=5., clip=1, clip_size=1, dispersion=.01)
 # A preceding admitted one-shot remains ahead of the new native input.
 live._outbound_queue = [(1, dict(type='track_repair', round_id=1, critical_base_revision=0, repair_seq=1, tracks=[]), 1)]
@@ -123,7 +171,7 @@ messages.append(dict(type='projectile_resolve', round_id=1, authority_epoch=7, p
     penetration_factor=1., impact=None, direct=None, splash=[], destructibles=[], hit_vehicle=False))
 for message in messages:
     sent(message['type'], lambda: native.send(live, message))
-assert len(received) == 9 and not any(value['type'] == 'ping' for value in received)
+assert len(received) == garage_count + 11 and not any(value['type'] == 'ping' for value in received)
 live.stop()
 live.stop()
 assert live.sock is None and not live.running and live.phase == 'disconnected'
@@ -169,4 +217,4 @@ current.stop()
 current.stop()
 assert replacement.closed and not current.running and current._outbound_queue == []
 
-print('Eight native producers acknowledged over TCP without ping; failed sends cannot retain a queued launch')
+print('Native battle and retained garage producers acknowledged over TCP without ping; failed sends cannot retain a queued launch')

@@ -79,6 +79,20 @@ def samples():
                           'wreck_hit': {'target_kind': 'bot', 'target_id': 2 ** 63 + 5}}]})
     messages.append({'type': 'track_repair', 'round_id': 1, 'critical_base_revision': 0, 'repair_seq': 1,
                      'tracks': [{'name': 'leftTrackHealth', 'hp': 12.5, 'max_hp': 100.0, 'state': 'critical'}]})
+    # The post-result detached-turret tail is not a new Bot motion sample.
+    messages.append({'type': 'bot_state', 'round_id': 1, 'authority_epoch': 2,
+                     'rows': [], 'detached_turrets': []})
+    messages.append({'type': 'bot_state', 'round_id': 1, 'authority_epoch': 2,
+                     'rows': [], 'sample_time_us': 1000, 'source_batch_horizon_us': 2000})
+    messages.extend([
+        {'type': 'select_vehicle', 'vehicle': 'germany:G04_PzVI_Tiger_I', 'max_health': 1500,
+         'vehicle_compact_descr': 'AQID', 'effective_params': {'camouflage': {'camouflage_id': None}},
+         'marks_on_gun': 2, 'outfits': {}},
+        {'type': 'select_team', 'team': 0},
+        {'type': 'set_team_size', 'team': 2, 'size': 15},
+        {'type': 'set_bot_tier_mode', 'mode': 'random'},
+        {'type': 'set_bot_skill_mode', 'mode': 'mixed'},
+    ])
     import replica_split
     tick = next((m for m in messages if m.get('type') == 'snapshot' and 'client_build' not in m
                  and m.get('bots') and m.get('players')), None)
