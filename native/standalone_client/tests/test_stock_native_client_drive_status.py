@@ -46,6 +46,55 @@ assert first==second
 try:native.update(native.create(dict(maxima=maxima,crew_roles=roles)),dict(stun_end_server_time_ms=12),0,None)
 except RuntimeError:pass
 else:raise AssertionError('unanchored accepted stun was admitted')
+# Exercise the real local Status + repair Owner chain, including accepted
+# server echoes. A destroyed turret must not keep repaired tracks immobile.
+import copy
+for tracks in (['leftTrackHealth'],['rightTrackHealth'],['leftTrackHealth','rightTrackHealth']):
+ pools=dict((name,200.)for name in tracks+['engineHealth','turretRotatorHealth'])
+ owner=native.create(dict(maxima=pools,regeneration=dict((name,100.)for name in pools),crew_roles=roles))
+ devices=[dict(name=name,hp=0. if name in tracks or name=='turretRotatorHealth' else 200.,max_hp=200.,state='destroyed' if name in tracks or name=='turretRotatorHealth' else 'normal')for name in sorted(pools)]
+ state=dict(critical=dict(devices=devices,destroyed=sorted(tracks+['turretRotatorHealth']),crew_ko=['driver']),critical_revision=1,critical_base_revision=1,critical_ack_seq=0)
+ broken=native.update(owner,state,1,None)
+ assert set(tracks).issubset(broken['destroyed']) and broken['turret_speed']==0. and broken['mobility']>0.,broken
+ partial=native.repair(owner,6.,6.);pending=copy.deepcopy(partial['report'])
+ assert all(partial['hp'][name]==50. for name in tracks),partial
+ # Repeated snapshots retain local progress while its checkpoint is pending.
+ repeated=native.update(owner,state,2,None)
+ assert repeated['hp']==partial['hp'] and repeated['destroyed']==partial['destroyed'],(partial,repeated)
+ repaired=native.repair(owner,6.,12.)
+ assert not set(tracks).intersection(repaired['destroyed']) and repaired['turret_speed']==0. and repaired['mobility']>0.,repaired
+ completed=copy.deepcopy(repaired['report'])
+ # An older partial ACK must not reinstall broken-track mobility flags.
+ echoed=copy.deepcopy(state);echoed.update(critical_revision=2,critical_ack_seq=pending['critical_seq'])
+ for row in echoed['critical']['devices']:
+  if row['name'] in tracks:row['hp']=50.
+ accepted=native.update(owner,echoed,3,None)
+ assert not set(tracks).intersection(accepted['destroyed']) and all(accepted['hp'][name]==100. for name in tracks),accepted
+ # Completion ACK retires the overlay. Non-track repair clears independently.
+ echoed.update(critical_revision=3,critical_ack_seq=completed['critical_seq'])
+ echoed['critical']['destroyed']=['turretRotatorHealth']
+ for row in echoed['critical']['devices']:
+  if row['name'] in tracks:row.update(hp=100.,state='critical')
+ accepted=native.update(owner,echoed,4,None)
+ assert accepted['report'] is None and accepted['destroyed']==['turretRotatorHealth'],accepted
+ echoed.update(critical_revision=4)
+ echoed['critical']['destroyed']=[]
+ for row in echoed['critical']['devices']:
+  if row['name']=='turretRotatorHealth':row.update(hp=100.,state='critical')
+ accepted=native.update(owner,echoed,5,None)
+ assert accepted['turret_speed']>0. and accepted['mobility']>0. and not accepted['destroyed'],accepted
+ # A genuinely new hit resets ownership and must stop a track again.
+ again=copy.deepcopy(state);again.update(critical_revision=5,critical_base_revision=5)
+ accepted=native.update(owner,again,6,None)
+ assert set(tracks).issubset(accepted['destroyed']) and all(accepted['hp'][name]==0. for name in tracks),accepted
+ # Repairing tracks cannot override an independently destroyed engine.
+ for row in again['critical']['devices']:
+  if row['name']=='engineHealth':row.update(hp=0.,state='destroyed')
+ again['critical']['destroyed']=sorted(tracks+['engineHealth','turretRotatorHealth'])
+ again.update(critical_revision=6,critical_base_revision=6)
+ native.update(owner,again,7,None)
+ accepted=native.repair(owner,12.,24.)
+ assert not set(tracks).intersection(accepted['destroyed']) and 'engineHealth' in accepted['destroyed'] and accepted['mobility']==0.,accepted
 print('native accepted critical/stun exact-law differential passed: 420 states')
 '''
 class NativeClientDriveStatusTest(unittest.TestCase):

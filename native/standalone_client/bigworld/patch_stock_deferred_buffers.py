@@ -130,6 +130,34 @@ def apply(root):
          '    for (auto& material : m_debug_materials) clearStockDeferredLegacyDecalInputs(material);',
          '    for (auto& material : m_materials) clearStockDeferredLegacyDecalInputs(material);')
 
+    # Original ARIE SHADOW writes unbiased depth into COLOR but biases raster
+    # depth through ShadowAlgoParams. The public atlas samples R32F COLOR,
+    # so apply the original uniform split bias on the receiver side instead.
+    header = 'lib/moo/dynamic_shadow.hpp'
+    edit(header, '        BW::vector<Matrix>          m_textureMatrices;',
+         '        BW::vector<Matrix>          m_textureMatrices;\n'
+         '        BW::vector<float>           m_stockShadowDepthBiases;')
+    cpp = 'lib/moo/dynamic_shadow.cpp'
+    edit(cpp, '#include "dynamic_shadow.hpp"',
+         '#include "dynamic_shadow.hpp"\n#include "wot/stock_directional_shadow.hpp"',
+         '#include "wot/stock_directional_shadow.hpp"')
+    edit(cpp, '        m_textureMatrices.resize(m_shadowQuality.m_numSplit);',
+         '        m_textureMatrices.resize(m_shadowQuality.m_numSplit);\n'
+         '        m_stockShadowDepthBiases.assign(m_shadowQuality.m_numSplit, 0.f);')
+    edit(cpp, '                    lightProjMatrices[i] = proj;',
+         '                    lightProjMatrices[i] = proj;\n'
+         '                    m_stockShadowDepthBiases[i] = wot::stock_directional_shadow_depth_bias(\n'
+         '                        proj(0, 0), proj(1, 1), proj(2, 2),\n'
+         '                        m_dynamicShadowMapSize, m_dynamicShadowMapSize);')
+    edit(cpp, '        m_dynamicShadowMapAtlas = NULL;',
+         '        m_dynamicShadowMapAtlas = NULL;\n        m_stockShadowDepthBiases.clear();')
+    edit(cpp, '        if (m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)',
+         '        if (numSplit == 0 || m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)')
+    edit(cpp, '            effect->SetFloat("g_splitCount", (float)m_shadowQuality.m_numSplit);',
+         '            effect->SetFloat("g_splitCount", (float)m_shadowQuality.m_numSplit);\n'
+         '            effect->SetFloatArray("stockShadowDepthBiases",\n'
+         '                &m_stockShadowDepthBiases[0], m_shadowQuality.m_numSplit);')
+
     cpp = 'lib/romp/ssao_support.cpp'
     edit(cpp, '#include "ssao_support.hpp"',
          '#include "ssao_support.hpp"\n#include "stock_deferred_buffers.hpp"',
@@ -235,6 +263,8 @@ def apply(root):
                (application.parent / 'include/wot/stock_deferred_buffers.hpp',
                 root / 'lib/wot/stock_deferred_buffers.hpp'))
     sources = [(destination, source.read_text()) for source, destination in headers]
+    sources.append((root / 'lib/wot/stock_directional_shadow.hpp',
+        (application.parent / 'include/wot/stock_directional_shadow.hpp').read_text()))
     for relative, text in pending.items():
         (root / relative).write_text(text)
     for destination, text in sources:
@@ -312,6 +342,12 @@ sampler stockLinearDepthSampler = sampler_state
     text = (root / lighting).read_text(encoding='latin1')
     text = text.replace('screenXY = SC2TC(vPos);', 'screenXY = SC2TC(vPos) / stockSceneDRR.xy;')
     pending[lighting] = text
+
+    shadow = 'shaders/shadow/dynamic_resolve.fx'
+    edit(shadow, 'float\t\tg_splitCount;',
+         'float\t\tg_splitCount;\nfloat stockShadowDepthBiases[MaxNumSplits];')
+    edit(shadow, '\t\tsmTC.z,',
+         '\t\tsmTC.z - stockShadowDepthBiases[split],')
 
     ssao = 'shaders/ssao/ssao.fx'
     edit(ssao, 'texture g_depth;', 'texture g_depth;\nfloat2 stockDepthUVScale = float2(1.f,1.f);',

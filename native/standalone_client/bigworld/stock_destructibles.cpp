@@ -166,9 +166,21 @@ bool stockDestructibleChunks(SpaceID spaceID,std::vector<uint32>& chunks)
     const auto found=owners.find(space.get());
     const auto owner=found==owners.end()?StockDestructibles():found->second.lock();
     if(!owner||!owner->current())return false;
-    for(const auto& mapping:owner->mappings)
-        if(mapping.bound&&mapping.data)
-            for(const auto& row:mapping.data->chunks)chunks.push_back(row.id);
+    // WGDE is a sparse census, not a grid-streaming list. Absence proves an
+    // empty cell only after the live mappings have bound their metadata.
+    bool bound=false;
+    for(const auto& mapping:owner->mappings) {
+        if(!mapping.bound) {
+            if(!mapping.objects[0].expired()||!mapping.objects[1].expired()){
+                chunks.clear();return false;
+            }
+            continue; // Retired mappings retain their owner slot.
+        }
+        if(!mapping.data){chunks.clear();return false;}
+        bound=true;
+        for(const auto& row:mapping.data->chunks)chunks.push_back(row.id);
+    }
+    if(!bound)return false;
     std::sort(chunks.begin(),chunks.end());
     chunks.erase(std::unique(chunks.begin(),chunks.end()),chunks.end());
     return true;

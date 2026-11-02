@@ -226,7 +226,27 @@ bool NativeScene::warmTreeChunks(const std::vector<std::uint32_t>& required)
     if(!BW::stockDestructibleChunks(space_->id(),streamed))return false;
     const std::set<std::uint32_t> loaded(streamed.begin(),streamed.end());
     for(auto id:required) {
-        if(!loaded.count(id)){registry_.ready_tree_chunks.erase(id);registry_.geometry.drop_chunk(id);continue;}
+        if(!loaded.count(id)){
+            // A bound compiled WGDE omits cells with no destructible slots.
+            // Keep a genuinely missing expected tree pending, but publish an
+            // empty tree index for a proved empty cell so its grid edge cannot
+            // become a vehicle wall. The stream revision retires this proof.
+            bool expected=false;
+            const auto known=by_chunk_.find(id);
+            if(known!=by_chunk_.end())for(const auto& key:known->second){
+                const auto& source=identities_.at(key).instance;
+                expected=expected||source.kind==Kind::Tree||
+                    (source.kind==Kind::Falling&&source.boxes.empty());
+            }
+            if(expected){
+                registry_.ready_tree_chunks.erase(id);
+                registry_.geometry.drop_chunk(id);
+            } else if(!registry_.ready_tree_chunks.count(id)) {
+                registry_.geometry.chunk(id,offline_destructible::Chunk{});
+                registry_.ready_tree_chunks.insert(id);
+            }
+            continue;
+        }
         if(registry_.ready_tree_chunks.count(id))continue;
         offline_destructible::Chunk prepared;bool pending=false;
         for(const auto& key:by_chunk_[id]) {

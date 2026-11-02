@@ -4177,6 +4177,20 @@ HDR and Flora retire manual render-target references from existing bindings
 before releasing the targets; cleanup never allocates a binding. Automatic
 semantic textures keep their existing producer and device-loss lifecycle.
 
+The original #1513 ARIE SHADOW vertex shader adds `ShadowAlgoParams.x * w`
+to raster clip-z while its pixel shader writes unbiased z to COLOR0. The
+retained public directional-shadow owner samples an R32F COLOR atlas, so its
+receiver must account for that difference. Original DX9 split setup at 9cc42a
+and arithmetic at 9ceba0 give normalized light-depth bias
+`p22 * max(.7 * abs(2/(width*p00)), .7 * abs(2/(height*p11)), abs(1/(2^24*p22)))`.
+Each split uses its own light projection and actual tile viewport dimensions,
+not the full atlas width. Subtracting that bias from receiver z preserves the
+stock depth-comparison sign for these orthographic splits without rewriting
+ARIE bytecode or replacing atlas resources. The split array resets on resource
+recreation/retirement and is uploaded with the matching matrix count. Native
+instruction and host boundary regressions prove the arithmetic and ownership;
+removal of moving vehicle-surface stripes still requires Windows image evidence.
+
 Flash movies publish viewport/clip state before Capture. A display-handle copy
 retains a context, not a particular immutable frame. Global and component
 movies keep their asynchronous ownership; shared DrawTextManager calls capture
@@ -4190,3 +4204,23 @@ FXO bindings and SDK snapshot copy-on-write behavior, with failing old-code
 controls. These establish ownership and interface contracts. They do not prove
 that a photographed GTX 1070 brightness boundary or intermittent garage frame
 has disappeared; that remains a matching Windows scene-validation boundary.
+
+### Sparse compiled destructible cells and movement
+
+`stockDestructibleChunks` enumerates the sparse WGDE metadata census, not every
+100-metre grid cell. An absent cell is proved empty only after all registered
+mappings have bound their metadata and the gameplay catalog expects no tree
+or boxless falling identity there. Publish an empty ready tree index in that
+case; retain Pending for an expected identity whose native metadata is missing.
+The stream revision retires both loaded and empty-cell proofs. Static geometry,
+terrain support and arena bounds keep their independent collision checks.
+
+A Windows Type 64 drive on `35_steppes` reproduced the old behavior: forward
+and forward-plus-turn stopped at approximately (213.51, -303.44), with normal
+modules and Pending tree contact, while reversing and detouring remained
+possible. The complete map WGDE omits the adjacent forward and lateral cells.
+This distinguishes the empty-cell ownership defect from an actual tree or
+terrain collision. Bounded MOBILITY state transitions additionally preserve
+module, input, support and contact evidence for future damage-related stops.
+Status/repair-owner regressions cover independent track, turret and engine
+conditions; they do not establish the cause of a session without module events.

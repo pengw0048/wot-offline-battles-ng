@@ -25,6 +25,7 @@ std::optional<std::pair<double,double>> serverClockAnchor(const Battle&);
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 namespace stock_native_client_drive {
 namespace {
@@ -78,7 +79,43 @@ void NativePlayerWorld::vertical(PlayerState&s,Point&position,double yaw,double 
 std::array<std::optional<double>,2>NativePlayerWorld::terrain_support(const Point&p,double yaw){const auto support=legacy_.terrain(driver_.state(),p,yaw);return {support.highest,support.center};}
 Point NativePlayerWorld::contacts(PlayerState&s,const Point&p,double yaw,double dt,const Point&tick){const auto out=contacts_.settle(s,driver_.descriptor(),driver_.controls(),*this,p,yaw,dt,now_,tick);publication_.replaceTankPushes(contacts_.pushes());return out;}
 bool NativePlayerWorld::complete_pose_clear(const PlayerState&a,const Point&start,double from,const PlayerState&b,const Point&end,double to){return turretClear(a,start,from,b,end,to);}
-void NativePlayerWorld::present(PlayerState&s,double dt,const SliceTrace&trace,bool stopped){current();if(stopped||overturn_level_==2){auto filter=p::value(entity_.get(),"filter");if(filter.get()!=Py_None){auto notify=p::value(filter.get(),"notifyInputKeysDown");if(notify.get()!=Py_None&&PyCallable_Check(notify.get())){if(!PyCFunction_Check(notify.get()))throw p::Error("Native player input stop requires the stock filter method");p::Ref args(Py_BuildValue("(ii)",0,0)),result(PyObject_CallObject(notify.get(),args.get()));current();}}}shared::Pose pose{s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll,driver_.controls().aim_yaw,driver_.controls().gun_pitch};shared_->updateLocal(pose,{std::sin(s.yaw)*s.speed+s.push_x,s.vertical_speed,std::cos(s.yaw)*s.speed+s.push_z},s.speed);if(stopped&&(!battle_.local->matrix||!battle_.local->model))return;selfPresentation(battle_,entity_.get(),driver_,dt,trace,stopped);current();presented_pose_.position=s.position;presented_pose_.yaw=s.yaw;presented_pose_.pitch=s.pitch;presented_pose_.roll=s.roll;presented_pose_.turret_yaw=driver_.controls().aim_yaw-s.yaw;presented_pose_.gun_pitch=driver_.controls().gun_pitch;presented_pose_.siege=int(local_->siege_state);presented_pose_.require_hydraulic_body=local_->kind=="player";presented_pose_.hydraulic_body=shared::hydraulicBodyAt(*local_,{s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll});}
+void NativePlayerWorld::reportMobility(const PlayerState&s,const SliceTrace&trace,bool stopped){
+    const auto&controls=driver_.controls();
+    const bool input=controls.forward!=0.||controls.turn!=0.;
+    if((!input&&!mobility_blocked_)||now_<next_mobility_report_)return;
+    next_mobility_report_=now_+1.;
+    const auto condition=conditions();
+    const auto&contact=trace.primary?*trace.primary:s.trace;
+    const bool blocked=input&&(stopped||condition.tracked||condition.engine_dead||condition.overturned||condition.siege_locked||
+        s.siege_braking.has_value()||s.support_blocked||condition.mobility<=0.||condition.power<=0.||condition.speed<=0.||
+        (contact.status!=ContactStatus::Clear&&contact.status!=ContactStatus::Crushed&&contact.status!=ContactStatus::Approach)||
+        (std::abs(s.speed)<.05&&std::abs(s.turn_speed)<.01));
+    if(!blocked&&!mobility_blocked_)return;
+    const auto status_owner=status(*local_);const auto&critical=status_owner->critical();
+    const auto device=[&](const char*name){const auto at=critical.devices.find(name);return at==critical.devices.end()?"normal":at->second.destroyed?"destroyed":at->second.critical?"critical":"normal";};
+    std::ostringstream signature;signature<<blocked<<' '<<stopped<<' '<<controls.forward<<' '<<controls.turn<<' '<<controls.handbrake
+        <<' '<<condition.tracked<<' '<<condition.engine_dead<<' '<<condition.overturned<<' '<<condition.siege_locked
+        <<' '<<s.siege_braking.has_value()<<' '<<s.support_blocked<<' '<<s.airborne<<' '<<condition.mobility<<' '<<condition.traverse
+        <<' '<<condition.power<<' '<<condition.speed<<' '<<trace.path<<' '<<int(contact.status)<<' '<<contact.kinds<<' '<<contact.reason
+        <<' '<<device("leftTrackHealth")<<' '<<device("rightTrackHealth")<<' '<<device("engineHealth")<<' '<<device("turretRotatorHealth");
+    // A changing collision/repair edge is capped at one record per second.
+    // The pose is evidence, not part of the signature that triggers a record.
+    if(signature.str()==mobility_report_)return;
+    mobility_report_=signature.str();mobility_blocked_=blocked;
+    std::ostringstream line;line<<"MOBILITY player="<<local_->id<<" blocked="<<blocked<<" stopped="<<stopped
+        <<" input=("<<controls.forward<<','<<controls.turn<<','<<controls.handbrake<<") drive=("<<s.drive_throttle<<','<<s.drive_turn<<")"
+        <<" left_track="<<device("leftTrackHealth")<<" right_track="<<device("rightTrackHealth")<<" engine="<<device("engineHealth")<<" turret="<<device("turretRotatorHealth")
+        <<" tracked="<<condition.tracked<<" engine_dead="<<condition.engine_dead<<" overturned="<<condition.overturned<<" siege_locked="<<condition.siege_locked
+        <<" siege_braking="<<s.siege_braking.has_value()<<" handbrake="<<controls.handbrake<<" support_blocked="<<s.support_blocked<<" airborne="<<s.airborne
+        <<" factors=("<<condition.mobility<<','<<condition.traverse<<','<<condition.power<<','<<condition.speed<<")"
+        <<" path="<<trace.path<<" contact="<<int(contact.status)<<" kinds="<<contact.kinds<<" reason="<<contact.reason
+        <<" pose=("<<s.position[0]<<','<<s.position[1]<<','<<s.position[2]<<','<<s.yaw<<','<<s.pitch<<','<<s.roll<<") speed="<<s.speed<<" turn_speed="<<s.turn_speed;
+    const auto point=[&](const char*key,const std::optional<Point>&value){line<<' '<<key<<'=';if(value)line<<'('<<(*value)[0]<<','<<(*value)[1]<<','<<(*value)[2]<<')';else line<<"none";};
+    point("hit",contact.point);point("normal",contact.normal);
+    line<<" critical_revision="<<local_->state.get("critical_revision").numeric()<<" critical_base="<<local_->state.get("critical_base_revision").numeric()
+        <<" critical_ack="<<local_->state.get("critical_ack_seq").numeric();native_battle::log(line.str());
+}
+void NativePlayerWorld::present(PlayerState&s,double dt,const SliceTrace&trace,bool stopped){current();reportMobility(s,trace,stopped);if(stopped||overturn_level_==2){auto filter=p::value(entity_.get(),"filter");if(filter.get()!=Py_None){auto notify=p::value(filter.get(),"notifyInputKeysDown");if(notify.get()!=Py_None&&PyCallable_Check(notify.get())){if(!PyCFunction_Check(notify.get()))throw p::Error("Native player input stop requires the stock filter method");p::Ref args(Py_BuildValue("(ii)",0,0)),result(PyObject_CallObject(notify.get(),args.get()));current();}}}shared::Pose pose{s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll,driver_.controls().aim_yaw,driver_.controls().gun_pitch};shared_->updateLocal(pose,{std::sin(s.yaw)*s.speed+s.push_x,s.vertical_speed,std::cos(s.yaw)*s.speed+s.push_z},s.speed);if(stopped&&(!battle_.local->matrix||!battle_.local->model))return;selfPresentation(battle_,entity_.get(),driver_,dt,trace,stopped);current();presented_pose_.position=s.position;presented_pose_.yaw=s.yaw;presented_pose_.pitch=s.pitch;presented_pose_.roll=s.roll;presented_pose_.turret_yaw=driver_.controls().aim_yaw-s.yaw;presented_pose_.gun_pitch=driver_.controls().gun_pitch;presented_pose_.siege=int(local_->siege_state);presented_pose_.require_hydraulic_body=local_->kind=="player";presented_pose_.hydraulic_body=shared::hydraulicBodyAt(*local_,{s.position[0],s.position[1],s.position[2],s.yaw,s.pitch,s.roll});}
 std::optional<ID>NativePlayerWorld::motion_time(double now){if(!motion_anchor_)return {};return ID(double(*motion_anchor_)+std::max(0.,now-motion_anchor_local_)*1000000.);}
 void NativePlayerWorld::poll_ram(const offline_contact::Body&own,const std::vector<ContactPeer>&others){
     // The correction is held until present() at the end of this step. Rebase
