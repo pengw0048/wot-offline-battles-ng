@@ -24,9 +24,10 @@ class TreeChunkReadinessTest(unittest.TestCase):
             path = Path(folder) / 'probe.cpp'
             binary = Path(folder) / 'probe'
             path.write_text(source)
-            subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                            *native_test_compile_flags(compiler), str(path), '-o', str(binary)],
-                           check=True, capture_output=True, text=True)
+            result = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                                     *native_test_compile_flags(compiler), str(path), '-o', str(binary)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True)
 
     def test_sparse_cells_and_missing_expected_objects_have_distinct_readiness(self):
@@ -71,11 +72,13 @@ struct NativeScene {
     std::uint64_t stream_revision_=0,revision=1;bool active=true;
     bool current()const{return active;}std::uint64_t streamRevision()const{return revision;}
     Admission refresh(Key key,Registry& registry){const auto& row=identities_.at(key);
-        if(row.admission==Admission::Admitted)registry.instances[key]=row.instance;return row.admission;}
+        if(row.admission==Admission::Admitted){registry.instances[key]=row.instance;}
+        return row.admission;}
     bool warmTreeChunks(const std::vector<std::uint32_t>&);
     void put(std::uint32_t chunk,Kind kind,bool boxes=false,Admission admission=Admission::Admitted){
         Key key{chunk,7};Frozen value;value.instance.kind=kind;value.admission=admission;
-        if(boxes)value.instance.boxes.push_back(1);identities_[key]=value;by_chunk_[chunk]={key};}
+        if(boxes){value.instance.boxes.push_back(1);}
+        identities_[key]=value;by_chunk_[chunk]={key};}
 };
 @METHOD@
 int main(){
