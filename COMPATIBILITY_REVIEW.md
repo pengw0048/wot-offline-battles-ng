@@ -4061,6 +4061,16 @@ state; repeated observations of the same epoch retain both. Host tests exercise
 the production receipt converters, historical sampling and local terminal
 containment. Windows hit geometry and rendering still require native acceptance.
 
+The separate server-owned Human-versus-Human historical ram armor probe still
+carries only chassis pose and shape, without a request-bound hydraulic body
+receipt. For a `hasSiegeMode` participant its native worker adapter returns the
+explicit terminal `available=false`; resource readiness is unchanged, so the
+server can finish that probe without fabricating an armor result or waiting
+forever. A latest receipt is not substituted, even for identical chassis
+coordinates. Ordinary Human pairs and other queries that already freeze their
+applied body receipt retain their paths. Full hydraulic Human-versus-Human
+historical ram armor is not supported by this baseline-only probe contract.
+
 ### Native visible-client hot paths and snapshot ownership
 
 The matching snapshot decoder owns immutable versions of `outfits` and
