@@ -1290,6 +1290,13 @@
       "source": "Original #1513 WorldApp 0x636c05/0x636dd1, query owner 0xabad80, history 0xac20a0 and consumer 0xac1d95; public client/world_app.cpp compiled-space path.",
       "evidence_and_boundary": "Exact instruction producer/consumer slices route an identical eligible candidate to skip 0xac1e64 or append 0xac1e3f according to GPU-query visibility history. This is distinct from the dormant small-object branch. No desktop FPS contribution or safe replacement query lifecycle has been established.",
       "status": "confirmed_original_consumer_missing_ng_implementation_pending"
+    },
+    {
+      "area": "ephemeral-instance-stream-creation",
+      "finding": "The desktop peak performs 271.89 locks/frame creating identical 64-byte native index streams in ephemeral RenderOpProcessors; stock-only processors also allocated unused 256 KiB public matrix buffers.",
+      "source": "bigworld/patch_stock_effect_owners.py; tests/test_stock_instancing_upload.py",
+      "evidence_and_boundary": "Matching packaged executable/PDB attributes caller RVA 0x0097a982 to RenderOpProcessor::createUnmanagedObjects. Shared EVC/DeviceCallback ownership initializes native indices once per device lifetime; public buffers allocate only for an actual public consumer. Host tests preserve failure/reset/mixed packet contracts; Windows FPS gain is not established.",
+      "status": "source_and_host_fixed_windows_acceptance_pending"
     }
   ],
   "renderer_unmatched_semantics": {

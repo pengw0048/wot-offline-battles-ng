@@ -792,7 +792,122 @@ def staged_instance_uploads(text):
     return text
 
 
+SHARED_INSTANCE_INDEX_OWNER = r'''// Every DrawContext uses the device's same immutable FLOAT1 indices.
+// The visual context retires this callback before RenderContext/DeviceCallback fini.
+class StockInstanceIndexStream : public DeviceCallback
+{
+public:
+    ~StockInstanceIndexStream() { deleteUnmanagedObjects(); }
+    void createUnmanagedObjects() override
+    {
+        if (buffer_.valid() || !rc().isHWInstancingAvailable()) return;
+        if (FAILED(buffer_.create(16 * sizeof(float), D3DUSAGE_WRITEONLY,
+            0, D3DPOOL_DEFAULT, "vertex buffer/original instance indices"))) return;
+        float* indices = NULL;
+        const HRESULT locked = buffer_.lock(0, 16 * sizeof(float),
+            reinterpret_cast<void**>(&indices), 0);
+        if (FAILED(locked) || !indices)
+        {
+            if (SUCCEEDED(locked)) buffer_.unlock();
+            buffer_.release();
+            return;
+        }
+        for (uint32 i = 0; i < 16; ++i) indices[i] = static_cast<float>(i);
+        if (FAILED(buffer_.unlock())) buffer_.release();
+    }
+    void deleteUnmanagedObjects() override { buffer_.release(); }
+    bool bind()
+    {
+        createUnmanagedObjects();
+        if (!buffer_.valid()) return false;
+        buffer_.set(InstancingStream::STREAM_NUMBER, 0, sizeof(float));
+        return true;
+    }
+private:
+    VertexBuffer buffer_;
+};
+
+bool EffectVisualContext::stockBindInstanceIndexStream()
+{
+    if (!stockInstanceIndexStream_)
+        stockInstanceIndexStream_.reset(new StockInstanceIndexStream);
+    return stockInstanceIndexStream_->bind();
+}
+
+'''
+
+
+def shared_instance_streams(text):
+    """Upgrade the reviewed per-processor stream owner, including cached SDKs."""
+    if 'effectVisualContext_.stockBindInstanceIndexStream()' in text:
+        return text
+    field = '\tVertexBuffer stockInstanceIndexVB_;\n'
+    if text.count(field) != 1:
+        raise RuntimeError('Unexpected native index stream owner')
+    text = text.replace(field, '', 1)
+    first = text.index('        if (!stockInstanceIndexVB_.valid() && rc().isHWInstancingAvailable())')
+    last = text.index('        if (!instancedVB_.valid() && rc().isHWInstancingAvailable())', first)
+    text = text[:first] + text[last:]
+    teardown = '\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n'
+    if text.count(teardown) != 1:
+        raise RuntimeError('Unexpected native index stream teardown')
+    text = text.replace(teardown, '', 1)
+    text = replace_once(text,
+        '                if (!stockInstanceIndexVB_.valid()) return;\n'
+        '                stockInstanceIndexVB_.set(InstancingStream::STREAM_NUMBER, 0, sizeof(float));',
+        '                if (!effectVisualContext_.stockBindInstanceIndexStream()) return;',
+        'bind the shared immutable native index stream')
+    first = text.index('\tvoid\tcreateUnmanagedObjects()')
+    last = text.index('\n\tvoid\tdeleteUnmanagedObjects()', first)
+    text = text[:first] + '''\tvoid\tcreateUnmanagedObjects()
+{
+    // CPU staging and the shared native index stream need no local GPU buffer.
+}
+
+bool ensurePublicInstancingBuffer()
+{
+    if (instancedVB_.valid()) return true;
+    return rc().isHWInstancingAvailable() && SUCCEEDED(instancedVB_.create(
+        InstancingStream::ELEMENT_SIZE * MAX_NUM_INSTANCED_MATRICES,
+        D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT,
+        "vertex buffer/visual batcher VB"));
+}
+''' + text[last:]
+    text = replace_once(text,
+        'const HRESULT locked = instancedVB_.valid() ?\n',
+        'const HRESULT locked = ensurePublicInstancingBuffer() ?\n',
+        'allocate the public matrix stream only for an admitted consumer')
+    return text
+
+
+def patch_shared_instance_index_owner(root):
+    apply_file(root, Path('lib/moo/effect_visual_context.hpp'), [
+        ('#include "visual.hpp"', '#include "visual.hpp"\n#include <memory>', 'shared index owner storage'),
+        ('namespace Moo\n{', 'namespace Moo\n{\nclass StockInstanceIndexStream;', 'shared index callback declaration'),
+        ('    void stockInstancingStream(const Matrix* matrices, uint32 count)',
+         '    bool stockBindInstanceIndexStream();\n    void stockInstancingStream(const Matrix* matrices, uint32 count)',
+         'shared index stream binding API'),
+        ('\tfloat\t\t\t\t\tcurrentObjectID_;',
+         '\tfloat\t\t\t\t\tcurrentObjectID_;\n'
+         '\t// Append device ownership without changing existing inline field offsets.\n'
+         '\tstd::unique_ptr<StockInstanceIndexStream> stockInstanceIndexStream_;',
+         'visual context owns the device index stream'),
+    ])
+    apply_file(root, Path('lib/moo/effect_visual_context.cpp'), [
+        ('#include "effect_visual_context.hpp"', '#include "effect_visual_context.hpp"\n'
+         '#include "device_callback.hpp"\n#include "vertex_buffer.hpp"\n#include "vertex_streams.hpp"',
+         'shared index callback dependencies'),
+        ('class StockInstancingStreamConstant : public EffectConstantValue',
+         SHARED_INSTANCE_INDEX_OWNER + 'class StockInstancingStreamConstant : public EffectConstantValue',
+         'shared immutable native index resource'),
+    ])
+
+
 def patch_instancing(root):
+    path = root / 'lib/moo/draw_context.cpp'
+    if 'effectVisualContext_.stockBindInstanceIndexStream()' in path.read_text():
+        patch_shared_instance_index_owner(root)
+        return
     apply_file(root, Path("lib/moo/effect_visual_context.hpp"), [
         ("const Matrix*\t\tworldMatrix() const { return worldMatrix_; }", r'''const Matrix*        worldMatrix() const { return worldMatrix_; }
     void stockInstancingStream(const Matrix* matrices, uint32 count)
@@ -864,7 +979,8 @@ def patch_instancing(root):
     old = "\t\tBW_GUARD;\n\t\tif (instancedVB_.valid())"
     new = "\t\tBW_GUARD;\n\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n\t\tif (instancedVB_.valid())"
     text = replace_once(text, old, new, "native index device teardown")
-    path.write_text(staged_instance_uploads(text))
+    path.write_text(shared_instance_streams(staged_instance_uploads(text)))
+    patch_shared_instance_index_owner(root)
 
 
 # The upstream constructor body is one whitespace-only line; keep it exact.

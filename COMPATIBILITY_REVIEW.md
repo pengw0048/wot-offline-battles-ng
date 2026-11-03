@@ -4561,3 +4561,21 @@ renderer parity gap, not evidence of a particular FPS gain. Query admission,
 proxy geometry, eligibility, temporal history and camera/teardown rules must
 be established before implementing it; no speculative object rejection is
 included in the diagnostic candidate.
+
+
+The 00:41 desktop report attributes 271.89 synchronous locks/frame in its
+28.887 ms peak window to the matching executable's RenderOpProcessor resource
+creation (64-byte DEFAULT/WRITEONLY vertex buffers). Main-scene and terrain
+intervals are only 1.130 and 0.805 ms respectively in that window; all-draw work
+is 17.910 ms. This is independent evidence of repeated resource setup, not a
+measurement of the occlusion gap. The immutable FLOAT1 index stream is now
+owned once by the device visual context, with DeviceCallback loss/reset and
+failure retry. Ephemeral draw contexts no longer allocate it individually or
+allocate an unused 256 KiB public matrix stream. A real public consumer lazily
+allocates that separate stream. Host tests exercise 300 processors with one
+64-byte initialization and zero public allocations, preserving mixed offsets,
+16-instance packets, rollover, failure isolation and reset recovery. The new
+owner is appended after existing visual-context members, retaining their
+inline field offsets. Windows desktop performance improvement remains pending.
+Terrain readback uses the collected render log directly because the Consumer
+build compiles its former INFO_MSG output away.
