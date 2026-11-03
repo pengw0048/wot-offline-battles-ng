@@ -30,7 +30,20 @@ static uint8_t* g_ring; static volatile LONG g_head, g_tail, g_sleeping, g_forei
 // Count real records before publishing head; wrap markers are not records.
 // External command admission reads this atomically without reserving ring space.
 alignas(8) static volatile LONG64 g_published;
-static HANDLE g_work, g_idle;
+static HANDLE g_work, g_idle, g_renderThread;
+static unsigned long long g_mainCpu, g_renderCpu;
+// Sample CPU consumption only at the existing summary cadence, not per draw.
+// Unlike wall-frame time, these values exclude thread waits and GPU execution.
+static double threadCpuDelta(HANDLE thread, unsigned long long& previous) {
+    FILETIME created, exited, kernel, user;
+    if (!thread || !GetThreadTimes(thread, &created, &exited, &kernel, &user)) return -1.;
+    const unsigned long long current =
+        (static_cast<unsigned long long>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+        (static_cast<unsigned long long>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+    const double elapsed = current >= previous ? double(current - previous) / 10000. : 0.;
+    previous = current;
+    return elapsed;
+}
 static uint32_t g_sinceWake;
 static volatile LONG g_framesQueued, g_framesDone;
 static LARGE_INTEGER g_freq;
@@ -794,6 +807,9 @@ static void flushStats() {
     const double f = double(rt::g_frames), ms = 1000.0 / double(rt::g_freq.QuadPart);
     fprintf(rt::g_log, "frames=%lld avg_frame_ms=%.3f syncs/frame=%.2f sync_wait_ms/frame=%.3f pace_wait_ms/frame=%.3f queue_kb/frame=%.1f\n",
         rt::g_frames, rt::g_frameTicks * ms / f, rt::g_syncCount / f, rt::g_syncTicks * ms / f, rt::g_paceTicks * ms / f, rt::g_bytes / 1024.0 / f);
+    fprintf(rt::g_log, "  cpu main_thread_ms/frame=%.3f render_thread_ms/frame=%.3f\n",
+        rt::threadCpuDelta(GetCurrentThread(), rt::g_mainCpu) / f,
+        rt::threadCpuDelta(rt::g_renderThread, rt::g_renderCpu) / f);
     for (auto& e : rt::g_syncBy) fprintf(rt::g_log, "  sync %s per_frame=%.2f\n", e.first, e.second / f);
     fflush(rt::g_log);
     rt::g_frames = rt::g_frameTicks = rt::g_syncCount = rt::g_syncTicks = rt::g_paceTicks = rt::g_bytes = 0; rt::g_syncBy.clear();
@@ -820,7 +836,8 @@ static IDirect3DDevice9Ex* wrapDevice(IDirect3DDevice9* real, bool isEx) {
 
         auto it = g_sbShadow.find(w); if (it != g_sbShadow.end()) { sh::Snapshot* sn = it->second; g_sbShadow.erase(it); sh::releaseRefs(*sn); delete sn; } };
     rt::g_started = true;
-    CreateThread(nullptr, 0, renderThread, nullptr, 0, nullptr);
+    rt::threadCpuDelta(GetCurrentThread(), rt::g_mainCpu);
+    rt::g_renderThread = CreateThread(nullptr, 0, renderThread, nullptr, 0, nullptr);
     return w;
 }
 

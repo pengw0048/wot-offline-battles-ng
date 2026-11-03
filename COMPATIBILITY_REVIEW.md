@@ -4516,3 +4516,14 @@ by default, with the existing environment opt-out. These changes remove proved
 redundant CPU/upload work; they do not establish a GTX1070 FPS gain. The inspected
 original small-object culling branch is dormant behind a constant-return
 producer, so it is not restored as a speculative optimization.
+
+
+The subsequent 28_desert desktop session spans roughly 45--51 FPS initially
+and 79--94 FPS later, with lower intervals still present. Render-thread sync
+waits average 0.2--1.6 ms/frame and do not account for the full slow-frame cost.
+The existing 600-frame summary now samples Windows main/render thread CPU
+consumption via GetThreadTimes, excluding waits and GPU work. It adds no
+per-draw timers. Actual normalmap/normalmap_specmap/lightonly host microbenchmarks
+show only about 0.025 ms per 1,000 draws available from a proposed packing
+rewrite, so that rewrite is deliberately omitted. Neither the report nor the
+host benchmark establishes a matched FPS improvement or GPU stage attribution.
