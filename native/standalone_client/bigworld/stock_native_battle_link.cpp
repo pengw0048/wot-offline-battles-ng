@@ -8,6 +8,7 @@
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_wire_codec.hpp"
 #include "stock_wire_net.hpp"
+#include "stock_native_worker_probe.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -167,6 +168,10 @@ struct Link {
     std::map<std::string, Value> turrets;
     std::string error;
     int dispatch_depth = 0;
+    std::uint64_t probe_rx=0,probe_reply_queued=0,probe_reply_refused=0;
+    std::int64_t probe_last_seq=0;
+    double probe_max_dispatch_age=0.,probe_last_frame_ms=-1.;
+    std::size_t max_rx_pending=0,max_tx_pending=0,max_tx_bytes=0;
 };
 std::unique_ptr<Link> link;
 
@@ -902,15 +907,12 @@ void handle(Value m, double now) {
     if (kind == "worker_ping") {
         const auto player = exact(at(m, "player_id")), seq = exact(at(m, "seq"));
         if (!player || *player <= 0 || !seq || *seq <= 0) return;
-        Value pong = object();
-        pong.object["type"] = text("worker_pong");
-        pong.object["player_id"] = integer(*player);
-        pong.object["seq"] = integer(*seq);
         const double frame = frameLatency(now);
-        pong.object["frame_ms"] = frame > 0. ? number(frame) : Value();
-        pong.object["round_id"] = at(m, "round_id");
-        pong.object["authority_epoch"] = at(m, "authority_epoch");
-        sendWire(pong);
+        Value pong=workerProbeReply(m,*player,*seq,frame>0.?std::optional<double>(frame):std::nullopt);
+        ++link->probe_rx;link->probe_last_seq=*seq;link->probe_last_frame_ms=frame;
+        link->probe_max_dispatch_age=std::max(link->probe_max_dispatch_age,
+            std::max(0.,clock()-finite(at(m,"_client_received_time"),now)));
+        if(sendWire(pong))++link->probe_reply_queued;else ++link->probe_reply_refused;
         return;
     }
     static const std::set<std::string> recoverable = {"snapshot", "events", "bot_observation"};
@@ -1022,6 +1024,9 @@ void drainReceived() {
     ++link->dispatch_depth;
     std::vector<stock_wire_net::Frame> frames;
     const auto status = stock_wire_net::receive(*link->net, MAX_RECEIVE, frames);
+    link->max_rx_pending=std::max(link->max_rx_pending,status.received_pending+frames.size());
+    link->max_tx_pending=std::max(link->max_tx_pending,status.outgoing_pending);
+    link->max_tx_bytes=std::max(link->max_tx_bytes,status.outgoing_bytes);
     const double now = clock();
     std::vector<Value> batch;
     batch.reserve(frames.size());
@@ -1176,6 +1181,16 @@ void recordFrame(double seconds) {
     link->frame_seconds += seconds;
     while (link->frames.size() > 1 && link->frame_seconds - link->frames.front() >= 1.) { link->frame_seconds -= link->frames.front(); link->frames.pop_front(); }
     link->last_frame = clock();
+}
+
+std::string takeProbeDiagnostics() {
+    if(!link)return {};
+    const std::string result=" probe_rx="+std::to_string(link->probe_rx)+" probe_last_seq="+std::to_string(link->probe_last_seq)+
+        " probe_reply_queued="+std::to_string(link->probe_reply_queued)+" probe_reply_refused="+std::to_string(link->probe_reply_refused)+
+        " probe_dispatch_max_ms="+std::to_string(link->probe_max_dispatch_age*1000.)+" probe_frame_ms="+std::to_string(link->probe_last_frame_ms)+
+        " net_rx_max="+std::to_string(link->max_rx_pending)+" net_tx_max="+std::to_string(link->max_tx_pending)+" net_tx_max_bytes="+std::to_string(link->max_tx_bytes);
+    link->probe_rx=link->probe_reply_queued=link->probe_reply_refused=0;link->probe_max_dispatch_age=0.;
+    link->max_rx_pending=link->max_tx_pending=link->max_tx_bytes=0;return result;
 }
 
 bool send(Battle&, const Value& message) {

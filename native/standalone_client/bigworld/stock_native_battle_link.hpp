@@ -66,5 +66,7 @@ struct Timing {
 Timing timing();
 // One hidden-render frame interval; worker_pong reports 1000 / the windowed frame rate.
 void recordFrame(double seconds);
+// Take a bounded per-window worker probe and transport queue summary.
+std::string takeProbeDiagnostics();
 }
 }

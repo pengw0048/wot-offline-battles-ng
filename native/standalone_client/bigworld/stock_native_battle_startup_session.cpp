@@ -4,6 +4,9 @@
 #endif
 #include "stock_native_battle_startup_internal.hpp"
 #include "stock_native_battle_local.hpp"
+#include "stock_native_battle_link.hpp"
+#include "stock_native_battle_compat.hpp"
+#include "stock_native_battle_remote.hpp"
 #include <algorithm>
 
 namespace native_battle {
@@ -303,7 +306,7 @@ void recordLocal(Battle& b) {
         auto entity = own && own->engine_id ? b.entity(own->engine_id) : p::retain(Py_None);
         auto read_int = [&](const char* name) { auto v = py::optional(entity.get(), name); return p::integer(v.get() == Py_None ? 0 : asInt(v.get())); };
         p::set(row.get(), "health", read_int("health"));
-        p::set(row.get(), "gun_angles", read_int("gunAngles"));
+        p::set(row.get(), "gun_angles", read_int("gunAnglesPacked"));
         auto rotator = py::optional(b.engine.avatar.get(), "gunRotator");
         if (rotator.get() != Py_None) {
             for (const char* name : {"turretYaw", "gunPitch", "dispersionAngle"}) {
@@ -354,6 +357,52 @@ void diagnosticsFrame(Battle& b, double entry_wall, double frame_seconds, const 
                        " fps=" + std::to_string(double(d.frames) / std::max(1.e-6, entry_wall - d.window_start)) +
                        " mean_ms=" + std::to_string(d.total_frame * 1000. / double(d.frames)) + " worst_ms=" + std::to_string(d.worst_frame * 1000.);
     for (const auto& stage : d.stages) line += " " + stage.first + "_ms=" + std::to_string(stage.second * 1000. / double(d.frames));
+    if(b.worker) line+=link::takeProbeDiagnostics();
+    else if(b.compat && b.compat->network_client) {
+        // The display uses worker frame time while the probe is fresh, and
+        // pong age after it goes stale. Keep both distinct from server RTT.
+        try {
+            PyObject* client=b.compat->network_client.get();
+            const auto numeric=[&](const char* name){auto value=py::optional(client,name);return value.get()==Py_None?-1.:p::scalar(value.get());};
+            auto lan=module("gui.mods.offline_lan_0922.lan_client");const double now=p::scalar(py::call(lan.get(),"_monotonic_time").get());
+            const double pong=numeric("_worker_pong_time"),started=numeric("_worker_ping_started");
+            const double age=pong>=0.?std::max(0.,now-pong):started>=0.?std::max(0.,now-started):-1.;
+            auto display=py::call(client,"worker_ping_display");auto value=p::item(display.get(),0),stale=p::item(display.get(),1);
+            line+=" probe_tx_seq="+std::to_string(std::int64_t(numeric("_ping_seq")))+
+                  " probe_rx_seq="+std::to_string(std::int64_t(numeric("_worker_probe_rx_seq")))+
+                  " probe_pong_age_ms="+std::to_string(age<0.?-1.:age*1000.)+
+                  " probe_worker_rtt_ms="+std::to_string(numeric("worker_rtt_ms"))+
+                  " probe_server_rtt_ms="+std::to_string(numeric("rtt_ms"))+
+                  " probe_frame_ms="+std::to_string(numeric("worker_frame_ms"))+
+                  " probe_display="+std::to_string(p::scalar(value.get()))+
+                  " probe_stale="+std::to_string(p::flag(stale.get())?1:0);
+            auto sock=py::optional(client,"sock");auto handle=py::optional(sock.get(),"_handle");
+            if(handle.get()!=Py_None) {
+                auto wire=module("offline_client_wire_native");auto metrics=py::call(wire.get(),"net_diagnostics",handle.get());
+                auto rx=p::item(metrics.get(),0),tx=p::item(metrics.get(),1),bytes=p::item(metrics.get(),2),age=p::item(metrics.get(),3);
+                line+=" net_rx_max="+std::to_string(p::wide(rx.get()))+" net_tx_max="+std::to_string(p::wide(tx.get()))+
+                      " net_tx_max_bytes="+std::to_string(p::wide(bytes.get()))+" net_rx_age_max_ms="+std::to_string(p::scalar(age.get())*1000.);
+            }
+        } catch(const std::exception&) {PyErr_Clear();line+=" probe_diagnostics_unavailable=1";}
+    }
+    if(!b.worker && b.remote) {
+        // Existing replica counters distinguish stale input from a cursor that
+        // has consumed its newest sample while vehicles still have motion.
+        try {
+            const auto rows=remote::probes(b,b.clock());
+            std::uint64_t frames=0,held=0,moving_held=0;double source_age=0.,gap=0.,cursor_lag=0.;std::size_t bots=0;
+            for(const auto& row:rows)if(row.key.compare(0,4,"bot:")==0) {
+                ++bots;frames+=row.frames;held+=row.held;moving_held+=row.moving_held;
+                source_age=std::max(source_age,row.source_age_ms);gap=std::max(gap,row.max_gap_ms);
+                if(row.source_time_us&&row.presentation_time_us)
+                    cursor_lag=std::max(cursor_lag,std::max(0.,(*row.source_time_us-*row.presentation_time_us)/1000.));
+            }
+            line+=" replica_bots="+std::to_string(bots)+" replica_frames="+std::to_string(frames)+
+                  " replica_held="+std::to_string(held)+" replica_moving_held="+std::to_string(moving_held)+
+                  " replica_source_age_max_ms="+std::to_string(source_age)+" replica_render_gap_max_ms="+std::to_string(gap)+
+                  " replica_cursor_lag_max_ms="+std::to_string(cursor_lag);
+        } catch(const std::exception&) {PyErr_Clear();line+=" replica_diagnostics_unavailable=1";}
+    }
     log(line);
     d.window_start = entry_wall;
     d.frames = 0;

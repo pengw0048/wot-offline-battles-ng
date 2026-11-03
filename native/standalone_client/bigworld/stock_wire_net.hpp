@@ -23,6 +23,7 @@ struct Frame {
 // "connecting", "connected", "closed" or "failed" (reported only after every frame was taken).
 struct Status {
     std::string state, error;
+    std::size_t received_pending=0, outgoing_pending=0, outgoing_bytes=0;
 };
 enum class Queued { queued, replaced, refused };
 std::shared_ptr<Native> open(const std::string& host, int port, double timeout);

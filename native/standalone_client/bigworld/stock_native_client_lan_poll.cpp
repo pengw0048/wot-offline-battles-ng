@@ -86,7 +86,7 @@ PyObject* pollMessages(PyObject*, PyObject* args) {
             p::Ref scope(PyTuple_Pack(2, attr(client, "round_id").get(), attr(client, "authority_epoch").get()));
             if (test(attr(client, "_worker_ping_scope").get(), scope.get(), Py_NE)) {
                 setAttr(client, "_worker_ping_scope", scope.get());
-                for (const char* name : {"worker_rtt_ms", "worker_frame_ms", "_worker_ping_started", "_worker_pong_time"})
+                for (const char* name : {"worker_rtt_ms", "worker_frame_ms", "_worker_ping_started", "_worker_pong_time", "_worker_probe_rx_seq"})
                     setAttr(client, name, Py_None);
             }
             if (attr(client, "round_id").get() != Py_None &&
@@ -160,10 +160,24 @@ PyObject* dispatchMessage(PyObject*, PyObject* args) {
             Py_RETURN_TRUE;
         }
         if (superseded(client, generation)) Py_RETURN_FALSE;
+        // Preserve only an accepted probe sequence for the existing PERF window.
+        // This diagnostic does not participate in admission or dispatch.
+        p::Ref probe_before=none();bool probe_message=false;
+        if(PyDict_Check(prepared.get())) {
+            PyObject* kind=PyDict_GetItemString(prepared.get(),"type");
+            if(kind && (PyString_Check(kind)||PyUnicode_Check(kind)) && p::string(kind)=="worker_pong") {
+                probe_message=true;replace(probe_before,attr(client,"_worker_pong_time"));
+            }
+        }
         auto handle_started = method(performance.get(), "clock");
         adjust(performance.get(), "handle_depth", 1);
         tryFinally([&] { method(client, "_handle_message", prepared.get()); },
                    [&] { adjust(performance.get(), "handle_depth", -1); finish(performance.get(), "handle", handle_started.get()); });
+        if(probe_message) {
+            auto after=attr(client,"_worker_pong_time");
+            PyObject* seq=PyDict_GetItemString(prepared.get(),"seq");
+            if(seq && after.get()!=Py_None && test(probe_before.get(),after.get(),Py_NE))setAttr(client,"_worker_probe_rx_seq",seq);
+        }
         if (generation == Py_None) Py_RETURN_TRUE;
         p::Ref same(PyObject_RichCompare(generation, attr(client, "_transport_generation").get(), Py_EQ));
         if (!truthy(same)) return same.release();

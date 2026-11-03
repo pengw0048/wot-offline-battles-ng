@@ -203,6 +203,8 @@ while len(received) < len(frames) and time.time() < deadline:
     time.sleep(0.01)
 assert [item[0] for item in received] == frames, (len(received), len(frames))
 assert all(item[1] >= 0.0 for item in received)
+rx_high, tx_high, tx_bytes_high, age_high = wire.net_diagnostics(sock._handle)
+assert rx_high >= 1 and tx_high >= 1 and tx_bytes_high > 0 and age_high >= 0., (rx_high, tx_high, tx_bytes_high, age_high)
 replicas = 0
 for frame, age, native in received:
     if wire.decode(frame)['type'] != 'replica_snapshot':
