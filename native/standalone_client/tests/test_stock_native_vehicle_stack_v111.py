@@ -14,6 +14,42 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 
+class VehicleStackHeaderConsumer(unittest.TestCase):
+    def test_python27_hypot_macro_before_or_after_standard_headers(self):
+        header=ROOT/'bigworld/stock_native_vehicle_stack.hpp'
+        guard='#ifdef hypot\n#undef hypot\n#endif\n'
+        source=header.read_text()
+        self.assertEqual(source.count(guard),1)
+        consumer='''
+namespace stack=stock_native_vehicle_stack;
+int main() {
+    stack::Body upper,lower;
+    upper.key={false,1};lower.key={false,2};upper.position={0.,2.,0.};
+    upper.shape=lower.shape={1.,2.,0.,2.};
+    const stack::Surface roof{{false,2},{0.,2.,0.},{0.,1.,0.}};
+    return stack::roof_candidate(upper,lower,0.,0.) &&
+        stack::vertical_closing(roof,-20.)==20. ? 0 : 1;
+}
+'''
+        compiler=os.environ.get('CXX','c++')
+        with tempfile.TemporaryDirectory(prefix='stack-header-macro-') as folder:
+            folder=Path(folder);unguarded=folder/header.name
+            unguarded.write_text(source.replace(guard,''))
+            for name,prefix in (('before_cmath',''),('after_cmath','#include <cmath>\n')):
+                with self.subTest(include_order=name):
+                    path=folder/(name+'.cpp');binary=folder/name
+                    path.write_text(prefix+'#define hypot _hypot\n#include "'+str(header)+'"\n'+consumer)
+                    command=[compiler,'-std=c++17','-Wall','-Wextra','-Werror',str(path),'-o',str(binary)]
+                    built=subprocess.run(command,capture_output=True,text=True)
+                    self.assertEqual(built.returncode,0,built.stderr)
+                    subprocess.run([str(binary)],check=True)
+                    # Removing only the entry guard must reproduce the real
+                    # Python 2 object-macro failure in this same consumer.
+                    path.write_text(prefix+'#define hypot _hypot\n#include "'+str(unguarded)+'"\n'+consumer)
+                    failed=subprocess.run(command,capture_output=True,text=True)
+                    self.assertNotEqual(failed.returncode,0,'Macro regression negative control unexpectedly compiled')
+                    self.assertIn('_hypot',failed.stderr)
+
 class VehicleStackV111(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

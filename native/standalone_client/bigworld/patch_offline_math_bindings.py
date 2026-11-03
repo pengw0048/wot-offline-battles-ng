@@ -403,11 +403,17 @@ def patch(root, native_query=False, rotation_query=False):
                 'frontier->effect_returned();' not in world or
                 original.count(include) != 1 or original.count(initialize) != 1 or
                 original.count('#include "stock_motion_rotation_python.inc"') != 1 or
-                original.count('stock_rotation_binding::initialize()') != 1):
+                original.count('stock_rotation_binding::initialize()') != 1 or
+                original.count('#if !defined(WOT_PYTHON_C_API)\n#ifndef WOT_NATIVE_SOURCE_STAMP') != 1):
             raise ValueError('Incomplete prepared rotation binding')
         return
     source = once(original, HEADER_BEFORE, HEADER_AFTER)
     source = once(source, EXPORT_BEFORE, EXPORT_AFTER)
+    # The source stamp belongs to the separately shipped original PE. Our
+    # builtin uses the reviewed Python C API binding and the pinned build input.
+    source = once(source,
+        '#ifndef WOT_HOST_PYTHON\n#ifndef WOT_NATIVE_SOURCE_STAMP\n',
+        '#if !defined(WOT_PYTHON_C_API)\n#ifndef WOT_NATIVE_SOURCE_STAMP\n')
     source = once(source, '#ifdef WOT_HOST_PYTHON\n#include <time.h>',
                   '#if !defined(_WIN32)\n#include <time.h>')
     # All remaining old host choices in this TU are Python object/API access.
@@ -415,6 +421,11 @@ def patch(root, native_query=False, rotation_query=False):
     if expanded_methods(root, source) != METHODS:
         raise ValueError('Numerical adapter changed the module methods')
     pending[path] = source
+    # The preceding 131072-cell bound fits Win32 size_t. Keep that checked
+    # allocation width explicit under the builtin's MSVC /WX build.
+    path = root/'offline_destructible_python.inc'
+    pending[path] = once(path.read_text(), 'result.reserve(visits);',
+                         'result.reserve(static_cast<std::size_t>(visits));')
     path = root/'offline_destructible_prepare_python.inc'
     source = path.read_text()
     if source.count('#ifdef WOT_HOST_PYTHON') == 2:
