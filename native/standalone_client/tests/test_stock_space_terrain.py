@@ -452,7 +452,13 @@ namespace BW{using string=std::string;}
 struct Vector4{float x,y,z,w;Vector4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){}
  float&operator[](size_t i){switch(i){case 0:return x;case 1:return y;case 2:return z;default:return w;}}};
 struct Layer{BW::string name;BW::string textureName()const{return name;}};
-struct Combined{std::vector<std::shared_ptr<Layer>>textureLayers_;};
+struct Combined{std::vector<std::shared_ptr<Layer>>textureLayers_;bool smallBlended_=true;};
+// The production renderer uploads textures through these packed-channel maps.
+bool supportSmallBlends_=true;
+const unsigned smallChannels[5][4]={{0,1,2,3},{0,1,2,3},{0,3,1,2},{2,1,0,3},{2,1,0,3}};
+const unsigned fullChannels[5][4]={{0,1,2,3},{2,0,1,3},{2,1,0,3},{2,1,0,3},{2,1,0,3}};
+unsigned getLayerIdx(unsigned slot,const Combined&combined){
+ return (supportSmallBlends_&&combined.smallBlended_?smallChannels:fullChannels)[combined.textureLayers_.size()][slot];}
 struct ID3DXEffect{bool stock=true;const char*GetParameterByName(const void*,const char*n){return n;}};
 namespace wot{bool is_stock_effect(ID3DXEffect*f){return f->stock;}}
 struct Managed{ID3DXEffect fx;ID3DXEffect*pEffect(){return &fx;}};
@@ -472,8 +478,8 @@ void colour(const Combined&theLayer,BaseMaterial*pMaterial){
 void ao(Block*pBlock,BaseMaterial*pMaterial){
 @AO@
 }
-void check(BaseMaterial&material,const std::vector<std::string>&names,int expected){
- Combined combined;for(const auto&name:names){if(name=="<null>")combined.textureLayers_.push_back(nullptr);
+void check(BaseMaterial&material,const std::vector<std::string>&names,int expected,bool small=true){
+ Combined combined;combined.smallBlended_=small;for(const auto&name:names){if(name=="<null>")combined.textureLayers_.push_back(nullptr);
   else combined.textureLayers_.push_back(std::make_shared<Layer>(Layer{name}));}
  material.writes=0;colour(combined,&material);assert(material.writes==2);
  for(unsigned i=0;i<4;++i){assert(material.colour[i]==float(int(i)==expected));
@@ -483,7 +489,23 @@ int main(){BaseMaterial material;
  check(material,{"road","maps/CoLoR_TeX.dds","<null>","sand"},1);
  check(material,{"color_tex_part.dds","aCOLOR_TEXb","road","COLOR_TEXTURE.dds"},3);
  check(material,{"colorTexture.dds","colour_tex.dds","color-tex.dds","road"},-1);
- check(material,{},-1);check(material,{"<null>","<null>","color_tex"},2);
+ check(material,{},-1);check(material,{"<null>","<null>","color_tex"},0);
+ // Every logical layer must mark the same physical channel as texture upload,
+ // for both device capabilities and every one-to-four-layer packing shape.
+ for(unsigned supported=0;supported<2;++supported){supportSmallBlends_=supported;
+  for(unsigned small=0;small<2;++small)for(unsigned count=1;count<=4;++count){
+   for(unsigned slot=0;slot<count;++slot){std::vector<std::string>names(count,"road.dds");
+    names[slot]="maps/CoLoR_TeX.dds";
+    const auto&channels=supported&&small?smallChannels:fullChannels;
+    check(material,names,channels[count][slot],small);
+   }
+  }
+ }
+ supportSmallBlends_=true;
+ // With three layers, logical global colour 0 is uploaded to B. A pure R
+ // detail texel must retain weight 1; the old R marker reduced it to black.
+ check(material,{"color_tex.dds","road.dds","sand.dds"},2);
+ const float detailWeight=1.f-material.colour.x;assert(detailWeight==1.f);
  // The same material must reset after switching from a colour batch to a plain batch.
  check(material,{"road"},-1);
  material.material.fx.fx.stock=false;material.writes=0;colour(Combined{},&material);assert(material.writes==0);
@@ -788,6 +810,22 @@ def fixture():
     return b''.join(parts), offsets, names
 
 
+class TerrainColourChannelTests(unittest.TestCase):
+    def test_packed_colour_channels_without_client_resources(self):
+        compiler = shutil.which('c++')
+        if not compiler:
+            self.skipTest('C++ compiler required')
+        with tempfile.TemporaryDirectory(prefix='terrain-colour-channels-') as folder:
+            root = Path(folder)
+            source = root / 'probe.cpp'
+            source.write_text(MANUAL_CONSTANTS_PROBE.replace(
+                '@COLOUR@', patch.COLOUR_LAYER_CONSTANTS).replace('@AO@', patch.AO_CONSTANTS))
+            binary = root / ('probe.exe' if os.name == 'nt' else 'probe')
+            subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                            '-UNDEBUG', str(source), '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+
 class StockSpaceTerrainTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -982,6 +1020,12 @@ class StockSpaceTerrainTests(unittest.TestCase):
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
             renderer.write_text(renderer.read_text().replace('\n' + patch.COLOUR_LAYER_CONSTANTS, '').replace(
                 '\n' + patch.AO_CONSTANTS, '').replace('#include "moo/renderer.hpp"\n#include "romp/ssao_support.hpp"\n', ''))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            renderer.write_text(renderer.read_text().replace(patch.COLOUR_LAYER_CONSTANTS,
+                patch.PREVIOUS_COLOUR_LAYER_CONSTANTS))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
             patch.patch(self.root)
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
             # The native instance fields remain byte-for-byte the old layout.

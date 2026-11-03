@@ -342,7 +342,7 @@ COLOUR_LAYER_CONSTANTS = r'''    ID3DXEffect* stockEffect = pMaterial->pEffect_-
                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             if (name.find("color_tex") == BW::string::npos) continue;
             colourSlot = Vector4(0.f, 0.f, 0.f, 0.f);
-            colourSlot[slot] = 1.f;
+            colourSlot[getLayerIdx(static_cast<unsigned>(slot), theLayer)] = 1.f;
         }
         const Vector4 inverseSlot(1.f - colourSlot.x, 1.f - colourSlot.y,
             1.f - colourSlot.z, 1.f - colourSlot.w);
@@ -350,6 +350,11 @@ COLOUR_LAYER_CONSTANTS = r'''    ID3DXEffect* stockEffect = pMaterial->pEffect_-
         pMaterial->SetParam(stockEffect->GetParameterByName(NULL, "invColorSlot"), &inverseSlot);
     }
 '''
+
+# Cached SDKs already contain the logical-index marker. Upgrade it before
+# checking/inserting the complete block so repeated preparation stays idempotent.
+PREVIOUS_COLOUR_LAYER_CONSTANTS = COLOUR_LAYER_CONSTANTS.replace(
+    'colourSlot[getLayerIdx(static_cast<unsigned>(slot), theLayer)]', 'colourSlot[slot]')
 
 AO_CONSTANTS = r'''    ID3DXEffect* stockEffect = pMaterial->pEffect_->pEffect()->pEffect();
     if (wot::is_stock_effect(stockEffect))
@@ -687,6 +692,7 @@ def patch(root):
         '    pMaterial->SetParam( pMaterial->useMultipassBlending_, blended );',
         '    pMaterial->SetParam( pMaterial->useMultipassBlending_, blended );\n'
         '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );')
+    renderer = upgrade_block(renderer, PREVIOUS_COLOUR_LAYER_CONSTANTS, COLOUR_LAYER_CONSTANTS)
     renderer = replace_once(renderer,
         '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );',
         '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );\n' + COLOUR_LAYER_CONSTANTS)
