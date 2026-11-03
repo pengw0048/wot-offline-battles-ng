@@ -241,7 +241,8 @@ def case_routing():
 def case_mods():
     resource_keys = []
     module('ResMgr', openSection=lambda path: (
-        resource_keys.append(path) or Namespace(keys=lambda: ['__init__.pyc'])))
+        resource_keys.append(path) or Namespace(keys=lambda: ['__init__.pyc', 'mod_ui_fixture.pyc',
+                                 'mod_ui_fixture.py', 'not_a_mod.pyc'])))
     module('shared_utils', forEach=lambda fn, items: [fn(item) for item in items])
     mods = exact('gui.mods', 'scripts/client/gui/mods/__init__.pyc', package=True)
     personality = module('gui.shared.personality', guiModsInit=mods.init,
@@ -259,16 +260,22 @@ def case_mods():
     personality.guiModsInit()
     mod = sys.modules['gui.mods.mod_offline_lan_0922']
     assert resource_keys == [mods.__path__[0]], resource_keys
-    assert mods._mods == {'gui.mods.mod_offline_lan_0922': mod}
+    ui = sys.modules['gui.mods.mod_ui_fixture']
+    assert mods._mods == {'gui.mods.mod_offline_lan_0922': mod,
+                          'gui.mods.mod_ui_fixture': ui}
     assert mod.calls == ['init'], mod.calls
+    assert ui.calls == ['init'], ui.calls
     personality.guiModsSendEvent('onAccountShowGUI', 1)
     personality.guiModsFini()
     assert mod.calls == ['init', ('onAccountShowGUI', 1), 'fini'], mod.calls
     assert mods._mods == {}
     # Like every discovered mod, a later guiModsInit registers it again.
     personality.guiModsInit()
-    assert mods._mods == {'gui.mods.mod_offline_lan_0922': mod}
+    ui = sys.modules['gui.mods.mod_ui_fixture']
+    assert mods._mods == {'gui.mods.mod_offline_lan_0922': mod,
+                          'gui.mods.mod_ui_fixture': ui}
     assert mod.calls[-1] == 'init' and mod.calls.count('init') == 2, mod.calls
+    assert ui.calls == ['init', ('onAccountShowGUI', 1), 'fini', 'init'], ui.calls
     personality.guiModsFini()
     del LOG[:]
     entry.uninstall()
@@ -320,6 +327,47 @@ def case_mods():
     print('Exact #1513 gui.mods: explicit offline mod init/sendEvent/fini at guiModsInit PASS')
 
 
+
+def case_ui_mods():
+    paths = []
+    def open_section(path):
+        paths.append(path)
+        # Physical script-package paths do not enumerate the merged resources.
+        if path != 'scripts/client/gui/mods':
+            return None
+        return Namespace(keys=lambda: ['__init__.pyc', 'mod_loose_fixture.pyc',
+                                       'mod_pack_fixture.pyc', 'not_a_mod.pyc'])
+    module('ResMgr', openSection=open_section)
+    module('shared_utils', forEach=lambda fn, items: [fn(item) for item in items])
+    mods = exact('gui.mods', 'scripts/client/gui/mods/__init__.pyc', package=True)
+    personality = module('gui.shared.personality', guiModsInit=mods.init,
+                         guiModsFini=mods.fini, guiModsSendEvent=mods.sendEvent)
+    module('OfflineOptionalServices', install=lambda: None, uninstall=lambda: None)
+    # Model PyImportPaths::addResPath's physical roots, including wotmod res/.
+    sys.path.extend(entry._ui_script_roots())
+    mod_paths, gui_paths, import_paths = list(mods.__path__), list(gui.__path__), list(sys.path)
+    assert entry.install() and entry.install()
+    assert mods.__path__[0] == 'scripts/client/gui/mods'
+    for unused in range(2):
+        personality.guiModsInit()
+        expected = ['gui.mods.mod_loose_fixture', 'gui.mods.mod_pack_fixture',
+                    'gui.mods.mod_offline_lan_0922']
+        assert sorted(mods._mods) == sorted(expected), mods._mods
+        personality.guiModsSendEvent('onAccountShowGUI', 1)
+        personality.guiModsFini()
+    for name in expected:
+        assert sys.modules[name].calls == ['init', ('onAccountShowGUI', 1), 'fini'] * 2
+    packed = sys.modules['gui.mods.mod_pack_fixture']
+    assert packed.helper_token == 'archive helper'
+    assert '.wotmod/res/scripts/client/gui/mods/' in packed.__file__.replace('\\', '/')
+    assert paths == ['scripts/client/gui/mods'] * 2, paths
+    entry.uninstall()
+    entry.uninstall()
+    assert mods.__path__ == mod_paths and gui.__path__ == gui_paths
+    assert sys.path == import_paths and personality.guiModsInit is mods.init
+    print('Exact #1513 UI mods: merged discovery, loose/ZIP imports and lifecycle PASS')
+
+
 def case_connection():
     module('ResMgr')
     events = Namespace()
@@ -362,4 +410,4 @@ def case_connection():
     print('Exact #1513 ConnectionManager: offline LOGGED_ON without WGC/login listeners PASS')
 
 
-{'routing': case_routing, 'mods': case_mods, 'connection': case_connection}[CASE]()
+{'routing': case_routing, 'mods': case_mods, 'ui_mods': case_ui_mods, 'connection': case_connection}[CASE]()

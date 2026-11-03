@@ -76,7 +76,7 @@ _GENERATED = frozenset((
     "standalone.log", PYTHON_LOG, INSTANCE_MANIFEST, ORIGINAL_BINDING,
     WORKER_READY_MARKER, PLAYER_READY_MARKER, PLAYER_FINISHED_MARKER,
     "preferences.xml"))
-_GENERATED_DIRS = frozenset(("logs", "replays", "res_mods", "user-data"))
+_GENERATED_DIRS = frozenset(("logs", "replays", "res_mods", "ui-mods", "user-data"))
 CONFIG_RELATIVE = "mods/configs/offline_lan_0922/config.json"
 # The client fills every absent key from its own defaults. Seeding only the
 # schema lets the launcher write the player name and save slot before the
@@ -244,7 +244,8 @@ def _package_files(package):
         directories[:] = sorted(
             name for name in directories
             if name != "__pycache__" and not os.path.islink(os.path.join(directory, name))
-            and not (top and name in _GENERATED_DIRS))
+            and not (top and name in _GENERATED_DIRS)
+            and not (relative_directory == "mods" and name == "0.9.22.0.1"))
         for name in sorted(names):
             if top and name in _GENERATED:
                 continue
@@ -331,14 +332,14 @@ def _load_preparation(instance):
     return module
 
 
-def prepare_instance(instance, original, overlay):
-    """Mount the original packages, after the launcher's vehicle overlay."""
+def prepare_instance(instance, original, overlay, ui_mods=False):
+    """Mount original packages and opt in to UI mods for a visible player."""
     from pathlib import Path
 
     os.makedirs(overlay, exist_ok=True)
     try:
         return _load_preparation(instance).prepare(
-            Path(original), Path(instance), overlays=[Path(overlay)])
+            Path(original), Path(instance), overlays=[Path(overlay)], ui_mods=ui_mods)
     except (OSError, ValueError, KeyError) as error:
         raise NGClientError("The NG client could not mount %s: %s" % (original, error))
 
@@ -354,7 +355,7 @@ def install(original, player, base_dir=None):
     for role in ROLES:
         instance = sibling_instance(player, role)
         copied, removed = sync_instance(package, instance)
-        prepare_instance(instance, original, overlay)
+        prepare_instance(instance, original, overlay, ui_mods=(role == PLAYER))
         bind_original_client(instance, original)
         actions.append("Prepared the NG %s in %s (%d updated, %d removed file(s))." % (
             role, instance, copied, removed))

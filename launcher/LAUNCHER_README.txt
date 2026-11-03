@@ -21,6 +21,16 @@ launchers can be installed side by side. The NG room uses TCP 28792.
 Only single player and replays are available. LAN rooms, joining a room and
 the Bot tactics editor are not supported by the NG client yet.
 
+UI plugins for Chinese HD 0.9.22.0.1 belong in the NG player instance:
+%LOCALAPPDATA%\WoT-Offline-NG\instances\player
+Put .wotmod files in mods\0.9.22.0.1. Put loose files normally shipped under
+res_mods\0.9.22.0.1 in ui-mods\0.9.22.0.1 instead. Preserve their scripts/gui
+subdirectories; place external plugin settings in mods\configs as instructed
+by the plugin. Close the game before changes, then launch it again. Updates
+preserve these files. The worker does not load them, and NG never imports mods
+from the original installation. Keep res_mods for the vehicle editor. Individual
+plugin compatibility needs Windows testing.
+
 Closing the visible single-player game also closes its hidden simulation worker
 and temporary server. The launcher itself stays open.
 

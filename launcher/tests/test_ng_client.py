@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import ng_client
 
@@ -115,6 +116,8 @@ class SyncInstanceTest(unittest.TestCase):
         _write(self.package, ng_client.CONFIG_RELATIVE, b'{"shipped": true}')
         _write(self.package, "preferences.xml", b"developer preferences")
         _write(self.package, "logs/old.log")
+        _write(self.package, "ui-mods/0.9.22.0.1/gui/developer.swf")
+        _write(self.package, "mods/0.9.22.0.1/developer.wotmod")
         self._identity("first")
 
     def _identity(self, value):
@@ -129,7 +132,7 @@ class SyncInstanceTest(unittest.TestCase):
         self.assertEqual(0, removed)
         self.assertEqual(b"bytecode",
                          _read(self.instance, "res/scripts/client/game.pyc"))
-        for absent in ("res/scripts/__pycache__", "preferences.xml", "logs"):
+        for absent in ("res/scripts/__pycache__", "preferences.xml", "logs", "ui-mods", "mods/0.9.22.0.1"):
             self.assertFalse(os.path.exists(os.path.join(self.instance, absent)))
         self.assertTrue(ng_client.instance_current(self.instance, self.package))
 
@@ -137,6 +140,8 @@ class SyncInstanceTest(unittest.TestCase):
         ng_client.sync_instance(self.package, self.instance)
         _write(self.instance, ng_client.CONFIG_RELATIVE, b'{"user": true}')
         _write(self.instance, "preferences.xml", b"user preferences")
+        _write(self.instance, "ui-mods/0.9.22.0.1/gui/user.swf")
+        _write(self.instance, "mods/0.9.22.0.1/user.wotmod")
         _write(self.instance, "mods/configs/offline_lan_0922/saves/career/save.json")
         _write(self.instance, ng_client.OVERLAY_RELATIVE + "/vehicles/a.xml")
         _write(self.package, "res/obsolete.txt")
@@ -154,7 +159,9 @@ class SyncInstanceTest(unittest.TestCase):
                          _read(self.instance, ng_client.CONFIG_RELATIVE))
         self.assertEqual(b"user preferences",
                          _read(self.instance, "preferences.xml"))
-        for kept in ("mods/configs/offline_lan_0922/saves/career/save.json",
+        for kept in ("ui-mods/0.9.22.0.1/gui/user.swf",
+                     "mods/0.9.22.0.1/user.wotmod",
+                     "mods/configs/offline_lan_0922/saves/career/save.json",
                      ng_client.OVERLAY_RELATIVE + "/vehicles/a.xml"):
             self.assertTrue(os.path.isfile(
                 os.path.join(self.instance, *kept.split("/"))))
@@ -190,6 +197,21 @@ class SyncInstanceTest(unittest.TestCase):
         with self.assertRaises(ng_client.NGClientError):
             ng_client.sync_instance(self.package, self.instance)
         self.assertFalse(os.path.exists(self.instance))
+
+
+class InstallModIsolationTest(unittest.TestCase):
+    def test_only_player_preparation_enables_ui_mods(self):
+        with patch.object(ng_client, 'package_root', return_value='package'), \
+                patch.object(ng_client, 'package_identity', return_value={}), \
+                patch.object(ng_client, 'sync_instance', return_value=(0, 0)), \
+                patch.object(ng_client, 'bind_original_client'), \
+                patch.object(ng_client, 'prepare_instance') as prepare:
+            ng_client.install('original', '/ng/instances/player')
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(prepare.call_args_list[0].kwargs, {'ui_mods': True})
+        self.assertEqual(prepare.call_args_list[1].kwargs, {'ui_mods': False})
+        self.assertEqual(prepare.call_args_list[0].args[2],
+                         prepare.call_args_list[1].args[2])
 
 
 class ChildEnvironmentTest(unittest.TestCase):

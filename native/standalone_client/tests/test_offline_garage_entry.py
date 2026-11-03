@@ -1,5 +1,7 @@
 """Run the independent offline entry against exact #1513 startup consumers."""
 import os
+import json
+import zipfile
 from pathlib import Path
 import shlex
 import shutil
@@ -77,7 +79,43 @@ class OfflineEntryConsumerTests(unittest.TestCase):
         mods.mkdir(parents=True)
         shutil.copyfile(ENTRY, self.root / ENTRY.name)
         (mods / 'mod_offline_lan_0922.py').write_text(FAKE_MOD)
+        (mods / 'mod_ui_fixture.py').write_text(FAKE_MOD)
+        subprocess.run([str(PY27), '-E', '-s', '-c',
+                        'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True)',
+                        str(mods / 'mod_ui_fixture.py')], check=True)
         self.harness(self.root, 'mods')
+
+
+    def test_ui_mods_import_from_loose_and_wotmod_roots_with_stock_lifecycle(self):
+        entry_root = self.root / 'offline-res/scripts/client'
+        own = entry_root / 'gui/mods'
+        own.mkdir(parents=True)
+        shutil.copyfile(ENTRY, entry_root / ENTRY.name)
+        (own / 'mod_offline_lan_0922.py').write_text(FAKE_MOD)
+        loose = self.root / 'ui-mods/0.9.22.0.1'
+        ui_dir = loose / 'scripts/client/gui/mods'
+        ui_dir.mkdir(parents=True)
+        source = ui_dir / 'mod_loose_fixture.py'
+        source.write_text(FAKE_MOD)
+        subprocess.run([str(PY27), '-E', '-s', '-c',
+                        'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True)',
+                        str(source)], check=True)
+        packed = self.root / 'mods/0.9.22.0.1/pack.wotmod'
+        packed.parent.mkdir(parents=True)
+        helper = self.root / 'pack_helper.py'
+        helper.write_text("token = 'archive helper'\n")
+        pack_source = self.root / 'mod_pack_fixture.py'
+        pack_source.write_text(FAKE_MOD + '\nimport pack_helper\nhelper_token = pack_helper.token\n')
+        for path in (helper, pack_source):
+            subprocess.run([str(PY27), '-E', '-s', '-c',
+                            'import py_compile, sys; py_compile.compile(sys.argv[1], doraise=True)',
+                            str(path)], check=True)
+        with zipfile.ZipFile(packed, 'w') as archive:
+            archive.write(str(pack_source) + 'c', 'res/scripts/client/gui/mods/mod_pack_fixture.pyc')
+            archive.write(str(helper) + 'c', 'res/scripts/client/pack_helper.pyc')
+        (self.root / 'original-client.json').write_text(json.dumps(
+            {'ui_mod_paths': [str(loose), str(packed)]}))
+        self.harness(entry_root, 'ui_mods')
 
 
 class NativeEntryHookTests(unittest.TestCase):
