@@ -199,6 +199,7 @@ template<class I> struct RefBase : I {
 
 struct WDevice; struct WSurface; struct WTexture; struct WCube; struct WVolTex; struct WVolume; struct WVB; struct WIB;
 struct WVS; struct WPS; struct WDecl; struct WSB; struct WQuery; struct WSwap;
+static void initQuery(WQuery*);
 namespace rt {
 static WDevice* g_dev;
 inline IDirect3DDevice9Ex* device();
@@ -309,7 +310,7 @@ IDirect3DVertexShader9* wrapOut(void*, IDirect3DVertexShader9* r) { return wrapI
 IDirect3DPixelShader9* wrapOut(void*, IDirect3DPixelShader9* r) { return wrapIdentity<WPS>(r); }
 IDirect3DVertexDeclaration9* wrapOut(void*, IDirect3DVertexDeclaration9* r) { return wrapIdentity<WDecl>(r); }
 IDirect3DStateBlock9* wrapOut(void*, IDirect3DStateBlock9* r) { return wrapIdentity<WSB>(r); }
-IDirect3DQuery9* wrapOut(void*, IDirect3DQuery9* r) { return wrapIdentity<WQuery>(r); }
+IDirect3DQuery9* wrapOut(void*, IDirect3DQuery9* r) { return wrapIdentity<WQuery>(r, initQuery); }
 IDirect3DSwapChain9* wrapOut(void*, IDirect3DSwapChain9* r) {
     IDirect3DSwapChain9Ex* ex = nullptr; bool isEx = SUCCEEDED(r->QueryInterface(__uuidof(IDirect3DSwapChain9Ex), (void**)&ex)); if (ex) ex->Release();
     auto* w = static_cast<WSwap*>(wrapIdentity<WSwap>(static_cast<IDirect3DSwapChain9Ex*>(r))); w->ex = isEx; return w;
@@ -565,81 +566,227 @@ HRESULT WSwap::Present(const RECT* s, const RECT* d, HWND w, const RGNDATA* rg, 
 }
 
 // ------------------------------------------------------------------ queries: created and polled by the render thread
-struct QState { volatile LONG pending = 0, ready = 0; DWORD size = 0; uint8_t data[16]; };
-static std::unordered_map<void*, QState> g_qstate; static SRWLOCK g_qLock = SRWLOCK_INIT;
-static std::vector<WQuery*> g_qpoll;   // render thread only
-static QState& qstate(void* q) { AcquireSRWLockExclusive(&g_qLock); QState& s = g_qstate[q]; ReleaseSRWLockExclusive(&g_qLock); return s; }
-static std::unordered_map<void*, D3DQUERYTYPE> g_qtype;
+struct QState {
+    D3DQUERYTYPE type = D3DQUERYTYPE(0);
+    DWORD size = 0;
+    uint64_t generation = 0;
+    HRESULT creation = S_FALSE, result = S_FALSE, buildingResult = S_OK;
+    bool flush = false, building = false;
+    uint8_t data[16] = {};
+};
+static std::unordered_map<void*, QState> g_qstate;
+static SRWLOCK g_qLock = SRWLOCK_INIT;
+struct QPoll { WQuery* query; uint64_t generation; };
+static std::vector<QPoll> g_qpoll; // render thread only; each row owns one reference
 static DWORD qsize(D3DQUERYTYPE t) {
     switch (t) { case D3DQUERYTYPE_EVENT: return sizeof(BOOL); case D3DQUERYTYPE_OCCLUSION: return sizeof(DWORD);
     case D3DQUERYTYPE_TIMESTAMP: case D3DQUERYTYPE_TIMESTAMPFREQ: return sizeof(UINT64); case D3DQUERYTYPE_TIMESTAMPDISJOINT: return sizeof(BOOL); default: return 0; }
 }
+static void freeQueryState(void* query) {
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate.erase(query);
+    ReleaseSRWLockExclusive(&g_qLock);
+}
+static void initQueryState(WQuery* w, D3DQUERYTYPE type, DWORD size, HRESULT creation) {
+    QState state;
+    state.type = type; state.size = size; state.creation = creation;
+    if (FAILED(creation)) state.result = creation;
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate[w] = state; // A recycled wrapper address must start with fresh data/generation.
+    w->ext = w; w->extFree = freeQueryState;
+    ReleaseSRWLockExclusive(&g_qLock);
+}
+static void initQuery(WQuery* w) {
+    initQueryState(w, w->real->GetType(), w->real->GetDataSize(), S_OK);
+}
+static void removeQueryPoll(size_t index) {
+    WQuery* w = g_qpoll[index].query;
+    g_qpoll[index] = g_qpoll.back(); g_qpoll.pop_back();
+    w->Release();
+}
+static void clearQueryPolls() {
+    AcquireSRWLockExclusive(&g_qLock);
+    for (auto& entry : g_qstate) {
+        auto& state = entry.second;
+        ++state.generation; state.creation = state.result = D3DERR_DEVICELOST;
+    }
+    ReleaseSRWLockExclusive(&g_qLock);
+    while (!g_qpoll.empty()) removeQueryPoll(g_qpoll.size() - 1);
+}
 static void pollQueries() {
     for (size_t i = 0; i < g_qpoll.size();) {
-        WQuery* w = g_qpoll[i]; QState& st = qstate(w); uint8_t buf[16] = {}; DWORD n = st.size;
-        if (w->real && w->real->GetData(buf, n, 0) == S_OK) {
-            memcpy(st.data, buf, n); MemoryBarrier(); if (!st.pending) InterlockedExchange(&st.ready, 1);
-            g_qpoll[i] = g_qpoll.back(); g_qpoll.pop_back(); w->Release();
-        } else ++i;
+        const QPoll poll = g_qpoll[i]; WQuery* w = poll.query;
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w);
+        const bool current = poll.generation == state.generation;
+        const DWORD size = state.size, flags = state.flush ? D3DGETDATA_FLUSH : 0;
+        state.flush = false;
+        ReleaseSRWLockExclusive(&g_qLock);
+        // No caller or queued operation can consume a query held only by this poll.
+        if (!current || InterlockedCompareExchange(&w->refs, 0, 0) == 1) {
+            removeQueryPoll(i); continue;
+        }
+        uint8_t data[16] = {};
+        const HRESULT result = rt::reportResult("Query.GetData", w->real ?
+            w->real->GetData(data, size, flags) : D3DERR_INVALIDCALL);
+        if (result == S_FALSE) { ++i; continue; }
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& latest = g_qstate.at(w);
+        if (poll.generation == latest.generation) {
+            latest.result = result;
+            if (result == S_OK) memcpy(latest.data, data, size);
+        }
+        ReleaseSRWLockExclusive(&g_qLock);
+        removeQueryPoll(i); // Errors are terminal too; never retain a failed native poll.
     }
 }
 HRESULT WDevice::CreateQuery(D3DQUERYTYPE t, IDirect3DQuery9** o) {
     auto r = REAL;
     if (!o || qsize(t) == 0 || !rt::onMain())
-        return rt::sync([&]() -> HRESULT { HRESULT h = r->CreateQuery(t, o); if (o && *o) *o = rt::wrapOut(this, *o); return h; }, "CreateQuery");
+        return rt::sync([&]() -> HRESULT {
+            if (o) *o = nullptr;
+            HRESULT h = r->CreateQuery(t, o);
+            if (SUCCEEDED(h) && o && *o) *o = rt::wrapOut(this, *o);
+            return h;
+        }, "CreateQuery");
+    *o = nullptr;
     WQuery* w = new WQuery(nullptr);
     bool known = false; for (int i = 0; i < rt::g_vtblCount; ++i) known |= rt::g_vtbls[i] == *(void**)w;
+    if (!known && rt::g_vtblCount == 16) { delete w; return E_OUTOFMEMORY; }
     if (!known) rt::g_vtbls[rt::g_vtblCount++] = *(void**)w;
-    AcquireSRWLockExclusive(&g_qLock); g_qtype[w] = t; g_qstate[w].size = qsize(t); ReleaseSRWLockExclusive(&g_qLock);
-    rt::post([r, t, w] { r->CreateQuery(t, &w->real); });
-    *o = w; return D3D_OK;
-}
-D3DQUERYTYPE WQuery::GetType() { AcquireSRWLockShared(&g_qLock); auto it = g_qtype.find(this); D3DQUERYTYPE t = it != g_qtype.end() ? it->second : D3DQUERYTYPE(0); ReleaseSRWLockShared(&g_qLock);
-    if (!t) t = rt::sync([&]() -> D3DQUERYTYPE { return real->GetType(); }, "Query.GetType"); return t; }
-DWORD WQuery::GetDataSize() { DWORD s = qsize(GetType()); return s ? s : rt::sync([&]() -> DWORD { return real->GetDataSize(); }, "Query.GetDataSize"); }
-HRESULT WQuery::Issue(DWORD f) {
-    QState& st = qstate(this); if (!st.size) st.size = qsize(GetType());
-    InterlockedIncrement(&st.pending); InterlockedExchange(&st.ready, 0);
-    WQuery* w = this; AddRef();
-    auto run = [w, f] {
-        w->real->Issue(f); QState& s = qstate(w); InterlockedDecrement(&s.pending);
-        if (f & D3DISSUE_END) { bool listed = false; for (auto* q : g_qpoll) listed |= q == w; if (!listed) { w->AddRef(); g_qpoll.push_back(w); } }
+    initQueryState(w, t, qsize(t), S_FALSE);
+    w->AddRef(); // Creation itself owns a lease, even if the caller releases immediately.
+    rt::post([r, t, w] {
+        HRESULT result = rt::reportResult("CreateQuery", r->CreateQuery(t, &w->real));
+        if (SUCCEEDED(result) && !w->real) result = D3DERR_INVALIDCALL;
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w); state.creation = result;
+        if (FAILED(result)) state.result = result;
+        ReleaseSRWLockExclusive(&g_qLock);
         w->Release();
-    };
-    if (rt::onMain()) { rt::post(run); return D3D_OK; }
-    return rt::sync([&]() -> HRESULT { run(); return D3D_OK; }, "Query.Issue");
+    });
+    *o = w; return D3D_OK; // Admission only; deferred failures are returned by Issue/GetData.
 }
-HRESULT WQuery::GetData(void* d, DWORD s, DWORD f) {
-    if (rt::onRender()) return real ? real->GetData(d, s, f) : S_FALSE;
-    QState& st = qstate(this);
-    if (st.ready) { if (d && s) memcpy(d, st.data, s < st.size ? s : st.size); return S_OK; }
-    if (f & D3DGETDATA_FLUSH) rt::wake();
-    return S_FALSE;
+D3DQUERYTYPE WQuery::GetType() {
+    AcquireSRWLockShared(&g_qLock);
+    const D3DQUERYTYPE type = g_qstate.at(this).type;
+    ReleaseSRWLockShared(&g_qLock);
+    return type;
+}
+DWORD WQuery::GetDataSize() {
+    AcquireSRWLockShared(&g_qLock);
+    const DWORD size = g_qstate.at(this).size;
+    ReleaseSRWLockShared(&g_qLock);
+    return size;
+}
+HRESULT WQuery::Issue(DWORD flags) {
+    if (flags != D3DISSUE_BEGIN && flags != D3DISSUE_END) return D3DERR_INVALIDCALL;
+    AcquireSRWLockExclusive(&g_qLock);
+    auto& state = g_qstate.at(this);
+    const HRESULT creation = state.creation;
+    if (FAILED(creation)) { ReleaseSRWLockExclusive(&g_qLock); return creation; }
+    const uint64_t generation = ++state.generation;
+    state.result = S_FALSE; state.flush = false;
+    ReleaseSRWLockExclusive(&g_qLock);
+    WQuery* w = this; AddRef();
+    auto run = [w, flags, generation]() -> HRESULT {
+        AcquireSRWLockShared(&g_qLock);
+        const HRESULT creation = g_qstate.at(w).creation;
+        ReleaseSRWLockShared(&g_qLock);
+        HRESULT result = rt::reportResult("Query.Issue", FAILED(creation) ? creation :
+            (w->real ? w->real->Issue(flags) : D3DERR_INVALIDCALL));
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w);
+        if (flags == D3DISSUE_BEGIN) {
+            state.building = true; state.buildingResult = result;
+        } else {
+            // A queued END must not hide its BEGIN's failure just because the
+            // caller admitted both commands before native execution started.
+            if (state.building && FAILED(state.buildingResult)) result = state.buildingResult;
+            state.building = false;
+        }
+        const bool current = generation == state.generation;
+        if (current) state.result = FAILED(result) ? result : S_FALSE;
+        const bool buffered = state.size != 0 && state.size <= sizeof(state.data) &&
+            state.size == qsize(state.type);
+        ReleaseSRWLockExclusive(&g_qLock);
+        for (size_t i = 0; i < g_qpoll.size(); ++i) {
+            if (g_qpoll[i].query == w) { removeQueryPoll(i); break; }
+        }
+        if (current && SUCCEEDED(result) && (flags & D3DISSUE_END) && buffered) {
+            w->AddRef(); g_qpoll.push_back({w, generation});
+        }
+        w->Release();
+        return result;
+    };
+    if (rt::onMain() && !rt::mainOwnsDevice()) { rt::post(run); return D3D_OK; }
+    return rt::sync(run, "Query.Issue");
+}
+HRESULT WQuery::GetData(void* data, DWORD size, DWORD flags) {
+    if ((!data && size) || (flags & ~DWORD(D3DGETDATA_FLUSH))) return D3DERR_INVALIDCALL;
+    AcquireSRWLockExclusive(&g_qLock);
+    auto& state = g_qstate.at(this);
+    if (size && size != state.size) { ReleaseSRWLockExclusive(&g_qLock); return D3DERR_INVALIDCALL; }
+    const HRESULT result = state.result;
+    const bool buffered = state.size != 0 && state.size <= sizeof(state.data) &&
+        state.size == qsize(state.type);
+    if (buffered && result == S_OK && size) memcpy(data, state.data, size);
+    if (flags & D3DGETDATA_FLUSH) state.flush = true;
+    ReleaseSRWLockExclusive(&g_qLock);
+    if (FAILED(result)) return result;
+    if (rt::onRender() || rt::mainOwnsDevice() || !buffered)
+        return rt::sync([&]() -> HRESULT {
+            return real ? real->GetData(data, size, flags) : D3DERR_INVALIDCALL;
+        }, "Query.GetData");
+    if (result != S_OK && (flags & D3DGETDATA_FLUSH)) rt::wake();
+    return result;
 }
 
 // ------------------------------------------------------------------ state blocks
-HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE t, IDirect3DStateBlock9** o) {
+HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
+    if (!out) return D3DERR_INVALIDCALL;
+    *out = nullptr;
+    const bool frontend = rt::onMain();
+    if (frontend) ensureShadows();
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { HRESULT h = r->CreateStateBlock(t, o); if (*o) *o = rt::wrapOut(this, *o); return h; }, "CreateStateBlock");
-    ensureShadows();
-    WSB* w = new WSB(nullptr);
-    bool known = false; for (int i = 0; i < rt::g_vtblCount; ++i) known |= rt::g_vtbls[i] == *(void**)w;
-    if (!known) rt::g_vtbls[rt::g_vtblCount++] = *(void**)w;
-    if (t == D3DSBT_ALL) { auto* s = new sh::Snapshot(); sh::saveRaw(*s); sh::addRefs(*s); g_sbShadow[w] = s; }
-    rt::post([r, t, w] { r->CreateStateBlock(t, &w->real); });
-    *o = w; return D3D_OK;
+    const HRESULT result = rt::sync([&]() -> HRESULT {
+        IDirect3DStateBlock9* block = nullptr;
+        const HRESULT result = rt::reportResult("CreateStateBlock", r->CreateStateBlock(type, &block));
+        if (FAILED(result)) { if (block) block->Release(); return result; }
+        if (!block) return D3DERR_INVALIDCALL;
+        *out = rt::wrapOut(this, block);
+        return result;
+    }, "CreateStateBlock");
+    if (SUCCEEDED(result) && frontend && type == D3DSBT_ALL) {
+        auto* snapshot = new sh::Snapshot();
+        sh::saveRaw(*snapshot); sh::addRefs(*snapshot);
+        g_sbShadow[*out] = snapshot;
+    }
+    return result;
 }
 HRESULT WSB::Capture() {
-    if (rt::onRender()) return real->Capture();
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return real->Capture(); }, "SB.Capture");
-    ensureShadows(); auto it = g_sbShadow.find(this); if (it != g_sbShadow.end()) sh::save(*it->second);
-    WSB* w = this; AddRef(); rt::post([w] { w->real->Capture(); w->Release(); }); return D3D_OK;
+    const bool frontend = rt::onMain();
+    if (frontend) ensureShadows();
+    const HRESULT result = rt::sync([&]() -> HRESULT {
+        return rt::reportResult("SB.Capture", real ? real->Capture() : D3DERR_INVALIDCALL);
+    }, "SB.Capture");
+    if (SUCCEEDED(result) && frontend) {
+        auto it = g_sbShadow.find(this);
+        if (it != g_sbShadow.end()) sh::save(*it->second);
+    }
+    return result;
 }
 HRESULT WSB::Apply() {
-    if (rt::onRender()) return real->Apply();
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return real->Apply(); }, "SB.Apply");
-    auto it = g_sbShadow.find(this); if (it != g_sbShadow.end()) sh::load(*it->second); else sh::known = false;
-    WSB* w = this; AddRef(); rt::post([w] { w->real->Apply(); w->Release(); }); return D3D_OK;
+    return rt::sync([&]() -> HRESULT {
+        const HRESULT result = rt::reportResult("SB.Apply", real ? real->Apply() : D3DERR_INVALIDCALL);
+        // Capture can also run on the device owner. Its real bindings, rather
+        // than a potentially older frontend snapshot, decide what Apply restored.
+        if (SUCCEEDED(result))
+            refreshShadows(reinterpret_cast<IDirect3DDevice9*>(rt::unwrap(rt::device())));
+        else
+            sh::known = false;
+        return result;
+    }, "SB.Apply");
 }
 
 // ------------------------------------------------------------------ resources: cached descriptions, locks
@@ -737,7 +884,7 @@ HRESULT WIB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o
 HRESULT WIB::Unlock() { return bufferUnlock(this); }
 
 // Reset needs every reference to default-pool surfaces gone: drop shadow references and run pending retirements first.
-static void beforeReset() { rt::g_inlineRetire = true; sh::clearAll(); rt::runDeferred(); rt::g_inlineRetire = false; }
+static void beforeReset() { rt::g_inlineRetire = true; clearQueryPolls(); sh::clearAll(); rt::runDeferred(); rt::g_inlineRetire = false; }
 // D3D9 rejects Reset/ResetEx (D3DERR_INVALIDCALL) from any thread but the device window's.
 // The render thread drains the queue and parks; the window thread resets the device it then owns.
 template<class F> static HRESULT resetOnWindowThread(IDirect3DDevice9Ex* real, F&& reset, const char* name) {

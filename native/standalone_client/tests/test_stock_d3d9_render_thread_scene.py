@@ -100,6 +100,9 @@ void WaitForSingleObject(HANDLE event, int) {
     events[event] = false;
 }
 namespace sh { void clearAll() { ++shadowClears; } }
+void clearQueryPolls() {
+    require(currentThread == 2 || rt::mainOwnsDevice(), "query reset outside device owner");
+}
 struct D3DPRESENT_PARAMETERS {};
 struct D3DDISPLAYMODEEX {};
 struct IDirect3DDevice9 {
