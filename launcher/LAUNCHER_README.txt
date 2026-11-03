@@ -31,6 +31,16 @@ closing the host launcher stops the room and worker. Stop the room before
 starting single player. The Bot tactics editor is not supported yet.
 Multiplayer gameplay and repeated rounds still need Windows acceptance.
 
+UI plugins for Chinese HD 0.9.22.0.1 belong in the NG player instance:
+%LOCALAPPDATA%\WoT-Offline-NG\instances\player
+Put .wotmod files in mods\0.9.22.0.1. Put loose files normally shipped under
+res_mods\0.9.22.0.1 in ui-mods\0.9.22.0.1 instead. Preserve their scripts/gui
+subdirectories; place external plugin settings in mods\configs as instructed
+by the plugin. Close the game before changes, then launch it again. Updates
+preserve these files. The worker does not load them, and NG never imports mods
+from the original installation. Keep res_mods for the vehicle editor. Individual
+plugin compatibility needs Windows testing.
+
 Closing the visible single-player game also closes its hidden simulation worker
 and temporary server. The launcher itself stays open.
 

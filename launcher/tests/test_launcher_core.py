@@ -757,7 +757,7 @@ class ClientInstallTest(unittest.TestCase):
         self._write(
             self.package, "tools/prepare_native_client.py",
             "import os\n"
-            "def prepare(client, package, overlays=()):\n"
+            "def prepare(client, package, overlays=(), ui_mods=False):\n"
             "    lines = [str(path) for path in overlays] + [str(client)]\n"
             "    with open(os.path.join(str(package), 'paths.xml'), 'w') "
             "as stream:\n"
@@ -1400,7 +1400,7 @@ class PayloadStagingTest(unittest.TestCase):
             "tools/inspect_client.py": "preparation dependency",
             "tools/prepare_native_client.py": (
                 "import sys\n"
-                "def prepare(client, package, overlays=()):\n"
+                "def prepare(client, package, overlays=(), ui_mods=False):\n"
                 "    assert getattr(sys, 'frozen', False)\n"
                 "    return {'executable': sys.executable, 'original': str(client), "
                 "'overlay': [str(path) for path in overlays]}\n"),

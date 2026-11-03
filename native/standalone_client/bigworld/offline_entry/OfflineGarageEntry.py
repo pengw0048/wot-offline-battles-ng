@@ -7,6 +7,7 @@ routes LOGIN through a view-less state, publishes the offline LOGGED_ON
 transition to the retained connection consumers only, and installs the
 offline policies for optional retail services.
 """
+import json
 import os
 import sys
 
@@ -17,6 +18,19 @@ MODS_DIRECTORY = os.path.join(
 _installed = None
 _route = None
 _entry_state_type = None
+
+
+def _ui_script_roots():
+    """Read only roots explicitly mounted for this instance by preparation."""
+    instance = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    marker = os.path.join(instance, 'original-client.json')
+    if not os.path.isfile(marker):
+        return []
+    with open(marker, 'rb') as stream:
+        roots = json.load(stream).get('ui_mod_paths', [])
+    return [os.path.join(root, 'res', 'scripts', 'client')
+            if root.lower().endswith('.wotmod')
+            else os.path.join(root, 'scripts', 'client') for root in roots]
 
 
 def install():
@@ -35,6 +49,7 @@ def install():
     original = personality.__dict__.get('guiModsInit')
     if original is None or original is not mods.__dict__.get('init'):
         raise RuntimeError('The original guiModsInit binding has changed')
+    ui_roots = _ui_script_roots()
     import OfflineOptionalServices
     OfflineOptionalServices.install()
     try:
@@ -47,10 +62,20 @@ def install():
         original()
         _init_offline_mod(mods)
 
-    if MODS_DIRECTORY not in mods.__path__:
+    original_mod_paths = list(mods.__path__)
+    gui = sys.modules['gui']
+    original_gui_paths = list(gui.__path__)
+    if ui_roots:
+        # Stock discovery reads only __path__[0] through ResMgr. Use its
+        # merged resource tree, then physical paths for CPython's importer.
+        mods.__path__[:] = ['scripts/client/gui/mods', MODS_DIRECTORY] + [
+            os.path.join(root, 'gui', 'mods') for root in ui_roots] + original_mod_paths
+        gui.__path__[:] = [os.path.join(root, 'gui') for root in ui_roots] + original_gui_paths
+    elif MODS_DIRECTORY not in mods.__path__:
         mods.__path__.append(MODS_DIRECTORY)
     personality.guiModsInit = gui_mods_init
-    _installed = (personality, original, gui_mods_init, mods, OfflineOptionalServices)
+    _installed = (personality, original, gui_mods_init, mods, OfflineOptionalServices,
+                  original_mod_paths, original_gui_paths)
     return True
 
 
@@ -58,11 +83,12 @@ def uninstall():
     global _installed
     installed, _installed = _installed, None
     if installed is not None:
-        personality, original, wrapper, mods, services = installed
+        (personality, original, wrapper, mods, services,
+         mod_paths, gui_paths) = installed
         if personality.__dict__.get('guiModsInit') is wrapper:
             personality.guiModsInit = original
-        if MODS_DIRECTORY in mods.__path__:
-            mods.__path__.remove(MODS_DIRECTORY)
+        mods.__path__[:] = mod_paths
+        sys.modules['gui'].__path__[:] = gui_paths
         services.uninstall()
     uninstall_route()
 

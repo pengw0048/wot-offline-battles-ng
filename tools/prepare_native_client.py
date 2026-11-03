@@ -122,11 +122,25 @@ class OriginalResources:
         self.close()
 
 
-def prepare(client, package, overlays=()):
+def ui_mod_paths(package):
+    """Mount player-owned loose resources and versioned packages only."""
+    loose = package / 'ui-mods/0.9.22.0.1'
+    archives = package / 'mods/0.9.22.0.1'
+    loose.mkdir(parents=True, exist_ok=True)
+    archives.mkdir(parents=True, exist_ok=True)
+    # Earlier resource roots win; give later relative package names priority.
+    packages = sorted((path for path in archives.rglob('*')
+                       if path.is_file() and path.suffix.lower() == '.wotmod'),
+                      key=lambda path: path.relative_to(archives).as_posix().lower(),
+                      reverse=True)
+    return [loose] + packages
+
+
+def prepare(client, package, overlays=(), ui_mods=False):
     """Write the package mounts; ``overlays`` precede every other root.
 
-    The launcher's vehicle-data overlay is the only caller-owned root. It takes
-    the place the original application gives ``res_mods``.
+    The launcher's vehicle-data overlay is shared with the worker. Optional
+    player UI roots stay below our runtime and above original resources.
     """
     client = client.expanduser().resolve()
     package = package.expanduser().resolve()
@@ -141,6 +155,7 @@ def prepare(client, package, overlays=()):
         if not (package / required).is_file():
             raise ValueError('Independent client package is missing ' + required)
     originals = original_resource_paths(client)
+    mods = ui_mod_paths(package) if ui_mods else []
     # BWResourceImpl snapshots this physical application metadata before mounts.
     # Preserve the original producer byte-for-byte beside the independent EXE.
     content_metadata = (client / 'app_type.xml').read_bytes()
@@ -153,7 +168,7 @@ def prepare(client, package, overlays=()):
     # The pinned offline package precedes the originals like the retail mods
     # path; it owns no game.pyc or entity table.
     offline = json.loads((package / 'offline-res.json').read_text(encoding='utf-8'))
-    for path in (overlays + [native_resources, package / 'offline-res'] + originals +
+    for path in (overlays + [native_resources, package / 'offline-res'] + mods + originals +
                  [package / 'res', package / 'engine-res']):
         ET.SubElement(paths, 'Path').text = path.as_posix()
     atomic_write(package / 'app_type.xml', content_metadata)
@@ -164,6 +179,7 @@ def prepare(client, package, overlays=()):
         'original_client': str(client),
         'resource_paths': [str(path) for path in originals],
         'overlay_paths': [str(path) for path in overlays],
+        'ui_mod_paths': [str(path) for path in mods],
         'resources_copied': False,
         'original_executable_used_at_runtime': False,
         'personality': 'game',
@@ -214,7 +230,7 @@ def main():
                 raise ValueError('An owned #1513 client directory is required.')
             client = Path(value)
         logger.info('Original client: %s', client)
-        record = prepare(client, package)
+        record = prepare(client, package, ui_mods=True)
         logger.info('Preparation succeeded: client=%s build=%s resource_paths=%d',
                     record['client_version'], record['client_build'],
                     len(record['resource_paths']))

@@ -324,6 +324,26 @@ The player launcher prepares these paths in its own Python runtime. Its package
 omits the development interpreter, authoring tools and unused SDK example
 resources; the standalone development download retains them.
 
+UI mods written for Chinese HD 0.9.22.0.1 can be installed in the NG player
+instance at `%LOCALAPPDATA%\WoT-Offline-NG\instances\player`:
+
+- Put `.wotmod` packages in `mods/0.9.22.0.1` (subdirectories are scanned).
+- Put loose resources normally shipped inside `res_mods/0.9.22.0.1` in
+  `ui-mods/0.9.22.0.1` instead, preserving their `scripts/`, `gui/`, etc. paths.
+- Put external plugin configuration in the player's `mods/configs` as directed
+  by the plugin. Script entry points use the original `mod_*.pyc` convention
+  and Python 2.7 bytecode.
+
+Close the game before changing mods, then start it through the launcher again.
+NG updates preserve these files. Loose UI resources override packaged UI mods;
+packages are mounted in descending relative filename order, so later names win.
+NG's own runtime and the launcher vehicle overlay take priority over UI mods.
+The hidden worker never mounts these UI mod roots; the original installation's
+mods are not imported. Keep `res_mods` for the launcher's vehicle editor.
+Loading uses the original GUI mod initialization, event and shutdown hooks.
+Individual UI plugins still require Windows validation; online services and
+hooks into replaced battle internals may need adaptation.
+
 For path preparation without launching:
 
 ```bash
