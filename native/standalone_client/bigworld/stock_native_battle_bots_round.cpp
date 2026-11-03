@@ -8,6 +8,7 @@
 #include "stock_native_battle_bots_random.hpp"
 #include "stock_native_battle_params.hpp"
 #include "stock_native_battle_startup.hpp"
+#include "stock_native_battle_remote.hpp"
 #include "stock_native_bot_combat_snapshot.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_motion_snapshot.hpp"
@@ -1355,6 +1356,10 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
                 p::text(skillForRating(rating)).get(), p::Ref(Py_BuildValue("i", stock_native_bot_descriptor::crewLevelForRating(rating))).get(), Py_None));
             auto resolved = p::call(fittings.get(), "build", args.get());
             pair = descriptorPair(resolved.get());
+            // Fitting reparses the descriptor. Own its BSP models before any
+            // cold geometry reader runs, including the inactive Siege mode.
+            remote::prepareDescriptor(b, pair.first.get());
+            if (pair.second) remote::prepareDescriptor(b, pair.second.get());
         } catch (const std::exception& e) {
             throw p::Error("bot " + std::to_string(bot_id) + " vehicle " + vehicle_name + " descriptor is unavailable: " + describe(e));
         }
