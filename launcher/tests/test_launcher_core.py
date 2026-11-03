@@ -152,14 +152,16 @@ class SessionPlanTest(unittest.TestCase):
         self.assertEqual(11, session["team2_size"])
         self.assertEqual(2, session["preferred_team"])
 
-    def test_vehicle_profile_is_planned_for_online_mode(self):
-        # The room host may pin a vehicle profile for an Online battle; the
-        # launcher verifies it against the room data at start time.
-        session = core.plan_session(
-            self._status(), core.MODE_JOIN, "10.0.0.5",
-            vehicle_profile="Fast MS-1")
-        self.assertEqual("Fast MS-1", session["vehicle_profile"])
-        self.assertEqual(core.MODE_JOIN, session["mode"])
+    def test_online_plan_always_uses_default_vehicle_data(self):
+        for address in ("10.0.0.5", "127.0.0.1:28792"):
+            for profile in (None, "Fast MS-1"):
+                with self.subTest(address=address, profile=profile):
+                    session = core.plan_session(
+                        self._status(), core.MODE_JOIN, address,
+                        vehicle_profile=profile)
+                    self.assertIsNone(session["vehicle_profile"])
+                    self.assertEqual(core.MODE_JOIN, session["mode"])
+                    self.assertFalse(session["needs_server"])
 
     def test_0_9_22_team_size_must_be_between_one_and_fifteen(self):
         for value in ("", "four", 0, 16, 1.5, True):
@@ -1657,6 +1659,33 @@ class ListenerTest(unittest.TestCase):
             self.assertTrue(core.probe_server_protocol(
                 port_version, "127.0.0.1", 28782,
                 connect=lambda address, timeout: self._ProtocolConnection()))
+
+    def test_protocol_probe_requires_the_same_bundled_build_identity(self):
+        identity = {
+            "schema": 1,
+            "semanticVersion": "0.1.0",
+            "buildIdentity": "ng-lan-test-build",
+        }
+        cases = (
+            (dict(identity), True),
+            (dict(identity, extraDiagnostic="ignored"), True),
+            (dict(identity, semanticVersion="0.1.1"), False),
+            (dict(identity, buildIdentity="another-build"), False),
+            (dict(identity, schema=2), False),
+            ({"schema": 1}, False),
+            (None, False),
+        )
+        with mock.patch.object(
+                core, "bundled_payload_identity", return_value=identity):
+            for server_identity, compatible in cases:
+                with self.subTest(identity=server_identity):
+                    connection = self._ProtocolConnection(
+                        {"ng_identity": server_identity})
+                    self.assertEqual(compatible, core.probe_server_protocol(
+                        core.PORT_0_9_22, "10.0.0.5", 28792,
+                        connect=lambda address, timeout: connection))
+                    self.assertEqual(
+                        compatible, connection.sent[-1]["type"] == "leave")
 
     def test_protocol_probe_rejects_an_unrelated_listener(self):
         connection = self._ProtocolConnection({"client_build": "wrong"})

@@ -18,8 +18,18 @@ instances with their own preferences.xml, python.log and replays. Saves and
 settings of the original-mod launcher are neither read nor changed, and both
 launchers can be installed side by side. The NG room uses TCP 28792.
 
-Only single player and replays are available. LAN rooms, joining a room and
-the Bot tactics editor are not supported by the NG client yet.
+For LAN play, select Online and Start LAN room on the host PC. The host
+starts the server and one hidden simulation worker. Each player, including
+the host, then selects Join network battle with the host's address on TCP
+28792. Allow inbound TCP 28792 through the host's Windows firewall. Everyone
+must use the same NG launcher build; a different package identity is rejected
+before the player starts. LAN battles use original vehicle values, ignoring
+the single-player vehicle profile.
+
+Closing the host's visible game keeps the LAN room running. Stop LAN room or
+closing the host launcher stops the room and worker. Stop the room before
+starting single player. The Bot tactics editor is not supported yet.
+Multiplayer gameplay and repeated rounds still need Windows acceptance.
 
 Closing the visible single-player game also closes its hidden simulation worker
 and temporary server. The launcher itself stays open.
