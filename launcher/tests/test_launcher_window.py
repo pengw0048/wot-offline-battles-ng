@@ -800,27 +800,144 @@ class WindowTest(unittest.TestCase):
         self.window._browse()
         self.assertEqual([], self.window._folders)
 
-    def test_ng_launcher_refuses_lan_rooms_joining_and_bot_tactics(self):
+    def test_online_buttons_are_enabled_for_the_supported_client(self):
         self._game("0.9.22.0.1", "1513")
+        self.window.mode.set(core.MODE_JOIN)
+        self.window._update_action_controls()
+        self.assertEqual("normal", self.window.server_button.cget("state"))
+        self.assertEqual(
+            "normal", self.window.network_start_button.cget("state"))
+        self.assertEqual(
+            "disabled", self.window.bot_tactics_button.cget("state"))
+        self.assertFalse(self.window._open_bot_tactics_editor())
+        self.assertIn(
+            wot_launcher.NG_BOT_TACTICS_UNSUPPORTED, self._log_text())
+
+    def test_online_buttons_reject_an_unsupported_client(self):
+        self._game("1.0.0", "1")
         self.window.mode.set(core.MODE_JOIN)
         self.window._update_action_controls()
         self.assertEqual("disabled", self.window.server_button.cget("state"))
         self.assertEqual(
             "disabled", self.window.network_start_button.cget("state"))
-        self.assertEqual(
-            "disabled", self.window.bot_tactics_button.cget("state"))
-        with mock.patch("core.plan_session") as plan, \
-                mock.patch("core.start_server", create=True) as start:
+        with mock.patch("wot_launcher.threading.Thread") as thread:
             self.assertFalse(self.window._toggle_lan_server())
-            self.assertFalse(self.window._start_network())
-            self.window._start()
-            self.assertFalse(self.window._open_bot_tactics_editor())
-        plan.assert_not_called()
-        start.assert_not_called()
+            self.window._start_network()
+        thread.assert_not_called()
         self.assertFalse(self.window._busy)
-        self.assertIn(wot_launcher.NG_LAN_UNSUPPORTED, self._log_text())
-        self.assertIn(
-            wot_launcher.NG_BOT_TACTICS_UNSUPPORTED, self._log_text())
+
+    def test_network_start_plans_default_vehicle_data(self):
+        with mock.patch(
+                "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                return_value=["Fast MS-1"]):
+            game_root = self._game("0.9.22.0.1", "1513")
+        self.window.vehicle_profile.set("Fast MS-1")
+        self.window.join_address.set("10.0.0.5:1234")
+        with mock.patch(
+                "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                return_value=["Fast MS-1"]), \
+                mock.patch("wot_launcher.threading.Thread") as thread:
+            self.window._start_network()
+
+        thread.return_value.start.assert_called_once_with()
+        self.assertEqual(self.window._run_session,
+                         thread.call_args.kwargs["target"])
+        root, session, unused_name = thread.call_args.kwargs["args"]
+        self.assertEqual(game_root, root)
+        self.assertEqual(core.MODE_JOIN, session["mode"])
+        self.assertEqual("10.0.0.5", session["host"])
+        self.assertEqual(1234, session["tcp_port"])
+        self.assertIsNone(session["vehicle_profile"])
+        self.assertFalse(session["needs_server"])
+
+    def test_single_player_does_not_refresh_a_running_room(self):
+        self._game("0.9.22.0.1", "1513")
+        for role in ("server", "worker"):
+            with self.subTest(role=role), \
+                    mock.patch("core.plan_session") as plan, \
+                    mock.patch("wot_launcher.threading.Thread") as thread:
+                self.window._server = (
+                    _Process() if role == "server" else None)
+                self.window._room_worker = (
+                    _Process() if role == "worker" else None)
+                self.window._start_single()
+
+                plan.assert_not_called()
+                thread.assert_not_called()
+                self.assertFalse(self.window._busy)
+        self.assertIn("Stop the LAN room before starting single player",
+                      self._log_text())
+
+    def test_single_and_replay_start_keep_the_selected_vehicle_profile(self):
+        with mock.patch(
+                "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                return_value=["Fast MS-1"]):
+            self._game("0.9.22.0.1", "1513")
+        self.window.vehicle_profile.set("Fast MS-1")
+        for replay_path in (None, "recording.wotreplay"):
+            with self.subTest(replay_path=replay_path), \
+                    mock.patch(
+                        "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                        return_value=["Fast MS-1"]), \
+                    mock.patch("wot_launcher.threading.Thread") as thread:
+                self.window._busy = False
+                self.window.mode.set(core.MODE_SINGLE)
+                self.window._start(replay_path=replay_path)
+
+                thread.return_value.start.assert_called_once_with()
+                unused_root, session, unused_name = (
+                    thread.call_args.kwargs["args"])
+                self.assertEqual("Fast MS-1", session["vehicle_profile"])
+                self.assertEqual(core.MODE_SINGLE, session["mode"])
+                self.assertEqual(replay_path is None, session["needs_server"])
+                if replay_path:
+                    self.assertEqual(replay_path, session["replay_path"])
+
+    def test_lan_host_uses_default_data_and_one_persistent_room_worker(self):
+        with mock.patch(
+                "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                return_value=["Fast MS-1"]):
+            game_root = self._game("0.9.22.0.1", "1513")
+        self.window.mode.set(core.MODE_JOIN)
+        self.window.vehicle_profile.set("Fast MS-1")
+        order = []
+        with mock.patch(
+                "wot_launcher.vehicle_overlays.list_vehicle_profiles",
+                return_value=["Fast MS-1"]), \
+                mock.patch("core.install_client_mod", return_value=[]), \
+                mock.patch(
+                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
+                    side_effect=lambda *unused: order.append("profile") or {
+                        "profile": None, "installedMembers": 0,
+                        "removedMembers": 0}) as prepare, \
+                mock.patch.object(
+                    self.window, "_start_server",
+                    side_effect=lambda *args, **kwargs:
+                    order.append("server") or True) as server, \
+                mock.patch.object(
+                    self.window, "_start_worker",
+                    side_effect=lambda *args, **kwargs:
+                    order.append("worker") or True) as worker, \
+                mock.patch("wot_launcher.threading.Thread") as thread:
+            self.assertTrue(self.window._toggle_lan_server())
+            thread.return_value.start.assert_called_once_with()
+            # Execute the scheduled operation through its actual callback.
+            thread.call_args.kwargs["target"]()
+
+        prepare.assert_called_once_with(game_root, None)
+        server.assert_called_once()
+        self.assertEqual((game_root, core.PORT_0_9_22),
+                         server.call_args.args)
+        self.assertTrue(server.call_args.kwargs["persistent"])
+        self.assertTrue(server.call_args.kwargs["require_owned"])
+        self.assertFalse(server.call_args.kwargs.get("loopback_only", False))
+        worker.assert_called_once_with(
+            game_root, core.LOCAL_HOST, core.DEFAULT_SERVER_PORT,
+            room_owned=True)
+        self.assertEqual(["profile", "server", "worker"], order)
+        self.assertEqual("%s:%d" % (core.LOCAL_HOST, core.DEFAULT_SERVER_PORT),
+                         self.window.join_address.get())
+        self.assertFalse(self.window._maintenance_busy)
 
     def test_maintenance_buttons_are_only_enabled_for_the_supported_client(self):
         self._game("1.0.0", "1")
@@ -855,7 +972,7 @@ class WindowTest(unittest.TestCase):
             self.window.root, game_root, "Fast MS-1", log=self.window._log,
             language=wot_launcher.i18n.LANGUAGE_CHINESE)
 
-    def test_vehicle_profile_selector_is_available_in_online_mode(self):
+    def test_online_mode_disables_profile_controls_and_preserves_selection(self):
         with mock.patch(
                 "wot_launcher.vehicle_overlays.list_vehicle_profiles",
                 return_value=["Fast MS-1"]):
@@ -871,6 +988,14 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(
             "Fast MS-1",
             self.window.vehicle_profile.get())
+        self.assertEqual(
+            "disabled", self.window.vehicle_profile_box.cget("state"))
+        self.assertEqual(
+            "disabled", self.window.vehicle_editor_button.cget("state"))
+
+        self.window.mode.set(core.MODE_SINGLE)
+        self.window._refresh_mode()
+        self.assertEqual("Fast MS-1", self.window.vehicle_profile.get())
         self.assertEqual(
             "readonly", self.window.vehicle_profile_box.cget("state"))
         self.assertEqual(
@@ -1555,64 +1680,49 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(["begin", "game", "finalize"], order)
         self.assertIsNone(self.window._active_report_session)
 
-    def _join_session_overlay_mocks(self, fetched, local_digest,
-                                    install_returns=1):
-        manifest = {
-            "schema": 1,
-            "targetVersion": "0.9.22.0.1",
-            "targetBuild": "1513",
-            "sourcePackage": "res/packages/scripts.pkg",
-            "members": [],
-        }
-        fetched = dict(fetched)
-        fetched.setdefault("manifest", manifest)
-        fetched.setdefault("payload", {})
-        return mock.patch(
-            "wot_launcher.vehicle_overlays.vehicle_overlay_digest",
-            return_value=local_digest), mock.patch(
-            "core.fetch_vehicle_overlay", return_value=fetched), mock.patch(
-            "wot_launcher.vehicle_overlays.install_vehicle_overlay",
-            return_value=install_returns)
-
-    def test_join_installs_the_host_vehicle_overlay(self):
+    def test_remote_join_uses_default_data_and_only_starts_the_player(self):
         session = {
             "client": core.PORT_0_9_22,
             "host": "10.0.0.5",
             "tcp_port": core.DEFAULT_SERVER_PORT,
             "needs_server": False,
             "mode": core.MODE_JOIN,
-            "vehicle_profile": None,
+            "vehicle_profile": "Fast MS-1",
         }
-        digest, fetch, install = self._join_session_overlay_mocks(
-            {"supported": True, "present": True, "digest": "d" * 64,
-             "profile": "Fast MS-1"}, local_digest="")
-        with mock.patch(
-                "core.install_client_mod", return_value=[]), \
+        with mock.patch("core.install_client_mod", return_value=[]), \
                 mock.patch(
                     "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
                     return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}), \
+                                  "removedMembers": 0}) as prepare, \
                 mock.patch(
                     "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    return_value=0), digest, fetch as fetch_mock, \
-                install as install_mock, \
+                    return_value=0), \
+                mock.patch("core.fetch_vehicle_overlay") as fetch, \
+                mock.patch(
+                    "wot_launcher.vehicle_overlays.install_vehicle_overlay") \
+                    as install, \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
-                           return_value=core.LISTENER_COMPATIBLE), \
-                mock.patch.object(self.window, "_run_game") as run_game, \
-                mock.patch.object(self.window, "_stop_worker"), \
-                mock.patch.object(self.window, "_stop_server"), \
+                           return_value=core.LISTENER_COMPATIBLE) as listener, \
+                mock.patch.object(self.window, "_start_server") as server, \
+                mock.patch.object(self.window, "_start_worker") as worker, \
+                mock.patch.object(self.window, "_run_game", return_value=False) \
+                    as run_game, \
                 mock.patch("core.wait_for_game_shutdown", return_value=True):
             self.window._run_session(self.settings_dir, session, "PlayerOne")
 
-        install_mock.assert_called_once_with(
-            self.settings_dir, fetch_mock.return_value["manifest"],
-            fetch_mock.return_value["payload"])
-        run_game.assert_called_once()
-        self.assertIn("Installed the host vehicle data profile", self._log_text())
-        self.assertIn("Fast MS-1", self._log_text())
+        prepare.assert_called_once_with(self.settings_dir, None)
+        listener.assert_called_once_with(
+            core.PORT_0_9_22, "10.0.0.5", core.DEFAULT_SERVER_PORT)
+        fetch.assert_not_called()
+        install.assert_not_called()
+        server.assert_not_called()
+        worker.assert_not_called()
+        run_game.assert_called_once_with(
+            self.settings_dir, core.PORT_0_9_22, "10.0.0.5",
+            core.DEFAULT_SERVER_PORT, paired_worker=False)
 
-    def test_owned_room_keeps_its_pinned_vehicle_data(self):
+    def test_owned_room_join_keeps_default_data_and_preserves_room_on_exit(self):
         session = {
             "client": core.PORT_0_9_22,
             "host": core.LOCAL_HOST,
@@ -1621,80 +1731,55 @@ class WindowTest(unittest.TestCase):
             "mode": core.MODE_JOIN,
             "vehicle_profile": "Fast MS-1",
         }
-        self.window._server = mock.Mock()
-        self.window._server.poll.return_value = None
+        server = _Process(exit_code=None)
+        worker = _Process(exit_code=None)
+        self.window._server = server
+        self.window._server_persistent = True
+        self.window._room_worker = worker
         self.window._server_context = {
             "game_root": os.path.normcase(os.path.realpath(
                 self.settings_dir)),
         }
-        digest, fetch, install = self._join_session_overlay_mocks(
-            {"supported": True, "present": True, "digest": "d" * 64,
-             "profile": "Fast MS-1"}, local_digest="d" * 64)
-        with mock.patch(
-                "core.install_client_mod", return_value=[]), \
+        self.window._room_vehicle_overlay_root = self.settings_dir
+        with mock.patch("core.install_client_mod", return_value=[]) as refresh, \
                 mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}) as prepare, \
+                    "wot_launcher.vehicle_overlays.vehicle_overlay_digest",
+                    return_value=""), \
                 mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    return_value=0), digest, fetch, install as install_mock, \
+                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile") \
+                    as prepare, \
+                mock.patch(
+                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data") \
+                    as cleanup, \
+                mock.patch("core.fetch_vehicle_overlay") as fetch, \
+                mock.patch(
+                    "wot_launcher.vehicle_overlays.install_vehicle_overlay") \
+                    as install, \
                 mock.patch("core.write_settings", return_value=[]), \
                 mock.patch("core.listener_status",
                            return_value=core.LISTENER_COMPATIBLE), \
-                mock.patch.object(self.window, "_run_game") as run_game, \
-                mock.patch.object(self.window, "_stop_worker"), \
-                mock.patch.object(self.window, "_stop_server"), \
-                mock.patch("core.wait_for_game_shutdown", return_value=True):
+                mock.patch.object(self.window, "_start_server") as start_server, \
+                mock.patch.object(self.window, "_start_worker") as start_worker, \
+                mock.patch.object(self.window, "_run_game", return_value=False) \
+                    as run_game:
             self.window._run_session(self.settings_dir, session, "PlayerOne")
 
-        # The running room's hidden worker is a WorldOfTanks.exe; the local
-        # prepare must not touch the pinned overlay and must not be called.
+        refresh.assert_not_called()
         prepare.assert_not_called()
-        install_mock.assert_not_called()
-        run_game.assert_called_once()
-        self.assertIn("keeps the vehicle data it pinned", self._log_text())
-
-    def test_owned_room_refuses_when_local_data_changed(self):
-        session = {
-            "client": core.PORT_0_9_22,
-            "host": core.LOCAL_HOST,
-            "tcp_port": core.DEFAULT_SERVER_PORT,
-            "needs_server": False,
-            "mode": core.MODE_JOIN,
-            "vehicle_profile": None,
-        }
-        self.window._server = mock.Mock()
-        self.window._server.poll.return_value = None
-        self.window._server_context = {
-            "game_root": os.path.normcase(os.path.realpath(
-                self.settings_dir)),
-        }
-        digest, fetch, install = self._join_session_overlay_mocks(
-            {"supported": True, "present": True, "digest": "d" * 64,
-             "profile": "Fast MS-1"}, local_digest="e" * 64)
-        with mock.patch(
-                "core.install_client_mod", return_value=[]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}) as prepare, \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    return_value=0), digest, fetch, install as install_mock, \
-                mock.patch("core.write_settings", return_value=[]), \
-                mock.patch("core.listener_status",
-                           return_value=core.LISTENER_COMPATIBLE), \
-                mock.patch.object(self.window, "_run_game") as run_game, \
-                mock.patch.object(self.window, "_stop_worker"), \
-                mock.patch.object(self.window, "_stop_server"), \
-                mock.patch("core.wait_for_game_shutdown", return_value=True):
-            self.window._run_session(self.settings_dir, session, "PlayerOne")
-
-        prepare.assert_not_called()
-        install_mock.assert_not_called()
-        run_game.assert_not_called()
-        self.assertIn("pinned to the vehicle profile", self._log_text())
+        cleanup.assert_not_called()
+        fetch.assert_not_called()
+        install.assert_not_called()
+        start_server.assert_not_called()
+        start_worker.assert_not_called()
+        run_game.assert_called_once_with(
+            self.settings_dir, core.PORT_0_9_22, core.LOCAL_HOST,
+            core.DEFAULT_SERVER_PORT, paired_worker=False)
+        self.assertIs(server, self.window._server)
+        self.assertIs(worker, self.window._room_worker)
+        self.assertFalse(server.terminated)
+        self.assertFalse(worker.terminated)
+        self.assertEqual(self.settings_dir,
+                         self.window._room_vehicle_overlay_root)
 
     def _run_join_session_with_crash_result(
             self, crashed, collect=True, client=core.PORT_0_9_22):
@@ -2549,6 +2634,37 @@ class WindowTest(unittest.TestCase):
             wot_launcher.error_reports.ROLE_VISIBLE_CLIENT,
             self.window._forced_stop_roles)
 
+    def test_close_visible_game_preserves_the_live_lan_room(self):
+        for has_game_handle in (True, False):
+            with self.subTest(has_game_handle=has_game_handle):
+                game = _Process() if has_game_handle else None
+                server = _Process()
+                worker = _Process()
+                self.window._game = game
+                self.window._server = server
+                self.window._server_persistent = True
+                self.window._room_worker = worker
+                with mock.patch.object(
+                        self.window, "_release_dump_monitor",
+                        return_value=False) as release, \
+                        mock.patch("core.kill_game") as kill_all:
+                    self.assertTrue(self.window._kill_game())
+
+                if has_game_handle:
+                    release.assert_called_once_with(game)
+                    self.assertTrue(game.killed)
+                else:
+                    release.assert_not_called()
+                kill_all.assert_not_called()
+                self.assertIs(server, self.window._server)
+                self.assertIs(worker, self.window._room_worker)
+                self.assertIsNone(server.poll())
+                self.assertIsNone(worker.poll())
+                self.assertFalse(server.terminated)
+                self.assertFalse(server.killed)
+                self.assertFalse(worker.terminated)
+                self.assertFalse(worker.killed)
+
     def test_releasing_a_dump_monitor_cancels_procdump_for_that_process(self):
         game = _Process(exit_code=None, pid=42)
         monitor = _Process(exit_code=None, pid=43)
@@ -2842,7 +2958,7 @@ class WindowTest(unittest.TestCase):
         sleep.assert_called_once_with(
             core.WORKER_FAILURE_DRAIN_SECONDS_0922)
 
-    def test_0922_join_waits_for_a_compatible_server_before_starting(self):
+    def test_join_blocks_unavailable_and_incompatible_endpoints(self):
         session = {
             "client": core.PORT_0_9_22,
             "host": "10.0.0.5",
@@ -2850,26 +2966,34 @@ class WindowTest(unittest.TestCase):
             "needs_server": False,
             "mode": core.MODE_JOIN,
         }
-        with mock.patch("core.install_client_mod", return_value=[]), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
-                    return_value={"profile": None, "installedMembers": 0,
-                                  "removedMembers": 0}), \
-                mock.patch(
-                    "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
-                    return_value=0), \
-                mock.patch("core.write_settings", return_value=[]), \
-                mock.patch("core.listener_status",
-                           return_value=core.LISTENER_FREE), \
-                mock.patch("core.fetch_vehicle_overlay") as fetch_overlay, \
-                mock.patch.object(self.window, "_run_game") as run_game:
-            self.window._run_session(self.settings_dir, session, "PlayerOne")
+        for status in (core.LISTENER_FREE, core.LISTENER_OCCUPIED):
+            with self.subTest(status=status), \
+                    mock.patch("core.install_client_mod", return_value=[]), \
+                    mock.patch(
+                        "wot_launcher.vehicle_overlays.prepare_vehicle_profile",
+                        return_value={"profile": None, "installedMembers": 0,
+                                      "removedMembers": 0}), \
+                    mock.patch(
+                        "wot_launcher.vehicle_overlays.ensure_original_vehicle_data",
+                        return_value=0), \
+                    mock.patch("core.write_settings", return_value=[]), \
+                    mock.patch("core.listener_status", return_value=status), \
+                    mock.patch("core.fetch_vehicle_overlay") as fetch_overlay, \
+                    mock.patch.object(self.window, "_start_server") as server, \
+                    mock.patch.object(self.window, "_start_worker") as worker, \
+                    mock.patch.object(self.window, "_run_game") as run_game, \
+                    mock.patch("core.wait_for_game_shutdown", return_value=True):
+                self.window._run_session(
+                    self.settings_dir, session, "PlayerOne")
 
-        fetch_overlay.assert_not_called()
-        run_game.assert_not_called()
+                fetch_overlay.assert_not_called()
+                server.assert_not_called()
+                worker.assert_not_called()
+                run_game.assert_not_called()
         self.assertIn(
             "did not answer the compatible 0.9.22 protocol",
             self._log_text())
+        self.assertIn("not the server for this client", self._log_text())
 
     def test_closing_the_window_saves_the_settings(self):
         self.window.player_name.set("PlayerOne")

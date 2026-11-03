@@ -171,7 +171,7 @@ def launcher_version(source_root=None):
 
 
 def build_identity(environ=None):
-    """Return one opaque diagnostic identity, never a compatibility gate."""
+    """Return the package build identity used by diagnostics and LAN probes."""
     environ = os.environ if environ is None else environ
     explicit = str(environ.get(BUILD_IDENTITY_ENV, "") or "").strip()
     if explicit:
@@ -183,7 +183,7 @@ def build_identity(environ=None):
 
 
 def stage_ng_client(target_root, ng_client, source_root=None, identity=None):
-    """Copy one NG client package and record its diagnostic identity."""
+    """Copy one NG client package and record its build identity."""
     if ng_client is None or not os.path.isdir(ng_client):
         raise ValueError("no NG client package; pass --ng-client")
     for relative in NG_CLIENT_REQUIRED:

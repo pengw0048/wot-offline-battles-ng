@@ -349,8 +349,20 @@ instance with their own `preferences.xml` and user data. All of it lives in
 instances and their logs. The room server listens on TCP 28792, so an NG room
 and an original-mod room can run on the same PC without answering each other.
 
-Only single player and replays are available. Hosting or joining a LAN room
-and the Bot tactics editor report that the NG client does not support them yet.
+For LAN play, open **Online** and click **Start LAN room** on the host PC.
+The host starts the room server and one hidden simulation worker. Each player,
+including the host, then clicks **Join network battle** with the host's address
+on TCP 28792. Allow inbound TCP 28792 through the host's Windows firewall.
+All players must use the same NG launcher build; the launcher checks the
+server's package identity before starting the player. LAN battles always use
+original vehicle values, regardless of the selected single-player profile.
+Closing the host's visible game keeps the room and worker running for the
+other players; **Stop LAN room** or closing the host launcher ends the room.
+Stop the room before starting a single-player game.
+
+The Bot tactics editor is not supported by the NG client yet. Multiplayer
+rendering, gameplay and repeated-round lifecycle still require Windows
+acceptance with multiple clients.
 
 Build it on Windows with x64 Python 3.11 from the `bigworld-client-win32`
 artifact of the `Build standalone BigWorld client` workflow. The launcher, its

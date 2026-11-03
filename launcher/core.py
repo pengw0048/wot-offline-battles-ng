@@ -297,7 +297,8 @@ def plan_session(status, mode, join_text="", team_size=DEFAULT_TEAM_SIZE,
         effective_team_size = max(
             effective_team1_size, effective_team2_size)
     effective_preferred_team = parse_preferred_team(preferred_team)
-    profile_name = str(vehicle_profile or "").strip() or None
+    profile_name = (str(vehicle_profile or "").strip() or None
+                    if mode == MODE_SINGLE else None)
     return {
         "client": port_version,
         "mode": mode,
@@ -730,7 +731,7 @@ def server_root(base_dir=None):
 
 
 def _normalize_payload_identity(value):
-    """Return one diagnostic build identity, never a compatibility gate."""
+    """Validate the package identity used by diagnostics and LAN probes."""
     if not isinstance(value, dict) or value.get("schema") != 1:
         return None
     semantic_version = value.get("semanticVersion")
@@ -1309,6 +1310,11 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None,
                 int(reply.get("protocol", -1)) != contract["protocol"] or
                 reply.get("client_build") != contract["client_build"]):
             return False
+        expected_identity = bundled_payload_identity(port_version)
+        if (expected_identity is not None and
+                _normalize_payload_identity(reply.get("ng_identity")) !=
+                expected_identity):
+            return False
         capabilities = contract["capabilities"]
         compatible = (capabilities is None or set(capabilities).issubset(
             set(reply.get("capabilities") or ())))
@@ -1341,8 +1347,8 @@ def probe_server_protocol(port_version, host, port, timeout=1.5, connect=None,
 def fetch_vehicle_overlay(host, port, timeout=5.0, connect=None):
     """Fetch the vehicle-data overlay a room host shares.
 
-    The NG battle wire carries no vehicle-data exchange messages, and the NG
-    launcher hosts only its own single-player room.
+    NG LAN rooms always use original vehicle values and do not exchange
+    vehicle-data overlays.
     """
     raise LauncherError(
         "Joining another room's vehicle data is not supported by the NG "

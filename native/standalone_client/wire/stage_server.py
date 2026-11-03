@@ -37,6 +37,14 @@ def _take_frame(buffer):
 def _decode_frame(frame):
     return _WIRE.decode(frame)
 
+
+def _ng_probe_identity():
+    return {
+        "schema": 1,
+        "semanticVersion": os.environ.get("WOT_OFFLINE_SEMANTIC_VERSION", ""),
+        "buildIdentity": os.environ.get("WOT_OFFLINE_BUILD_IDENTITY", ""),
+    }
+
 '''
 
 SERIALIZE_BEFORE = '    def _serialize_message(self, message, report_failure=True):\n        outgoing = _monotonic_endpoint_server_time(self, message)\n        try:\n            payload = (json.dumps(\n                outgoing, separators=(",", ":")) + "\\n").encode("utf-8")\n        except Exception as error:\n            self._record_outbound_failure(\n                "encode_error", message, error=error, sent_bytes=0)\n            raise\n        if len(payload) > MAX_LINE_BYTES:\n            try:\n                framed = state_transfer.frame_payload(\n                    outgoing, payload,\n                    state_transfer.CAPABILITY in getattr(self, "capabilities", ()))\n            except state_transfer.TransferError:\n                if report_failure:\n                    self._record_outbound_failure(\n                        "message_too_large", message, payload, sent_bytes=0)\n                return None\n            _server_log_limited(\n                "state-transfer:%s:%s" % (id(self), outgoing.get("type")),\n                "STATE_TRANSFER send kind=%s round=%s bytes=%d "\n                        "frames=%d wire_bytes=%d endpoint=%s" % (\n                outgoing.get("type"), outgoing.get("round_id"), len(payload),\n                framed.count(b"\\n"), len(framed),\n                getattr(self, "player_id", getattr(self, "worker_id", None))))\n            return framed\n        return payload\n\n'
@@ -128,6 +136,14 @@ EDITS = (
      '            hello = json.loads(line.decode("utf-8"))\n',
      '            line, buffer = _take_frame(buffer)\n'
      '            hello = _decode_frame(line)\n', 1),
+    # Launcher preflight compares the packaged NG version before joining.
+    ('                    "server_capabilities": list(SERVER_CAPABILITIES),\n'
+     '                })\n'
+     '                _server_log("PROBE OK %s:%d" % self.client_address)\n',
+     '                    "server_capabilities": list(SERVER_CAPABILITIES),\n'
+     '                    "ng_identity": _ng_probe_identity(),\n'
+     '                })\n'
+     '                _server_log("PROBE OK %s:%d" % self.client_address)\n', 1),
     # Launcher probe overlay exchange.
     ('                    while b"\\n" not in buffer:\n',
      '                    while not _frame_ready(buffer):\n', 1),
