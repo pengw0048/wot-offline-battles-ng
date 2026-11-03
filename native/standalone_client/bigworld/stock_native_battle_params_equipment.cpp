@@ -383,11 +383,11 @@ std::vector<EquipmentContract> botConsumableContracts(const Value* bot_consumabl
         if (row.resolved().kind != K::Object) throw p::Error("bot consumable contract is not a mapping");
         out.push_back(validate(row));
     }
-    bool large=true,small=true;
-    for (std::size_t i = 0; i < 3; ++i) {large=large && out[i].name==DEFAULT_BOT_CONSUMABLE_NAMES[i];small=small && out[i].name==SMALL_BOT_CONSUMABLE_NAMES[i];}
-    if(!large && !small)throw Invalid("bot consumable contract order is invalid");
+    bool large_kit=true,small_kit=true;
+    for (std::size_t i = 0; i < 3; ++i) {large_kit=large_kit && out[i].name==DEFAULT_BOT_CONSUMABLE_NAMES[i];small_kit=small_kit && out[i].name==SMALL_BOT_CONSUMABLE_NAMES[i];}
+    if(!large_kit && !small_kit)throw Invalid("bot consumable contract order is invalid");
     if (out[0].kind != "extinguisher" || out[1].kind != "medkit" || out[2].kind != "repairkit") throw Invalid("bot consumable contract kinds are invalid");
-    if (out[0].autoactivate!=large || out[1].repair_all!=large || out[2].repair_all!=large) throw Invalid("bot consumable effect policy is invalid");
+    if (out[0].autoactivate!=large_kit || out[1].repair_all!=large_kit || out[2].repair_all!=large_kit) throw Invalid("bot consumable effect policy is invalid");
     return out;
 }
 

@@ -1,4 +1,7 @@
 #pragma once
+#ifdef hypot
+#undef hypot
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
