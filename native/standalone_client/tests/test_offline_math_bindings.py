@@ -35,7 +35,8 @@ class OfflineMathBindingTests(unittest.TestCase):
         after = self.contents()
         changed = {name for name in before if before[name] != after[name]}
         self.assertEqual(changed, {'offline_math_batch_native.cpp',
-            'offline_destructible_prepare_python.inc', 'offline_navigation_query_python.inc',
+            'offline_destructible_prepare_python.inc', 'offline_destructible_python.inc',
+            'offline_navigation_query_python.inc',
             'offline_simulation_motion_python.inc'})
         self.assertEqual(len(adapter.METHODS), 103)
         self.assertIn('sim_control_contacts_materialized', adapter.METHODS)
@@ -51,10 +52,15 @@ class OfflineMathBindingTests(unittest.TestCase):
         self.assertEqual(before['offline_simulation_motion_python.inc'].replace(
             b'return hits_[handle-1].get();', b'return hits_[static_cast<unsigned>(handle-1)].get();'),
             after['offline_simulation_motion_python.inc'])
+        self.assertEqual(before['offline_destructible_python.inc'].replace(
+            b'result.reserve(visits);', b'result.reserve(static_cast<std::size_t>(visits));'),
+            after['offline_destructible_python.inc'])
         cpp = after['offline_math_batch_native.cpp'].decode()
         self.assertIn('#ifdef WOT_PYTHON_C_API\n#include <Python.h>', cpp)
         self.assertIn('#if defined(_WIN32)\nextern "C" __declspec(dllexport)', cpp)
         self.assertIn('#if !defined(_WIN32)\n#include <time.h>', cpp)
+        self.assertIn('#if !defined(WOT_PYTHON_C_API)\n#ifndef WOT_NATIVE_SOURCE_STAMP', cpp)
+        self.assertNotIn('#ifndef WOT_HOST_PYTHON\n#ifndef WOT_NATIVE_SOURCE_STAMP', cpp)
         # No numerical statement or registered method row in this TU changes.
         for line in difflib.ndiff(before['offline_math_batch_native.cpp'].decode().splitlines(),cpp.splitlines()):
             if line[:2] not in ('+ ','- '):
