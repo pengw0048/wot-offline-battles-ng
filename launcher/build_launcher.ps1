@@ -67,6 +67,9 @@ python -m PyInstaller `
     --hidden-import bot_tactics_ui `
     --hidden-import bot_tactics_smoke `
     --exclude-module gui `
+    --copy-metadata numpy `
+    --collect-all moderngl `
+    --collect-all glcontext `
     --hidden-import PIL.ImageTk `
     --exclude-module PIL._avif `
     --hidden-import PIL.DdsImagePlugin `
@@ -81,6 +84,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $AppRoot = Join-Path $DistRoot $AppName
+
 $ServerPayloadRoot = Join-Path $AppRoot "_internal\servers"
 $ServerPayloads = @(
     Get-ChildItem -LiteralPath $ServerPayloadRoot -Directory -Force)

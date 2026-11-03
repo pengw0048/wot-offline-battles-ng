@@ -1,6 +1,7 @@
 #include "stock_native_bot_motion_snapshot.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_descriptor.hpp"
+#include "stock_native_battle_local.hpp"
 #include <Python.h>
 #include <cmath>
 #include <limits>
@@ -148,11 +149,25 @@ static bool readSnapshot(const BotSeed& bot,PyObject * vehicle,MotionSnapshot & 
         const char * tuning[]={"GRAVITY","CONTACT_PENETRATION","AIRBORNE_ANGULAR_DAMPING","AIRBORNE_ANGULAR_SPEED_LIMIT",
             "FREEZE_ACCEL_EPSILON","FREEZE_VEL_EPSILON","FREEZE_ANG_ACCEL_EPSILON","FREEZE_ANG_VEL_EPSILON","SERVER_PHYSICS_MAX_SUBSTEPS"};
         for(unsigned i=0;i<9;++i)u.tuning[i]=attribute(physics.p,tuning[i]);
-        u.maximum_steps=int(u.tuning[8]);u.half_length=d.half_length;u.half_width=d.half_width;
+        u.maximum_steps=int(u.tuning[8]);u.fall_safe_speed=attribute(physics.p,"FALL_SAFE_SPEED");u.half_length=d.half_length;u.half_width=d.half_width;
         u.slide_hold_tan=attribute(physics.p,"SLIDE_HOLD_TAN");u.cohesion=attribute(physics.p,"COHESION");
         u.slide_drag=attribute(physics.p,"SLIDE_DRAG");u.slide_max=attribute(physics.p,"SLIDE_MAX");
-        // The pinned configuration keeps the detailed Bot suspension off (bot_runtime.BOT_FULL_SUPPORT_ENABLED).
-        value.detailed_suspension=false;
+        // Full support stays off. The descriptor is available for the pinned
+        // five-point edge admission, including passive wrecks, and is retired
+        // once every basic witness is restored.
+        if(!native_battle::local::suspensionTrialExcluded(vehicle)) {
+            try {
+                auto detailed=native_battle::local::deriveSuspension(vehicle);
+                detailed.half_length=u.half_length;detailed.half_width=u.half_width;
+                detailed.slide_hold_tan=u.slide_hold_tan;detailed.cohesion=u.cohesion;
+                detailed.slide_drag=u.slide_drag;detailed.slide_max=u.slide_max;
+                u=std::move(detailed);value.detailed_suspension=true;
+            } catch(const std::exception&) {
+                // A missing exact-client component contains only this actor's
+                // optional edge solver; basic support remains authoritative.
+                PyErr_Clear();
+            }
+        }
         if(mode){namespace p=stock_native_bot_python;auto misc=p::value(vehicle,"miscAttrs");const double spall=p::numeric(misc.get(),"antifragmentationLiningFactor",1.);if(spall<1.)throw std::runtime_error("#1513 Spall Liner factor is invalid");value.ram.spall=spall;value.ram.bonus=0.;}
         else{const auto& ram=raw.get("ram_profile");if(ram.kind!=SeedValue::Kind::Null){value.ram.spall=num(ram,"spall_coefficient",1.);value.ram.bonus=num(ram,"ramming_bonus");value.ram.contact_armor=optional(ram,"contact_armor");}}
         value.ram_sequence=std::int64_t(num(raw,"_ram_motion_seq"));

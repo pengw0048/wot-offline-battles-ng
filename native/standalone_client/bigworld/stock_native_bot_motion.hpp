@@ -25,6 +25,13 @@ struct Descriptor {
 };
 struct RejectedRotation {Point origin{};double yaw=0.,delta=0.,until=0.;};
 struct DriveSweep {Point start{};Vec movement{};};
+enum class TranslationOutcome {Pending,Unrestricted,RemotePlayer,ContactSolver,MissingStep,NotForwardMotor,MotorSettled};
+struct TranslationReceipt {
+    Point start{};Vec requested{};
+    double fraction=1.,elapsed=0.,speed_before=0.;
+    bool remote_player_contact=false;
+    TranslationOutcome outcome=TranslationOutcome::Pending;
+};
 struct State : wot::offline_bot_step::VerticalState {
     std::int64_t id=0;
     double contact_forward=0.,direction_command=0.;
@@ -33,6 +40,7 @@ struct State : wot::offline_bot_step::VerticalState {
     std::optional<int> contact_motor_turn;
     std::optional<double> destructible_contact_speed;
     std::optional<DriveSweep> drive_sweep;
+    std::optional<TranslationReceipt> translation_receipt;
     std::map<int,RejectedRotation> rejected_rotations;
     int hard_grinds=0;
 };
@@ -88,4 +96,5 @@ struct ContactOptions {
 void contact(State&,const Descriptor&,const ContactResponse&,double dt,double now,
     World&,ContactOptions={});
 void wreck_contact(State&,const Descriptor&,const ContactResponse&,double dt,double now,World&);
+void settle_drive_sweep(State&);
 }

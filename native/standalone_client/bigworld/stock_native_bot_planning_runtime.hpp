@@ -15,6 +15,7 @@ public:
     virtual ~PlanningHost()=default;
     virtual double planningRotationFraction(ID,const nav::Point&,double,double,bool wreck_push)=0;
     virtual void cancelArtillery(ID)=0;
+    virtual std::optional<double> mechanicalTargetFraction(ID,const decision::Target&,double,double){return {};}
 };
 struct LiveActor {
     decision::Input decision;
@@ -46,11 +47,12 @@ class PlanningRuntime final:public decision::World,public nav::RotationGeometry 
     std::map<ID,nav::CandidateState> candidate_states_;
     std::map<ID,std::unique_ptr<nav::CandidateProbe>> candidate_probes_;
     std::map<ID,nav::Strategy> selected_orders_;
-    bool open_=false;
+    bool open_=false,last_direction_uncertain_=false;
     nav::CandidateProbe& candidate(ID);
     std::vector<stock_native_bot_parking::Occupied> occupancy(ID)const;
     void syncParking(ID);
 public:
+    std::optional<double> mechanicalTargetFraction(ID id,const decision::Target&t,double yaw,double length)override{return host_.mechanicalTargetFraction(id,t,yaw,length);}
     PlanningRuntime(const PlanningSnapshot&,stock_native_world::Pipeline&,
         perception::Perception&,PlanningHost&);
     ~PlanningRuntime();
@@ -84,6 +86,7 @@ public:
     perception::Perception& perception(){return perception_;}
     const nav::BakeProof& bake()const{return bake_;}
     bool direction(ID,double,const plan::Optional<double>&,double,const plan::Optional<double>&)override;
+    bool direction_uncertain()const override{return last_direction_uncertain_;}
     bool pose(ID,double,bool)override;
     plan::Navigation navigate(const plan::Input&,const plan::Order&,const nav::Point&)override;
     void useOrder(ID,const nav::Strategy&)override;

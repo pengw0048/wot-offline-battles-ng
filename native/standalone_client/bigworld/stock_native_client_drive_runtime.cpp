@@ -1,4 +1,5 @@
 #include "stock_native_client_drive_runtime.hpp"
+#include "stock_native_client_wreck.hpp"
 #include "stock_native_battle_local_laws.hpp"
 #include <algorithm>
 #include <cmath>
@@ -80,6 +81,20 @@ bool PlayerDriver::slice(PlayerWorld&world,double dt){auto&s=state_;const auto&d
     // Motion barriers precede the next native presentation and cannot carry its prior receipt.
     s.hydraulic_body.reset();
     dt=std::max(0.,std::min(.1,dt));SliceTrace trace;trace.initial_position=s.position;trace.initial_yaw=s.yaw;
+    if(condition.dead&&!condition.battle_over){
+        s.wreck_started=!s.wreck_active;s.wreck_active=true;s.siege_braking.reset();s.drive_turn=s.drive_throttle=s.direction_command=0.;s.service_brake=false;controls_.forward=controls_.turn=0.;
+        auto position=s.position;const auto tick=position;double yaw=s.yaw;
+        const double vx=std::sin(yaw)*s.speed+s.push_x,vz=std::cos(yaw)*s.speed+s.push_z;
+        const auto velocity=s.airborne?std::array<double,3>{vx,vz,s.turn_speed}:
+            wreckContactStep(d,d.motion.collision_shape,vx,vz,s.turn_speed,yaw,dt,std::cos(s.pitch)*std::cos(s.roll));
+        s.speed=0.;s.push_x=velocity[0];s.push_z=velocity[1];s.turn_speed=velocity[2];
+        const double candidate=angle(yaw+s.turn_speed*dt);
+        if(world.pose_sweep(s,position,yaw,position,candidate,0.,dt))yaw=candidate;
+        world.vertical(s,position,yaw,dt,tick,tick);
+        position=world.contacts(s,position,yaw,dt,tick);
+        s.position=position;s.yaw=yaw;world.present(s,dt,trace,false);s.wreck_started=false;return false;
+    }
+    s.wreck_active=false;s.wreck_started=false;
     if(condition.battle_over||!condition.alive||(!condition.has_alive_method&&!condition.crew_active)){s.speed=s.turn_speed=s.drive_turn=s.drive_throttle=s.direction_command=0.;s.service_brake=false;controls_.forward=controls_.turn=0.;world.present(s,dt,trace,true);return true;}
     auto position=s.position;const auto tick=position;double yaw=s.yaw;canonicalize(yaw);s.yaw=yaw;const auto before=s;const double tick_yaw=yaw;double motion_yaw=yaw;const bool airborne_at_start=s.airborne;
     const bool turret_guard=world.detached_turrets();if(turret_guard)world.checkpoint();

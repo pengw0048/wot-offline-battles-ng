@@ -14,7 +14,7 @@ from native_test_compile_flags import native_test_compile_flags
 from test_stock_hydraulic_receipt import SERVER
 
 ROOT = Path(__file__).resolve().parents[1]
-FORK = os.environ.get('WOT_FORK_0101_SOURCE')
+FORK = os.environ.get('WOT_FORK_SOURCE')
 sys.path.insert(0, str(ROOT / 'wire'))
 import stage_server
 
@@ -118,7 +118,7 @@ class HydraulicQuery(unittest.TestCase):
             (folder / 'offline_release_drive_law.hpp').write_text('#pragma once\n#include <algorithm>\n#include <cmath>\n' + law)
             rebase = block((ROOT / 'bigworld/stock_native_bot_vehicle_geometry.cpp').read_text(), 'std::optional<std::array<double,8>> rebaseHydraulicBody(')
             (folder / 'probe.cpp').write_text(HOST.replace('@REBASE@', rebase))
-            sources = ['stock_native_bot_publication', 'stock_native_bot_contacts', 'stock_native_bot_motion', 'stock_native_bot_combat']
+            sources = ['stock_native_bot_publication', 'stock_native_client_drive_roster', 'stock_native_bot_contacts', 'stock_native_bot_motion', 'stock_native_bot_combat']
             command = ['c++', '-std=c++17', '-O0', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
                        *native_test_compile_flags(), '-I' + str(folder), '-I' + str(ROOT / 'tests'),
                        '-I' + str(ROOT / 'bigworld'), '-I' + str(fork / 'native'), str(folder / 'probe.cpp')]

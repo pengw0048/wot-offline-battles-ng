@@ -65,10 +65,10 @@ for pitch in (-math.pi/2.,math.pi/2.,-math.pi/2.+1.e-9,math.pi/2.-1.e-9):
    p,angles,event=a.pose(1.+seq*.04+offset);v=native.pose(b,1.+seq*.04+offset);equal(v['position'],p);equal(v['attitude'],angles);steps+=1
 print(json.dumps(dict(turret_presentation_steps=steps)))
 '''
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'),'Pinned gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'),'Pinned gameplay source is required')
 class NativeTurretPresentation(unittest.TestCase):
     def test_buffer_and_arc(self):
-        fork=Path(os.environ['WOT_FORK_0101_SOURCE'])
+        fork=Path(os.environ['WOT_FORK_SOURCE'])
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         names=['stock_native_client_turret_presentation','stock_native_detached_turret_snapshot','stock_native_detached_turret_runtime','stock_native_bot_turret_obstacles','stock_native_client_state']

@@ -115,9 +115,9 @@ print('native replay preparation lifecycle passed')
 class NativeReplayPreparationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            raise unittest.SkipTest('The fixed v0.10.1 source input is required')
+            raise unittest.SkipTest('The pinned v1.1.1 source input is required')
         cls.source = Path(source)
         cls.temporary = tempfile.TemporaryDirectory(prefix='native-replay-preparation-')
         cls.addClassCleanup(cls.temporary.cleanup)

@@ -235,17 +235,28 @@ class BotLineupIntegrationTests(unittest.TestCase):
             bot_lineup_ui.BotLineupEditorWindow)
         editor._profile_name = profile_name
         editor._store = store
-        editor._choices_by_nation = {"germany": [choice]}
+        editor._choices = [choice]
+        editor._draft = [dict(team=2, slot=0, enabled=False)]
+        editor._catalog_ready = True
+        editor._bulk_states = {1: {}, 2: {}}
         editor._rows = {(2, 0): {
-            "nation": _Variable("germany"),
             "vehicle": _Variable("Leichttraktor"),
+            "vehicle_options": [(choice["type_name"], "Leichttraktor")],
             "skill": _Variable("Veteran"),
-            "vehicle_box": _Combo(0),
+            "skill_options": [("veteran", "Veteran")],
         }}
         editor._on_save = saved.append
-        editor.status = _Variable()
+        editor.language = "en"
+        editor.root = None
+        editor._render = lambda: None
+        editor._messagebox = types.SimpleNamespace(
+            showinfo=lambda *args, **kwargs: None,
+            showerror=lambda *args, **kwargs: self.fail(str(args)))
 
-        editor._vehicle_changed((2, 0))
+        editor._changed(2, 0, "vehicle")
+        editor._changed(2, 0, "skill")
+        self.assertEqual([], saved)
+        self.assertTrue(editor._save())
 
         self.assertEqual(1, len(saved))
         return bot_lineup_profiles.assignments_for(saved[0], profile_name)

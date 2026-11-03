@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE=os.environ.get('WOT_FORK_SOURCE')
 ORACLE=r'''
 import ast,hashlib,imp,json,math,os,sys
 base=os.path.join(sys.argv[1],'src/res/scripts/client/gui/mods/offline_lan_0922')
@@ -40,7 +40,7 @@ for case in json.load(sys.stdin):
     results.append([seed,impulse['velocity'],impulse['spin'],row['attitude'],[f['origin'],f['velocity'],[[s['origin'],s['velocity'],s['start'],s['duration']] for s in f['segments']],f['duration'],f['rest'],f['contact'],f['impact_velocity'],f['energy'],f['landed']],count[0]])
 json.dump(results,sys.stdout)
 '''
-@unittest.skipUnless(SOURCE,'set WOT_FORK_0101_SOURCE')
+@unittest.skipUnless(SOURCE,'set WOT_FORK_SOURCE')
 class Launch(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

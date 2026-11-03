@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 struct _object;
+namespace wot::offline_bot_step {struct CrewFactors;}
 namespace stock_native_client_state {
 using Point=std::array<double,3>;
 // x, y, z, yaw, pitch, roll, absolute aim yaw, gun pitch.
@@ -179,6 +180,7 @@ struct Actor {
     // Resource owners may attach their immutable native geometry without
     // copying it through Python. Its concrete type remains adapter-owned.
     std::shared_ptr<const void> geometry;
+    std::array<std::shared_ptr<const wot::offline_bot_step::CrewFactors>,2> bot_crew_factors;
     std::uint64_t probe_frames=0,probe_held=0,probe_moving_held=0;
     double probe_max_gap_ms=0.;
     Presentation presented;

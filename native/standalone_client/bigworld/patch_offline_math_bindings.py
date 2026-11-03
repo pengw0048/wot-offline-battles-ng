@@ -1,4 +1,4 @@
-"""Adapt the fixed fork v0.10.1 numerical module to the owned Python C API.
+"""Adapt the fixed fork v1.1.1 numerical module to the owned Python C API.
 
 The numerical laws and 103 module methods remain untouched. Python binding
 selection is independent of the platform: Win32 retains its real process,
@@ -8,7 +8,7 @@ import argparse
 from pathlib import Path
 import re
 
-PINNED_COMMIT = '144619f6eb2925f8da4b13637bf65b8550fc898f'
+PINNED_COMMIT = 'abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0'
 SOURCES = (
     'offline_math_batch_geometry.cpp', 'offline_async_worker.cpp',
     'offline_navigation.cpp', 'native_visibility_core.cpp',
@@ -49,7 +49,7 @@ HEADER_BEFORE = '''#ifdef WOT_HOST_PYTHON
 #include <windows.h>
 #define WOT_CDECL __cdecl
 '''
-HEADER_AFTER = '''// Independent binding adapter for fork v0.10.1 / 144619f6.
+HEADER_AFTER = '''// Independent binding adapter for fork v1.1.1 / abd03c4a.
 #if defined(WOT_HOST_PYTHON) && !defined(WOT_PYTHON_C_API)
 #define WOT_PYTHON_C_API
 #endif
@@ -384,7 +384,7 @@ def patch(root, native_query=False, rotation_query=False):
     path = root/'offline_math_batch_native.cpp'
     original = path.read_text()
     if expanded_methods(root, original) != METHODS:
-        raise ValueError('Pinned v0.10.1 module method table changed')
+        raise ValueError('Pinned v1.1.1 module method table changed')
     prepared_motion = (root/'offline_simulation_motion_python.inc').read_text() if rotation_query else ''
     if rotation_query and ('stock_motion_rotation_python.inc' in original or
             'stock_rotation_binding::initialize' in original or

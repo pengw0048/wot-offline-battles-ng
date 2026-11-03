@@ -15,7 +15,7 @@ std::optional<double> NativeNavigationScene::ground(double x,double z,double hin
     double top=hint+8.;const double bottom=hint-18.;
     for(unsigned layer=0;layer<3;++layer){stock_native_world::Hit hit;
         if(pipeline_.navigation({x,top,z},{x,bottom,z},hit,true)!=stock_native_world::QueryStatus::Found)return {};
-        const double height=hit.point[1];if(height<=hint+4.5&&hit.normal[1]>0.)return waterDepth({x,height,z})>.90?std::nullopt:std::optional<double>(height);
+        const double height=hit.point[1];if(height<=hint+4.5&&hit.normal[1]>0.)return waterDepth({x,height,z})>stock_native_bot_navigation::navigable_water_depth?std::nullopt:std::optional<double>(height);
         const double next=height-.05;if(!(bottom<next&&next<top))return {};top=next;}return {};
 }
 Proof NativeNavigationScene::corridor(const Point&a,const Point&b,double width)
@@ -32,7 +32,7 @@ Proof NativeNavigationScene::corridor(const Point&a,const Point&b,double width)
 Proof NativeNavigationScene::navigation(const Point&a,const Point&b,double cell,double up,double down,std::optional<double>slope)
 {
     NavigationQuerySnapshot snapshot{};std::copy(a.begin(),a.end(),snapshot.start);std::copy(b.begin(),b.end(),snapshot.end);
-    snapshot.cell_size=cell;snapshot.grade_up=up;snapshot.grade_down=down;snapshot.water_limit=.90;
+    snapshot.cell_size=cell;snapshot.grade_up=up;snapshot.grade_down=down;snapshot.water_limit=stock_native_bot_navigation::navigable_water_depth;
     if(slope){snapshot.grade_up=snapshot.grade_down=std::min(*slope,std::tan(25.*3.14159265358979323846/180.));snapshot.sample_spacing=std::min(1.,cell*.42);}
     NavigationQueryEngine engine{};engine.context=this;
     engine.ray=[](void*raw,const double*start,const double*end,bool ground,double&height,double&normal){

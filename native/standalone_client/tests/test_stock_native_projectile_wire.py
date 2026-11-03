@@ -115,10 +115,10 @@ for sample in json.load(open(sys.argv[2])):
   rejected+=1
 print('Actual server reader: %d dispatch accepts, %d null-wreck rejections; real effects/frontiers/tombstones/retries passed'%(accepted,rejected))
 '''
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'), 'fixed gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'), 'fixed gameplay source is required')
 class NativeProjectileWire(unittest.TestCase):
     def test_wire(self):
-        fork=Path(os.environ['WOT_FORK_0101_SOURCE'])
+        fork=Path(os.environ['WOT_FORK_SOURCE'])
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         names=['stock_native_projectile_wire','stock_native_projectile_owner','stock_native_projectile_cursor','stock_native_projectile_history','stock_native_projectile_chord','stock_native_projectile_damage','stock_native_bot_armor_law','stock_native_bot_combat','stock_native_client_state']
@@ -126,10 +126,10 @@ class NativeProjectileWire(unittest.TestCase):
             folder=Path(folder);binary=folder/'projectile_wire_test.so';script=folder/'fixture.py';script.write_text(SCRIPT)
             command=['c++','-std=c++17','-O0','-ffp-contract=off','-Wall','-Wextra','-Werror','-DWOT_CLIENT_REPLICA_HOST_BUILD','-bundle','-undefined','dynamic_lookup','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(ROOT/'bigworld'),'-I'+str(fork/'native'),str(ROOT/'tests/stock_native_projectile_wire_host.cpp')]+[str(ROOT/'bigworld'/(name+'.cpp')) for name in names]+['-o',str(binary)]
             subprocess.run(command,check=True);samples=folder/'wire_samples.json';subprocess.run([py27,'-B',str(script),str(samples),str(fork)],check=True)
-            fixed_server=os.environ.get('WOT_FORK_0101_SERVER')
+            fixed_server=os.environ.get('WOT_FORK_SERVER')
             if fixed_server:
                 server=Path(fixed_server).parent if Path(fixed_server).is_file()else Path(fixed_server)
                 subprocess.run([sys.executable,'-B','-c',SERVER_CONTRACT,str(server),str(samples)],check=True)
             else:
-                print('Pinned server acceptance requires WOT_FORK_0101_SERVER; native wire and original sender checks passed')
+                print('Pinned server acceptance requires WOT_FORK_SERVER; native wire and original sender checks passed')
 if __name__=='__main__':unittest.main()

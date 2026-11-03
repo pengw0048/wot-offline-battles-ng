@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Stage the pinned gameplay catalogs with #1513 raw WGDE row identities.
 
-The pinned v0.10.1 baker numbered a chunk's items without its empty WGDE
-rows. #1513 keys every scene object to its raw row (006bab30/006ba9b0), as
-the native scene queries now report. Only the (chunk, item) fields change;
-every other byte of the pinned catalogs is retained.
+The pinned v1.1.1 bakers already use raw WGDE rows, including empty slots.
+Verify catalog versions and digests, then preserve their bytes unchanged.
 """
 import argparse
 import hashlib
@@ -76,6 +74,9 @@ def stage(source, destination, table_path=TABLE):
         raise ValueError('The WGDE empty-row table does not cover the pinned maps')
     for name, rewire in (('destructibles', rewire_destructibles), ('foliage', rewire_foliage)):
         manifest = destructibles if name == 'destructibles' else _manifest(source / name)
+        expected_version = 10 if name == 'destructibles' else 5
+        if manifest.get('version') != expected_version:
+            raise ValueError('The pinned catalog identity version changed: ' + name)
         (output / name).mkdir(parents=True, exist_ok=True)
         for record in manifest['maps']:
             entry = table['maps'][record['map']]
@@ -87,8 +88,6 @@ def stage(source, destination, table_path=TABLE):
             data = json.loads(payload.decode('utf-8'))
             if name == 'destructibles' and data['source']['space_bin_sha256'] != entry['space_bin_sha256']:
                 raise ValueError('Pinned catalog was baked from another space.bin: ' + record['file'])
-            if entry['empty_rows']:
-                payload = encode(rewire(data, entry['empty_rows']))
             (output / name / record['file']).write_bytes(payload)
             record['sha256'] = hashlib.sha256(payload).hexdigest()
         manifest['identity'] = {'rule': IDENTITY_RULE}

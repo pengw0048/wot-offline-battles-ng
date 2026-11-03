@@ -39,7 +39,7 @@ bool initRuntimeModule()
     runtimeMethods[5] = restore;
     PyObject * module = Py_InitModule( "offline_instance_guard_native", runtimeMethods );
     return module && PyModule_AddStringConstant( module, "_wot_offline_fork_revision",
-        "144619f6eb2925f8da4b13637bf65b8550fc898f" ) == 0;
+        "abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0" ) == 0;
 }
 
 class OfflineForkModule : public Script::InitTimeJob
@@ -65,7 +65,7 @@ public:
         if (valid)
         {
             valid = PyModule_AddStringConstant( module, "_wot_offline_fork_revision",
-                "144619f6eb2925f8da4b13637bf65b8550fc898f" ) == 0;
+                "abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0" ) == 0;
         }
         if (!valid)
         {

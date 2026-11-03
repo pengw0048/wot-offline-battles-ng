@@ -170,7 +170,7 @@ ROLE_COUNTS = {'client/bw_winmain.cpp': 2, 'client/app.cpp': 2,
                'lib/ashes/simple_gui.cpp': 1}
 
 
-# Pinned v0.10.1 WorkerPresentation.activate requires a positive hidden count.
+# Pinned v1.1.1 WorkerPresentation.activate requires a positive hidden count.
 # This EXE never shows the worker, so a zero count needs native proof instead.
 PINNED_HIDE = '''        if not private_desktop:
             hidden_count = hide_windows()

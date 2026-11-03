@@ -218,8 +218,8 @@ and diff it before replacing tracked catalogs.
 ## Target simulation ownership
 
 - The independent client's gameplay integration target is
-  `colorfulmeans/wot-0.9.22-offline-battles` release `v0.10.1`, commit
-  `144619f6eb2925f8da4b13637bf65b8550fc898f`. This is the offline mod version;
+  `colorfulmeans/wot-0.9.22-offline-battles` release `v1.1.1`, commit
+  `abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0`. This is the offline mod version;
   the native client contract remains Chinese HD `0.9.22.0.1 #1513`.
 - Every room has one mandatory hidden native worker. Each player's visible
   client advances that player's projectiles; the LAN server confirms shared
@@ -341,6 +341,9 @@ files above. Do not hard-code a current test count, release status, CI URL, or
 source hash in this instruction file.
 
 ## Change, validation, and handoff discipline
+
+- Do not trigger or wait for full BigWorld builds on GitHub Actions. Use local
+  compilation when a full engine build is needed.
 
 - Diagnose with read-only checks first. Implement only when the task includes a
   change.

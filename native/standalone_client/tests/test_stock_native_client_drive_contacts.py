@@ -15,7 +15,7 @@ import types
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE=os.environ.get('WOT_FORK_SOURCE')
 LAW_NAMES='''GRAVITY GRAVITY_FACTOR COHESION COH_DECAY_Y COH_DECAY_FACTOR COH_DECAY_POW
 SLOPE_COH_DECAY_Y SLOPE_COH_DECAY COH_DECAY_BOUND POWER_FACTOR BKWD_POWER_FRACTION ENGINE_MIN_V
 DRIVE_TRACTION SLOPE_GRIP_LNG_MIN_Y SLOPE_GRIP_LNG_FULL_Y SLOPE_GRIP_LNG_MIN SLOPE_GRIP_LNG_FULL
@@ -44,10 +44,10 @@ class ContactDifferential(unittest.TestCase):
         diagnostic=types.ModuleType('gui.mods.offline_lan_0922.worker_diagnostics');diagnostic.observed=lambda unused:lambda fn:fn;sys.modules[diagnostic.__name__]=diagnostic
         native_math=types.ModuleType('gui.mods.offline_lan_0922.native_math');native_math.call=lambda *args:None;native_math._load=lambda:None;package.native_math=native_math;sys.modules[native_math.__name__]=native_math
         base=Path(SOURCE)/'src/res/scripts/client/gui/mods/offline_lan_0922'
-        for name in ('vehicle_physics','tank_collision','tank_contact_ledger'):
+        for name in ('vehicle_physics','vehicle_stack','tank_collision','tank_contact_ledger'):
             spec=importlib.util.spec_from_file_location('gui.mods.offline_lan_0922.'+name,base/(name+'.py'));module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);setattr(package,name,module);sys.modules[module.__name__]=module;setattr(cls,name,module)
         tree=ast.parse((base/'battle_runtime.py').read_text());method=next(node for outer in tree.body if isinstance(outer,ast.ClassDef) for node in outer.body if isinstance(node,ast.FunctionDef) and node.name=='_resolve_local_tank_contacts')
-        env=dict(math=math,sys=sys,vehicle_physics=cls.vehicle_physics,tank_collision=cls.tank_collision,tank_contact_ledger=cls.tank_contact_ledger,_number=lambda v,default=0.:default if v is None else float(v))
+        env=dict(math=math,sys=sys,native_input_diagnostics=types.SimpleNamespace(write_json_record=lambda *a,**k:None),vehicle_physics=cls.vehicle_physics,tank_collision=cls.tank_collision,tank_contact_ledger=cls.tank_contact_ledger,_number=lambda v,default=0.:default if v is None else float(v))
         harness=ast.Module(body=[ast.ClassDef(name='Harness',bases=[],keywords=[],body=[method],decorator_list=[])],type_ignores=[])
         method.decorator_list=[];exec(compile(ast.fix_missing_locations(harness),'fixed-player-contact','exec'),env);cls.Harness=env['Harness']
     @classmethod

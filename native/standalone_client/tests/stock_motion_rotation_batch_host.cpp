@@ -17,7 +17,7 @@ Snapshot snapshot()
     value.start_yaw=scalar();value.end_yaw=scalar();value.pitch=scalar();value.roll=scalar();value.pivot_offset=scalar();
     value.translation={{scalar(),scalar()}};value.max_angle_step=scalar();value.drivable_gradient=scalar();
     value.max_steps=static_cast<std::uint32_t>(scalar());value.include_static=scalar()!=0.;
-    value.replacement_reader_available=scalar()!=0.;value.replacement_active=scalar()!=0.;return value;
+    value.replacement_reader_available=scalar()!=0.;value.replacement_active=scalar()!=0.;value.follow_ground=scalar()!=0.;return value;
 }
 Contact contact() { return {point(),point()}; }
 struct Script {int status;bool trace;Contact hit;std::vector<Contact> candidates;};

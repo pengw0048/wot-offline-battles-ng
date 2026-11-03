@@ -83,9 +83,9 @@ print(json.dumps({'player_edges':steps,'scatter_cases':400,'python_business_call
 
 class NativeClientWeaponTests(unittest.TestCase):
     def test_player_weapon_matches_fixed_gun_state(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='native-client-weapon-') as directory:

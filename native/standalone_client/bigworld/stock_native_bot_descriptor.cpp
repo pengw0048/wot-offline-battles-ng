@@ -18,7 +18,7 @@ Bounds hullBounds(PyObject* descriptor){auto hull=p::value(descriptor,"hull");re
 Bounds bodyBounds(PyObject* descriptor){auto chassis=p::value(descriptor,"chassis");auto h=hullBounds(descriptor);if(chassis.get()==Py_None)return h;const auto c=componentBox(chassis.get());auto mount=p::value(chassis.get(),"hullPosition");const auto offset=boxPoint(mount.get());Bounds out;for(int i=0;i<3;++i){out.minimum[i]=std::min(c.minimum[i],h.minimum[i]+offset[i]);out.maximum[i]=std::max(c.maximum[i],h.maximum[i]+offset[i]);}return out;}
 std::array<double,4> chassisShape(PyObject* descriptor){auto chassis=p::value(descriptor,"chassis"),mount=p::value(chassis.get(),"hullPosition");const auto c=componentBox(chassis.get()),h=hullBounds(descriptor);const auto offset=boxPoint(mount.get());return {std::max({std::abs(c.minimum[0]),std::abs(c.maximum[0]),.8}),std::max({std::abs(c.minimum[2]),std::abs(c.maximum[2]),1.}),c.minimum[1],std::max(c.maximum[1],offset[1]+h.maximum[1])};}
 std::optional<std::array<Point,6>> checkpoints(PyObject* descriptor){try{std::array<Point,6> out;auto stored=p::value(descriptor,"visibilityCheckPoints");if(stored.get()!=Py_None&&PySequence_Size(stored.get())>=6){for(int i=0;i<6;++i){auto v=p::item(stored.get(),i);out[i]=boxPoint(v.get());}return out;}auto chassis=p::value(descriptor,"chassis"),hull=p::value(descriptor,"hull"),turret=p::value(descriptor,"turret"),hp=p::value(chassis.get(),"hullPosition"),positions=p::value(hull.get(),"turretPositions"),gp=p::value(turret.get(),"gunPosition"),first=p::item(positions.get(),0);const auto h=boxPoint(hp.get()),t=boxPoint(first.get()),g=boxPoint(gp.get());const auto box=componentBox(hull.get()),turret_box=componentBox(turret.get());const auto top=std::max(box.maximum[1],t[1]+turret_box.maximum[1]),cy=(box.minimum[1]+box.maximum[1])/2.,cz=(box.minimum[2]+box.maximum[2])/2.;Point gun{};for(int i=0;i<3;++i)gun[i]=t[i]+g[i];const std::array<Point,5> local{{gun,{{0.,cy,box.maximum[2]}},{{0.,cy,box.minimum[2]}},{{box.maximum[0],gun[1],cz}},{{box.minimum[0],gun[1],cz}}}};out[0]={{0.,h[1]+top,0.}};for(int n=0;n<5;++n)for(int i=0;i<3;++i)out[n+1][i]=h[i]+local[n][i];return out;}catch(const std::exception&){PyErr_Clear();return std::nullopt;}}
-int crewLevelForRating(double rating){rating=std::max(0.,std::min(1.,rating));const double anchors[]={0.,.34,.67,1.},levels[]={75.,90.,100.,100.};double trained=100.;for(int i=0;i<3;++i)if(rating<=anchors[i+1]){const double f=(rating-anchors[i])/(anchors[i+1]-anchors[i]);trained=f<=0?levels[i]:f>=1?levels[i+1]:levels[i]+(levels[i+1]-levels[i])*f;break;}int result=75;for(int level:{90,100})if(std::abs(level-trained)<std::abs(result-trained))result=level;return result;}
+int crewLevelForRating(double rating){rating=std::max(0.,std::min(1.,rating));const double anchors[]={0.,.34,.67,1.};const int levels[]={50,75,100,100};int best=0;double distance=std::abs(rating-anchors[0]);for(int i=1;i<4;++i){const double candidate=std::abs(rating-anchors[i]);if(candidate<distance-1.e-12){best=i;distance=candidate;}}return levels[best];}
 double driveCap(PyObject* descriptor,double forward,double reverse,double speed,PyObject* travel_descriptor){const bool backwards=speed<0.;double cap=backwards?reverse:forward;auto travel=travel_descriptor?p::retain(travel_descriptor):p::value(descriptor,"defaultVehicleDescr");if(travel.get()!=Py_None&&cap>0.){auto physics=p::value(travel.get(),"physics"),limits=p::value(physics.get(),"speedLimits"),v=p::item(limits.get(),backwards?1:0);const double raw=p::scalar(v.get());if(raw<0.)throw p::Error("Native travel drive limit invalid");cap=std::max(cap,raw);}if(!std::isfinite(cap)||cap<0.)throw p::Error("Native drive cap invalid");return backwards?-cap:cap;}
 DevicePool devicePool(PyObject* descriptor,const std::string& name){
     DevicePool out;auto pools=p::value(descriptor,"_offline_critical_device_pools");
@@ -62,6 +62,7 @@ bool aimSamples(PyObject* descriptor,std::vector<wot::offline_bot_step::AimSampl
  }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}
 }
 PyObject* defaultCrewFactors(PyObject* descriptor,std::optional<int> requested){
+ bool fitted=false;
  try {
     p::Ref utils(PyImport_ImportModule("items.utils")),tankmen(PyImport_ImportModule("items.tankmen")),constants(PyImport_ImportModule("constants")),qualifier(PyImport_ImportModule("items.qualifiers"));
     p::Ref crew_module(PyImport_ImportModule("items.VehicleDescrCrew")),qualifiers_module(PyImport_ImportModule("VehicleQualifiersApplier"));
@@ -69,13 +70,24 @@ PyObject* defaultCrewFactors(PyObject* descriptor,std::optional<int> requested){
     auto qualifier_type=p::value(qualifier.get(),"QUALIFIER_TYPE"),main_skill=p::value(qualifier_type.get(),"MAIN_SKILL"),crew_class=p::value(crew_module.get(),"VehicleDescrCrew"),qualifiers_class=p::value(qualifiers_module.get(),"VehicleQualifiersApplier");
     const int maximum=int(p::integral(tankmen.get(),"MAX_SKILL_LEVEL"));auto type=p::value(descriptor,"type");
     auto produce=[&](int level){auto n=p::integer(level);p::Ref args(PyTuple_Pack(2,type.get(),n.get()));return p::call(utils.get(),"generateDefaultCrew",args.get());};
-    auto crew=[&](){try{return produce(requested?std::max(50,std::min(maximum,*requested)):maximum);}catch(const std::exception&){if(!requested)throw;PyErr_Clear();return produce(maximum);}}();
+    // This reader runs only during descriptor installation/switching. Reuse the
+    // cold fitting's exact generated crew and directives; no battle policy is
+    // delegated to Python.
+    PyObject* fitting_module=PyDict_GetItemString(PyImport_GetModuleDict(),"gui.mods.offline_lan_0922.bot_fittings");
+    auto context=[&](){if(!fitting_module)return p::retain(Py_None);p::Ref args(PyTuple_Pack(1,descriptor));return p::call(fitting_module,"context",args.get());}();
+    fitted=context.get()!=Py_None;
+    auto directives=p::value(context.get(),"directives");
+    auto crew=[&](){if(context.get()!=Py_None)return p::value(context.get(),"crew");try{return produce(requested?std::max(50,std::min(maximum,*requested)):maximum);}catch(const std::exception&){if(!requested)throw;PyErr_Clear();return produce(maximum);}}();
     p::Ref compact(PySequence_List(crew.get())),flags(PyList_New(PyList_GET_SIZE(compact.get())));for(Py_ssize_t i=0;i<PyList_GET_SIZE(flags.get());++i){Py_INCREF(Py_True);PyList_SET_ITEM(flags.get(),i,Py_True);}
     p::Ref empty(PyTuple_New(0));auto factors=p::call(utils.get(),"makeDefaultVehicleAttributeFactors",empty.get());
     auto collect=[&](PyObject* target,PyObject* aspect){
-        p::set(target,"crewLevelIncrease",p::integer(0));auto devices=p::value(descriptor,"optionalDevices");if(devices.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(devices.get());++i){auto device=p::item(devices.get(),i);if(device.get()==Py_None)continue;p::Ref args(PyTuple_Pack(3,descriptor,target,aspect));p::call(device.get(),"updateVehicleAttrFactors",args.get());}
+        double increase=0.;if(directives.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(directives.get());++i){auto directive=p::item(directives.get(),i);increase+=p::numeric(directive.get(),"crewLevelIncrease",0.);}
+        p::set(target,"crewLevelIncrease",p::number(increase));
+        if(directives.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(directives.get());++i){auto directive=p::item(directives.get(),i);p::Ref args(PyTuple_Pack(3,descriptor,target,aspect));p::call(directive.get(),"updateVehicleAttrFactors",args.get());}
+        auto devices=p::value(descriptor,"optionalDevices");if(devices.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(devices.get());++i){auto device=p::item(devices.get(),i);if(device.get()==Py_None)continue;p::Ref args(PyTuple_Pack(3,descriptor,target,aspect));p::call(device.get(),"updateVehicleAttrFactors",args.get());}
         auto mapping=p::dict();p::Ref qualifiers(PyObject_CallFunctionObjArgs(qualifiers_class.get(),mapping.get(),descriptor,nullptr));p::Ref bonuses(PyObject_GetItem(qualifiers.get(),main_skill.get()));
         p::Ref args(PyTuple_Pack(3,descriptor,compact.get(),bonuses.get()));auto kwargs=p::dict();p::set(kwargs.get(),"activityFlags",flags);p::set(kwargs.get(),"isFire",p::boolean(false));p::Ref c(PyObject_Call(crew_class.get(),args.get(),kwargs.get()));
+        if(directives.get()!=Py_None)for(Py_ssize_t i=0;i<p::size(directives.get());++i){auto directive=p::item(directives.get(),i),tags=p::value(directive.get(),"tags"),tag=p::text("crewSkillBattleBooster");const int boosted=PySequence_Contains(tags.get(),tag.get());if(boosted<0)throw p::Error("Native directive tags invalid");if(boosted)invoke(c.get(),"boostSkillBy",directive.get());}
         invoke(c.get(),"onCollectFactors",target);auto camouflage=p::value(c.get(),"camouflageFactor");p::set(target,"camouflage",camouflage);
         auto dispersion=p::list();p::append(dispersion.get(),p::number(1.));p::append(dispersion.get(),p::number(0.));invoke(c.get(),"onCollectShotDispersionFactors",dispersion.get());p::set(target,"shotDispersion",dispersion);
     };
@@ -85,6 +97,6 @@ PyObject* defaultCrewFactors(PyObject* descriptor,std::optional<int> requested){
     p::Ref copy(PyImport_ImportModule("copy"));auto stationary=invoke(copy.get(),"deepcopy",factors.get());collect(stationary.get(),still.get());
     auto visibility=p::dict(),a=p::value(factors.get(),"invisibility"),b=p::value(stationary.get(),"invisibility");if(PyDict_SetItem(visibility.get(),normal.get(),a.get())<0||PyDict_SetItem(visibility.get(),still.get(),b.get())<0)throw p::Error("Native crew invisibility allocation failed");p::set(factors.get(),"invisibility",visibility);
     p::Ref pair(PyTuple_Pack(2,normal.get(),still.get()));p::set(factors.get(),"_aspects",pair);return factors.release();
- }catch(const std::exception&e){if(requested){PyErr_Clear();return defaultCrewFactors(descriptor,std::nullopt);}if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}
+ }catch(const std::exception&e){if(requested&&!fitted){PyErr_Clear();return defaultCrewFactors(descriptor,std::nullopt);}if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return nullptr;}
 }
 }

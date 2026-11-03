@@ -44,7 +44,7 @@ print('4000 shared-stream draws matched exact CPython 2.7')
 '''
 class NativeProjectileRandom(unittest.TestCase):
     def test_shared_python27_stream(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
         if not source:self.skipTest('Fixed source input is required')
         py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()

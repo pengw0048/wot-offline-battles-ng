@@ -12,6 +12,7 @@
 namespace wot::offline_bot_step {
 struct ArcKey {
     std::int64_t actor=0, target=0, fire_sequence=0, descriptor_revision=0;
+    std::uint64_t target_record_revision=0,target_descriptor_revision=0;
     std::string target_kind;
     int shell=0, arc_mask=0;
     Point source_position{}, source_angles{}, origin{};
@@ -21,10 +22,13 @@ struct ArcKey {
 struct ArcCandidate {
     std::string arc;
     Point aim{}, origin{}, velocity{};
+    Point reference_position{},reference_velocity{};double prediction_seconds=0.;
     double yaw=0, pitch=0, flight_time=0, speed=0, gravity=0, maximum=0;
     double proof_maximum_step=0;
     std::vector<Point> path;
     std::optional<Point> terminal_impact;
+    std::optional<std::size_t> aim_token;
+    std::uint64_t target_record_revision=0,target_descriptor_revision=0;
 };
 enum class ArcQuery { clear, hit, failed };
 class ArcWorld {
@@ -70,6 +74,8 @@ struct ArtilleryInput {
     ArcKey identity;
     AimPose pose;
     Point target{},velocity{},origin{},barrel_point{};
+    std::vector<Point> aim_samples;
+    std::optional<std::pair<Point,Point>> canonical_motion;
     double speed=0,gravity=0,maximum=0;
     offline_simulation::weapons::AimConfig pitch_config;
     bool valid_pitch=false,source_available=false;
@@ -105,6 +111,7 @@ struct ArtilleryReproof {
 };
 struct ArtilleryIntent {
     ArcCandidate solution;
+    AimPose source;
     Point target_position{};
     double yaw=0,pitch=0,created=0;
 };

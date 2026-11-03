@@ -11,15 +11,15 @@ class PlayerImpactDifferential(ContactDifferential):
   command=['c++','-std=c++17','-bundle','-undefined','dynamic_lookup','-ffp-contract=off','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-register','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(big),'-I'+str(Path(SOURCE)/'native'),str(ROOT/'tests/stock_native_client_drive_impact_host.cpp')]+[str(big/name)for name in ('stock_native_client_drive_publication.cpp','stock_native_bot_environment.cpp','stock_native_bot_internal_geometry.cpp','stock_native_bot_step_state.cpp','stock_native_bot_combat.cpp')]+['-o',str(folder/'client_impact_test.so')]
   compiled=subprocess.run(command,capture_output=True,text=True);self.assertEqual(compiled.returncode,0,compiled.stderr)
   script=r'''
-import ast,math,random,types
+import ast,math,random,types,sys
 import client_impact_test as native
 assert native.hydraulic()
-base=SOURCE+'/src/res/scripts/client/gui/mods/offline_lan_0922/';tree=ast.parse(open(base+'battle_runtime.py').read());outer=next(n for n in tree.body if isinstance(n,ast.ClassDef)and n.name=='BattleRuntime');outer.body=[n for n in outer.body if isinstance(n,ast.FunctionDef)and n.name in ('_apply_fall_damage','_apply_landing_impact','_apply_world_contact_impact')];module=ast.Module(body=[outer]);ast.fix_missing_locations(module)
+base=SOURCE+'/src/res/scripts/client/gui/mods/offline_lan_0922/';diagnostic=types.ModuleType('native_input_diagnostics');diagnostic.write_json_record=lambda *a,**kw:None;sys.modules['native_input_diagnostics']=diagnostic;tree=ast.parse(open(base+'battle_runtime.py').read());outer=next(n for n in tree.body if isinstance(n,ast.ClassDef)and n.name=='BattleRuntime');outer.body=[n for n in outer.body if isinstance(n,ast.FunctionDef)and n.name in ('_apply_fall_damage','_apply_landing_impact','_apply_world_contact_impact')];module=ast.Module(body=[outer]);ast.fix_missing_locations(module)
 class O(object):
  def __init__(self,**kw):self.__dict__.update(kw)
 physics=ast.parse(open(base+'vehicle_physics.py').read());selected=[n for n in physics.body if isinstance(n,ast.FunctionDef)and n.name in ('fall_damage','world_impact_speed')];env=dict(math=math,FALL_SAFE_SPEED=10.,FALL_DMG_PER_MS=.03);exec(compile(ast.Module(body=selected),base+'vehicle_physics.py','exec'),env);vp=O(**env);ns=dict(math=math,vehicle_physics=vp,lan_protocol=O(PLAYER_LANDING_MAX_IMPACT_SPEED=200.),MAX_PENDING_LANDING_IMPACTS=32,sys=O(stdout=O(write=lambda value:None)));exec(compile(module,base+'battle_runtime.py','exec'),ns);entity=O(typeDescriptor=O(maxHealth=1000),matrix=None,health=1000);rng=random.Random(1513)
 def owner():
- h=ns['BattleRuntime']();h.client=None;h._landing_contact_witnesses=();h._landing_contact_normal=(0.,1.,0.);h._landing_contact_pose=None;h._pending_landing_impacts=[];return h
+ h=ns['BattleRuntime']();h.client=None;h._clock=lambda:0.;h._landing_contact_witnesses=();h._landing_contact_normal=(0.,1.,0.);h._landing_contact_pose=None;h._pending_landing_impacts=[];return h
 for i in range(640):
  h=owner();x=rng.uniform(-30.,30.);z=rng.uniform(-30.,30.);speed=rng.choice([0.,10.,10.033333333333333,200.,251.,rng.uniform(-20.,50.)]);normal=bool(i%2);slide=rng.uniform(0.,15.);h._local_air_lateral=(x,z);h._local_slide_speed=slide
  damage=h._apply_landing_impact(entity,speed,normal_impact=normal);actual=native.landing(speed,x,z,slide,normal)

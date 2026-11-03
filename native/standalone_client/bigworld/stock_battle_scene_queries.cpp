@@ -3,6 +3,7 @@
 #include "stock_battle_scene_queries_data.hpp"
 #include "stock_scene_identity.hpp"
 #include "stock_rotation_stage_timing.hpp"
+#include "stock_ground_effects.hpp"
 
 #include "physics2/collision_callback.hpp"
 #include "physics2/collision_obstacle.hpp"
@@ -543,6 +544,20 @@ float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAl
     for (Waters::const_iterator it = waters.begin(); it != waters.end(); ++it)
     {
         const float distance = (*it)->stockWaterRayDistance( start, end, edgeAlpha );
+        if (distance > 0.f)
+            return distance;
+    }
+    return -1.f;
+}
+
+float collideStockPhysicalWater( const Vector3 & start, const Vector3 & end )
+{
+    // The bound space owner fences CPU readiness, streaming and teardown.
+    // v1.1.1 physics ignores the renderer's Water visibility and alpha gates.
+    const Waters & waters = Waters::instance();
+    for (Waters::const_iterator it = waters.begin(); it != waters.end(); ++it)
+    {
+        const float distance = collideStockWorkerWater( *it, start, end );
         if (distance > 0.f)
             return distance;
     }

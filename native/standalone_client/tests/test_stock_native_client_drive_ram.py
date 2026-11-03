@@ -37,7 +37,7 @@ def collide(vehicle,matrix,start,end,unused_math,chassis_matrix=None):
  first=Bag(dist=reach+.02,matInfo=Bag(armor=5.,vehicleDamageFactor=0.,extra=Bag(name='leftTrackHealth' if spec['mode']==3 else 'screen')))
  structural=Bag(dist=reach+.1,matInfo=Bag(armor=spec['armor'],vehicleDamageFactor=1.,extra=Bag(name='hull')))
  return [first,structural]
-env=dict(math=math,sys=Bag(stdout=cStringIO.StringIO()),tank_collision=tc,vehicle_physics=vp,collide_vehicle_at_matrix=collide,_number=lambda v,default=0.:default if v is None else float(v),_xyz=lambda v:tuple(v[i] for i in range(3)))
+env=dict(__name__='gui.mods.offline_lan_0922.battle_runtime',__package__='gui.mods.offline_lan_0922',math=math,sys=Bag(stdout=cStringIO.StringIO()),tank_collision=tc,vehicle_physics=vp,collide_vehicle_at_matrix=collide,_number=lambda v,default=0.:default if v is None else float(v),_xyz=lambda v:tuple(v[i] for i in range(3)))
 exec(compile(ast.fix_missing_locations(ast.Module([ast.ClassDef(name='Harness',bases=[ast.Name(id='object',ctx=ast.Load())],body=methods,decorator_list=[])])),path,'exec'),env)
 class Oracle(env['Harness']):
  _ram_obb_overlap_polygon=staticmethod(tc.obb_overlap_polygon);_ram_obb_overlap_point=staticmethod(tc.obb_overlap_point)
@@ -117,10 +117,14 @@ for stamp,bracket in ((None,None),(1000000,None)):
 run([(own,[body()],None,False)])
 o,h=run([(own,[body()],1000000,False)],specs(0,1));native.retire(h);native.retry(h);assert native.inspect(h)['pending']==0 and native.inspect(h)['active']==[]
 # Exact 21-field worker witness restores the original pair rather than the
-# later pushed presentation; preserve the original local attitude override.
+# later pushed presentation, including its original pitch and roll.
 witness=[1,7,1000000,0.,0.,-1.,0.,0.,5.,0.,.12,-.1,0.,0.,0.,0.,.2,.1,0.,0.,5.]
 witness_peer=body(z=100.,_ram_motion=witness,bot_ram_motion_seq=7)
 for mode in (0,1,2,3):run([(own,[witness_peer],1000000,False),(own,[witness_peer],1020000,True),(own,[witness_peer],1040000,True)],specs(mode))
+# Without a worker witness, the admitted typed body's own attitude still owns
+# the frozen proof; a separate current local attitude is not a replacement.
+typed_own=dict(own,pitch=.12,roll=-.08,local_pitch=.7,local_roll=-.6)
+for mode in (0,1,2,3):run([(typed_own,[body()],1000000,False)],specs(mode))
 # Receipt pressure never discards a frozen proof or advances its sequence.
 settings=specs()+[dict(specs()[1],id=id) for id in range(3,22)]
 peers=[body(id) for id in range(2,22)]
@@ -163,8 +167,8 @@ print(json.dumps(dict(random_episodes=360,sustained_frames=50,retry_scenarios=12
 '''
 class NativePlayerRamTests(unittest.TestCase):
  def test_original_player_episodes_plate_search_and_receipts(self):
-  source=os.environ.get('WOT_FORK_0101_SOURCE')
-  if not source:self.skipTest('Fixed v0.10.1 source input is required')
+  source=os.environ.get('WOT_FORK_SOURCE')
+  if not source:self.skipTest('Pinned v1.1.1 source input is required')
   py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
   prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
   with tempfile.TemporaryDirectory(prefix='native-player-ram-') as directory:

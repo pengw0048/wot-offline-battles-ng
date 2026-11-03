@@ -2,7 +2,7 @@
 """Compose the NG launcher source tree from the pinned gameplay source.
 
 The launcher, its tests and its build read ``server/``, ``src/`` and
-``tools/`` beside ``launcher/``. Those must be the pinned v0.10.1 gameplay
+``tools/`` beside ``launcher/``. Those must be the pinned v1.1.1 gameplay
 source, not this repository's retired line, and the server must speak the
 binary battle wire the independent client uses. The composed tree is:
 

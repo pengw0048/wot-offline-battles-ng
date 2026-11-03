@@ -14,7 +14,7 @@ namespace {
 using Catalog = DestructibleCatalog;
 using Kind = Catalog::Kind;
 constexpr const char* format_name = "offline-lan-0922-destructible-catalog";
-constexpr std::int64_t format_version = 9;
+constexpr std::int64_t format_version = 10;
 constexpr int structure_material_min = 73, structure_material_max = 86;
 const std::set<std::string> supported_maps{
     "01_karelia", "02_malinovka", "04_himmelsdorf", "05_prohorovka", "06_ensk", "07_lakeville", "08_ruinberg",

@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 class ArmorGeometry(unittest.TestCase):
     def test_exact_search_trace_and_tracks(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
         if not source:self.skipTest('fixed gameplay source is required')
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         rng=random.Random(1513);cases=[]

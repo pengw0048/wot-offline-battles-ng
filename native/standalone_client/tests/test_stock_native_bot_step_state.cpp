@@ -108,6 +108,17 @@ int main() {
            std::abs(*settled.landing_impact-1.981)<1.e-12);
     assert(settled.normal_impact && !settled.ground_observed);
     assert(!body.airborne && std::abs(body.position[1]-.326425)<1.e-12);
+    // An impact impulse remains observable even if the body rebounds airborne.
+    auto rebound=trial;rebound.original=body;rebound.original.airborne=true;
+    rebound.solved.contacts=0;rebound.solved.impact_speed=-15.;rebound.fall_safe_speed=10.;
+    auto rebound_result=commit_vertical(body,rebound,false);
+    assert(body.airborne && rebound_result.landing_impact && *rebound_result.landing_impact==15.);
+    rebound.original.airborne=false;rebound.solved.contacts=1;
+    auto settled_contact=commit_vertical(body,rebound,false);
+    assert(!settled_contact.landing_impact);
+    rebound.original.airborne=true;rebound.solved.contacts=0;rebound.solved.impact_speed=-9.;
+    auto safe_rebound=commit_vertical(body,rebound,false);
+    assert(!safe_rebound.landing_impact);
     VerticalTrial raised=trial;
     raised.original=body; raised.tick_position={-1.,.4,0.};
     raised.invalid=false; raised.raised=true;
@@ -117,6 +128,18 @@ int main() {
     raised.original=body;
     auto accepted=commit_vertical(body,raised,true);
     assert(!accepted.blocked && body.position[1]==1.5);
+    // Recorded ledge recovery is accepted only against the original support layer.
+    VerticalState edge;edge.position={18.7163,.5250618174309358,86.5085};
+    edge.terrain_pitch=-1.314603274514827;edge.roll=-1.0042512591213686;
+    SupportPlane ledge;ledge.center_x=edge.position[0];ledge.center_z=edge.position[2];ledge.center_y=1.2159;ledge.gradient_x=-.0413;ledge.gradient_z=-.0608;
+    std::vector<SuspensionContact> supports;
+    for(double z:{-.8839618563652039,0.,.8839618563652039,1.7679237127304077}){SuspensionContact c;c.x=1.4403699517250061;c.z=z;c.ground=1.158897876739502;supports.push_back(c);}
+    assert(support_contact_recovery(edge,supports,ledge,edge.position,edge.position[1],1.5643090044391021));
+    auto moved=edge.position;moved[0]-=.5;
+    assert(!support_contact_recovery(edge,supports,ledge,moved,edge.position[1],1.5643090044391021));
+    auto below=ledge;below.center_y=-15.;
+    assert(!support_contact_recovery(edge,supports,below,edge.position,edge.position[1],1.5643090044391021));
+    assert(!support_contact_recovery(edge,supports,std::nullopt,edge.position,edge.position[1],1.5643090044391021));
     SupportPlane plane;
     plane.gradient_x=.1; plane.normal={-.1,1.,0.};
     const auto checkpoints=support_checkpoints(plane,plane,{0.,0.,0.},{3.,.3,0.},.9);

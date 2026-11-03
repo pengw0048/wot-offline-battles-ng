@@ -256,8 +256,8 @@ its build and resource preparation are described below. The NG launcher runs
 it with the hidden worker.
 
 The gameplay integration target is
-[the colorfulmeans fork's v0.10.1 release](https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v0.10.1),
-fixed at commit `144619f6eb2925f8da4b13637bf65b8550fc898f`. Its mod version is
+[the colorfulmeans fork's v1.1.1 release](https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v1.1.1),
+fixed at commit `abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0`. Its mod version is
 separate from the unchanged #1513 game resource and native interface contract.
 Each player's visible client advances that player's projectiles, with the LAN
 server confirming shared damage and destruction. A mandatory hidden native
@@ -265,6 +265,13 @@ worker owns Bot movement and Bot projectiles. Windows sessions have exercised
 movement, projectile completion, Bot damage, player death, battle results and
 repeated returns to the garage. Rendering remains incomplete, and these lifecycle
 checks do not establish visual correctness or gameplay acceptance.
+The v1.1.1 integration updates the retained account, missions, economy and
+resource data together with the launcher, and ports the affected player and Bot
+combat, navigation and shared physics rules into native C++. The Bot tactics
+editor is outside this migration. Battle-time ownership remains native; cold
+vehicle fitting and descriptor preparation use the stock client interfaces.
+NG replay format R3 records the expanded binary state. Earlier R2 recordings
+are rejected before decoding and remain on disk.
 The fork's native extensions must be rebuilt or adapted from source because
 their original executable addresses are not valid in the rebuilt client.
 
@@ -297,9 +304,9 @@ and compares its output bits with the C++ implementation. These checks do not
 establish complete resource, vehicle-physics or gameplay parity; the reviewed
 boundaries are in [COMPATIBILITY_REVIEW.md](COMPATIBILITY_REVIEW.md).
 
-The separate `Build standalone BigWorld client` workflow builds the pinned
+Build the pinned
 [BigWorld 14.4.1 source](https://github.com/v2v3v4/BigWorld-Engine-14.4.1/tree/3d3cc16ae60bb1d71cb014e9b0539e54e6d8c4fb)
-with Windows/MSVC. To reproduce it on Windows with Visual Studio 2022, v142,
+locally with Windows/MSVC. On Windows with Visual Studio 2022, v142,
 CMake and PowerShell 7, use a new temporary work directory:
 
 ```powershell
@@ -384,13 +391,13 @@ The Bot tactics editor is not supported by the NG client yet. Multiplayer
 rendering, gameplay and repeated-round lifecycle still require Windows
 acceptance with multiple clients.
 
-Build it on Windows with x64 Python 3.11 from the `bigworld-client-win32`
-artifact of the `Build standalone BigWorld client` workflow. The launcher, its
-tests and its build read the pinned v0.10.1 server and tools, so compose that
+Build it on Windows with x64 Python 3.11 from a locally built native client
+package. The launcher, its
+tests and its build read the pinned v1.1.1 server and tools, so compose that
 source tree first:
 
 ```powershell
-python -m pip install -r server/requirements-windows-build.txt Pillow==12.3.0
+python -m pip install -r launcher/requirements-build.txt
 python tools/stage_ng_launcher_source.py --output "$env:TEMP\ng-launcher-source"
 pwsh -NoProfile -File "$env:TEMP\ng-launcher-source\launcher\build_launcher.ps1" `
   -NgClient C:\path\to\bigworld-client-win32

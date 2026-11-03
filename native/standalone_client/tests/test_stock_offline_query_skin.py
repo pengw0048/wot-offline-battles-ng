@@ -28,7 +28,6 @@ FUNCTIONS = {
     '_owned_component_skin_1513', '_compiled_motion_skin_1513',
     '_destructible_bin_key', '_bin_keys_for_bounds', '_baked_bin_keys_for_bounds_1513',
     '_destructible_isolated_1513', 'is_excluded_1513',
-    '_layout_repair_pending_1513', '_layout_generation_1513',
 }
 KINDS = {'structure': 0, 'fragile': 1, 'falling': 2, 'other': 3}
 
@@ -138,7 +137,7 @@ def fixtures():
     case['destroyed'] = {(10, 1, 71)}
     case['surfaces'] = [(71, 0, 9, 10)]
     case['layout_generations'] = {10: 1}
-    add('spatially proved repaired slot remap', case, True)
+    add('retired layout remap cannot rebind a different raw slot', case, False)
     case['layout_repairs'] = {10}
     add('pending repair cannot remap', case, False)
     case['layout_repairs'] = set(); case['surfaces'] = [(71, 0, 1, 10)]
@@ -274,8 +273,8 @@ def encode(cases):
 class NativeSkinTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source: raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source = os.environ.get('WOT_FORK_SOURCE')
+        if not source: raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         if not shutil.which(CXX): raise unittest.SkipTest('C++ compiler is required')
         cls.source = Path(source)
         cls.temporary = tempfile.TemporaryDirectory(prefix='native-query-skin-')

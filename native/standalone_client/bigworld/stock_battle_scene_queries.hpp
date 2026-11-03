@@ -100,6 +100,9 @@ float stockGunMarkerSegmentCollision( const Vector3 & start, const Vector3 & end
 // The native owner behind BigWorld.wg_collideWater: segment distance or -1.
 float collideStockWater( const Vector3 & start, const Vector3 & end, bool edgeAlpha );
 
+// Physics uses current compiled-space CPU surfaces independently of render visibility.
+float collideStockPhysicalWater( const Vector3 & start, const Vector3 & end );
+
 // The native owner behind BigWorld.wg_getSpaceBounds: camera-space x/z bounds.
 Vector4 stockCameraSpaceBounds();
 

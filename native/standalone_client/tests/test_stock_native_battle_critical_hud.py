@@ -8,7 +8,7 @@ import unittest
 from test_stock_native_battle_critical_order import method
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 
 FIXTURE = r'''
 import battle_critical_hud_test as native

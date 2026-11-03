@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE=os.environ.get('WOT_FORK_SOURCE')
 ORACLE=r'''
 import ast,copy,imp,json,math,os,sys,time
 base=os.path.join(sys.argv[1],'src/res/scripts/client/gui/mods/offline_lan_0922')
@@ -53,7 +53,7 @@ for case in json.load(sys.stdin):
 json.dump(result,sys.stdout)
 '''
 
-@unittest.skipUnless(SOURCE,'set WOT_FORK_0101_SOURCE to the pinned gameplay checkout')
+@unittest.skipUnless(SOURCE,'set WOT_FORK_SOURCE to the pinned gameplay checkout')
 class DetachedTurret(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

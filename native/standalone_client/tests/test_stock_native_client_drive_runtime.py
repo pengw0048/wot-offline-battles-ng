@@ -17,14 +17,15 @@ class PlayerDriverDifferential(ContactDifferential):
         super().setUpClass();folder=Path(cls.folder.name);native=Path(SOURCE)/'native';big=ROOT/'bigworld';binary=folder/'driver.so'
         subprocess.run(['c++','-std=c++17','-O0','-shared','-fPIC','-ffp-contract=off','-Wall','-Wextra','-Werror',
             '-I'+str(folder),'-I'+str(big),'-I'+str(native),str(big/'stock_native_client_drive_runtime.cpp'),str(big/'stock_native_bot_motion.cpp'),
-            str(ROOT/'tests/stock_native_client_drive_runtime_host.cpp'),'-o',str(binary)],check=True,capture_output=True,text=True)
-        cls.driver=ctypes.CDLL(str(binary)).player_driver_fixture;ptr=ctypes.POINTER(ctypes.c_double);cls.driver.argtypes=[ptr]*6;cls.driver.restype=ctypes.c_int
+            str(ROOT/'tests/stock_native_client_drive_runtime_host.cpp'),'-o',str(binary)],check=True)
+        cls.lib=ctypes.CDLL(str(binary));cls.driver=cls.lib.player_driver_fixture;ptr=ctypes.POINTER(ctypes.c_double);cls.driver.argtypes=[ptr]*6;cls.driver.restype=ctypes.c_int
+        cls.wreck=cls.lib.player_wreck_fixture;cls.wreck.argtypes=[ctypes.c_int,ctypes.c_int,ptr];cls.wreck.restype=ctypes.c_int
         base=Path(SOURCE)/'src/res/scripts/client/gui/mods/offline_lan_0922';tree=ast.parse((base/'battle_runtime.py').read_text())
         wanted=set('''_drive_local_step _canonicalize_local_attitude _smoothed_drive_pitch _local_suspension_state_snapshot
 _restore_local_suspension_state _apply_suspension_slope_slide _apply_slope_slide _settle_airborne_lateral_contact _resettle_local_suspension_endpoint'''.split())
         methods=[node for outer in tree.body if isinstance(outer,ast.ClassDef) for node in outer.body if isinstance(node,ast.FunctionDef) and node.name in wanted]
         for node in methods:node.decorator_list=[]
-        env=dict(math=math,sys=__import__('sys'),vehicle_physics=cls.vehicle_physics,
+        env=dict(math=math,sys=__import__('sys'),native_input_diagnostics=types.SimpleNamespace(write_json_record=lambda *a,**k:None),vehicle_physics=cls.vehicle_physics,
             critical_damage=types.SimpleNamespace(stat_factor=lambda entity,name:entity.factors[name]),
             tank_collision=types.SimpleNamespace(rotation_fraction=lambda *args,**kwargs:env['fraction']),
             _number=lambda value,default=0.:default if value is None else float(value),
@@ -32,6 +33,16 @@ _restore_local_suspension_state _apply_suspension_slope_slide _apply_slope_slide
             _engine_rotation=lambda yaw:(0.,0.,yaw),GROUND_PLANE_EPSILON=.35)
         harness=ast.Module(body=[ast.ClassDef(name='Harness',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
         exec(compile(ast.fix_missing_locations(harness),'fixed-full-player-drive','exec'),env);cls.FullHarness=env['Harness'];cls.environment=env
+    def test_dead_player_keeps_passive_motion_and_publishes(self):
+        out=(ctypes.c_double*11)()
+        self.assertEqual(11,self.wreck(1,0,out))
+        self.assertEqual((1.,0.,1.),tuple(out[:3]))
+        self.assertEqual((1.1,1.8,3.2),tuple(out[3:6]))
+        self.assertEqual(0.,out[6]);self.assertGreater(abs(out[7])+abs(out[8]),0.)
+        self.assertEqual(0.,out[10])
+        self.assertEqual(11,self.wreck(0,1,out))
+        self.assertEqual((0.,1.,0.),tuple(out[:3]))
+
     def drive_case(self,rng,index):
         vp=self.vehicle_physics
         params=dict(mass=25000.,powerW=280000.,nativePowerRatio=1.,speedFwd=14.,speedBwd=6.,specificFriction=.07,brakeDecel=4.,rotSpd=.7,terrainResist=[1.,1.2,1.8],trackCenter=1.4,rotationIsAroundCenter=index%3==0)
@@ -48,14 +59,14 @@ _restore_local_suspension_state _apply_suspension_slope_slide _apply_slope_slide
         normal=(1.,.2,-.5) if index%12==0 else None;held=index%16==0;recover=index%15==0
         correction=(.015,0.,-.012) if index%5==0 else (0.,0.,0.);impulse=.1 if index%5==0 else 0.;dy=-.05
         if index%21==0:state['siege_braking']=False
-        h=self.FullHarness()
+        h=self.FullHarness();h._local_wreck_active=False
         for key,value in state.items():setattr(h,'_local_'+key,value)
         h._local_physics=params;h._local_descriptor=None;h._local_suspension_params={} if detail else None;h._local_suspension_disabled=False;h._local_suspension_failed_this_tick=False;h._local_suspension_support_vertical_speed=0.;h._local_suspension_support_gradient=None
         h._local_spring_ground_memory=h._local_pseudo_ground_memory=None;h._local_fall_armed=True;h._local_left_flying=h._local_right_flying=False;h._local_surface_up_cosine=None;h._pending_landing_impacts=[]
         h._local_drive_pitch_history=None;h._local_smooth_drive_pitch=0.;h._local_drive_turn=h._local_drive_throttle=h._local_reaction_rate=0.;h._local_support_tick_pose=h._local_support_motion_pose=None
         h._local_push_x=h._local_push_z=0.;h._local_siege_aim_pitch=0.;h._local_siege_pending=None
         h._sender=types.SimpleNamespace(forward=controls[0],turn=controls[1],handbrake=controls[2]);h._server=types.SimpleNamespace(vehicle_id=1)
-        entity=types.SimpleNamespace(typeDescriptor={},isAlive=lambda:flags[1],isCrewActive=flags[2],is_tracked=flags[4],is_engine_dead=flags[5],factors={'mobility':flags[8],'traverse':flags[9]},_offlineStunFactors={'speed':flags[11]})
+        entity=types.SimpleNamespace(typeDescriptor={},health=1000,isAlive=lambda:flags[1],isCrewActive=flags[2],is_tracked=flags[4],is_engine_dead=flags[5],factors={'mobility':flags[8],'traverse':flags[9]},_offlineStunFactors={'speed':flags[11]})
         h._server_entity=lambda unused:entity;h._battle_result=True if flags[3] else None;h._overturn_level=2 if flags[6] else 0
         h._local_model=h._local_matrix=object();h._binding=None;h._destructibles=None;h._detached_turret_obstacles=object() if guard else None
         h._local_turret_pose=lambda p,yaw,pitch,roll:dict(position=p,yaw=yaw,pitch=pitch,roll=roll)
@@ -76,7 +87,7 @@ _restore_local_suspension_state _apply_suspension_slope_slide _apply_slope_slide
             p,yaw=args[1:3];h._local_reaction_rate=.12;h._local_contact_reaction_paid=True
             return ((p[0]+.02,p[1],p[2]),yaw+.01)
         h._recover_local_held_peer_turn=recovery if held else lambda *args:None;h._recover_local_world_turn=recovery if recover else lambda *args:None
-        h._arena_rotation_is_clear=lambda *args:arena
+        h._arena_rotation_is_clear=lambda *args:arena;h._boundary_rotation_clear=lambda *args:arena
         def pose(*args):h._local_motion_status='clear' if sweep else 'hard';h._local_world_collision_trace={};return sweep
         h._pose_sweep_is_clear=pose;h._ensure_local_suspension_params=lambda unused:{} if detail else None
         def vertical(entity,p,yaw,dt,support_height_delta=0.,support_speed_delta=0.):

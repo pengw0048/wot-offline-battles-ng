@@ -73,7 +73,14 @@ ProbePlan MotionPlan::prepare(const MotionPlanInput&in)
     std::optional<double> horizon;if(in.baked)horizon=std::max(in.cell_size,std::abs(in.speed)*1.5);
     if(plan.travel_sign>0.&&horizon&&in.move_position&&in.movement_intent&&(in.recovery=="drive"||in.recovery=="avoid"))
         plan.maximum_distance=std::min(std::max(.5,distance(in.position,*in.move_position)-1.5),*horizon);
-    else if(in.recovery=="short_forward_escape"||in.recovery=="short_reverse_escape")plan.maximum_distance=std::max(.5,in.recovery_probe_distance.value_or(2.));
+    else if(in.recovery=="short_forward_escape"||in.recovery=="short_reverse_escape") {
+        if(in.recovery_probe_origin&&in.recovery_probe_yaw&&in.recovery_probe_length) {
+            const auto&origin=*in.recovery_probe_origin;const double yaw=*in.recovery_probe_yaw;
+            const double travelled=(in.position[0]-origin[0])*std::sin(yaw)+(in.position[2]-origin[2])*std::cos(yaw);
+            plan.maximum_distance=std::max(0.,*in.recovery_probe_length-travelled);
+            if(*plan.maximum_distance<=.05){plan.throttle=plan.turn=0.;plan.slope_pitch=in.terrain_pitch;plan.escape_complete=true;return plan;}
+        } else plan.maximum_distance=std::max(.5,in.recovery_probe_distance.value_or(2.));
+    }
     else if(in.recovery=="contact_escape"||in.recovery=="forward_escape"||in.recovery=="wreck_push")
         plan.maximum_distance=std::max(.5,in.recovery_probe_distance.value_or(std::max(.5,in.half_length)*1.6));
     else if(plan.travel_sign<0.&&horizon&&(in.recovery=="reverse_turn"||in.recovery=="reverse_withdraw"))plan.maximum_distance=horizon;
@@ -83,8 +90,11 @@ ProbePlan MotionPlan::prepare(const MotionPlanInput&in)
             if(*in.clearance_distance<=0.)plan.throttle=plan.turn=0.;}}
     auto found=cache.find(in.id);std::optional<ProbeCache> previous;if(found!=cache.end())previous=found->second;
     const bool settled=std::abs(plan.throttle)<=.01&&std::abs(plan.turn)<=.01&&std::abs(in.speed)<=.02&&in.grounded&&!in.airborne;
-    const bool reusable=previous&&(!in.decision_due||cacheCovers(*previous,plan.maximum_distance))&&cacheReusable(*previous,in.position,plan.travel_yaw,in.speed,in.now,settled,in.step,!in.refresh_control);
-    const bool geometry=previous&&probeClear(previous->result)&&cacheCovers(*previous,plan.maximum_distance)&&cacheReusable(*previous,in.position,plan.travel_yaw,in.speed,in.now,settled,in.step,true);
+    const std::optional<Point> body_pose=in.airborne?std::nullopt:std::optional<Point>(Point{{in.yaw,in.terrain_pitch,in.roll}});
+    const auto up=[](const Point&p){const double sy=std::sin(p[0]),cy=std::cos(p[0]),sp=std::sin(p[1]),cp=std::cos(p[1]),sr=std::sin(p[2]),cr=std::cos(p[2]);return Point{{-cy*sr+sy*sp*cr,cp*cr,sy*sr+cy*sp*cr}};};
+    const bool same_plane=!previous||(!previous->body_pose&&!body_pose)||(previous->body_pose&&body_pose&&[&]{const auto a=up(*previous->body_pose),b=up(*body_pose);double error=0.;for(int i=0;i<3;++i)error+=(a[i]-b[i])*(a[i]-b[i]);return error<=.005*.005;}());
+    const bool reusable=previous&&same_plane&&(!in.decision_due||cacheCovers(*previous,plan.maximum_distance))&&cacheReusable(*previous,in.position,plan.travel_yaw,in.speed,in.now,settled,in.step,!in.refresh_control);
+    const bool geometry=previous&&same_plane&&probeClear(previous->result)&&cacheCovers(*previous,plan.maximum_distance)&&cacheReusable(*previous,in.position,plan.travel_yaw,in.speed,in.now,settled,in.step,true);
     plan.catchup_reprobe=!in.refresh_control&&!reusable&&previous&&probeClear(previous->result)&&
         (std::abs(plan.throttle)>.01||std::abs(in.speed)>.0001||std::abs(plan.turn)>.01||std::abs(in.turn_speed)>.01);
     plan.catchup_hold=!in.refresh_control&&!reusable&&!plan.catchup_reprobe;
@@ -92,7 +102,7 @@ ProbePlan MotionPlan::prepare(const MotionPlanInput&in)
     else if(!reusable){
         try{plan.sample=world_.direction(in.id,in.position,plan.travel_yaw,in.speed,in.descriptor,plan.maximum_distance);}
         catch(...){MotionSample failure;failure.collision=true;failure.probe_failed=true;plan.sample=failure;}
-        if(plan.sample&&probeClear(*plan.sample)&&!plan.sample->deferred&&std::abs(plan.sample->slope)<=.01&&
+        if(plan.sample&&probeClear(*plan.sample)&&!plan.sample->deferred&&std::abs(plan.sample->slope)<=.01&&std::abs(in.terrain_pitch)<=.01&&std::abs(in.roll)<=.01&&
            (std::abs(plan.throttle)>.01||std::abs(in.speed)>.0001)&&std::abs(plan.turn)<=.01&&std::abs(in.turn_speed)<=.01&&!in.airborne){
             double receipt_speed=std::abs(in.speed);if(plan.throttle<0.||(std::abs(plan.throttle)<=.01&&in.speed<0.))receipt_speed=-std::max(receipt_speed,.000001);
             std::optional<WorldReceipt> old;if(previous&&!previous->result.deferred&&probeClear(previous->result)&&previous->result.receipt&&
@@ -107,7 +117,7 @@ ProbePlan MotionPlan::prepare(const MotionPlanInput&in)
                 if(fresh.status==ReceiptStatus::Deferred)plan.sample->receipt_pending=true;
                 else if(fresh.status==ReceiptStatus::Blocked){plan.sample->clear=false;plan.sample->collision=true;}
                 else if(fresh.status==ReceiptStatus::Clear)plan.sample->receipt=fresh.receipt;}}
-        if(plan.sample&&!plan.sample->deferred){ProbeCache stored;stored.result=*plan.sample;stored.position=in.position;stored.yaw=plan.travel_yaw;stored.maximum_distance=plan.maximum_distance;
+        if(plan.sample&&!plan.sample->deferred){ProbeCache stored;stored.result=*plan.sample;stored.position=in.position;stored.yaw=plan.travel_yaw;stored.maximum_distance=plan.maximum_distance;stored.body_pose=body_pose;
             stored.distance=std::min(std::abs(in.speed)>5.?20.:15.,plan.maximum_distance.value_or(std::numeric_limits<double>::infinity()));stored.leading=std::max(.5,in.half_length);
             stored.deadline=plan.sample->receipt_pending?in.now:deadline(in.now,in.id,!previous);cache[in.id]=stored;
         }else if(plan.sample&&plan.sample->deferred){if(geometry)plan.sample=previous->result;else{cache.erase(in.id);if(previous||!in.exact_resolver){plan.throttle=plan.turn=0.;plan.pose_frozen=true;}}}

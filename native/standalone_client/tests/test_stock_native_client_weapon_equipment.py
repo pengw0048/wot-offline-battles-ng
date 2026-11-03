@@ -97,7 +97,7 @@ outer=copy.deepcopy(snapshot);outer['players'][1]['equipment_revision']=revision
 inner=copy.deepcopy(outer);inner['players'][1]['equipment_revision']=revision+2;inner['players'][1]['equipment_states'][2]['active']=not rows[2]['active']
 def nested_cold(message,present):
  result=original_cold(message,present)
- if message is outer:native.equipment_snapshot(b,inner,int(present))
+ if message['players'][1]['equipment_revision']==revision+1:native.equipment_snapshot(b,inner,int(present))
  return result
 b._restore_local_equipment_snapshot_cold=nested_cold
 assert native.equipment_snapshot(b,outer,1) is True
@@ -119,13 +119,14 @@ for worker,replay in ((True,False),(False,True)):
  assert b._remember_ram_bot_snapshot(None) is False
 b._worker_mode=b._replay_mode=False;b.state='loading'
 assert facade.restore_equipment_snapshot(b,snapshot,True) is None
+native.reset()
 print('equipment original AST %d clocks/edges passed; cold parses=%d; hot traps/RAM ownership passed'%(count,cold[0]))
 '''
 
 
 class NativeClientWeaponEquipmentTest(unittest.TestCase):
     def test_original_snapshot_clocks_and_owner_boundaries(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Pinned gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True, env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
@@ -134,10 +135,10 @@ class NativeClientWeaponEquipmentTest(unittest.TestCase):
             folder = Path(directory)
             (folder/'fixture.py').write_text(FIXTURE)
             bridge = (ROOT/'bigworld/stock_native_client_weapon_runtime_python.cpp').read_text()
-            start = bridge.index('PyObject*equipmentSnapshot(')
-            end = bridge.index('PyObject*publish(', start)
-            (folder/'host.cpp').write_text((ROOT/'tests/stock_native_client_weapon_equipment_host.cpp').read_text()+'\n'+bridge[start:end])
-            command = ['c++', '-std=c++17', '-O1', '-DWOT_CLIENT_REPLICA_HOST_BUILD', '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix)/'include/python2.7'), '-I'+str(ROOT/'bigworld'), str(folder/'host.cpp'), str(ROOT/'bigworld/stock_native_client_state.cpp'), '-o', str(folder/'equipment_snapshot_test.so')]
+            start = bridge.index('bool equipmentSnapshot(')
+            end = bridge.index('// The rows stay current', start)
+            (folder/'host.cpp').write_text((ROOT/'tests/stock_native_client_weapon_equipment_host.cpp').read_text()+'\nnamespace stock_native_client_weapon_runtime {\n'+bridge[start:end]+'\n}\n')
+            command = ['c++', '-std=c++17', '-O1', '-DWOT_CLIENT_REPLICA_HOST_BUILD', '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix)/'include/python2.7'), '-I'+str(ROOT/'bigworld'), '-I'+str(ROOT/'tests'), '-I'+str(Path(source)/'native'), str(folder/'host.cpp'), str(ROOT/'bigworld/stock_native_client_state.cpp'), '-o', str(folder/'equipment_snapshot_test.so')]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([py27, '-B', str(folder/'fixture.py'), source, str(ROOT/'bigworld/stock_native_client_weapon_runtime_bindings.py')], capture_output=True, text=True)

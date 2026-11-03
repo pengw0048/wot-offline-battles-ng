@@ -11,7 +11,9 @@ enum Flag:std::uint32_t {
     Equipment=1u<<8,Ammo=1u<<9,Forward=1u<<10,Backward=1u<<11,
     Left=1u<<12,Right=1u<<13,Burst=1u<<14,Clip=1u<<15,Siege=1u<<16,
     ContactMomentum=1u<<17,Airborne=1u<<18,ServiceBrake=1u<<19,
-    RouteWreckBlocked=1u<<20,RamMotion=1u<<21,RamMotionBodies=1u<<22
+    RouteWreckBlocked=1u<<20,RamMotion=1u<<21,LocalCombatManoeuvre=1u<<22,
+    AimFeedback=1u<<23,AimFeedbackAligned=1u<<24,AmmoMagazineStarted=1u<<25,
+    RamMotionBodies=1u<<26
 };
 struct EquipmentRow {
     ID contract_revision=0;
@@ -23,7 +25,10 @@ struct EquipmentRow {
 struct Input {
     // Exact order is bot_state_codec.SCALARS from the fixed gameplay release.
     // Values in integral columns have already crossed the event-ingress check.
-    std::array<double,37> scalars{};
+    std::array<double,38> scalars{};
+    int aim_feedback_kind=0;
+    ID aim_feedback_id=0;
+    double aim_feedback_error=0.;
     std::uint32_t flags=0;
     std::vector<int> ammunition;
     wot::offline_bot_step::CriticalState critical;

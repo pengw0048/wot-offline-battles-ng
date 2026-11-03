@@ -259,12 +259,15 @@ void recordControl(Battle& b, const stock_native_bot::Clock& clock, std::int64_t
 
 void retire(Battle& b) {
     auto* a = authority(b);
-    if (!a) return;
-    if (a->owner) {
+    if (a && a->owner) {
         OwnerRef o = std::move(a->owner);
         owner::close(*o);
     }
     b.bots.reset();
+    // Fitting contexts own descriptors (including Siege pairs) and native crew
+    // caches. Retire the round's cold descriptor owner on every client.
+    PyObject* fittings=PyDict_GetItemString(PyImport_GetModuleDict(),"gui.mods.offline_lan_0922.bot_fittings");
+    if(fittings){p::Ref args(PyTuple_New(0));p::call(fittings,"clear",args.get());}
 }
 
 bool enabled(const Battle& b) { return b.worker && authority(b) && authority(b)->started; }

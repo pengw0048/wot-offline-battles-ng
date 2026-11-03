@@ -18,6 +18,7 @@ struct ProbeCache {
     Point position{};
     double yaw=0.,distance=0.,leading=0.,deadline=0.;
     std::optional<double> maximum_distance;
+    std::optional<Point> body_pose;
 };
 struct ExactDescriptor {
     CandidateDescriptor candidate;
@@ -39,13 +40,13 @@ struct MotionPlanInput {
     std::int64_t id=0;
     Point position{};
     double yaw=0.,speed=0.,turn_speed=0.,throttle=0.,turn=0.,step=0.,now=0.;
-    double half_length=0.,terrain_pitch=0.;
+    double half_length=0.,terrain_pitch=0.,roll=0.;
     bool grounded=false,airborne=false,decision_due=false,refresh_control=true,exact_resolver=true;
     bool baked=true,movement_intent=true;
     double cell_size=0.;
     std::string recovery="drive";
-    std::optional<Point> move_position;
-    std::optional<double> recovery_probe_distance,clearance_distance;
+    std::optional<Point> move_position,recovery_probe_origin;
+    std::optional<double> recovery_probe_distance,recovery_probe_yaw,recovery_probe_length,clearance_distance;
     ExactDescriptor descriptor;
 };
 struct ProbePlan {
@@ -53,7 +54,7 @@ struct ProbePlan {
     int movement_direction=0,rotation_direction=0;
     bool path_clear=true,pose_frozen=false,generic_collision=false,exact_collision=false;
     bool remember_failure=false,report_blocked_corridor=false;
-    bool cache_reused=false,catchup_hold=false,catchup_reprobe=false;
+    bool cache_reused=false,catchup_hold=false,catchup_reprobe=false,escape_complete=false;
     std::optional<double> maximum_distance;
     std::optional<MotionSample> sample;
 };

@@ -12,8 +12,8 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 class NativeClientSurvivalTests(unittest.TestCase):
  def test_original_warning_clocks_and_publication_edges(self):
-  source=os.environ.get('WOT_FORK_0101_SOURCE')
-  if not source:self.skipTest('Fixed v0.10.1 source input is required')
+  source=os.environ.get('WOT_FORK_SOURCE')
+  if not source:self.skipTest('Pinned v1.1.1 source input is required')
   base=Path(source)/'src/res/scripts/client/gui/mods/offline_lan_0922'
   tree=ast.parse((base/'battle_runtime.py').read_text())
   methods=[node for cls in tree.body if isinstance(cls,ast.ClassDef) and cls.name=='BattleRuntime' for node in cls.body if isinstance(node,ast.FunctionDef) and node.name in ('_tick_drowning','_tick_overturn')]
@@ -29,6 +29,7 @@ class NativeClientSurvivalTests(unittest.TestCase):
    result=subprocess.run(cmd,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
    operation=ctypes.CDLL(str(binary)).player_survival_step;ptr=ctypes.POINTER(ctypes.c_double);operation.argtypes=[ptr,ptr,ctypes.c_int,ctypes.c_double,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_double,ctypes.c_double,ptr];operation.restype=ctypes.c_int
    original=env['Original']();original.client=types.SimpleNamespace(player_id=1);original._server=types.SimpleNamespace();original._records={'player:1':dict(engine_id=101,state=dict(alive=True,health=100.))};entity=types.SimpleNamespace(health=100.);original._avatar=types.SimpleNamespace();original._server_entity=lambda unused:entity;original._local_position=(0.,0.,0.);original._local_yaw=original._local_pitch=original._local_roll=0.
+   original._log_drowning=lambda *args,**kwargs:None
    fields=('_drown_check','_drown_time','_drown_level','_drown_started','_overturn_check','_overturn_time','_overturn_level','_overturn_started')
    def reset(initial=None):
     values=initial or (0.,0.,0,None,0.,0.,0,None)
@@ -46,7 +47,7 @@ class NativeClientSurvivalTests(unittest.TestCase):
     if guard=='entity':original._server_entity=lambda unused:None;eligible=False
     if guard=='entity_health':entity.health=0.;eligible=False
     samples=[];clocks=[];events=[];clock=1000.+steps*.037
-    original._vehicle_drowning_level=lambda *args:(samples.append(1) or level)
+    original._vehicle_drowning_level=lambda *args,**kwargs:(samples.append(1) or level)
     original._server_clock=lambda:(clocks.append(1) or clock)
     original._present_drowning_level=lambda value,now:events.append(value)
     original._present_overturn_level=lambda value:events.append(value)

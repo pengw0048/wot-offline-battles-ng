@@ -51,7 +51,7 @@ print('physics snapshot passed')
 '''
 class PhysicsSnapshotTests(unittest.TestCase):
     def test_installed_geometry_and_event_identity(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
         if not source:self.skipTest('fixed gameplay source is required')
         py27=subprocess.check_output(['pyenv','which','python2.7'],text=True,env=dict(os.environ,PYENV_VERSION='2.7.18')).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
@@ -61,7 +61,7 @@ class PhysicsSnapshotTests(unittest.TestCase):
             (folder/'offline_release_drive_law.hpp').write_text('#pragma once\n#include <cmath>\n#include <algorithm>\n'+law)
             command=['c++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-bundle','-undefined','dynamic_lookup',
                 '-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(Path(source)/'native'),'-I'+str(ROOT/'bigworld'),
-                str(ROOT/'bigworld/stock_native_bot_physics_snapshot.cpp'),str(ROOT/'tests/stock_native_bot_physics_snapshot_host.cpp'),'-o',str(folder/'physics_snapshot_test.so')]
+                str(ROOT/'bigworld/stock_native_bot_physics_snapshot.cpp'),str(ROOT/'tests/stock_native_client_state_host.cpp'),str(ROOT/'tests/stock_native_bot_physics_snapshot_host.cpp'),'-o',str(folder/'physics_snapshot_test.so')]
             built=subprocess.run(command,text=True,capture_output=True);self.assertEqual(built.returncode,0,built.stderr)
             run=subprocess.run([py27,'-B',str(script)],text=True,capture_output=True)
             self.assertEqual(run.returncode,0,run.stderr);self.assertIn('physics snapshot passed',run.stdout)

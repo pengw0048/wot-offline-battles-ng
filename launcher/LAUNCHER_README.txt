@@ -1,4 +1,4 @@
-wot-0.9.22-offline-battles NG v0.10.1
+wot-0.9.22-offline-battles NG v1.1.1
 
 Supported client: Chinese HD World of Tanks 0.9.22.0.1 #1513 (32-bit).
 The launcher and bundled server require 64-bit Windows.
@@ -58,8 +58,8 @@ then Save with the game closed. One rental copy grants its original battle count
 Fully unlocked saves receive one copy per compatible vehicle on their first style
 stock initialization, including existing saves; later use/sales are not replenished.
 
-English release notes:
-https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v0.10.1
+Integrated gameplay source (offline mod v1.1.1):
+https://github.com/colorfulmeans/wot-0.9.22-offline-battles/releases/tag/v1.1.1
 
 This mod is free; resale is prohibited. World of Tanks game assets are not
 included. This unofficial project is not endorsed by Wargaming.
@@ -67,6 +67,8 @@ See LICENSE, THIRD_PARTY_NOTICES.md and licenses for license terms. The optional
 crash recorder downloads Microsoft ProcDump only with the launcher's consent
 setting. The launcher and LAN server share CPython 3.11.9 from python.org.
 Native replay recording and playback do not require a separate Python runtime.
+The viewer bundles NumPy, ModernGL and glcontext; their wheel license files
+are included with their distribution metadata under _internal.
 
 CPython 3.11.9 license
 ======================

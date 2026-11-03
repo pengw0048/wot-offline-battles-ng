@@ -35,6 +35,7 @@ struct CombatSnapshot {
     double crew_factor=1, gun_rotation_factor=1;
 };
 struct CombatModeSnapshot {
+    std::shared_ptr<const CrewFactors> crew_factors;
     offline_simulation::weapons::GunConfig gun_config;
     offline_simulation::weapons::AimConfig aim_config;
     bool valid_pitch=false;

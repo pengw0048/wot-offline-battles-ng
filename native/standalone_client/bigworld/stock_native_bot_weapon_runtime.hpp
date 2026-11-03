@@ -19,6 +19,8 @@ struct WeaponActorState {
     int team=0;
     std::string class_tag;
     bool hull_aiming=false;
+    struct Feedback {std::string kind;std::int64_t id=0;double error=0.;bool aligned=false;};
+    std::optional<Feedback> feedback;
     GunnerConfig gunner;
     std::uint64_t descriptor_revision=0;
     struct SelectionRecord {std::uint64_t record_revision=0,descriptor_revision=0;AimSelection selection;};
@@ -43,6 +45,7 @@ class WeaponRuntime {
     WeaponActorState::SelectionRecord& selection(WeaponActorState&,const WeaponTarget&);
 public:
     CombatSharedRuntime& shared(){return shared_;}
+    const CombatSharedRuntime& shared()const{return shared_;}
     // Final lane budget is reset once by the total step owner.
     void beginSlice(int lane_budget){shared_.final_lane_budget=lane_budget;}
     std::size_t advanceArtillery(double now,std::size_t budget,WeaponRuntimeWorld& world){return shared_.artillery.advance(now,budget,world);}

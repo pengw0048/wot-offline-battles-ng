@@ -81,7 +81,9 @@ class WireBuildIntegrity(unittest.TestCase):
             path = source / relative
             path.parent.mkdir(parents=True)
             path.write_text(VALID)
-            with patch.object(prepare, 'RETIRED', ()), patch.object(prepare, 'ADAPTERS', {
+            (source / relative.with_name('bot_fittings.py')).write_text('')
+            (source / relative.with_name('bot_runtime.py')).write_text('')
+            with patch.object(prepare, 'adapt_bot_fittings', return_value=''), patch.object(prepare, 'RETIRED', ()), patch.object(prepare, 'ADAPTERS', {
                     relative: lambda text: text.replace("'hello'", "'unknown_command'")}):
                 with self.assertRaisesRegex(ValueError, 'unknown_command'):
                     prepare.stage_runtime(source, staged)

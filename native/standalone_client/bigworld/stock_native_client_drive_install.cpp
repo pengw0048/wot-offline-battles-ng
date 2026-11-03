@@ -41,7 +41,10 @@ PlayerDescriptor readPlayerDescriptor(const native_battle::Battle&b,PyObject*res
 }
 // The pose the local presentation published at attach time, and zero motion.
 PlayerState readPlayerInitialState(const native_battle::Battle&b,const stock_native_client_state::Actor&actor){
-    const auto&local=*b.local;if(!actor.local||!local.matrix)throw p::Error("Native player has no bound local physical pose");
+    if(!b.local||!actor.local||!b.local->matrix)throw p::Error("Native player has no bound local physical pose");
+    const auto&local=*b.local;
+    for(double value:{local.position[0],local.position[1],local.position[2],local.yaw,local.pitch,local.roll,local.speed,local.turn_speed,local.siege_aim_pitch,local.air_lateral[0],local.air_lateral[2]})
+        if(!std::isfinite(value))throw p::Error("Native player initial physical pose is not finite");
     PlayerState out;out.position=local.position;out.yaw=local.yaw;out.pitch=out.terrain_pitch=local.pitch;out.roll=local.roll;out.speed=local.speed;out.turn_speed=local.turn_speed;
     out.hydraulic_pitch=local.siege_aim_pitch;out.air_lateral_x=local.air_lateral[0];out.air_lateral_z=local.air_lateral[2];out.airborne=local.airborne;out.service_brake=local.service_brake;out.has_presentation=true;return out;
 }

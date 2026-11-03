@@ -5,10 +5,10 @@ import subprocess
 import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'), 'fixed gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'), 'fixed gameplay source is required')
 class NativeProjectileOwner(unittest.TestCase):
     def test_lifecycle(self):
-        fork=Path(os.environ['WOT_FORK_0101_SOURCE'])
+        fork=Path(os.environ['WOT_FORK_SOURCE'])
         names=['stock_native_projectile_owner','stock_native_projectile_cursor','stock_native_projectile_history','stock_native_projectile_chord','stock_native_projectile_damage','stock_native_bot_armor_law','stock_native_bot_combat']
         with tempfile.TemporaryDirectory(prefix='native-projectile-owner-') as folder:
             binary=Path(folder)/'owner'
@@ -16,7 +16,7 @@ class NativeProjectileOwner(unittest.TestCase):
             subprocess.run(command,check=True)
             subprocess.run([str(binary)],check=True)
     def test_scene(self):
-        fork=Path(os.environ['WOT_FORK_0101_SOURCE'])
+        fork=Path(os.environ['WOT_FORK_SOURCE'])
         names=['stock_native_projectile_scene','stock_native_projectile_cursor','stock_native_projectile_damage','stock_native_bot_armor_law','stock_native_bot_combat','stock_native_world_pipeline','stock_motion_rotation_batch','stock_offline_query_skin']
         with tempfile.TemporaryDirectory(prefix='native-projectile-scene-') as folder:
             binary=Path(folder)/'scene'

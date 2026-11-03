@@ -7,7 +7,10 @@
 #include <set>
 #include <string>
 
+namespace offline_navigation_map_law { struct Map; }
+
 namespace stock_native_bot_navigation {
+constexpr double navigable_water_depth=1.20;
 using Point=offline_navigation::Point;
 using Cell=offline_navigation::Cell;
 using Edge=std::pair<Cell,Cell>;
@@ -31,6 +34,8 @@ class Grid {
     using ProofKey=std::tuple<std::array<int,3>,std::array<int,3>,double>;
     using GroundKey=std::array<int,3>;
     World& world_;
+    std::unique_ptr<offline_navigation_map_law::Map> geometry_;
+    std::vector<Hull> planning_hulls_;
     std::map<GroundKey,std::optional<double>> ground_cache_;
     std::map<std::pair<Cell,Cell>,Corridor> corridor_cache_;
     std::deque<std::pair<Cell,Cell>> corridor_order_;
@@ -51,6 +56,7 @@ public:
     std::uint64_t hull_revision=0,proof_revision=0;
     bool proof_deferred=false;
     explicit Grid(offline_navigation::MapInput,World&,double grade_up,double grade_down);
+    ~Grid();
     Cell cellFor(const Point&)const;
     Point pointFor(const Cell&,double height)const;
     std::optional<std::size_t> index(const Cell&,bool require_height=true)const;

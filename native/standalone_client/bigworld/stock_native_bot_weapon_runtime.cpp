@@ -38,16 +38,19 @@ ArtilleryAimInput artilleryInput(const WeaponActorState& a,const CombatActorRefs
  p.identity.fire_sequence=weapon.fire_seq;p.identity.shell=weapon.ammo.loaded;p.identity.descriptor_revision=a.descriptor_revision;
  p.pose=pose(a,motion,weapon);p.pitch_config=weapon.aim_config;p.valid_pitch=mode.valid_pitch;
  if(mode.gun_mount)p.origin=shot_origin(p.pose,*mode.gun_mount);
- if(target){in.target=target->target;p.identity.target_kind=target->target.kind;p.identity.target=target->target.id;p.target=target->target.position;p.velocity=target->target.velocity;}
+ if(target){in.target=target->target;p.identity.target_record_revision=target->record_revision;p.identity.target_descriptor_revision=target->descriptor_revision;p.identity.target_kind=target->target.kind;p.identity.target=target->target.id;p.target=target->target.position;p.velocity=target->target.velocity;p.canonical_motion=std::make_pair(p.target,p.velocity);
+  try {for(const auto& sample:ordered_vehicle_aim_samples(target->samples))p.aim_samples.push_back(vehicle_aim_point(sample,target->pose));}
+  catch(...) {p.aim_samples.clear();}}
  const auto physical=shell(mode,weapon.ammo.loaded);if(physical && *physical){p.speed=(**physical).speed;p.gravity=(**physical).gravity;p.maximum=(**physical).maximum_distance;}
  return in;
 }
 std::array<double,3> hull_aim(double hull,double target,double lo,double hi,double turn,double throttle,double rear,
  const stock_native_bot_planner::Command& cmd,bool has_target,bool allow_rear){
+ const bool limited=!(lo<=-pi+.1&&hi>=pi-.1);const double relative=delta(target,hull),margin=std::min(.04,std::max(0.,hi-lo)*.25);
+ if(!allow_rear&&rear==0.&&limited&&std::abs(relative)>pi*.5&&!(lo+margin<=relative&&relative<=hi-margin))return {turn,throttle,0.};
  if(cmd.movement_intent&&(cmd.mode=="artillery_deploy"||cmd.mode=="artillery_relocate"))return {turn,throttle,0.};
  static const std::set<std::string> held={"avoid","blocked","reverse_turn","pivot_recovery","forward_escape","short_forward_escape","short_reverse_escape","contact_escape","wreck_push","friendly_yield","nav_wait","physical_hold"};
  if(!has_target||held.count(cmd.recovery))return {turn,throttle,0.};
- const bool limited=!(lo<=-pi+.1&&hi>=pi-.1);const double relative=delta(target,hull),margin=std::min(.04,std::max(0.,hi-lo)*.25);
  const auto clamp=[](double v,double l,double h){return std::max(l,std::min(h,v));};
  if(limited&&(rear!=0.||(allow_rear&&std::abs(relative)>pi*.5))&&!(lo+margin<=relative&&relative<=hi-margin)){
   double a=delta(target-(lo+hi)*.5,hull);if(rear!=0.&&std::abs(relative)>pi*.5&&a*rear<0.)a+=std::copysign(2.*pi,rear);return {clamp(a/.58,-1.,1.),0.,1.};}
@@ -62,7 +65,7 @@ WeaponActorState::SelectionRecord& WeaponRuntime::selection(WeaponActorState& ac
  const auto key=std::make_pair(target.target.kind,target.target.id);auto& record=actor.targets[key];
  if(record.record_revision!=target.record_revision||record.descriptor_revision!=target.descriptor_revision ||
     (record.selection.samples.empty()&&!target.samples.empty())){record={};record.record_revision=target.record_revision;
-  record.descriptor_revision=target.descriptor_revision;record.selection.samples=target.samples;}
+  record.descriptor_revision=target.descriptor_revision;record.selection.samples=ordered_vehicle_aim_samples(target.samples);}
  return record;
 }
 std::optional<bool> WeaponRuntime::shotClear(WeaponActorState& state,CombatActorRefs actor,const CombatModeSnapshot& mode,
@@ -95,8 +98,8 @@ void WeaponRuntime::preMotion(WeaponActorState& state,CombatActorRefs actor,cons
  const CombatSlice& slice,d::Decisions& decisions){
  prepare_combat_weapon(actor,slice,command.shell_index);
  if(state.class_tag=="SPG") {auto input=artilleryInput(state,actor,mode,motion,target,command);
-  const auto hold=prepare_artillery_hold(actor,shared_,slice,input);if(hold.aim_position)command.aim=command.face=*hold.aim_position;
-  if(hold.brake){command.brake=true;command.throttle=command.turn=0.;command.movement_intent=false;}}
+  const auto hold=prepare_artillery_hold(actor,shared_,slice,input);if(hold.aim_position){command.aim=*hold.aim_position;if(!command.hull_owned)command.face=*hold.aim_position;}
+  if(hold.brake&&!command.hull_owned){command.brake=true;command.throttle=command.turn=0.;command.movement_intent=false;}}
  const auto aim=command.aim;const double dx=aim[0]-motion.position[0],dz=aim[2]-motion.position[2],distance=std::hypot(dx,dz);
  double yaw=distance>.1?std::atan2(dx,dz):motion.yaw;double laying_yaw=yaw;
  const auto sig=signature(state,actor,target);
@@ -112,11 +115,11 @@ void WeaponRuntime::preMotion(WeaponActorState& state,CombatActorRefs actor,cons
  double rear=policy.rear_hull_aim&&policy.rear_hull_aim->first==id?policy.rear_hull_aim->second:0.;
  const bool allow=!(policy.rear_retry&&policy.rear_retry->first==id&&slice.now<policy.rear_retry->second)&&!policy.rear_motion_blocked;
  const auto aimed=hull_aim(motion.yaw,laying_yaw,mode.minimum_yaw,mode.maximum_yaw,std::max(-1.,std::min(1.,command.turn)),
-  std::max(-1.,std::min(1.,command.throttle)),rear,command,target&&command.mode!="base_defense"&&command.parking_phase.empty(),allow);
+  std::max(-1.,std::min(1.,command.throttle)),rear,command,target&&!command.hull_owned&&command.mode!="base_defense"&&command.parking_phase.empty(),allow);
  command.turn=aimed[0];command.throttle=aimed[1];const bool active=aimed[2]!=0.;state.hull_aiming=active;
  if(active&&mode.limited_yaw&&(rear!=0.||std::abs(delta(laying_yaw,motion.yaw))>pi*.5)){
   policy.rear_hull_aim=std::make_pair(id,command.turn);
-  if(!policy.rear_lease&&command.movement_intent&&command.mode!="engage")policy.rear_lease=d::RearLease{motion.position,slice.now,{}};
+  if(!policy.rear_lease&&command.movement_intent&&command.mode!="engage"){d::RearLease lease{motion.position,slice.now,{}};lease.goal=command.move;lease.target=command.target.present?std::optional<std::int64_t>(command.target.value):std::nullopt;lease.fire_sequence=actor.weapons.at(actor.key).fire_seq;policy.rear_lease=lease;}
   if(!policy.rear_episode)policy.rear_episode=d::RearEpisode{target?target->target.id:0,actor.weapons.at(actor.key).fire_seq,id,slice.now};
  }else policy.rear_hull_aim.reset();
  if(active&&std::abs(command.throttle)<=.01)command.brake=true;
@@ -134,10 +137,17 @@ WeaponRuntimeResult WeaponRuntime::postMotion(WeaponActorState& state,CombatActo
  d::Target decision_target;if(target){decision_target.identity={target->target.kind,target->target.id};decision_target.id=target->target.id;
   decision_target.position=target->target.position;decision_target.alive=target->alive;}
  const d::Target* decision_target_ptr=target?&decision_target:nullptr;
+ const auto record_feedback=[&](const WeaponAimResult& aimed){
+  if(!aimed.alignment_error){if(state.feedback)state.feedback->aligned=false;return;}
+  if(target && target->alive && target->target.id>0 && (target->target.kind=="human"||target->target.kind=="bot"))
+   state.feedback=WeaponActorState::Feedback{target->target.kind,target->target.id,*aimed.alignment_error,aimed.aligned};
+  else state.feedback=WeaponActorState::Feedback{};
+ };
  if(state.class_tag=="SPG"){
   auto aim=artilleryInput(state,actor,mode,motion,target,command);aim.refresh_control=refresh_control;aim.physical.source_available=source;
   if(barrel)aim.physical.barrel_point=*barrel;
   const auto aimed=advance_artillery_aim(actor,shared_,slice,aim,f,mode.hydraulic,world);
+  record_feedback(aimed.aim);
   const auto launch_barrel=world.barrel_point(actor.key,f.pose);
   aim.physical.source_available=world.source_available(actor.key)&&launch_barrel.has_value();
   if(launch_barrel)aim.physical.barrel_point=*launch_barrel;
@@ -167,6 +177,7 @@ WeaponRuntimeResult WeaponRuntime::postMotion(WeaponActorState& state,CombatActo
     const auto i=*record->selection.selected;aim.selected_sample=record->selection.samples[i];aim.selected_token=DirectAimToken{target->record_revision,target->descriptor_revision,i};}}
   if(!source){aim.mount.reset();aim.shell.reset();}
   const auto aimed=advance_direct_aim(actor,slice,aim,f,mode.hydraulic,world);
+  record_feedback(aimed.aim);
   const auto launch_barrel=world.barrel_point(actor.key,f.pose);
   bool launch_source=world.source_available(actor.key)&&launch_barrel.has_value();
   if(launch_source)try {launch_source=!world.barrel_under_water(*launch_barrel);}catch(...){launch_source=false;}

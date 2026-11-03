@@ -51,9 +51,9 @@ json.dump(dict(body=result,encode=angles),sys.stdout)
 
 class NativeDestructibleRuntimeTest(unittest.TestCase):
     def test_body_and_authority_lifecycle(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         compiler = shutil.which('c++')
         if not compiler:
             self.skipTest('C++ compiler unavailable')

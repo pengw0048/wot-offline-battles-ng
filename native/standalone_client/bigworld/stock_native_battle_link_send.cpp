@@ -1,7 +1,7 @@
 #if !defined(WOT_NATIVE_BATTLE_HOST_BUILD)
 #include "pch.hpp"
 #endif
-// The worker link's outgoing messages: each pinned (144619f6) worker LAN client sender's checks and payload.
+// The worker link's outgoing messages: each pinned (abd03c4a) worker LAN client sender's checks and payload.
 // A Python refusal (False/None) and a Python exception both become nullopt.
 #include "stock_native_battle_link_internal.hpp"
 #include <algorithm>

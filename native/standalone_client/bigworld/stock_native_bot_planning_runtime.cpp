@@ -42,6 +42,7 @@ void PlanningRuntime::update(LiveActor value)
     auto driver=planner_.actors().find(id);n.traffic_waiting=driver!=planner_.actors().end()&&driver->second.driver.traffic_waiting;
     auto&state=candidate_states_[id];state.id=id;state.position=in.body.position;state.yaw=in.body.yaw;state.speed=in.speed;state.now=in.now;
     state.water_depth=value.water_depth;state.half_width=in.body.half_width;state.half_length=in.body.half_length;state.rejected_rotations=value.rejected_rotations;
+    decisions_.updateActor(value.decision);
     decisions_.actors.at(id).blocked_rotations=value.rejected_rotations;
     actors_[id]=std::move(value);candidate_probes_.erase(id);syncParking(id);
 }
@@ -92,12 +93,12 @@ nav::ProbePlan PlanningRuntime::selectedMotion(nav::MotionPlanInput input)
 {
     input.descriptor=descriptors_.at(input.id);input.cell_size=grid_.map.cell_size;input.baked=true;
     input.clearance_distance=optional(traffic_.clearance_distance(input.id,input.position));auto out=motion_plan_.prepare(input);
-    if(out.remember_failure)planner_.remember_failure(input.id,out.travel_yaw);
+    if(out.remember_failure)planner_.remember_forecast(input.id,out.travel_yaw,input.position,out.maximum_distance.value_or(0.));
     if(out.report_blocked_corridor&&input.move_position)navigator_.reportHardContact(input.id,input.position,*input.move_position,out.travel_yaw,input.now);
     return out;
 }
 bool PlanningRuntime::direction(ID id,double yaw,const plan::Optional<double>&maximum,double drive_direction,const plan::Optional<double>&implicit)
-{(void)drive_direction;return candidate(id).direction(yaw,optional(maximum),optional(implicit));}
+{(void)drive_direction;auto&probe=candidate(id);const bool result=probe.direction(yaw,optional(maximum),optional(implicit));last_direction_uncertain_=probe.directionUncertain();return result;}
 bool PlanningRuntime::pose(ID id,double yaw,bool wreck_push){return candidate(id).pose(yaw,wreck_push);}
 plan::Navigation PlanningRuntime::navigate(const plan::Input&in,const plan::Order&,const nav::Point&destination)
 {

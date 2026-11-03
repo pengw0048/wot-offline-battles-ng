@@ -9,12 +9,16 @@ missing here.
 import argparse
 import array
 import base64
+import calendar
 import collections
+import contextlib
+import functools
 import copy
 import ctypes
 import dataclasses
 import hashlib
 import heapq
+import io
 import json
 import math
 import os
@@ -33,18 +37,23 @@ import types
 import typing
 import uuid
 import weakref
+import zipfile
 import zlib
 
 SERVER_STDLIB_MODULES = (
     argparse.__name__,
     array.__name__,
     base64.__name__,
+    calendar.__name__,
     collections.__name__,
+    contextlib.__name__,
+    functools.__name__,
     copy.__name__,
     ctypes.__name__,
     dataclasses.__name__,
     hashlib.__name__,
     heapq.__name__,
+    io.__name__,
     json.__name__,
     math.__name__,
     os.__name__,
@@ -63,5 +72,6 @@ SERVER_STDLIB_MODULES = (
     typing.__name__,
     uuid.__name__,
     weakref.__name__,
+    zipfile.__name__,
     zlib.__name__,
 )

@@ -21,6 +21,8 @@ struct HumanDescriptor {
     bool pivot_available=false,rotation_around_center=false;
     std::array<double,4> shape{};
     contacts::Profile ram;
+    step::SuspensionDescriptor suspension;
+    bool hydraulic_support=false;
     double rolling_decel=0.,slide_hold=0.,gravity=0.,side_min_y=0.,side_full_y=0.,side_min=0.,side_full=0.;
     std::vector<std::string> crew;
     std::optional<double> vision_maximum,radio_maximum;

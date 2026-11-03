@@ -55,8 +55,21 @@ def encode(value):
         parts += optional(order.get(key))
     parts += [str(order.get('fire_range', 0.)), json.dumps(order.get('combat_mode', 'route')),
               json.dumps(order.get('parking_phase', ''))] + optional(order.get('parking_heading'))
+    identity = ''
+    if order.get('empty_ammo'):
+        identity = 'empty_ammo:%s:%s' % (order.get('route_id') or '', order.get('route_index') if order.get('route_index') is not None else 'none')
+    elif order.get('combat_mode','route') in ('route','advance') and order.get('route_id') and not order.get('parking_phase') and not order.get('team_command') and not order.get('defense_base_id'):
+        identity = 'route:%s:%s' % (order['route_id'], order.get('route_index') if order.get('route_index') is not None else 'none')
+    elif order.get('target_id') is not None and not order.get('parking_phase') and order.get('combat_mode') not in ('base_defense','artillery_deploy','artillery_relocate'):
+        identity = 'combat:%s:%s' % (order.get('target_kind') or '', order['target_id'])
+    area=order.get('capture_area')
+    if area:
+        center=area['point'];center=[center.get(k,0.) for k in ('x','y','z')] if isinstance(center,dict) else center
+        parts += ['1'] + list(map(str,center)) + [str(area['radius'])]
+    else: parts += ['0','0','0','0','0']
+    parts += [json.dumps(identity)]
     destination = order.get('move_position', order.get('aim_position', value['body']['position']))
-    parts += list(map(str, value['nav'] if value['nav'] is not None else destination))
+    parts += [flag(value['nav'] is not None)] + list(map(str, value['nav'] if value['nav'] is not None else destination))
     parts += [json.dumps(value['nav_status'])] + [flag(value['nav_stop'] is not None), flag(value['nav_stop'])]
     parts += optional_point(value['nav_progress'])
     parts += list(map(str, [value['policy'], value['traffic'], len(value['peers'])]))
@@ -76,7 +89,8 @@ def reference(cases, modules):
             adapter.driver = adapter_module.LocalDriver()
             adapter.navigation_target = None
             for key in ('_contact_peers', '_contact_attempts', '_contact_escapes',
-                        '_wreck_attempts', '_wreck_history', '_withdrawal_attempts'):
+                        '_wreck_attempts', '_wreck_history', '_wreck_last_terminal',
+                        '_withdrawal_attempts', '_flank_arrivals'):
                 setattr(adapter, key, {})
             traffic = traffic_module.TrafficCoordinator()
         own = copy.deepcopy(value['body'])
@@ -131,9 +145,9 @@ def reference(cases, modules):
 class NativePlannerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+            raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.temporary = tempfile.TemporaryDirectory(prefix='native-bot-planner-')
         cls.binary = Path(cls.temporary.name)/'planner'
         command = ['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
@@ -191,10 +205,27 @@ class NativePlannerTests(unittest.TestCase):
                 self.assertEqual(a, b, key)
         defaults = dict(navigation_replan=False, navigation_recovery=False, withdrawal_aim=False,
                         traffic_mode='', forward_blocked_by=None, reverse_blocked_by=None,
-                        recovery_probe_distance=None, brake=False)
+                        recovery_probe_distance=None, recovery_probe_origin=None,recovery_probe_yaw=None,recovery_probe_length=None, brake=False)
         for index, (native, original) in enumerate(zip(actual, expected)):
             for key, result in native.items():
                 close(result, original.get(key, defaults.get(key)), 'case %d %s %r' % (index, key, cases[index]))
+
+    def test_capture_hold_reentry_and_combat_destinations(self):
+        area=dict(point=dict(x=0.,y=0.,z=0.),radius=10.)
+        cases=[]
+        for x,target,mode,hold in ((0.,(0.,0.,20.),'engage',None),(0.,(2.,0.,2.),'route',None),
+                                   (12.,(0.,0.,0.),'engage',0.),(0.,(2.,0.,2.),'engage',None),
+                                   (0.,(2.,0.,2.),'route',0.)):
+            order=dict(move_position=target,combat_mode=mode,target_id=7,target_kind='bot',capture_area=area)
+            if hold is not None:order['throttle_override']=hold
+            cases.append(case(body=body(x=x),order=order,peers=[body(actor=2,x=x+3.4)],traffic=0))
+        self.compare(cases)
+
+    def test_failure_evidence_is_local_and_preserves_short_proofs(self):
+        binary=Path(self.temporary.name)/'failure-scope'
+        command=['c++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),str(ROOT/'bigworld/stock_native_bot_planner.cpp'),str(ROOT/'tests/stock_native_bot_failure_scope_host.cpp'),'-o',str(binary)]
+        built=subprocess.run(command,text=True,capture_output=True);self.assertEqual(0,built.returncode,built.stderr)
+        run=subprocess.run([str(binary)],text=True,capture_output=True);self.assertEqual(0,run.returncode,run.stderr)
 
     def test_route_and_tactical_orders(self):
         cases = []
@@ -285,6 +316,20 @@ class NativePlannerTests(unittest.TestCase):
                 cases.append(case(reset=tick==0,body=own,peers=peers,speed=speed,now=tick*.17,dt=.17,
                                   traffic=3,policy=(run+tick//15)%7,native_rotation_refused=tick%4==0,
                                   stopping_distance=.5,order=dict(move_position=target,combat_mode='route')))
+        self.compare(cases)
+
+    def test_route_connector_revisits_and_combat_hold_keep_progress_owner(self):
+        cases=[]
+        for tick in range(70):
+            own=body(x=0.,z=0.,speed=0.)
+            if tick < 40:
+                order=dict(move_position=(0.,0.,40.+(tick%3)*3.),combat_mode='route',route_id='leg-a',route_index=1)
+                local=(5. if tick%2 else -5.,0.,5.)
+            else:
+                order=dict(move_position=(0.,0.,20.+tick*.1),combat_mode='engage',target_id=7,target_kind='bot')
+                if 45<=tick<52:order['throttle_override']=0.
+                local=(0.,0.,8.)
+            cases.append(case(reset=tick==0,body=own,now=tick*.2,nav=local,nav_progress=local,order=order,policy=0))
         self.compare(cases)
 
     def test_python27_decimal_brake_key_is_not_rounded_product(self):

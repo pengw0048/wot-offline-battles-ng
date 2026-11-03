@@ -43,6 +43,7 @@ struct CombatDescriptor {
     std::optional<Point> water_sensor;
     SiegeConfig siege;
     double base_repair_factor=0,repair_speed_factor=1;
+    int skill=3;
 };
 struct CombatSlice {
     double elapsed=0,now=0,equipment_now=0;

@@ -73,7 +73,7 @@ print('Native vehicle/avatar/compound hooks use round state and preserve stock b
 '''
 
 
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'), 'fixed gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'), 'fixed gameplay source is required')
 class NativeBattleTargetLockTests(unittest.TestCase):
     def test_outline_candidate_reaches_the_native_input_owner(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
@@ -84,7 +84,7 @@ class NativeBattleTargetLockTests(unittest.TestCase):
             command = ['c++', '-std=c++17', '-O1', '-DWOT_NATIVE_BATTLE_HOST_BUILD', '-DWOT_CLIENT_REPLICA_HOST_BUILD', '-Wno-register',
                        '-bundle', '-undefined', 'dynamic_lookup', '-Wl,-dead_strip',
                        '-Wl,-exported_symbol,_initbattle_target_lock_test', '-isystem', str(Path(prefix) / 'include/python2.7'),
-                       '-I' + str(ROOT / 'bigworld'), '-I' + str(Path(os.environ['WOT_FORK_0101_SOURCE']) / 'native'),
+                       '-I' + str(ROOT / 'bigworld'), '-I' + str(Path(os.environ['WOT_FORK_SOURCE']) / 'native'),
                        str(ROOT / 'tests/stock_native_battle_target_lock_host.cpp'),
                        str(ROOT / 'bigworld/stock_native_battle_compat.cpp'),
                        str(ROOT / 'bigworld/stock_native_battle_compat_hooks.cpp'),

@@ -26,8 +26,19 @@ std::optional<LegacyPlane>sampledPlayerSupport(const std::array<std::optional<do
     double height=-std::numeric_limits<double>::infinity();for(const auto&p:points)height=std::max(height,p[2]-gx*p[0]-gz*p[1]);const auto plane=sampledPlayerPlane({height+gz*length*.5,height-gz*length*.5,height+gx*width*.5,height-gx*width*.5,height},yaw,length,width,1.e-6);if(!plane)return {};auto out=*plane;for(const auto&p:points)out.contact_residual=std::max(out.contact_residual,height+gx*p[0]+gz*p[1]-p[2]);return out;
 }
 LegacySupport::LegacySupport(world::Pipeline&pipeline,const PlayerDescriptor&descriptor,double epsilon,double limit):pipeline_(pipeline),descriptor_(descriptor),plane_epsilon_(epsilon),pitch_limit_(limit){if(epsilon<0.||!std::isfinite(epsilon)||limit<=0.||!std::isfinite(limit))throw std::invalid_argument("Native player legacy support metadata is invalid");}
-std::optional<double>LegacySupport::column(double x,double z,double hint,std::optional<double>maximum){const auto end=rounded({x,-1000.,z});auto start=rounded({x,hint+2.,z});for(unsigned layer=0;layer<4;++layer){world::Hit hit;const auto status=pipeline_.ground(start,end,hit);if(status!=world::QueryStatus::Found)return {};const double y=hit.point[1];if((!maximum||y<=*maximum)&&hit.normal[1]>.5)return y;const double next=y-.05;if(next<=end[1]+.01)return {};start=rounded({x,next,z});}return {};}
-std::optional<double>LegacySupport::nearGround(double x,double z,double hint){const auto end=rounded({x,hint-30.,z});auto start=rounded({x,hint+8.,z});for(unsigned layer=0;layer<4;++layer){world::Hit hit;const auto status=pipeline_.ground(start,end,hit);if(status!=world::QueryStatus::Found)return {};const double y=hit.point[1];if(-14.<y-hint&&y-hint<6.&&hit.normal[1]>0.)return y;const double next=y-.05;if(!(end[1]<next&&next<start[1]))return {};start=rounded({x,next,z});}return {};}
+std::optional<double>LegacySupport::column(double x,double z,double hint,std::optional<double>maximum){
+    const auto end=rounded({x,-1000.,z});const auto origin=rounded({x,hint+2.,z});auto start=origin;std::optional<double> result;
+    for(unsigned layer=0;layer<4;++layer){world::Hit hit;const auto status=pipeline_.ground(start,end,hit);if(status!=world::QueryStatus::Found)break;
+        const double y=hit.point[1];if((!maximum||y<=*maximum)&&hit.normal[1]>.5){result=y;break;}const double next=y-.05;if(next<=end[1]+.01)break;start=rounded({x,next,z});}
+    const Point roof_start{x,std::min(origin[1],maximum.value_or(origin[1])),z};
+    return roof_?roof_(roof_start,end,result):result;
+}
+std::optional<double>LegacySupport::nearGround(double x,double z,double hint){
+    const auto end=rounded({x,hint-30.,z}),origin=rounded({x,hint+8.,z});auto start=origin;std::optional<double> result;
+    for(unsigned layer=0;layer<4;++layer){world::Hit hit;const auto status=pipeline_.ground(start,end,hit);if(status!=world::QueryStatus::Found)break;
+        const double y=hit.point[1];if(-14.<y-hint&&y-hint<6.&&hit.normal[1]>0.){result=y;break;}const double next=y-.05;if(!(end[1]<next&&next<start[1]))break;start=rounded({x,next,z});}
+    return roof_?roof_(origin,end,result):result;
+}
 LegacySamples LegacySupport::terrain(const PlayerState&s,const Point&position,double yaw,std::optional<double>maximum,std::optional<double>follow){const double length=std::max(1.5,descriptor_.motion.collision_shape[1]),width=std::max(.3,descriptor_.motion.collision_shape[0]),sn=std::sin(yaw),cs=std::cos(yaw);LegacySamples out;std::array<std::optional<double>,5>samples;
     for(unsigned i=0;i<3;++i){const double distance=i==0?length:i==1?0.:-length;const auto y=column(position[0]+sn*distance,position[2]+cs*distance,position[1],maximum);if(!y)continue;if(!out.highest||*y>*out.highest)out.highest=y;if(i==0)samples[0]=y;else if(i==1)samples[4]=out.center=y;else samples[1]=y;}
     samples[2]=column(position[0]+cs*width,position[2]-sn*width,position[1],maximum);samples[3]=column(position[0]-cs*width,position[2]+sn*width,position[1],maximum);out.plane=sampledPlayerSupport(samples,yaw,length*2.,width*2.);if(out.plane){out.plane->plane.center_x=position[0];out.plane->plane.center_z=position[2];}sample_=Sample{position[0],position[2],yaw,out.plane};

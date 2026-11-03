@@ -14,7 +14,7 @@ import types
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 TUNING = '''GRAVITY CONTACT_PENETRATION AIRBORNE_ANGULAR_DAMPING AIRBORNE_ANGULAR_SPEED_LIMIT
 FREEZE_ACCEL_EPSILON FREEZE_VEL_EPSILON FREEZE_ANG_ACCEL_EPSILON FREEZE_ANG_VEL_EPSILON SERVER_PHYSICS_MAX_SUBSTEPS'''.split()
 
@@ -46,7 +46,7 @@ def params(physics):
     return out
 
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class ClientDriveDifferential(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -78,6 +78,7 @@ _commit_local_suspension_metadata _update_suspension_vertical_motion'''.split()
                    if isinstance(node,ast.FunctionDef) and node.name in wanted]
         harness = ast.Module(body=[ast.ClassDef(name='Harness',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
         env = dict(math=math, vehicle_physics=physics, GROUND_PLANE_EPSILON=.35,
+                   native_input_diagnostics=types.SimpleNamespace(write_json_record=lambda *a,**k:None),
                    tank_collision=types.SimpleNamespace(support_rise_is_obstacle=lambda a,b,c:b-a>c+.02))
         exec(compile(ast.fix_missing_locations(harness),'pinned-local-support','exec'),env)
         cls.Harness = env['Harness']
@@ -119,8 +120,10 @@ suspension_support_vertical_speed speed turn_speed airborne fall_armed left_flyi
             return height if low-.01<=height<=high+.01 and up>.5 and (flat_maximum_y is None or height<=flat_maximum_y+.01 or up<.995) else None
         h._suspension_ground_y=ground;h._ground_y=lambda x,z,hint,allow_wide:None if missing else cy+gx*x+gz*z
         h._entity_turret_yaw=lambda unused:value['turret'];h.impacts=[]
+        h._clock=lambda:0.;h._next_local_edge_support_log=float('inf');h._next_local_abnormal_support_log=float('inf');h._local_support_decision_log_at=float('inf')
+        h.client=types.SimpleNamespace(player_id=1);h._bot_stack_impact_contact=lambda *a:None;h._commit_stack_impact=lambda *a:None
         h._apply_landing_impact=lambda entity,impact,normal_impact:h.impacts.append(impact)
-        expected=h._update_suspension_vertical_motion(None,state[0],state[1],value['dt'],value['height_delta'],value['speed_delta'])
+        expected=h._update_suspension_vertical_motion(types.SimpleNamespace(typeDescriptor=types.SimpleNamespace(maxHealth=1000)),state[0],state[1],value['dt'],value['height_delta'],value['speed_delta'])
         raw=[getattr(self.physics,name) for name in TUNING]+list(state[0])+list(state[1:])+list(value['tick'])
         raw += [value.get('motion') is not None]+list(value.get('motion') or (0.,0.,0.))
         raw += [value['dt'],value['turret'],value['height_delta'],value['speed_delta']]+value['world']
@@ -137,6 +140,15 @@ suspension_support_vertical_speed speed turn_speed airborne fall_armed left_flyi
         if h._local_ground_plane:
             for index,key in enumerate(('gradient_x','gradient_z','center_y')):
                 self.assertAlmostEqual(actual[k+1+index],h._local_ground_plane[key],places=9)
+        k += 4
+        contact_count=int(actual[k]);k += 1 + contact_count*2
+        witness_count=int(actual[k]);k += 1 + witness_count*3
+        for index, row in enumerate(h._local_suspension_probe_trace):
+            offset=row[8] or (0.,0.)
+            spring=h._local_suspension_params['springs'][index]
+            self.assertAlmostEqual(actual[k+index*2],spring['x']+offset[0],places=9)
+            self.assertAlmostEqual(actual[k+index*2+1],spring['z']+offset[1],places=9)
+        return sum(row[8] is not None and row[8] != (0.,0.) for row in h._local_suspension_probe_trace)
 
     def test_pinned_local_ground_vertical_rules(self):
         rng=random.Random(1513)
@@ -152,6 +164,12 @@ suspension_support_vertical_speed speed turn_speed airborne fall_armed left_flyi
                 turret=rng.uniform(-2.,2.),height_delta=.03 if index%5==0 else 0.,speed_delta=.02 if index%17==0 else 0.,
                 world=[gx,gz,0.,index%9==0,index%23==0],previous=[gx,gz,0.] if index%3 else None,gradient=index%4==0)
             self.compare(value)
+
+    def test_patch_support_uses_the_witness_force_position(self):
+        value=dict(state=[(0.,0.,0.),0.,0.,0.,0.,0.,0.,0.,0.,0.,False,True,False,False],
+            tick=(0.,0.,0.),motion=(0.,0.,0.),dt=.016,turret=0.,height_delta=0.,speed_delta=0.,
+            world=[0.,0.,0.,True,False],previous=[0.,0.,0.],gradient=True)
+        self.assertGreater(self.compare(value), 0)
 
 
 class ClientDriveLifecycle(unittest.TestCase):

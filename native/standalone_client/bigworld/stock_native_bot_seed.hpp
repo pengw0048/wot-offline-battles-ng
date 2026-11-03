@@ -2,6 +2,7 @@
 // The round's Bot manifest as the native round start built it (the pinned BotRuntime.battle_start
 // state): the input of the native owner's cold installation. Descriptors stay #1513 handles.
 #include "stock_native_client_state.hpp"
+#include "stock_native_bot_combat.hpp"
 #include <cstdint>
 #include <map>
 #include <string>
@@ -25,6 +26,7 @@ struct BotSeed {
     stock_native_client_state::Point spawn{};               // the formation spawn of its (team, slot)
     double rating = .34;
     int crew_level = 100;
+    std::shared_ptr<const wot::offline_bot_step::CrewFactors> travel_factors,siege_factors;
     std::vector<SeedEquipment> equipment;
 };
 // The descriptor of the Bot's installed Siege state (siege_mechanics.active_descriptor).

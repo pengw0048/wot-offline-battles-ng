@@ -78,7 +78,7 @@ print('native visible spotting original-law differential passed: 1400 frames')
 
 class NativeClientEnvironmentTest(unittest.TestCase):
     def test_pinned_seams(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         spec = importlib.util.spec_from_file_location('environment_bindings', ROOT / 'bigworld/stock_native_client_environment_bindings.py')
@@ -91,7 +91,7 @@ class NativeClientEnvironmentTest(unittest.TestCase):
         self.assertIn('native_client_environment.activate(self, chunk_id, item_index)', prepared)
 
     def test_unavailable_pair_preserves_last_decision(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         program = r"""
@@ -142,7 +142,7 @@ int main(){
             subprocess.run([str(binary)],check=True)
 
     def test_spotting_differential(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True, env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()

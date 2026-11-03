@@ -40,7 +40,7 @@ class EnvironmentDifferential(unittest.TestCase):
             from gui.mods.offline_lan_0922.bot_runtime import BotRuntime
             td=types.SimpleNamespace(_offline_critical_device_pools={'engineHealth':(100,50),'fuelTankHealth':(100,50)},
                 miscAttrs={},type=types.SimpleNamespace(crewRoles=(('driver',),('commander',))))
-            runtime=BotRuntime.__new__(BotRuntime);runtime._descriptors={1:td};runtime._turn_speeds={};runtime._friendly_repositions={}
+            runtime=BotRuntime.__new__(BotRuntime);runtime.round_id=1;runtime._descriptors={1:td};runtime._turn_speeds={};runtime._friendly_repositions={}
             runtime._environment_fall_totals={};runtime._environment_critical_totals={}
             runtime.impact_contacts_resolver=lambda *args:[{'name':'engineHealth','weight':.8},
                 {'name':'fuelTankHealth','weight':2./3.},{'name':'driverHealth','weight':1.}]

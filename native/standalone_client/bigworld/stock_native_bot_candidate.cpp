@@ -17,7 +17,7 @@ DirectionSample probeDirection(CandidateWorld&world,const Point&position,double 
     const double half_width=width.value_or(descriptor.present?descriptor.collision_half_width:2.2);
     if(!std::isfinite(half_width)||half_width<=0.)return failed(true,0.,"");
     try{
-        const double water=world.waterDepth(position);const bool wet=water>.90;
+        const double water=world.waterDepth(position);const bool wet=water>stock_native_bot_navigation::navigable_water_depth;
         double far=std::abs(speed)>5.?20.:15.;
         if(maximum){if(!std::isfinite(*maximum))return failed(true,0.,"");far=std::min(far,std::max(.5,*maximum));}
         const double near=std::min(8.,far),sine=std::sin(yaw),cosine=std::cos(yaw);double previous_y=position[1],previous_distance=0.,largest=0.,slope=0.;
@@ -30,7 +30,7 @@ DirectionSample probeDirection(CandidateWorld&world,const Point&position,double 
                 if(ground.status==RayStatus::Failed)return failed(true,99.,"planning_ground_query_failed",true,false);
                 if(ground.status==RayStatus::Miss)return failed(false,99.,"planning_ground_missing",false,false);
                 next_y=ground.height;const double depth=world.waterDepth({nx,next_y,nz});
-                if((wet&&depth>water+.10)||(!wet&&depth>.90)){auto result=failed(false,0.,"");result.water=true;return result;}
+                if((wet&&depth>water+.10)||(!wet&&depth>stock_native_bot_navigation::navigable_water_depth)){auto result=failed(false,0.,"");result.water=true;return result;}
                 const double delta=next_y-previous_y;slope=delta/std::max(.1,run);if(std::abs(slope)>std::abs(largest))largest=slope;
                 if(std::abs(delta)>run*max_grade)return failed(false,slope,"planning_grade");}
             for(double offset:{-half_width,0.,half_width}){
@@ -58,13 +58,14 @@ std::optional<bool> CandidateProbe::corridor(double yaw,bool wet,bool shallow,bo
 }
 bool CandidateProbe::direction(double yaw,std::optional<double>maximum,std::optional<double>implicit)
 {
-    const bool bounded=bool(maximum);if(!maximum)maximum=implicit;
-    auto advisory=corridor(yaw,grid_.pointHazard(state_.position,4)||state_.water_depth>.90,
+    last_direction_uncertain_=false;const bool bounded=bool(maximum);if(!maximum)maximum=implicit;
+    auto advisory=corridor(yaw,grid_.pointHazard(state_.position,4)||state_.water_depth>stock_native_bot_navigation::navigable_water_depth,
         navigator_.controlledShallowStep(state_.id,state_.position,yaw),false,maximum);
     if(advisory&&!*advisory)return false;if(advisory&&*advisory&&!bounded)return true;
     const double normal=angle(yaw);const auto key=std::make_pair(std::round(normal*1.e4)/1.e4,
         maximum?std::optional<double>(std::round(*maximum*100.)/100.):std::nullopt);
     auto found=samples_.find(key);if(found==samples_.end())found=samples_.emplace(key,probeDirection(world_,state_.position,yaw,state_.speed,descriptor_,maximum)).first;
+    last_direction_uncertain_=found->second.deferred||found->second.probe_failed;
     return found->second.deferred?!bounded:probeClear(found->second);
 }
 bool CandidateProbe::pose(double yaw,bool allow_wreck_push)

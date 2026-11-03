@@ -51,7 +51,7 @@ print('foliage snapshot and native lifecycle passed')
 '''
 class FoliageSnapshotTests(unittest.TestCase):
     def test_cold_rows_dirty_updates_and_native_tree_lifecycle(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
         if not source:self.skipTest('fixed gameplay source is required')
         py27=subprocess.check_output(['pyenv','which','python2.7'],text=True,env=dict(os.environ,PYENV_VERSION='2.7.18')).strip();prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='foliage-snapshot-') as directory:

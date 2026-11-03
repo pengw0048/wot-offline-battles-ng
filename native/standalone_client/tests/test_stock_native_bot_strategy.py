@@ -39,10 +39,14 @@ def reference(cases):
 class NativeStrategyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-strategy-');cls.binary=Path(cls.tmp.name)/'strategy'
-        built=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),
+        import sys
+        sys.path.insert(0,str(ROOT/'bigworld'))
+        from prepare_offline_fork import stage_bot_ammo_data
+        stage_bot_ammo_data(cls.source,Path(cls.tmp.name))
+        built=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+cls.tmp.name,
             str(ROOT/'bigworld/stock_native_bot_strategy.cpp'),str(ROOT/'tests/stock_native_bot_strategy_host.cpp'),'-o',str(cls.binary)],capture_output=True,text=True)
         if built.returncode:raise RuntimeError(built.stderr)
         cls.py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
@@ -78,6 +82,14 @@ for name in ('gui','gui.mods'):
     def test_route_join_forward_reverse_and_direct_without_server_order(self):
         cases=[['base',2,500.,500.],self.agent(),self.agent(actor=2,has_route=0),self.agent(actor=3)]
         cases += [self.order(),self.order(z=90.,speed=3.,now=1.),self.order(x=80.,z=180.,now=2.),self.order(actor=2),self.order(actor=3,z=60.,yaw=3.14,speed=-2.)]
+        self.compare(cases)
+    def test_six_metre_gate_crossings_and_stale_samples(self):
+        cases=[self.agent(actor=1,points=((0.,0.),(0.,20.),(0.,40.),(0.,80.))),
+               self.agent(actor=2,points=((0.,0.),(0.,20.),(0.,40.),(0.,80.))),
+               self.agent(actor=3,points=((0.,0.),(0.,20.),(0.,40.),(0.,80.)))]
+        cases += [self.order(actor=1,z=0.,now=0.),self.order(actor=1,z=30.,now=1.),
+                  self.order(actor=2,z=0.,now=0.),self.order(actor=2,z=30.,now=3.),
+                  self.order(actor=3,x=7.,z=0.,now=0.),self.order(actor=3,x=7.,z=30.,now=1.)]
         self.compare(cases)
     def test_engage_withdraw_flank_contact_memory_focus_and_shells(self):
         cases=[self.agent(actor=i,seed=i,kind='heavyTank' if i==1 else 'mediumTank',role='brawler' if i==1 else 'support',roles=[('flanker',.8),('brawler',.7)],caution=.3 if i==1 else .8) for i in range(1,6)]

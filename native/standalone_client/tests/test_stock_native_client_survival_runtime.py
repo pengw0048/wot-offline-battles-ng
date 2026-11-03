@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 FIXTURE = r'''
 import math,random,sys,types
 import client_survival_runtime_test as native
@@ -43,14 +43,14 @@ for i in range(400):
 assert all(a[3] in ((0.,0.),(100.,10.),(100.,30.)) for a in events)
 # Replacement descriptors are read without inventing a universal hull height.
 old=b.entity.typeDescriptor;b.entity.typeDescriptor=O(hull=None)
-before=b._drown_level;native.drowning(b,.3,999.);assert b._drown_level==before
-b.entity.typeDescriptor=old;b.water=99.;native.drowning(b,.3,1000.);assert b._drown_level==2
+before=native.levels(b)[0];native.drowning(b,.3,999.);assert native.levels(b)[0]==before
+b.entity.typeDescriptor=old;b.water=99.;native.drowning(b,.3,1000.);assert native.levels(b)[0]==2
 # A native HUD consumer may synchronously retire the complete battle.
 b,events=battle();native.pose(b,dict(position=(0.,0.,0.),yaw=0.,pitch=0.,roll=0.,up=-1.))
 def retire(*args):native.close(b)
 b._avatar.updateVehicleMiscStatus=retire
 native.overturn(b,.2,1.)
-assert b._native_client_survival is None and not hasattr(b.entity,'_offh_overturned')
+assert native.levels(b)==(0,0) and not hasattr(b.entity,'_offh_overturned')
 native.close(b);native.reset()
 print('400 production survival geometry/flag boundaries and HUD retirement passed')
 '''

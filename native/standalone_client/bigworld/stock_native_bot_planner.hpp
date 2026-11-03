@@ -23,21 +23,25 @@ struct Body {
     double yaw = 0., pitch = 0., roll = 0.;
     double half_length = 0., half_width = 0., lower_y = 0., upper_y = 0.;
 };
+struct CaptureArea {Point center{};double radius=0.;};
 struct Order {
     Optional<Point> aim, move, face;
     Optional<double> throttle, arrival_radius, parking_heading, hull_angle_degrees;
     Optional<std::int64_t> target;
-    std::string mode = "route", parking_phase, target_kind;
+    Optional<CaptureArea> capture_area;
+    std::string mode = "route", parking_phase, target_kind, progress_identity;
     bool fire_allowed = false, stable_hull_face = false;
     int shell_index = 0;
     double fire_range = 0.;
 };
+Order constrain_capture(const Order&,const Point&);
 struct Input {
     Body body;
     int slot = 0;
     double speed = 0., dt = 0., now = 0., decision_horizon = 0.;
     Optional<double> stopping_distance, turn_speed_limit, implicit_probe_distance;
-    bool rotation_refused = false, navigation_recovery_allowed = false;
+    bool rotation_refused = false, navigation_recovery_allowed = false, motor_hold = false;
+    std::string progress_identity;
 };
 struct Navigation {
     Point target{};
@@ -50,11 +54,13 @@ struct Command {
     Optional<std::int64_t> target, forward_blocker, reverse_blocker;
     Point aim{}, face{}, move{};
     double throttle = 0., turn = 0., target_yaw = 0., fire_range = 0.;
-    bool brake = false, fire_allowed = false, movement_intent = false, stable_hull_face = false;
+    bool brake = false, fire_allowed = false, movement_intent = false, stable_hull_face = false,hull_owned=false;
+    bool rotation_safety_queried=false,rotation_safety_blocked=false;
     bool withdrawal_aim = false, navigation_recovery = false, navigation_replan = false;
     int shell_index = 0;
     std::string mode = "route", recovery = "drive", parking_phase, traffic_mode;
-    Optional<double> probe_distance, pivot_extent, hull_angle_degrees, navigation_probe_distance;
+    Optional<double> probe_distance, probe_yaw, probe_length, pivot_extent, hull_angle_degrees, navigation_probe_distance;
+    Optional<Point> probe_origin;
     Optional<Point> driver_progress_target;
 };
 // Implementations are synchronous C++ world/navigation owners. These methods
@@ -65,6 +71,7 @@ public:
     virtual bool direction(std::int64_t actor, double yaw,
         const Optional<double> &maximum_distance, double drive_direction,
         const Optional<double> &implicit_horizon) = 0;
+    virtual bool direction_uncertain() const { return false; }
     virtual bool pose(std::int64_t actor, double yaw, bool allow_wreck_push) = 0;
     virtual Navigation navigate(const Input &, const Order &, const Point &destination) = 0;
 };
@@ -72,8 +79,11 @@ struct Escape {
     Point start{};
     double yaw = 0., sign = 1., distance = 0., until = 0.;
 };
+struct ProgressPoint {Point goal{};double best=0.;};
 struct Objective {
-    Point goal{};
+    Point goal{}, order_goal{}, travel_origin{};
+    double travel_best=0., order_best=0.;
+    std::vector<ProgressPoint> connectors,action_points;
     double best = 0., at = 0.;
     Optional<double> alignment_yaw, alignment_best;
 };
@@ -88,6 +98,7 @@ struct NavigationWait {
     bool active = false, completed = false;
     Point origin{};
 };
+struct FailureEvidence {Point origin{};double distance=0.,expires=0.;bool scoped=false,forecast=false;};
 struct DriverState {
     int slot = 0, recovery_count = 0;
     Point last_position{};
@@ -103,6 +114,8 @@ struct DriverState {
     Optional<Episode> pocket, replan;
     Optional<NavigationWait> navigation_wait;
     std::map<int, double> failed_yaws, real_failed_yaws;
+    std::map<int,FailureEvidence> failure_evidence;
+    std::string progress_identity;
 };
 struct Contact {
     std::int64_t peer = 0;
@@ -110,12 +123,14 @@ struct Contact {
     bool alive = true;
     Point position{};
     std::array<double, 2> normal{};
+    double depth = 0.;
 };
 struct ContactMemory {
     Contact contact;
     Point position{};
     double yaw = 0.;
     bool failed_reverse = false, failed_forward = false;
+    std::vector<double> failed_headings;
 };
 struct ContactEscape {
     Contact contact;
@@ -149,6 +164,8 @@ public:
     ActorMemory &actor(const Input &);
     void forget(std::int64_t);
     void remember_failure(std::int64_t, double yaw, double ttl = 2.);
+    void remember_forecast(std::int64_t, double yaw, const Point&, double distance, double ttl = 2.);
+    void remember_contact(std::int64_t, double yaw, const Point&, double ttl = 2.);
     bool wait_for_traffic(std::int64_t, double elapsed);
     Command drive(const Input &, const Navigation &, const Point &destination,
         bool movement_intent, bool stop_at_target, const Optional<double> &arrival,

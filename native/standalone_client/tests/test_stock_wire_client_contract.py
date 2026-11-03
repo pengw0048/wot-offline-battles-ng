@@ -14,7 +14,7 @@ import gen_cpp  # noqa: E402
 
 class ClientWireContract(unittest.TestCase):
     def test_generated_python_producer_types_are_registered(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
         sys.path.insert(0, str(ROOT / 'bigworld'))

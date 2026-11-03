@@ -49,6 +49,9 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     std::map<stock_native_bot_turret::Owner,stock_native_detached_turret::Checkpoint>turret_pushes_;
     std::optional<std::pair<ID,Vec>>reaction_key_;
     std::vector<ContactPeer>rotation_peers_;
+    std::optional<stock_native_vehicle_stack::Body>support_actor_;
+    std::vector<stock_native_vehicle_stack::Surface>roof_hits_;
+    stock_native_vehicle_stack::Descent descent_;
     std::map<stock_native_bot_turret::Owner,std::string>turret_failures_;
     std::optional<ID>motion_anchor_;double motion_anchor_local_=0.,now_=0.;
     int drown_level_=0,overturn_level_=0;bool damage_pending_=false,battle_over_=false;
@@ -61,6 +64,7 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     std::optional<Recovery>reaction(PlayerState&,const Point&,double,double,double,const ContactTrace&,const ContactPeer*);
     std::vector<Point>groundWitnesses(const Point&,double);
     void impactGeometry();
+    std::optional<double>roofGround(const Point&,const Point&,std::optional<double>,std::optional<double> flat={});
     void ensureRegion(const Point&,const Point&,double extra=0.);
     void reportMobility(const PlayerState&,const SliceTrace&,bool stopped);
 public:

@@ -132,6 +132,19 @@ void trees_and_turrets() {
     MotionRequest motion;TurretSweep sweep;motion.turret=&sweep;scene.turret_clear=false;
     const auto blocked=pipeline.resolveMotion(motion);assert(blocked.turret_blocked&&blocked.status==ContactStatus::Hard);
 }
+void soft_plants_and_railway() {
+    Registry registry;NativeScene scene;Pipeline pipeline(registry,scene,0);pipeline.actor(actor());
+    auto plant=instance(Kind::Tree,0.);plant.filename="vegetation/Fern.spt";plant.tree_health=3.;
+    registry.put({1,7},plant);registry.ready_tree_chunks.insert(1);scene.chunks={1};
+    g::Chunk chunk;g::Item item;item.index=7;item.position={{0.,0.,0.}};item.tree=item.named=true;chunk.items[7]=item;chunk.origins[{0,0}]={7};registry.geometry.chunk(1,chunk);
+    const auto result=pipeline.trees({{0.,0.,-1.}},0.,{{0.,0.,1.}},0.,{{-1.,0.,-1.}},{{1.,2.,1.}},2.,.2,0.,true);
+    assert(result.status!=ContactStatus::Hard&&result.status!=ContactStatus::Pending&&!result.requires_commit&&scene.effects.empty());
+    assert(!pipeline.commit({1,7,-1},{{0.,0.,0.}},20.));
+    auto rail=instance(Kind::Fragile,0.,1.);rail.filename="content/rw004_carriage/model.model";registry.put({1,8},rail);
+    assert(!pipeline.crushable({1,8,-1},100.)&&!pipeline.commit({1,8,-1},{{0.,0.,0.}},100.));
+    scene.planes.push_back({0.,{71,0,8,1}});Hit hit;
+    assert(pipeline.navigation({{-1.,1.,0.}},{{1.,1.,0.}},hit,true)==QueryStatus::Found);
+}
 void tree_vector_boundaries() {
     Registry registry;NativeScene scene;Pipeline pipeline(registry,scene,0);pipeline.actor(actor());
     MotionRequest request;const Point raw{{12345.678951,0.,23456.789052}};request.geometry_position=raw;
@@ -177,6 +190,6 @@ int main(int argc,char ** argv) {
         }
         return 0;
     }
-    filter_and_events();backing_and_replacement();kinetic_and_cold();catalog_proposal_and_siblings();dependencies();trees_and_turrets();tree_vector_boundaries();occupied_scan_without_interval();powered_cap_preserves_real_speed();
+    filter_and_events();backing_and_replacement();kinetic_and_cold();catalog_proposal_and_siblings();dependencies();trees_and_turrets();soft_plants_and_railway();tree_vector_boundaries();occupied_scan_without_interval();powered_cap_preserves_real_speed();
     std::cout<<"Native world pipeline tests passed\n";
 }

@@ -89,6 +89,10 @@ bool syncFireEffect(Battle& b, PyObject* entity, std::optional<bool> burning) {
         if (!damage) return false;
         burning = damage->fire;
     }
+    auto health = py::optional(entity, "health");
+    auto crew = py::optional(entity, "isCrewActive");
+    if ((health.get() != Py_None && p::wide(health.get()) <= 0) ||
+        (crew.get() != Py_None && !p::flag(crew.get()))) burning = false;
     auto descriptor = py::optional(entity, "typeDescriptor");
     auto extras = py::optional(descriptor.get(), "extrasDict");
     if (extras.get() == Py_None) return false;

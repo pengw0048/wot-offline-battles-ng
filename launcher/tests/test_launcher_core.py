@@ -16,6 +16,7 @@ import core
 import ng_client
 import server_imports
 import stage_payload
+import save_slots
 
 
 class EndpointTest(unittest.TestCase):
@@ -947,12 +948,17 @@ class ClientInstallTest(unittest.TestCase):
             "mods/configs/offline_lan_0922/config.json"))
         self.assertEqual("{broken", self._read(
             "mods/configs/offline_lan_0922/config.json.invalid"))
-        for name in ("server_endpoint.json", "account_state.json",
-                     "garage_state.json"):
-            self.assertEqual("saved-" + name, self._read(
-                "mods/configs/offline_lan_0922/" + name))
-        self.assertEqual(postbattle, self._read(
-            "mods/configs/offline_lan_0922/postbattle_state.json"))
+        self.assertEqual("saved-server_endpoint.json", self._read(
+            "mods/configs/offline_lan_0922/server_endpoint.json"))
+        for name in ("account_state.json", "garage_state.json", "postbattle_state.json"):
+            self.assertFalse(os.path.exists(os.path.join(
+                self.game, "mods/configs/offline_lan_0922", name)))
+        metadata = save_slots.read_slot(save_slots.DEFAULT_SLOT_ID, self.game)
+        self.assertEqual(save_slots.MODE_UNLOCKED, metadata["mode"])
+        self.assertFalse(metadata["has_state"])
+        saved = core._read_json(os.path.join(metadata["path"], save_slots.METADATA_NAME))
+        self.assertEqual(save_slots.DEFAULT_REVISION, saved["default_revision"])
+        self.assertTrue(saved["skip_legacy_import"])
         self.assertIn("kept the saved endpoint", " ".join(actions))
 
     def test_startup_repair_quarantines_an_unusable_save_id(self):
@@ -989,6 +995,8 @@ class ClientInstallTest(unittest.TestCase):
         self._stage_0_9_22(json.dumps({"enabled": True}))
         app_data = os.path.join(self.work, "app-data")
         relative_root = "Wargaming.net/WorldOfTanks/offline_lan_0922"
+        # Once upgraded, default edits must survive every later install/repair.
+        save_slots.replace_default(self.game, environment={'APPDATA': app_data})
         saved_files = {}
         for slot in ("default", "career-2"):
             for name in ("garage_state.json", "account_state.json",
@@ -1110,8 +1118,9 @@ class ClientInstallTest(unittest.TestCase):
         core.reset_0_9_22_state(
             self.game, self.payload, is_running=lambda: False)
 
-        self.assertFalse(os.path.exists(os.path.join(
-            self.game, *saves_root.rstrip("/").split("/"))))
+        directory = os.path.join(self.game, *saves_root.rstrip('/').split('/'))
+        self.assertEqual(['default'], os.listdir(directory))
+        self.assertEqual(['save.json'], os.listdir(os.path.join(directory, 'default')))
         self.assertEqual("keep", self._read(state_root + "notes.json"))
 
     def test_reset_deletes_save_slots_from_appdata(self):
@@ -1133,7 +1142,8 @@ class ClientInstallTest(unittest.TestCase):
             core.reset_0_9_22_state(
                 self.game, self.payload, is_running=lambda: False)
 
-        self.assertFalse(os.path.exists(saves_root))
+        self.assertEqual(['default'], os.listdir(saves_root))
+        self.assertEqual(['save.json'], os.listdir(os.path.join(saves_root, 'default')))
         self.assertFalse(os.path.exists(os.path.join(
             state_root, "garage_state.json")))
         with open(os.path.join(state_root, "notes.json")) as stream:
@@ -1254,6 +1264,12 @@ class PayloadStagingTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, os.path.dirname(self.root), True)
         self.written = stage_payload.stage(self.root, include_clients=False)
         self.target = os.path.join(self.root, stage_payload.SERVER_DIR)
+        self.source = os.path.join(os.path.dirname(self.root), "source")
+        os.makedirs(os.path.join(self.source, "launcher"))
+        with open(os.path.join(self.source, "ng-launcher-source.json"), "w") as stream:
+            json.dump({"fork_revision": "a" * 40}, stream)
+        with open(os.path.join(self.source, "launcher", "wot_launcher.py"), "w") as stream:
+            stream.write('LAUNCHER_VERSION = "%s"\n' % stage_payload.launcher_version())
 
     @staticmethod
     def _write_ng_client(package):
@@ -1263,7 +1279,7 @@ class PayloadStagingTest(unittest.TestCase):
             path = os.path.join(package, *relative.split("/"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as stream:
-                stream.write("x")
+                stream.write(json.dumps({"revision": "a" * 40}) if relative == "offline-res.json" else "x")
 
     def test_supported_server_entry_points_are_staged(self):
         expected_ports = {core.PORT_0_9_22}
@@ -1273,6 +1289,23 @@ class PayloadStagingTest(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(core.server_script(port_version, self.target)),
                 port_version)
+            self.assertTrue(os.path.isfile(os.path.join(
+                os.path.dirname(core.server_script(port_version,self.target)),
+                'server_route_recovery.py')))
+            self.assertTrue(os.path.isfile(os.path.join(
+                os.path.dirname(core.server_script(port_version,self.target)),
+                'server_empty_ammo.py')))
+
+    def test_staged_server_imports_without_the_repository_on_its_path(self):
+        import subprocess
+        import sys
+        source=os.path.dirname(core.server_script(core.PORT_0_9_22,self.target))
+        result=subprocess.run([sys.executable,'-I','-S','-c',
+            "import sys;sys.path.insert(0,sys.argv[1]);from server_bot_ai import BotPlanner;"
+            "from server_empty_ammo import EmptyAmmoMixin;"
+            "assert isinstance(BotPlanner(),EmptyAmmoMixin)",source],
+            cwd=self.target,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        self.assertEqual(0,result.returncode,result.stderr)
 
     def test_windows_distribution_guard_rejects_map_studio_paths(self):
         script_path = os.path.join(
@@ -1344,7 +1377,7 @@ class PayloadStagingTest(unittest.TestCase):
         target = os.path.join(source, "staged")
 
         stage_payload.stage_ng_client(
-            target, package, identity="test-staging")
+            target, package, source_root=self.source, identity="test-staging")
 
         for relative in stage_payload.NG_CLIENT_REQUIRED + (
                 "offline-res/scripts/client/gui/mods/mod_offline.pyc",):
@@ -1368,7 +1401,7 @@ class PayloadStagingTest(unittest.TestCase):
         target = os.path.join(source, "staged")
 
         written = stage_payload.stage_ng_client(
-            target, package, identity="test-staging")
+            target, package, source_root=self.source, identity="test-staging")
 
         self.assertFalse(os.path.exists(os.path.join(target, "bwclient_h.PDB")))
         self.assertFalse(any(path.lower().endswith(".pdb") for path in written))
@@ -1412,7 +1445,7 @@ class PayloadStagingTest(unittest.TestCase):
                 stream.write(text)
         target = os.path.join(source, "staged")
 
-        written = stage_payload.stage_ng_client(target, package, identity="test-staging")
+        written = stage_payload.stage_ng_client(target, package, source_root=self.source, identity="test-staging")
 
         for relative in ("prepare-runtime", "Start-Client.cmd",
                 "engine-res/scripts/common/Lib/test", "engine-res/scripts/common/Lib/idlelib",
@@ -1470,13 +1503,40 @@ class PayloadStagingTest(unittest.TestCase):
                 stream.write(relative)
         target = os.path.join(source, "staged")
 
-        written = stage_payload.stage_ng_client(target, package, identity="test-staging")
+        written = stage_payload.stage_ng_client(target, package, source_root=self.source, identity="test-staging")
 
         for relative in retired:
             self.assertFalse(os.path.exists(os.path.join(target, *relative.split("/"))), relative)
             self.assertTrue(os.path.isfile(os.path.join(package, *relative.split("/"))), relative)
         for relative in stage_payload.NG_CLIENT_REQUIRED + retained:
             self.assertIn(os.path.join(target, *relative.split("/")), written)
+
+    def test_mismatched_or_unverifiable_gameplay_revision_is_rejected_before_copy(self):
+        package = os.path.join(os.path.dirname(self.root), "client")
+        self._write_ng_client(package)
+        target = os.path.join(os.path.dirname(self.root), "staged-client")
+        manifest = os.path.join(package, "offline-res.json")
+        for content in (json.dumps({"revision": "b" * 40}), json.dumps({}),
+                        json.dumps([]), "{broken", json.dumps({"revision": None})):
+            with self.subTest(manifest=content):
+                with open(manifest, "w") as stream:
+                    stream.write(content)
+                with self.assertRaises(ValueError):
+                    stage_payload.stage_ng_client(target, package, self.source)
+                self.assertFalse(os.path.exists(target))
+        self._write_ng_client(package)
+        record = os.path.join(self.source, "ng-launcher-source.json")
+        for content in (json.dumps({"fork_revision": ""}), json.dumps({}), "{broken"):
+            with self.subTest(source=content):
+                with open(record, "w") as stream:
+                    stream.write(content)
+                with self.assertRaises(ValueError):
+                    stage_payload.stage_ng_client(target, package, self.source)
+                self.assertFalse(os.path.exists(target))
+        os.unlink(record)
+        with self.assertRaises(ValueError):
+            stage_payload.stage_ng_client(target, package, self.source)
+        self.assertFalse(os.path.exists(target))
 
     def test_an_incomplete_ng_client_package_is_rejected(self):
         source = tempfile.mkdtemp()

@@ -20,6 +20,7 @@ namespace perception=stock_native_bot_perception;
 namespace observation=stock_native_bot_observation;
 namespace publication=stock_native_bot_publication;
 namespace step=wot::offline_bot_step;
+namespace stack=stock_native_vehicle_stack;
 using ID=std::int64_t;
 using Key=offline_simulation::ActorKey;
 using Point=step::Point;
@@ -81,6 +82,8 @@ struct Human {
     std::optional<double> spawn_drive_cap;
     double contact_drive_forward=0.,contact_drive_reverse=0.,contact_rotation_speed=0.;
     double contact_mass=0.;
+    step::SuspensionDescriptor suspension;
+    bool hydraulic_support=false;
     bool pivot_available=false,rotation_around_center=true;
     double track_center=0.;
 };
@@ -95,6 +98,8 @@ public:
     virtual step::ImpactWorld& impactWorld(ID)=0;
     virtual std::optional<contacts::Armor> armor(const contacts::Body&,const contacts::Body&,
         const std::array<double,3>&)=0;
+    virtual std::vector<stack::Surface> roofs(const stack::Body&,const stack::Body&,
+        const step::AimPose&,const Point&,const Point&){return {};}
     virtual void actorChanged(const Actor&,const step::AimPose&)=0;
     virtual void modeChanged(ID,const Mode&)=0;
     virtual void beginCallback(double now,double server_time_ms)=0;
@@ -106,6 +111,7 @@ struct Output {
     publication::Batch state;
     std::optional<observation::Observation> observation;
     std::vector<contacts::PushProof> pushes;
+    std::vector<stack::Row> stacks;
     std::vector<ID> hazards,environment_fires;
     std::vector<std::array<ID,2>> falls;
     struct CriticalTotal {ID actor;std::string cause;std::uint32_t mask;ID count;};
@@ -161,6 +167,8 @@ class Runtime final:public planning::PlanningHost,public physics::ImpactTransact
     publication::Publisher publisher_;
     std::vector<contacts::Report> reports_;
     step::EnvironmentTotals environment_;
+    stack::Ledger stacks_;
+    std::map<stack::Identity,stack::Identity> stack_carriers_;
     std::map<ID,std::unique_ptr<physics::PhysicsWorld>> worlds_;
     offline_simulation::TickToken identity_;
     Clock clock_;
@@ -194,6 +202,10 @@ class Runtime final:public planning::PlanningHost,public physics::ImpactTransact
     std::optional<step::WeaponTarget> target(const decision::Output&,const plan::Command&);
     publication::Input publicationActor(const Actor&)const;
     std::optional<Output> advance(const Slice&);
+    stack::Body stackBody(const Actor&)const;
+    stack::Body stackBody(const Human&)const;
+    std::vector<stack::Surface> stackRoofs(const stack::Body&,const Point&,const Point&);
+    void advanceStacks(double);
 public:
     Runtime(Snapshot,stock_native_world::Registry&,stock_native_world::Scene&,Services&);
     ~Runtime();
@@ -227,8 +239,12 @@ public:
     step::WeaponRuntime& weaponRuntime(){return weapons_runtime_;}
     const offline_simulation::TickToken& identity()const{return identity_;}
     double planningRotationFraction(ID,const Point&,double,double,bool)override;
+    std::optional<bool> aimPointReachable(ID,const step::WeaponTarget&,const Point&,const Point&)const;
+    std::optional<double> mechanicalTargetFraction(ID,const decision::Target&,double,double)override;
     void cancelArtillery(ID)override;
     int fall_damage(motion::State&,double,const std::vector<Point>&,const Point&,bool)override;
+    std::vector<stack::Surface> roofs(const motion::State&,const Point&,const Point&)override;
+    void stack_impact(motion::State&,const stack::Surface&,double,int)override;
     motion::World& motion_world(ID)override;
     std::optional<contacts::Armor> armor(const contacts::Body&,const contacts::Body&,const std::array<double,3>&)override;
     double water_depth(const Point&)override;

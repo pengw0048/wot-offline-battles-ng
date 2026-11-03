@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 FIXTURE = r'''
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
@@ -86,7 +86,7 @@ print('Native chat Unicode relay, exclusions, rejection recovery and stock comma
 '''
 
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class NativeBattleRadioTests(unittest.TestCase):
     def test_native_radio_uses_the_python27_plaintext_contract(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

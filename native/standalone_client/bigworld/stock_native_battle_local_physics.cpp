@@ -415,6 +415,7 @@ step::SuspensionDescriptor deriveSuspension(PyObject* descriptor) {
                    law::FREEZE_ACCEL_EPSILON, law::FREEZE_VEL_EPSILON, law::FREEZE_ANG_ACCEL_EPSILON, law::FREEZE_ANG_VEL_EPSILON,
                    double(law::SERVER_PHYSICS_MAX_SUBSTEPS)}};
     out.maximum_steps = law::SERVER_PHYSICS_MAX_SUBSTEPS;
+    out.fall_safe_speed = law::FALL_SAFE_SPEED;
     out.width = width;
     out.clearance = clearance;
     out.rest_length = rest_length;

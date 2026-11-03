@@ -89,7 +89,8 @@ def build(test, path, original_completion=False):
     query = (ROOT / 'bigworld/stock_battle_scene_queries.cpp').read_text()
     (include / 'stock_worker_water_alpha.inc').write_text('namespace BW {\n' +
         body(query, 'float Water::stockWaterRayDistance(') + '\n' +
-        body(query, 'float collideStockWater(') + '\n}\n')
+        body(query, 'float collideStockWater(') + '\n' +
+        body(query, 'float collideStockPhysicalWater(') + '\n}\n')
     executable = path / 'worker_water'
     result = subprocess.run(['c++', *native_test_compile_flags('c++'), '-std=c++17',
         '-Wall', '-Wextra', '-Werror', '-Wno-unused-variable', '-Wno-unused-parameter', '-Wno-mismatched-tags',

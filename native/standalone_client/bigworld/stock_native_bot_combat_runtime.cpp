@@ -15,7 +15,7 @@ CombatPreparation prepare_combat_actor(CombatActorRefs actor,const CombatDescrip
         const bool was_fire=c.critical.fire;
         for (auto& equipment:actor.equipment) {
             const bool stunned=c.alive && c.stun_until_equipment_time>slice.equipment_now+1.e-9;
-            auto effect=poll_bot_equipment(equipment,c,slice.equipment_now,stunned);
+            auto effect=poll_bot_equipment(equipment,c,slice.equipment_now,stunned,descriptor.skill);
             if (effect) result.equipment_effects.push_back(*effect);
         }
         const double repair=descriptor.base_repair_factor*(1.+std::max(0.,equipment_passives(actor.equipment).repair_bonus));

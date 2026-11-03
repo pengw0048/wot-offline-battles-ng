@@ -6,10 +6,10 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get("WOT_FORK_0101_SOURCE")
+SOURCE = os.environ.get("WOT_FORK_SOURCE")
 
 
-@unittest.skipUnless(SOURCE, "set WOT_FORK_0101_SOURCE to the fixed gameplay checkout")
+@unittest.skipUnless(SOURCE, "set WOT_FORK_SOURCE to the fixed gameplay checkout")
 class BattleShutdownTests(unittest.TestCase):
     def test_worker_link_closes_and_releases_owners_even_when_leave_fails(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

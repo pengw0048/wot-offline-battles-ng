@@ -39,6 +39,25 @@ int main() {
     input.source_available=input.valid_pitch=true;input.target={0.,0.,100.};
     input.speed=500.;input.gravity=9.81;input.maximum=1000.;
     input.pitch_config.fixed_pitch=true;input.pitch_config.fixed_limits={-1.57,1.57};
+    ArtilleryInput fallback=input;fallback.pitch_config.fixed_limits={-.6,-.1};
+    assert(artillery_candidates(fallback).empty());
+    fallback.aim_samples={{0.,50.,100.},{0.,60.,100.}};
+    auto candidates=artillery_candidates(fallback);
+    assert(!candidates.empty() && candidates.front().aim_token==0);
+    ArtilleryController fallback_controller;
+    assert(!fallback_controller.plan(fallback,0.).ready);
+    fallback_controller.advance(0.,100,world);
+    auto fallback_receipt=fallback_controller.plan(fallback,0.);
+    assert(fallback_receipt.ready && fallback_receipt.candidate && fallback_receipt.candidate->aim_token==0);
+    fallback.identity.target_descriptor_revision=1;
+    assert(!fallback_controller.plan(fallback,.1).ready);
+    ArtilleryReproof reproof;reproof.arc="low";reproof.hold_solution=fallback_receipt.candidate;
+    WeaponFrame frame;frame.valid_pitch=true;HydraulicConfig hydraulic;
+    assert(!artillery_reproof_solution(fallback,reproof,frame,hydraulic));
+    fallback.pitch_config.fixed_limits={-1.57,1.57};
+    candidates=artillery_candidates(fallback);
+    assert(!candidates.empty() && !candidates.front().aim_token);
+    fallback.maximum=1.;assert(artillery_candidates(fallback).empty());
     auto planning=artillery.plan(input,0.);assert(!planning.ready);
     assert(artillery.advance(0.,100,world)>0);
     planning=artillery.plan(input,0.);assert(planning.ready && planning.candidate);
@@ -49,4 +68,18 @@ int main() {
     assert(artillery.advance(.1,100,world)>0);
     proof=prove_artillery_launch(intent,artillery,input,*planning.candidate,1,22,0.,.1,true,true,.1,0.,1,{},scene);
     assert(proof.status==ArtilleryProofStatus::ready && proof.launch && proof.launch->proof.size()==14);
+    // Reproof owns the chassis anchor; a new barrel solve is permitted until
+    // an exact launch intent freezes all eight source pose values.
+    auto slewing=intent;slewing.intent.reset();auto moved_barrel=input;moved_barrel.pose.gun_pitch+=.01;
+    assert(artillery_reproof_current(slewing,artillery,moved_barrel,1,true,.2));
+    auto pending=intent;assert(!artillery_reproof_current(pending,artillery,moved_barrel,1,true,.2));
+    // Deliberate bias/lead is frozen gunner error, not evidence of stale motion.
+    auto biased=intent;biased.intent->solution.aim[0]+=25.;
+    assert(!artillery_receipt_stale(biased,artillery,input,*planning.candidate,true,.2));
+    auto changed=input;changed.target[0]+=2.;
+    assert(artillery_receipt_stale(biased,artillery,changed,*planning.candidate,true,.2));
+    auto predicted=intent;predicted.intent->solution.reference_velocity={2.,0.,0.};predicted.intent->solution.prediction_seconds=.5;
+    auto live=input;live.canonical_motion=std::make_pair(Point{1.,0.,100.},Point{2.,0.,0.});
+    assert(!artillery_receipt_stale(predicted,artillery,live,*planning.candidate,true,.2));
+
 }

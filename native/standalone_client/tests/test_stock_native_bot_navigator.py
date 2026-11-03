@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from stock_gameplay_source import navigation_include
 import test_stock_native_bot_navigation as grid_test
 ROOT=grid_test.ROOT
 
@@ -66,11 +67,11 @@ class NativeNavigatorTests(unittest.TestCase):
     graph=grid_test.NativeNavigationTests.graph
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-navigator-');cls.binary=Path(cls.tmp.name)/'navigator'
         compiled=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-pthread',
-            '-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),
+            '-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),
             str(ROOT/'bigworld/stock_native_bot_navigator.cpp'),str(cls.source/'native/offline_navigation.cpp'),str(cls.source/'native/offline_async_worker.cpp'),
             str(ROOT/'tests/stock_native_bot_navigator_host.cpp'),'-o',str(cls.binary)],capture_output=True,text=True)
         if compiled.returncode:raise RuntimeError(compiled.stderr)

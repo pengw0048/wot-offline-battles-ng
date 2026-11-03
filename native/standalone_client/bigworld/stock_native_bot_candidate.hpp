@@ -44,6 +44,7 @@ class CandidateProbe {
     CandidateDescriptor descriptor_;
     BakeProof bake_;
     std::map<std::pair<double,std::optional<double>>,DirectionSample> samples_;
+    bool last_direction_uncertain_=false;
 public:
     CandidateProbe(Grid&,Navigator&,CandidateWorld&,CandidateState&,CandidateDescriptor,BakeProof);
     // Cache lifetime is one planner decision, never a realized-motion receipt.
@@ -51,6 +52,7 @@ public:
         bool hazard_only,std::optional<double> maximum={});
     bool direction(double yaw,std::optional<double> maximum={},std::optional<double> implicit_horizon={});
     bool pose(double yaw,bool allow_wreck_push=false);
+    bool directionUncertain()const{return last_direction_uncertain_;}
     const auto& samples()const{return samples_;}
 };
 }

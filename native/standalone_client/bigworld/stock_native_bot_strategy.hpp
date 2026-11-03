@@ -4,9 +4,11 @@
 
 namespace stock_native_bot_strategy {
 using Point=stock_native_bot_planner::Point;
-struct Shell {int index=0;std::string kind;double penetration=0.,damage=0.;};
+struct Shell {int index=0;std::string kind;double penetration=0.,damage=0.;std::string name;};
 struct Profile {
-    std::string class_tag,dominant_role;
+    std::string class_tag,dominant_role,vehicle_name,gun_name;
+    bool ammo_manual=false;
+    std::vector<double> ammo_ratios;
     double desired_range=0.,fire_range=0.,armor=0.;
     std::map<std::string,double> roles;
     std::vector<Shell> shells;
@@ -19,10 +21,12 @@ struct Agent {
     Profile profile;
     Personality personality;
     std::string route_id="direct";
-    bool has_route=false,route_started=false;
+    bool has_route=false,route_started=false,route_entry_fixed=false;
     std::vector<std::array<double,2>> waypoints;
     int waypoint_index=0,route_join_index=-1;
-    std::optional<Point> position,route_join_anchor;
+    std::optional<Point> position,route_join_anchor,route_observation;
+    std::string observed_route_id;
+    double route_observed_at=0.;
     std::optional<std::int64_t> target;
     double health_fraction=1.;
 };
@@ -49,7 +53,7 @@ class Director {
     std::map<int,std::map<std::int64_t,Contact>> contacts_;
     std::vector<Contact*> known(int team,double now);
     Contact* choose(Agent&,const Point&,double yaw,double now);
-    Point route(Agent&,const Point&,double speed,double yaw);
+    Point route(Agent&,const Point&,double speed,double yaw,double now);
     Point fallback(const Agent&,const Point&)const;
     Point anchor(const Agent&,const Point&)const;
     std::optional<double> hullAngle(const Agent&)const;

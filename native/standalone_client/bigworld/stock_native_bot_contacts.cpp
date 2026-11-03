@@ -1,4 +1,5 @@
 #include "stock_native_bot_contacts.hpp"
+#include "stock_native_client_drive_roster.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -189,7 +190,7 @@ void Contacts::consume(std::map<ID,Actor>& actors,const std::vector<Human>& huma
     }
 }
 void Contacts::translations(std::map<ID,Actor>& actors,const std::vector<Human>& humans,
-    const std::map<ID,Point>& starts,ID sample_us,const std::vector<ID>& owner_order)
+    const std::map<ID,Point>& starts,ID sample_us,const std::vector<ID>& owner_order,double elapsed)
 {
     auto traversal=owner_order;if(traversal.empty())for(const auto&entry:actors)traversal.push_back(entry.first);
     std::vector<offline_math::Body> bodies;std::map<ID,Body> projected;
@@ -205,7 +206,7 @@ void Contacts::translations(std::map<ID,Actor>& actors,const std::vector<Human>&
     }
     for(ID id:traversal) {
         auto& a=actors.at(id);auto& s=*a.motion;
-        if(!s.alive){a.ram_motion.clear();continue;}
+        if(!s.alive){a.ram_motion.clear();s.translation_receipt.reset();continue;}
         const auto origin=starts.find(id);if(origin==starts.end())continue;
         const auto& start=origin->second;
         const offline_math::Vec move{s.position[0]-start[0],s.position[2]-start[2]};
@@ -238,6 +239,9 @@ void Contacts::translations(std::map<ID,Actor>& actors,const std::vector<Human>&
         else s.drive_sweep.reset();
         const auto accepted=offline_math::slide(body,move,bodies,true,fraction);
         s.position[0]=start[0]+accepted.x;s.position[2]=start[2]+accepted.z;
+        stock_native_bot_motion::TranslationReceipt receipt;receipt.start=start;receipt.requested={move.x,move.z};receipt.fraction=fraction;receipt.elapsed=elapsed;receipt.speed_before=s.speed;
+        receipt.remote_player_contact=std::any_of(hits.begin(),hits.end(),[&](const auto&hit){return hit.first>=human_base_&&hit.second<=fraction+1.e-9;});
+        s.translation_receipt=receipt;
     }
 }
 std::vector<Report> Contacts::historical(std::map<ID,Actor>& actors,const std::vector<Human>& humans)
@@ -308,7 +312,11 @@ std::vector<Report> Contacts::settle(std::map<ID,Actor>& actors,const std::vecto
         bodies.push_back(it->second);
     }
     if(bodies.size()!=by_id.size())throw std::invalid_argument("Incomplete native contact dictionary order");
-    const auto rows=offline_contact::resolve(bodies,owners,dt,std::vector<Pair>(contacts_.begin(),contacts_.end()));
+    std::set<Pair> stacked;
+    const auto omit=[&](ID upper,const std::optional<stock_native_vehicle_stack::Identity>&carrier){if(!carrier)return;const ID lower=carrier->id+(carrier->human?human_base_:0);stacked.insert(pair(upper,lower));};
+    for(const auto&actor:actors)omit(actor.first,actor.second.motion->stack_carrier);
+    for(const auto&human:humans)omit(human_base_+human.network_id,human.stack_carrier);
+    const auto rows=stock_native_client_contact_roster::resolve(bodies,owners,dt,std::vector<Pair>(contacts_.begin(),contacts_.end()),0,stacked);
     std::map<ID,const offline_contact::Row*> by_row;for(const auto& row:rows)by_row[row.id]=&row;
     auto reports=historical(actors,humans);
     std::set<Pair> current,contact_seen;
@@ -370,6 +378,7 @@ std::vector<Report> Contacts::settle(std::map<ID,Actor>& actors,const std::vecto
             const auto& other=by_id.at(peer);
             if(other.id==own.id)continue;
             const Pair key=pair(own.id,other.id);if(contact_seen.count(key))continue;
+            if(stacked.count(key))continue;
             contact_seen.insert(key);
             const Body& first=by_id.at(key.first);const Body& second=by_id.at(key.second);
             if(!first.has(offline_contact::Alive)||!second.has(offline_contact::Alive)||

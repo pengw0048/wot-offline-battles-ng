@@ -216,7 +216,7 @@ print('native client query ownership/current-pose fixture passed')
 
 class NativeClientQueryTest(unittest.TestCase):
     def test_pinned_bindings(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         spec = importlib.util.spec_from_file_location('query_bindings', ROOT / 'bigworld/stock_native_client_query_bindings.py')
@@ -271,7 +271,7 @@ class NativeClientQueryTest(unittest.TestCase):
             self.assertEqual(compatibility._native_query_aliases, [])
 
     def test_native_current_pose_and_lifecycle(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Pinned native geometry source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True, env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
@@ -280,11 +280,11 @@ class NativeClientQueryTest(unittest.TestCase):
             folder = Path(directory)
             (folder / 'fixture.py').write_text(FIXTURE)
             fork = Path(source)/'native'
-            names = ['stock_native_bot_resource_lifecycle', 'stock_native_bot_turret_obstacles', 'stock_native_detached_turret_snapshot',
+            names = ['stock_native_client_state', 'stock_native_bot_resource_lifecycle', 'stock_native_bot_turret_obstacles', 'stock_native_detached_turret_snapshot',
                      'stock_native_detached_turret_runtime']
             sources = [str(ROOT/'bigworld'/(name+'.cpp')) for name in names]
             sources += [str(fork/'offline_destructible_geometry.cpp')]
-            result = subprocess.run(['c++', '-std=c++17', '-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD', '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'), '-I'+str(fork), str(ROOT / 'tests/stock_native_client_query_host.cpp')]+sources+['-o', str(folder / 'client_query_test.so')], capture_output=True, text=True)
+            result = subprocess.run(['c++', '-std=c++17', '-DWOT_RESOURCE_LIFECYCLE_HOST_BUILD', '-DWOT_CLIENT_REPLICA_HOST_BUILD', '-Wno-register', '-bundle', '-undefined', 'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'), '-I' + str(ROOT / 'bigworld'), '-I'+str(fork), str(ROOT / 'tests/stock_native_client_query_host.cpp')]+sources+['-o', str(folder / 'client_query_test.so')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(ROOT / 'bigworld/stock_native_client_query.py')], cwd=str(folder), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

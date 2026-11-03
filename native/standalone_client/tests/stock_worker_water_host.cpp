@@ -191,6 +191,7 @@ CompiledSpace::BinaryFormat fixture(){CompiledSpace::BinaryFormat file;
  append(file.bytes,std::vector<Definition>{definition(0,0,0,1),definition(0,5,1,2),definition(500,2,2,3),definition(1000,3,3,4)});
  append(file.bytes,std::vector<Bounds>{{{{-1,0,-1}},{{1,.001f,1}}},{{{-10,0,-20}},{{10,.001f,20}}},{{{-10,0,-20}},{{10,.001f,20}}},{{{1,1,1}},{{-1,-1,-1}}}});return file;}
 float ray(float x=0,bool alpha=false,float endY=-10){return collideStockWater({x,10,0},{x,endY,0},alpha);}
+float physicalRay(float x=0,float endY=-10){return collideStockPhysicalWater({x,10,0},{x,endY,0});}
 void completeBackground(){auto tasks=pending;pending.clear();for(auto& task:tasks)task->doBackgroundTask(taskManager);}
 void completeForeground(){auto tasks=taskManager.foreground;taskManager.foreground.clear();for(auto& task:tasks)task->doMainThreadTask(taskManager);}
 void complete(){completeBackground();completeForeground();}
@@ -198,28 +199,28 @@ bool load(Loader& loader,const ClientSpacePtr& space){auto file=fixture();Compil
 }
 int main(int argc,char**){using namespace BW;const bool baseline=argc>1;
  auto space=std::make_shared<CompiledSpace::CompiledSpace>(7);DeprecatedSpaceHelpers::camera=space;Loader first;
- assert(load(first,space));assert(ray()==-1);assert(first.doBind());assert(space->scene.objects.size()==3);
- auto* w=Waters::instance()[0];assert(!w->initialised_&&!w->stockQueryDataReady_);assert(ray()==-1);
+ assert(load(first,space));assert(ray()==-1&&physicalRay()==-1);assert(first.doBind());assert(space->scene.objects.size()==3);
+ auto* w=Waters::instance()[0];assert(!w->initialised_&&!w->stockQueryDataReady_);assert(ray()==-1&&physicalRay()==-1);
  pending.front()->doBackgroundTask(taskManager);pending.erase(pending.begin());
- assert(ray()==-1); // Background tables alone do not publish readiness.
+ assert(ray()==-1&&physicalRay()==-1); // Background tables alone do not publish readiness.
  completeForeground();
  if(baseline){assert(ray()==-1);std::puts("Original completion without CPU publication: worker misses water");first.doUnload();pending.clear();goto cleanup;}
- assert(ray()==10);assert(!w->initialised_&&w->visible_&&drawInit==0);
- complete();assert(ray(500)==8&&ray(1000)==-1&&ray(200)==-1);
+ assert(ray()==10&&physicalRay()==10);assert(!w->initialised_&&w->visible_&&drawInit==0);
+ complete();assert(ray(500)==8&&ray(1000)==-1&&ray(200)==-1);assert(physicalRay(500)==8&&physicalRay(1000)==-1&&physicalRay(200)==-1);
  assert(ray(9)==10); // An enabled cell admits the whole original surface, not a clipped cell.
  assert(ray(0,false,9)==10); // Preserve infinite-ray behavior beyond end.
  assert(ray()==10); // Original surface order wins over the closer second surface (5).
  assert(ray(0,true)==10);w->wAlpha_.assign(w->wAlpha_.size(),0);assert(ray(0,true)==5);assert(ray()==10);
- w->visible_=false;assert(ray()==10);wot::hostWorker=false;assert(ray()==-1);
- w->initialised_=true;assert(ray()==-1);w->visible_=true;assert(ray()==10);wot::hostWorker=true;
+ w->visible_=false;assert(ray()==10&&physicalRay()==10);wot::hostWorker=false;assert(ray()==-1&&physicalRay()==10);
+ w->initialised_=true;assert(ray()==-1&&physicalRay()==10);w->visible_=true;assert(ray()==10&&physicalRay()==10);w->initialised_=false;assert(ray()==-1&&physicalRay()==10);wot::hostWorker=true;
  w->initialised_=false;w->createManagedObjects();assert(ray()==10); // GPU resets do not retire CPU geometry.
  duringCPU=[](Water* surface){assert(!surface->stockQueryDataReady_);assert(surface->stockGroundRayDistance({0,10,0},{0,-10,0})==-1);};
  {auto state=w->state_;state.position_.y=1;w->rebuild(state,w->resources_);}duringCPU={};assert(ray()==9);
- space->retired=true;assert(ray()==-1);space->retired=false;
- {auto other=std::make_shared<CompiledSpace::CompiledSpace>(7);DeprecatedSpaceHelpers::camera=other;assert(ray()==-1);DeprecatedSpaceHelpers::camera=space;}
- space->scene.onRemove=[&](){assert(ray()==-1&&ray(500)==-1);assert(!load(first,space));first.doUnload();};
- first.doUnload();space->scene.onRemove={};assert(ray()==-1&&Waters::instance().empty());first.doUnload();
- assert(load(first,space));assert(first.doBind());complete();assert(ray()==10&&ray(500)==8);first.doUnload();
+ space->retired=true;assert(ray()==-1&&physicalRay()==-1);space->retired=false;
+ {auto other=std::make_shared<CompiledSpace::CompiledSpace>(7);DeprecatedSpaceHelpers::camera=other;assert(ray()==-1&&physicalRay()==-1);DeprecatedSpaceHelpers::camera=space;}
+ space->scene.onRemove=[&](){assert(ray()==-1&&ray(500)==-1&&physicalRay()==-1&&physicalRay(500)==-1);assert(!load(first,space));first.doUnload();};
+ first.doUnload();space->scene.onRemove={};assert(ray()==-1&&physicalRay()==-1&&Waters::instance().empty());first.doUnload();
+ assert(load(first,space));assert(first.doBind());complete();assert(ray()==10&&ray(500)==8&&physicalRay()==10&&physicalRay(500)==8);first.doUnload();
  // Unload while native membership admission reenters: no partial registry.
  assert(load(first,space));space->scene.onAdd=[&](){assert(ray()==-1);assert(!first.doBind());first.doUnload();};
  assert(!first.doBind());space->scene.onAdd={};assert(space->scene.objects.empty()&&Waters::instance().empty());complete();assert(ray()==-1);
@@ -256,7 +257,7 @@ int main(int argc,char**){using namespace BW;const bool baseline=argc>1;
  assert(load(first,space)&&first.doBind());completeBackground();assert(liveTasks==1);
  taskManager.foreground.clear();assert(liveTasks==0);first.doUnload();
  Water::background=false;assert(load(first,space)&&first.doBind());assert(ray()==10&&liveTasks==0);first.doUnload();Water::background=true;
- std::puts("Worker water: producer readiness, all-callsite dispatch, space identity, alpha, order, disabled cells, unload and rebind passed");
+ std::puts("Worker and visible physics water: producer readiness, all-callsite dispatch, space identity, alpha, order, disabled cells, unload and rebind passed");
 cleanup:
  for(auto entry:Water::s_renderTargetMap_)delete entry.second;Water::s_renderTargetMap_.clear();
  for(void* slot:Water::reuseSlots)::operator delete(slot);Water::reuseSlots.clear();

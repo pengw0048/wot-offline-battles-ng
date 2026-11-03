@@ -19,7 +19,7 @@ struct Actor {
     decision::Target target;
     weapon::AimPose pose;
     double speed=0.;
-    bool pitch_locked=false;
+    bool pitch_locked=false,empty_ammo=false;
     double static_pitch=0.;
 };
 struct Descriptor {
@@ -37,7 +37,8 @@ struct CoverCandidate {
     bool peek_feasible=true,escape_feasible=true;
 };
 struct Affordance {ID bot_id=0,target_id=0;std::string target_kind;std::vector<CoverCandidate> candidates;};
-struct RadioRecipient {Key actor;double time_left=0.;};
+struct RadioSource {Key actor;double time_left=0.;};
+struct RadioRecipient {Key actor;double time_left=0.;std::vector<RadioSource> sources;};
 struct Contact {
     int observing_team=0,target_team=0;
     Key target;

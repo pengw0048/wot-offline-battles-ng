@@ -18,6 +18,7 @@ const std::set<std::string> ACTIVATION_CREW_NAMES{
 
 namespace {
 const char* const DEFAULT_BOT_CONSUMABLE_NAMES[] = {"autoExtinguishers", "largeMedkit", "largeRepairkit"};
+const char* const SMALL_BOT_CONSUMABLE_NAMES[] = {"handExtinguishers", "smallMedkit", "smallRepairkit"};
 const std::set<std::string> BOT_YELLOW_REPAIR_DEVICES{"ammoBayHealth", "engineHealth", "gunHealth"};
 const char* const CONTRACT_FIELDS[] = {
     "name", "kind", "id", "compactDescr", "tags", "reuseCount", "cooldownSeconds", "autoactivate", "fireStartingChanceFactor",
@@ -236,7 +237,7 @@ SnapshotState validatedSnapshot(const Value& raw, const EquipmentContract& contr
         out.pending[i] = value;
     }
     if (out.pending[0] && !contract.autoactivate) throw Invalid("equipment wire auto clock is invalid");
-    if (out.pending[1] && contract.kind != "repairkit" && contract.kind != "medkit") throw Invalid("equipment wire AI clock is invalid");
+    if (out.pending[1] && contract.kind != "repairkit" && contract.kind != "medkit" && contract.name != "handExtinguishers") throw Invalid("equipment wire AI clock is invalid");
     if (out.uses_left == 0 && (out.pending[0] || out.pending[1])) throw Invalid("exhausted equipment has a pending activation");
     return out;
 }
@@ -341,16 +342,21 @@ EquipmentContract projectEquipment(PyObject* d, double reaction_seconds) {
     return out;
 }
 
-std::vector<EquipmentContract> defaultBotConsumables(PyObject* cache) {
+std::vector<EquipmentContract> defaultBotConsumables(PyObject* cache, int skill) {
+    if(skill<0 || skill>3)throw Invalid("bot consumable skill is invalid");
+    if(skill==0)return {};
     auto ids = py::call(cache, "equipmentIDs");
     auto descriptors = py::call(cache, "equipments");
     std::vector<EquipmentContract> out;
-    for (const char* name : DEFAULT_BOT_CONSUMABLE_NAMES) {
+    const auto& names=skill==3?DEFAULT_BOT_CONSUMABLE_NAMES:SMALL_BOT_CONSUMABLE_NAMES;
+    for (const char* name : names) {
         auto id = py::call(ids.get(), "get", p::text(name).get());
         auto descriptor = py::call(descriptors.get(), "get", id.get());
         if (descriptor.get() == Py_None) throw Invalid(std::string("client equipment '") + name + "' is unavailable");
         auto projected = projectEquipment(descriptor.get());
         if (projected.name != name) throw Invalid(std::string("client equipment '") + name + "' resolved as '" + projected.name + "'");
+        projected.reuse_count=skill==1?0:-1;
+        if(projected.name=="handExtinguishers")projected.auto_reaction_seconds=5.;
         out.push_back(std::move(projected));
     }
     return out;
@@ -370,16 +376,18 @@ std::vector<EquipmentContract> botConsumableContracts(const Value* bot_consumabl
     }
     if (!raw) return {};
     const auto& rows = raw->resolved();
+    if (rows.kind == K::Array && rows.array.empty()) return {};
     if (rows.kind != K::Array || rows.array.size() != 3) throw Invalid("bot consumable contract count is invalid");
     std::vector<EquipmentContract> out;
     for (const auto& row : rows.array) {
         if (row.resolved().kind != K::Object) throw p::Error("bot consumable contract is not a mapping");
         out.push_back(validate(row));
     }
-    for (std::size_t i = 0; i < 3; ++i)
-        if (out[i].name != DEFAULT_BOT_CONSUMABLE_NAMES[i]) throw Invalid("bot consumable contract order is invalid");
+    bool large=true,small=true;
+    for (std::size_t i = 0; i < 3; ++i) {large=large && out[i].name==DEFAULT_BOT_CONSUMABLE_NAMES[i];small=small && out[i].name==SMALL_BOT_CONSUMABLE_NAMES[i];}
+    if(!large && !small)throw Invalid("bot consumable contract order is invalid");
     if (out[0].kind != "extinguisher" || out[1].kind != "medkit" || out[2].kind != "repairkit") throw Invalid("bot consumable contract kinds are invalid");
-    if (!out[0].autoactivate || !out[1].repair_all || !out[2].repair_all) throw Invalid("bot consumable effect policy is invalid");
+    if (out[0].autoactivate!=large || out[1].repair_all!=large || out[2].repair_all!=large) throw Invalid("bot consumable effect policy is invalid");
     return out;
 }
 

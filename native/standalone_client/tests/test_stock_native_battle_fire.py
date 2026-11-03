@@ -69,14 +69,22 @@ assert not extra.running
 extra.fail=False
 assert native.sync(e,{101:True},None,2)
 assert native.sync(e,{101:False},None,2)
-# Explicit start/stop remains an intentional override independent of state.
+# Death and inactive crew suppress late canonical and explicit start edges.
+e.health=0
+assert not native.sync(e,{101:True},True,2)
+assert not extra.running
+e.health=100;e.isCrewActive=False
+assert not native.sync(e,{101:True},None,2)
+assert not extra.running
+e.isCrewActive=True
+# Explicit start/stop remains an intentional override for a living vehicle.
 assert native.sync(e,None,True,2)
 assert native.sync(e,None,False,5)
 print('Canonical fire ownership, overrides, identity and partial-startup retries passed')
 '''
 
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class NativeBattleFireTest(unittest.TestCase):
     def test_production_effect_reads_native_owner_and_retries_readiness(self):
         py27 = python27(self)
@@ -102,7 +110,7 @@ class NativeBattleFireTest(unittest.TestCase):
             result = subprocess.run([py27, '-B', '-c', FIXTURE], cwd=folder, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             # The previous real consumer loses the very first native fire edge.
-            legacy = body[:body.index('\n    if (!burning)')] + '\n' + body[body.index('    auto descriptor'):]
+            legacy = body[:body.index('\n    if (!burning)')] + '\n' + body[body.index('    auto health'):]
             legacy = legacy.replace('const bool on = *burning;',
                                     'const bool on = burning ? *burning : p::flag(py::optional(entity, "is_on_fire").get());')
             path.write_text(host.replace(body, legacy))

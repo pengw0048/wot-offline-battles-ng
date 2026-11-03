@@ -32,6 +32,6 @@ public:
     std::vector<double> distances(const Point&)const;
     bool displaced(std::int64_t,const Plan&,const Point&,bool airborne,bool overturned)const;
     std::optional<Plan> select(std::int64_t,int team,const Point&origin,const std::vector<Point>&excluded,
-        const std::vector<Occupied>&occupied,const std::optional<std::string>&preferred={})const;
+        const std::vector<Occupied>&occupied,const std::optional<std::string>&preferred={},const std::set<std::string>&excluded_zones={})const;
 };
 }

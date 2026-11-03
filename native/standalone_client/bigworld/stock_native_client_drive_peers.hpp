@@ -1,5 +1,6 @@
 #pragma once
 #include "stock_native_client_drive_contacts.hpp"
+#include "stock_native_client_wreck.hpp"
 #include "stock_native_client_state.hpp"
 namespace stock_native_client_drive {
 struct HistoricalMotion {
@@ -11,8 +12,7 @@ struct HistoricalMotion {
 std::optional<HistoricalMotion> historicalMotion(const stock_native_client_state::Actor&,double cursor,ID player);
 std::array<double,3> predictContactVelocity(const PlayerDescriptor&,const stock_native_client_state::Value&checkpoint,
     const std::array<double,4>&shape,double sample_time,double now,const std::vector<std::array<double,4>>&impulses,double fixed_step);
-std::array<double,3>wreckContactStep(const PlayerDescriptor&,const std::array<double,4>&,
-    double vx,double vz,double omega,double yaw,double dt,double normal_y);
+
 class NativePeers {
     struct Entry {std::shared_ptr<stock_native_client_state::Actor>actor;PlayerDescriptor descriptor;bool dynamics=true;};
     std::map<std::string,Entry> entries_;

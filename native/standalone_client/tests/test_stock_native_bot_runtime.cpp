@@ -43,6 +43,12 @@ struct World:step::WeaponRuntimeWorld,observation::World,step::ImpactWorld {
 struct Service:Services {
     World world;stock_native_bot_turret::Obstacles obstacles;unsigned callbacks=0,changes=0,scans=0,modes=0;
     std::vector<ID> warmed;
+    bool roofs_enabled=false;
+    std::vector<stack::Surface>roofs(const stack::Body&upper,const stack::Body&lower,const step::AimPose&,const Point&start,const Point&end)override {
+        if(!roofs_enabled||!stack::roof_candidate(upper,lower,start[0],start[2]))return {};
+        const stack::Surface hit{lower.key,{start[0],lower.position[1]+2.,start[2]},{0.,1.,0.}};
+        return stack::admit_roof(upper,hit,start,end,end[1])?std::vector<stack::Surface>{hit}:std::vector<stack::Surface>{};
+    }
     step::WeaponRuntimeWorld&weaponWorld()override{return world;}observation::World&tacticalWorld()override{return world;}
     stock_native_bot_turret::Obstacles&turrets()override{return obstacles;}step::ImpactWorld&impactWorld(ID)override{return world;}
     std::optional<contacts::Armor> armor(const contacts::Body&,const contacts::Body&,const std::array<double,3>&)override{return {};}
@@ -101,6 +107,31 @@ int main() {
         assert(!external.externalContact(999,response,.1,.5));
     }
     Scene scene;Service service;w::Registry registry;Runtime runtime(fixture(d),registry,scene,service);
+    {
+        auto snapshot=fixture(d);auto&dead=snapshot.actors[0];dead.motion.state.alive=false;dead.motion.state.push_yaw=.4;
+        dead.combat.state.alive=false;dead.combat.state.health=0;dead.combat.aim.turret_yaw=.3;
+        Service wreck_service;w::Registry wreck_registry;Runtime wreck(std::move(snapshot),wreck_registry,scene,wreck_service);
+        wreck.update(.05,.05,50.);const auto&a=wreck.actors().at(8);assert(a.motion.yaw!=0.);
+        assert(std::abs(a.weapon.aim_yaw-(a.motion.yaw+.3))<1.e-12);
+    }
+    // Roof receipts are queried by the physical owner and matched to final
+    // descriptor contacts. Dead upper hulls keep pressure as environment work.
+    {
+        auto snapshot=fixture(d);snapshot.actors[0].motion.state.position={5.,2.,0.};snapshot.actors[1].motion.state.position={5.,0.,0.};
+        for(auto&a:snapshot.actors){
+            auto&u=a.motion.suspension;u.parameters={25000.,75000.,25000.,1./60.,10.};u.tuning={9.81,.1,.1,4.,.01,.01,.01,.01,32.};u.maximum_steps=32;u.rest_length=.5;u.clearance=.3;
+            for(int side:{-1,1})for(int z=-2;z<=2;++z){step::SuspensionContact c;c.x=side;c.z=z;c.spring=true;c.side=side;c.compression=.2;c.maximum=.4;c.stiffness=25000.*9.81/2.;c.damping=2000.;c.force=100000.;c.rest_length=.5;u.springs.push_back(c);}
+            for(auto&m:a.modes)m.motion.suspension=u;
+            auto&o=snapshot.planning.orders.at(a.motion.state.id);o.drive.mode=o.navigation.mode="hold";o.drive.move.clear();
+        }
+        Service support;support.roofs_enabled=true;w::Registry support_registry;Runtime stacked(std::move(snapshot),support_registry,scene,support);
+        std::vector<stack::Row> rows;for(int i=1;i<=20;++i){auto updates=stacked.update(.05,i*.05,i*50.);for(const auto&update:updates)rows=update.stacks;}
+        assert(rows.size()==1&&rows[0].upper.id==8&&rows[0].lower.id==1);assert(rows[0].lower_total==5.&&rows[0].upper_total==5.);
+        auto killed=ServerSnapshot{};killed.combat.record=step::combat_record(stacked.actors().at(8).combat);killed.combat.record.alive=false;killed.combat.record.health=0;killed.combat.revision=killed.combat.base_revision=1;assert(stacked.serverSnapshot(8,killed));
+        for(int i=21;i<=40;++i){auto updates=stacked.update(.05,i*.05,i*50.);for(const auto&update:updates)rows=update.stacks;}
+        assert(rows.size()==1&&rows[0].lower_environment_total==5.&&rows[0].lower_total==10.&&rows[0].upper_total==5.);
+        assert(stacked.actors().at(8).motion.position[1]==2.);
+    }
     assert(runtime.update(.02,.02,20.).empty());assert(runtime.clock().sample_us==0);
     auto first=runtime.update(.03,.05,50.);assert(first.size()==1);assert(first[0].state.sample_us==50000);assert(first[0].state.rows.size()==2);
     assert(first[0].state.rows[0][0]==8&&first[0].state.rows[1][0]==1);assert(runtime.statistics().refreshes==1);

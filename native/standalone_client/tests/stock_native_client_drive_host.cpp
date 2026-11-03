@@ -4,7 +4,7 @@
 using namespace stock_native_client_drive;
 namespace {
 step::SuspensionDescriptor descriptor(const double* tuning){step::SuspensionDescriptor d;d.parameters={10000.,30000.,10000.,1./60.,10.};
-    for(unsigned i=0;i<9;++i)d.tuning[i]=tuning[i];d.maximum_steps=int(d.tuning[8]);d.width=2.5;d.clearance=.3;d.rest_length=.5;d.contact_memory_distance=.5;d.footprint_half_width=.15;
+    for(unsigned i=0;i<9;++i)d.tuning[i]=tuning[i];d.maximum_steps=int(d.tuning[8]);d.fall_safe_speed=10.;d.width=2.5;d.clearance=.3;d.rest_length=.5;d.contact_memory_distance=.5;d.footprint_half_width=.15;
     for(int side:{-1,1})for(int i=0;i<5;++i){step::SuspensionContact c;c.x=side;c.z=i-2.;c.side=side;c.spring=true;c.stiffness=10000.*d.tuning[0]/2.;
         c.damping=2000.;c.compression=.2;c.maximum=.4;c.force=100000.;c.rest_length=.5;c.footprint_front=c.footprint_rear=.5;d.springs.push_back(c);}
     for(int side:{-1,1})for(int i=0;i<4;++i){step::SuspensionContact c;c.x=side;c.z=i-1.5;c.side=side;c.track=true;c.penetration=.04;d.pseudo.push_back(c);}
@@ -35,5 +35,6 @@ extern "C" int client_drive_fixture(const double*in,double*out){try{
     for(double q:{v.ground_plane?v.ground_plane->gradient_x:0.,v.ground_plane?v.ground_plane->gradient_z:0.,v.ground_plane?v.ground_plane->center_y:0.})out[k++]=q;
     out[k++]=result.contacts.size();for(const auto&c:result.contacts){out[k++]=c.ground.has_value();out[k++]=c.ground.value_or(0.);}
     out[k++]=result.outcome.landing_witnesses.size();for(const auto&q:result.outcome.landing_witnesses)for(double p:q)out[k++]=p;
+    for(std::size_t i=0;i<10;++i){out[k++]=result.contacts[i].x;out[k++]=result.contacts[i].z;}
     return int(k);
 }catch(...){return -1;}}

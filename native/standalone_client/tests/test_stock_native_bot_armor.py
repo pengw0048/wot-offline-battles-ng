@@ -9,9 +9,9 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE=os.environ.get('WOT_FORK_SOURCE')
 
-@unittest.skipUnless(SOURCE,'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE,'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class ArmorLaw(unittest.TestCase):
     def test_multilayer_nominal_scores(self):
         rng=random.Random(1513);cases=[]

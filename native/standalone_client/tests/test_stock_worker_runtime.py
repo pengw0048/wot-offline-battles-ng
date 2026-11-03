@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = ROOT.parents[1]
 TESTS = Path(__file__).resolve().parent
 ARCHIVE = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
-FORK = Path(os.environ.get('WOT_FORK_0101_SOURCE', str(
-    Path.home() / '.cache/wot-independent-client/evidence/native-rewrite/upstream-v0101-review/source-144619f6')))
+FORK = Path(os.environ.get('WOT_FORK_SOURCE', str(
+    Path.home() / '.cache/wot-independent-client/evidence/native-rewrite/upstream-v111-review/source-abd03c4a')))
 PY27 = Path(os.environ.get('WOT_PYTHON27', str(Path.home() / '.pyenv/versions/2.7.18/bin/python2.7')))
 PRESENTATION = Path('src/res/scripts/client/gui/mods/offline_lan_0922/worker_presentation.py')
 WORKER = 'simulation_worker'
@@ -260,7 +260,7 @@ class WorkerPresentationAdapterTest(unittest.TestCase):
     def pinned(self):
         path = FORK / PRESENTATION
         if not path.is_file():
-            self.skipTest('The pinned v0.10.1 gameplay source is required')
+            self.skipTest('The pinned v1.1.1 gameplay source is required')
         return path.read_text(encoding='utf-8')
 
     def test_adapter_is_exact_idempotent_and_fails_closed(self):
@@ -513,7 +513,7 @@ class WorkerRuntimeHostTest(unittest.TestCase):
     def test_native_handshake_with_adapted_pinned_worker_presentation(self):
         presentation = FORK / PRESENTATION
         if not presentation.is_file():
-            self.skipTest('The pinned v0.10.1 gameplay source is required')
+            self.skipTest('The pinned v1.1.1 gameplay source is required')
         platform = (ROOT / 'bigworld/stock_offline_platform.cpp').read_text()
         declarations = '\n'.join(
             [line for line in platform.splitlines() if line.startswith('#define MAX_HIDDEN_WINDOWS')] +

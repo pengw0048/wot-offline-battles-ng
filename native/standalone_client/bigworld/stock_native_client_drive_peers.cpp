@@ -1,4 +1,5 @@
 #include "stock_native_client_drive_peers.hpp"
+#include "stock_native_client_wreck.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -18,17 +19,11 @@ Vec grip(const PlayerDescriptor&d,double normal,bool rolling){normal=std::max(0.
     return {rolling?rr:std::max(rr,hold),std::max(rr,hold*side)};
 }
 double bleed(double v,double budget){return budget<=0.?v:v>budget?v-budget:v<-budget?v+budget:0.;}
-std::array<double,3>wreck(const PlayerDescriptor&d,const std::array<double,4>&shape,double x,double z,double omega,double yaw,double dt,double normal){const double sn=std::sin(yaw),cs=std::cos(yaw),inertia=(shape[0]*shape[0]+shape[1]*shape[1])/3.;std::array<double,3>velocity{x*sn+z*cs,x*cs-z*sn,omega};const auto decel=grip(d,normal,false);
-    struct Row{unsigned axis;double lever,budget,impulse=0.;};std::vector<Row>constraints;for(double width:{-shape[0],shape[0]})for(double length:{-shape[1]/2.,shape[1]/2.}){constraints.push_back({0,width,decel[0]*dt/4.});constraints.push_back({1,-length,decel[1]*dt/4.});}
-    for(int iteration=0;iteration<d.motion.constraint_iterations;++iteration){double largest=0.;for(auto&row:constraints){double delta=-(velocity[row.axis]+row.lever*velocity[2])/(1.+row.lever*row.lever/inertia);const double updated=std::max(-row.budget,std::min(row.budget,row.impulse+delta));delta=updated-row.impulse;row.impulse=updated;velocity[row.axis]+=delta;velocity[2]+=delta*row.lever/inertia;largest=std::max(largest,std::abs(delta));}if(largest<1.e-9)break;}
-    for(auto&v:velocity)if(std::abs(v)<1.e-9)v=0.;return {velocity[0]*sn+velocity[1]*cs,velocity[0]*cs-velocity[1]*sn,velocity[2]};
-}
 std::pair<double,double>vertical(double y,const std::array<double,4>&shape,double pitch,double roll){const double cp=std::cos(pitch),sp=std::sin(pitch),cr=std::cos(roll),sr=std::sin(roll),up=cp*cr,center=y+(shape[2]+shape[3])*.5*up,extent=std::abs(cp*sr)*shape[0]+std::abs(sp)*shape[1]+std::abs(up)*(shape[3]-shape[2])*.5;return {center-extent,center+extent};}
 bool overlaps(const PlayerState&own,const PlayerDescriptor&d,double y,const std::array<double,4>&shape,double pitch,double roll){const auto a=vertical(own.position[1],d.motion.collision_shape,own.pitch,own.roll),b=vertical(y,shape,pitch,roll);return std::min(a.second,b.second)-std::max(a.first,b.first)>.02;}
 ID ack(const Value&state,ID player){for(const auto&row:rows(state.get("contact_push_acks"))){const auto&v=row.resolved().array;if(v.size()!=7)throw std::invalid_argument("Native contact acknowledgement width is invalid");if(ID(v[0].numeric())==player)return ID(v[1].numeric());}return 0;}
 std::array<double,5>pending(const Value&state,ID player,const PushCheckpoint*local){std::array<double,5>out{};if(!local)return out;out=local->totals;for(const auto&row:rows(state.get("contact_push_acks"))){const auto&v=row.resolved().array;if(v.size()!=7)throw std::invalid_argument("Native contact acknowledgement width is invalid");if(ID(v[0].numeric())==player){if(local->sequence<=ID(v[1].numeric()))return {};for(unsigned i=0;i<5;++i)out[i]-=v[i+2].numeric();break;}}return out;}
 }
-std::array<double,3>wreckContactStep(const PlayerDescriptor&d,const std::array<double,4>&shape,double vx,double vz,double omega,double yaw,double dt,double normal){if(dt<=0.)return {vx,vz,omega};return wreck(d,shape,vx,vz,omega,yaw,dt,normal);}
 std::optional<HistoricalMotion>historicalMotion(const shared::Actor&actor,double cursor,ID player){const auto&history=actor.receipts;if(history.empty())return {};
     const auto right=history.lowerBound(cursor);if(right==history.size()||(right==0&&history[right].time!=cursor)||!history[right].revision)return {};
     const auto revision=*history[right].revision;const auto upper=history.upperBound(cursor,revision);if(upper==0)return {};const auto left=upper-1,other=history.lowerBound(cursor,revision);
@@ -42,7 +37,7 @@ std::array<double,3>predictContactVelocity(const PlayerDescriptor&d,const Value&
     if(!(fixed>0.))throw std::invalid_argument("Native contact prediction step is invalid");const double yaw=number(state,"yaw"),sn=std::sin(yaw),cs=std::cos(yaw),pitch=number(state,"pitch"),roll=number(state,"roll"),normal=std::cos(pitch)*std::cos(roll);const bool live=alive(state),air=state.get("airborne").truth();const double speed=live?number(state,"speed"):0.,throttle=live?number(state,"movement_dir"):0.;
     std::array<double,3>velocity{sn*speed+number(state,"push_x"),cs*speed+number(state,"push_z"),number(state,"push_yaw")};double cursor=stamp;
     for(std::size_t i=0;i<=impulses.size();++i){const auto row=i<impulses.size()?impulses[i]:std::array<double,4>{now,0.,0.,0.};const double end=std::max(cursor,std::min(now,row[0]));double remaining=end-cursor;
-        while(remaining>1.e-9){const double dt=std::min(fixed,remaining);if(live){double forward=velocity[0]*sn+velocity[1]*cs,right=velocity[0]*cs-velocity[1]*sn;forward=d.motion.drive.longitudinal(forward,throttle,number(state,"rotation_dir")!=0.,pitch,dt,air,0,false,state.get("service_brake").truth());if(!air)right=bleed(right,grip(d,normal,forward!=0.||throttle!=0.)[1]*dt);velocity[0]=forward*sn+right*cs;velocity[1]=forward*cs-right*sn;}else if(!air)velocity=wreck(d,shape,velocity[0],velocity[1],velocity[2],yaw,dt,normal);remaining-=dt;}
+        while(remaining>1.e-9){const double dt=std::min(fixed,remaining);if(live){double forward=velocity[0]*sn+velocity[1]*cs,right=velocity[0]*cs-velocity[1]*sn;forward=d.motion.drive.longitudinal(forward,throttle,number(state,"rotation_dir")!=0.,pitch,dt,air,0,false,state.get("service_brake").truth());if(!air)right=bleed(right,grip(d,normal,forward!=0.||throttle!=0.)[1]*dt);velocity[0]=forward*sn+right*cs;velocity[1]=forward*cs-right*sn;}else if(!air)velocity=wreckContactStep(d,shape,velocity[0],velocity[1],velocity[2],yaw,dt,normal);remaining-=dt;}
         for(unsigned j=0;j<3;++j)velocity[j]+=row[j+1];cursor=end;
     }return velocity;
 }

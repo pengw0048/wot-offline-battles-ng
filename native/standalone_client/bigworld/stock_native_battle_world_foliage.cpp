@@ -16,7 +16,7 @@ namespace world {
 namespace {
 namespace trees = stock_native_bot_foliage;
 constexpr const char* format_name = "offline-lan-0922-foliage";
-constexpr std::int64_t format_version = 4;
+constexpr std::int64_t format_version = 5;
 
 p::Ref item(PyObject* mapping, const char* name) {
     PyObject* v = PyDict_Check(mapping) ? PyDict_GetItemString(mapping, name) : nullptr;
@@ -55,7 +55,7 @@ void checkManifest(const std::string& directory, const std::string& map) {
     if (!exists(directory + "/" + map + ".json")) throw p::Error("foliage data is unavailable");
 }
 
-// foliage/<map>.json version 4, validated exactly as the pinned loader did, into the native tree state.
+// foliage/<map>.json version 5, validated exactly as the pinned loader did, into the native tree state.
 trees::TreeState readFoliage(PyObject* data, const std::string& map, bool enabled) {
     if (!PyDict_Check(data)) throw p::Error("foliage root is not an object");
     if (text(item(data, "format").get()) != format_name) throw p::Error("unsupported foliage format");

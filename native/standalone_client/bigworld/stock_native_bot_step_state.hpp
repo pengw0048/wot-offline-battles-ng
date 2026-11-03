@@ -1,4 +1,5 @@
 #pragma once
+#include "stock_native_vehicle_stack.hpp"
 
 #include <array>
 #include <optional>
@@ -121,11 +122,13 @@ struct VerticalState {
     double slide_speed=0, air_lateral_x=0, air_lateral_z=0;
     int movement_direction=0, rotation_direction=0;
     bool alive=true, airborne=false, grounded_once=false, left_flying=false, right_flying=false;
-    bool suspension_disabled=false, basic_continuous_support=false;
+    bool suspension_disabled=false, basic_continuous_support=false, edge_support_active=false;
     double last_drive_pitch=0, support_repair_elapsed=0;
     std::optional<double> basic_fall_origin, straddle_reference, slope_basis_yaw;
     std::optional<std::array<double,2>> slope_target;
     std::optional<double> ground_height;
+    std::optional<double> basic_support_datum;
+    std::optional<stock_native_vehicle_stack::Identity> stack_carrier;
     std::optional<SupportPlane> ground_plane;
     std::optional<std::array<double,2>> support_gradient;
     double support_vertical_speed=0;
@@ -137,7 +140,7 @@ struct VerticalTrial {
     std::optional<SupportPlane> current_plane;
     std::vector<SuspensionContact> contacts;
     SuspensionSolveResult solved;
-    double elapsed=0, support_speed=0;
+    double elapsed=0, support_speed=0, fall_safe_speed=0;
     std::optional<std::array<double,2>> support_gradient;
     bool pending_spawn=false, invalid=false, raised=false;
 };
@@ -150,19 +153,25 @@ struct VerticalOutcome {
     bool normal_impact=false, ground_observed=false;
     std::vector<Point> landing_witnesses;
     Point landing_normal{0.,1.,0.};
+    std::vector<Point> support_contacts;
+    std::optional<double> raw_impact;
+    std::optional<stock_native_vehicle_stack::Surface> landing_surface;
 };
 struct SuspensionDescriptor {
     std::array<double,5> parameters{};
     std::array<double,9> tuning{};
     int maximum_steps=0;
     double width=0, clearance=0, rest_length=0, contact_memory_distance=0;
-    double footprint_half_width=0;
+    double footprint_half_width=0, fall_safe_speed=0;
     double slide_hold_tan=0, cohesion=0, slide_drag=0, slide_max=0;
     double half_length=0, half_width=0;
     std::vector<SuspensionContact> springs, pseudo, rigid;
     std::optional<Point> turret_origin;
     std::vector<Point> turret_contacts;
 };
+bool support_contact_recovery(const VerticalState&, const std::vector<SuspensionContact>&,
+    const std::optional<SupportPlane>&, const std::optional<Point>& motion,
+    double before_height, double solved_height);
 struct VerticalMemory {
     std::vector<std::optional<GroundMemory>> springs, pseudo;
 };
@@ -182,6 +191,18 @@ public:
     virtual std::array<double,2> passive_move(VerticalState&, double x, double z,
                                               double elapsed)=0;
 };
+struct BasicSupportPoint {
+    Point position{};
+    std::optional<double> ground;
+    bool valid=false, continuous_rise=false;
+};
+std::array<BasicSupportPoint,5> basic_support_status(const VerticalState&,
+    const SuspensionDescriptor&, VerticalWorld&);
+bool basic_support_continuous(const VerticalState&,const std::array<BasicSupportPoint,5>&,VerticalWorld&);
+bool select_detailed_support(VerticalState&, const SuspensionDescriptor&, VerticalWorld&);
+bool select_detailed_support(VerticalState&, const std::array<BasicSupportPoint,5>&);
+bool release_detailed_support(VerticalState&, VerticalMemory&,
+    const SuspensionDescriptor&, VerticalWorld&);
 VerticalOutcome advance_vertical(VerticalState&, VerticalMemory&,
     const SuspensionDescriptor&, VerticalWorld&, double yaw, double turret_yaw,
     Point tick_position, std::optional<Point> motion_position, double elapsed);

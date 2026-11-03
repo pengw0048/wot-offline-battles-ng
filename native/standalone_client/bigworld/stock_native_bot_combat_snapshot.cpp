@@ -1,5 +1,6 @@
 #include "stock_native_bot_combat_snapshot.hpp"
 #include "stock_native_bot_descriptor.hpp"
+#include "stock_native_bot_ammo.hpp"
 #include "stock_native_projectile_damage_python.hpp"
 #include "stock_native_bot_value.hpp"
 #include <numeric>
@@ -73,18 +74,38 @@ void fresh_gun(PyObject* descriptor,std::optional<int> level,CombatSnapshot& s){
     auto shots=value(gun.get(),"shots");g.shell_count=shots.get()==Py_None?1:std::max(1,int(size(shots.get())));g.validate();
 }
 void fresh_ammo(PyObject* descriptor,const SeedValue& profile,const SeedValue& state,CombatSnapshot& s){
-    const int count=s.gun_config.shell_count;auto& ammo=s.ammo;ammo.categories.assign(count,0);ammo.remaining.assign(count,0);std::map<int,const SeedValue*> by_index;
-    const auto& rows=profile.resolved().get("shells").resolved();if(rows.kind==SeedKind::Array)for(const auto& row:rows.array){if(row.resolved().kind!=SeedKind::Object)continue;const int n=int(row.resolved().get("index").numeric(-1));if(n>=0&&n<count)by_index[n]=&row;}
-    int first=-1;double baseline=0.;for(int i=0;i<count;++i){auto it=by_index.find(i);std::string kind;if(it!=by_index.end()){const auto& raw=it->second->resolved().get("kind");if(raw.resolved().kind!=SeedKind::Null)kind=vtext(raw);}std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return char(std::tolower(c));});
-        if(kind.find("high_explosive")!=std::string::npos||(kind.find("explosive")!=std::string::npos&&kind.find("armor_piercing")==std::string::npos))ammo.categories[i]=2;else if(first<0){first=i;baseline=it==by_index.end()?0.:std::max(0.,it->second->resolved().get("penetration").numeric(0.));}}
-    for(int i=0;i<count;++i)if(ammo.categories[i]!=2&&i!=first&&baseline>0.){auto it=by_index.find(i);if(it!=by_index.end()&&std::max(0.,it->second->resolved().get("penetration").numeric(0.))>=baseline*1.03)ammo.categories[i]=1;}
-    auto gun=value(descriptor,"gun"),turret=value(descriptor,"turret"),capacity=value(descriptor,"maxAmmo");if(capacity.get()==Py_None)capacity=value(gun.get(),"maxAmmo");if(capacity.get()==Py_None)capacity=value(turret.get(),"maxAmmo");int maximum=45;try{if(capacity.get()!=Py_None)maximum=int(scalar(capacity.get()));}catch(const std::exception&){PyErr_Clear();}maximum=std::max(0,std::min(1000,maximum));
-    const auto& cls=profile.resolved().get("class_tag");const bool spg=cls.resolved().kind==SeedKind::Text&&cls.resolved().text=="SPG";const std::array<double,3> weights=spg?std::array<double,3>{1.,1.,4.}:std::array<double,3>{3.,2.,1.};std::vector<int> active;for(int category:{2,1,0})if(std::find(ammo.categories.begin(),ammo.categories.end(),category)!=ammo.categories.end())active.push_back(category);double total=0.;for(int c:active)total+=weights[c];std::map<int,int> quantities;int assigned=0;for(int c:active)assigned+=(quantities[c]=int(maximum*weights[c]/total));
-    auto remainders=active;std::stable_sort(remainders.begin(),remainders.end(),[&](int a,int b){return maximum*weights[a]/total-quantities[a]>maximum*weights[b]/total-quantities[b];});for(int i=0;i<maximum-assigned;++i)++quantities[remainders[std::size_t(i)%remainders.size()]];
-    for(int c:active){std::vector<int> indices;for(int i=0;i<count;++i)if(ammo.categories[i]==c)indices.push_back(i);for(int i=0;i<quantities[c];++i)++ammo.remaining[indices[std::size_t(i)%indices.size()]];}
+    const int count=s.gun_config.shell_count;auto& ammo=s.ammo;
+    stock_native_bot_ammo::Profile input;
+    const auto get_text=[&](const SeedValue& row,const char* name){const auto& v=row.resolved().get(name).resolved();return v.kind==SeedKind::Text?v.text:std::string();};
+    input.vehicle=get_text(profile,"vehicle_name");input.gun=get_text(profile,"gun_name");input.class_tag=get_text(profile,"class_tag");
+    input.clip_size=s.gun_config.clip_size;
+    const auto& rows=profile.resolved().get("shells").resolved();
+    if(rows.kind==SeedKind::Array)for(const auto& row:rows.array)if(row.resolved().kind==SeedKind::Object)
+        input.shells.push_back({int(row.resolved().get("index").numeric(-1)),get_text(row,"kind"),get_text(row,"name")});
+    if(has(profile,"ammo_ratios")) {
+        input.manual=true;const auto& ratios=profile.resolved().get("ammo_ratios").resolved();
+        if(ratios.kind!=SeedKind::Array)throw Error("invalid ammunition ratios");
+        for(const auto& ratio:ratios.array)input.ratios.push_back(vscalar(ratio));
+    }
+    if(has(profile,"ammo_limit"))input.ammo_limit=int(vnum(profile,"ammo_limit"));
+    auto gun=value(descriptor,"gun"),turret=value(descriptor,"turret"),capacity=value(descriptor,"maxAmmo");
+    if(capacity.get()==Py_None)capacity=value(gun.get(),"maxAmmo");if(capacity.get()==Py_None)capacity=value(turret.get(),"maxAmmo");
+    int maximum=45;try{if(capacity.get()!=Py_None)maximum=int(scalar(capacity.get()));}catch(const std::exception&){PyErr_Clear();}
+    maximum=std::max(0,std::min(1800,maximum));
+    if(input.shells.empty()) {
+        auto shots=value(gun.get(),"shots"),type=value(descriptor,"type");
+        if(input.vehicle.empty()) {auto name=value(type.get(),"name");if(name.get()!=Py_None)input.vehicle=text(name.get());}
+        if(input.gun.empty()) {auto name=value(gun.get(),"name");if(name.get()!=Py_None)input.gun=text(name.get());}
+        for(int i=0;i<count && shots.get()!=Py_None && i<size(shots.get());++i) {
+            auto shot=item(shots.get(),i),shell=value(shot.get(),"shell"),kind=value(shell.get(),"kind"),name=value(shell.get(),"name");
+            input.shells.push_back({i,kind.get()==Py_None?std::string():text(kind.get()),name.get()==Py_None?std::string():text(name.get())});
+        }
+    }
+    const auto allocation=stock_native_bot_ammo::allocate(input,maximum,count);
+    ammo.categories=allocation.categories;ammo.remaining=allocation.remaining;
     ammo.loaded=ammo.fallback();ammo.next=ammo.loaded;
     if(has(state,"ammo_remaining")||has(state,"next_shell_index")||has(state,"ammo_reload_pending")){
-        for(const char* key:{"ammo_remaining","shell_index","next_shell_index","ammo_reload_pending"})if(!has(state,key))throw Error("incomplete ammunition snapshot");const auto& remaining=state.resolved().get("ammo_remaining").resolved();if(remaining.kind!=SeedKind::Array||int(remaining.array.size())!=count)throw Error("ammunition shape mismatch");ammo.remaining.clear();for(int i=0;i<count;++i){const auto& v=remaining.array[std::size_t(i)].resolved();if(v.kind!=SeedKind::Integer||v.integer<0||v.integer>1000)throw Error("ammunition quantity invalid");ammo.remaining.push_back(int(v.integer));}ammo.loaded=int(vnum(state,"shell_index"));ammo.next=int(vnum(state,"next_shell_index"));if(state.resolved().get("ammo_reload_pending").resolved().kind!=SeedKind::Boolean)throw Error("ammunition reload flag invalid");ammo.reload_pending=vflag(state,"ammo_reload_pending");ammo.plan_pending=false;
+        for(const char* key:{"ammo_remaining","shell_index","next_shell_index","ammo_reload_pending"})if(!has(state,key))throw Error("incomplete ammunition snapshot");const auto& remaining=state.resolved().get("ammo_remaining").resolved();if(remaining.kind!=SeedKind::Array||int(remaining.array.size())!=count)throw Error("ammunition shape mismatch");ammo.remaining.clear();for(int i=0;i<count;++i){const auto& v=remaining.array[std::size_t(i)].resolved();if(v.kind!=SeedKind::Integer||v.integer<0||v.integer>1800)throw Error("ammunition quantity invalid");ammo.remaining.push_back(int(v.integer));}ammo.loaded=int(vnum(state,"shell_index"));ammo.next=int(vnum(state,"next_shell_index"));if(state.resolved().get("ammo_reload_pending").resolved().kind!=SeedKind::Boolean)throw Error("ammunition reload flag invalid");ammo.reload_pending=vflag(state,"ammo_reload_pending");ammo.plan_pending=false;
         const int sum=std::accumulate(ammo.remaining.begin(),ammo.remaining.end(),0);if(ammo.loaded<0||ammo.loaded>=count||ammo.next<0||ammo.next>=count||(sum>0&&(ammo.remaining[ammo.next]<=0||(!ammo.reload_pending&&ammo.remaining[ammo.loaded]<=0))))throw Error("ammunition selection invalid");}
     ammo.validate(count);
 }
@@ -162,8 +183,12 @@ static bool load_snapshot(const stock_native_bot::BotSeed& bot,PyObject* descrip
     }
     for(const char* name:{"engineHealth","ammoBayHealth","fuelTankHealth","radioHealth","gunHealth","turretRotatorHealth","surveyingDeviceHealth","leftTrackHealth","rightTrackHealth"}){const auto pool=stock_native_bot_descriptor::devicePool(descriptor,name);auto& d=c.critical.devices[name];d.maximum=pool.maximum;d.regeneration=pool.regeneration;}
     for(const auto& n:stock_native_bot_descriptor::crewRoster(descriptor))c.descriptor_crew_roster.insert(n);
+    c.critical.fitting=descriptor==bot.siege.get()?bot.siege_factors:bot.travel_factors;c.critical.health=c.health;c.critical.maximum_health=c.maximum_health;
     auto& g=s.gun_config;
     fresh_gun(descriptor,bot.crew_level,s);
+    if(c.critical.fitting){const auto& base=c.critical.fitting->rows.front();g.movement_dispersion_factor*=base.bloom_move;g.rotation_dispersion_factor*=base.bloom_rotation;g.turret_dispersion_factor*=base.bloom_turret;
+        auto ammo_bay=c.critical.devices.find("ammoBayHealth");if(ammo_bay!=c.critical.devices.end()){if(ammo_bay->second.maximum)*ammo_bay->second.maximum*=base.ammo_bay_health;if(ammo_bay->second.regeneration)*ammo_bay->second.regeneration*=base.ammo_bay_health;}}
+
     fresh_ammo(descriptor,profile,state,s);
     s.gun.emplace(g);s.gun->restore(mode_only?0:s.fire_sequence,mode_only?1.:critical_factor(c.critical,CriticalStat::dispersion),false,0.,0.,1.,false,0,0);
     s.burst.validate(static_cast<std::int64_t>(vnum(state,"fire_seq")));
@@ -243,7 +268,7 @@ bool readServerCombat(const stock_native_client_state::Value& source,const stock
 bool load_combat_mode(const stock_native_bot::BotSeed& bot,PyObject* descriptor,CombatModeSnapshot& output){
     try {
         CombatSnapshot snapshot;if(!load_snapshot(bot,descriptor,snapshot,true))return false;
-        CombatModeSnapshot mode;mode.gun_config=snapshot.gun_config;mode.aim_config=std::move(snapshot.aim_config);
+        CombatModeSnapshot mode;mode.crew_factors=snapshot.state.critical.fitting;mode.gun_config=snapshot.gun_config;mode.aim_config=std::move(snapshot.aim_config);
         mode.valid_pitch=snapshot.valid_pitch;mode.gun_mount=snapshot.gun_mount;mode.water_sensor=snapshot.water_sensor;
         mode.limited_yaw=snapshot.limited_yaw;mode.minimum_yaw=snapshot.minimum_yaw;mode.maximum_yaw=snapshot.maximum_yaw;mode.static_yaw=snapshot.static_yaw;
         mode.hydraulic=snapshot.hydraulic;mode.shells=std::move(snapshot.shells);mode.base_repair_factor=snapshot.base_repair_factor;

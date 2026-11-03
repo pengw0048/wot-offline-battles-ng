@@ -35,7 +35,7 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_python_boundaries_read_native_damage_owner(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source or not shutil.which('pyenv'):
             self.skipTest('Fixed gameplay source and CPython 2.7.18 are required')
         python = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

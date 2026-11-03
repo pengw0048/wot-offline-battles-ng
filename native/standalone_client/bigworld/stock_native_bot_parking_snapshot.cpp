@@ -83,7 +83,7 @@ bool readCatalog(const stock_native_bot::RoundSeed&seed,const offline_navigation
     const Value data=stock_native_client_state::read(p::value(data_module.get(),"CATALOG").get());const Value&entry=at(at(data,"maps"),seed.map.c_str());
     std::map<std::int64_t,Catalog> result;
     for(const auto&bot:seed.bots){
-        const auto&state=bot.second.state;const auto&initial=at(state,"_spg_initial");if(initial.resolved().kind==Kind::Null)continue;
+        const auto&state=bot.second.state;if(at(at(state,"profile"),"class_tag").resolved().text!="SPG")continue;const auto&initial=at(state,"_spg_initial");
         // The native round start publishes catalog plans only; launcher manual plans need a tactics profile.
         if(at(initial,"source").resolved().text=="launcher_manual_v1")throw p::Error("Native parking manual plans need a Bot tactics profile");
         const auto team=int(at(state,"team").integer);

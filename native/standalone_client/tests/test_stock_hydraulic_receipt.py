@@ -10,7 +10,7 @@ from test_stock_vehicle_physics_owner import block
 from test_stock_wire_codec import python27_audit_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
-FORK = os.environ.get('WOT_FORK_0101_SOURCE')
+FORK = os.environ.get('WOT_FORK_SOURCE')
 sys.path.insert(0, str(ROOT / 'wire'))
 from codec import WireError
 from schema import SCHEMA
@@ -109,6 +109,25 @@ assert snapshots,'No production tick snapshot offered'
 snapshot=dict(snapshots[-1])
 decoded=schema.SCHEMA.decode(schema.SCHEMA.encode(snapshot))
 assert decoded['players'][0]['hydraulic_body']==body
+# A fitted Bot is normal gameplay, not an optional diagnostic row. Preserve
+# its manifest identity and the new native manoeuvre/aim/ammunition state.
+fitting={'vehicle':'ussr:R11_MS-1','tier':'elite','crew_level':100}
+identity=dict(id=16,team=2,slot=0,name='Bot',vehicle=fitting['vehicle'],max_health=100,
+              fitting=fitting,skill='elite')
+bot=BattleState._sanitize_bot_state(dict(id=16,health=100,alive=True,x=0.,y=0.,z=0.,yaw=0.,
+    speed=0.,movement_dir=0,rotation_dir=0),identity,None)
+bot.update(local_combat_manoeuvre=True,ammo_magazine_started=True,ammo_policy_shell_index=1,
+           aim_feedback_kind='human',aim_feedback_id=1,aim_feedback_error=.1,aim_feedback_aligned=False)
+fitted_snapshot=dict(snapshot,bots=[bot])
+fitted=schema.SCHEMA.decode(schema.SCHEMA.encode(fitted_snapshot))
+assert fitted['bots'][0]['fitting']==fitting and fitted['bots'][0]['ammo_policy_shell_index']==1
+replica,_=split.encode(fitted_snapshot,None,999,False)
+fitted=schema.SCHEMA.decode(schema.SCHEMA.encode(replica))
+assert fitted['bot_states'][0]['fitting']==fitting and fitted['bot_states'][0]['local_combat_manoeuvre']
+manifest=dict(identity,health=100,profile={},route=[],equipment_contracts=[],vehicle_tier=1)
+event=dict(type='events',round_id=1,server_tick=1,authority_epoch=1,server_time_ms=1,
+           worker_status='connected',events=[dict(kind='bot_manifest',event_id='1:1:fit',bots=[manifest])])
+assert schema.SCHEMA.decode(schema.SCHEMA.encode(event))['events'][0]['bots'][0]['fitting']==fitting
 out,baseline=split.encode(snapshot,None,999,False)
 wire=schema.SCHEMA.decode(schema.SCHEMA.encode(out))
 assert wire['player_motion'][0]['hydraulic_body']==body

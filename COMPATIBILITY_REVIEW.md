@@ -4644,3 +4644,17 @@ Failure propagation and visibility history are unchanged. Focused host tests
 cover large pending queues, lifecycle/reset, snapshot invalidation, MRT/depth
 ownership and both shared-scope success and capture failure. Actual desktop
 frame improvement remains a runtime measurement.
+
+
+The v1.1.1 gameplay source is pinned to
+`abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0`. Preparation uses its raw v10
+destructible and v5 foliage catalogs; obsolete layout remapping is removed.
+Account and server logic come from that pinned source, while the native client
+ports battle-time rules rather than reinstating the retired Python runtimes.
+Focused host comparisons cover local navigation meshes, physical water queries
+independent of rendering visibility, support and rotation bounds, stacked
+vehicles, passive wrecks, fitted Bot equipment and crew effects, fire control,
+and binary publication. These are logic and adapter evidence, not Windows
+physics or gameplay acceptance. Launcher staging rejects a mismatched gameplay
+revision. NG replay R3 rejects earlier R2 streams before decoding and bounds
+cumulative decompressed input and recording output.

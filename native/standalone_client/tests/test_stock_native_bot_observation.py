@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from stock_gameplay_source import navigation_include
 ROOT=Path(__file__).resolve().parents[1]
 
 
@@ -25,9 +26,10 @@ def reference(cases):
     next_lane=next_observation=next_cover=0.;cover_queue=[];cover_cursor=0;result=[]
     for now,count,fresh,dead,refresh,publish,selected,collect_cover,distance,inject in cases:
         runtime.now=now;runtime.states=dict((i,dict(id=i,team=1,alive=i!=dead,x=float(i),y=0.,z=0.,profile=dict(class_tag='mediumTank' if i%9 else 'SPG'))) for i in range(1,count+1))
+        if inject < 0:runtime.states[-inject]['ammo_remaining']=[0]
         runtime.states[201]=dict(id=201,team=2,alive=True,x=0.,y=0.,z=distance)
         players=[dict(id=202,team=2,alive=True,x=0.,y=0.,z=distance)]
-        if inject:runtime._shot_los_cache[(inject,'bot',201)]=(now,True)
+        if inject > 0:runtime._shot_los_cache[(inject,'bot',201)]=(now,True)
         observation=bool(publish and refresh and now>=next_observation)
         # These fixtures deliberately have no remembered team pose: queued
         # cover work retires as stale and cannot reserve the lane window.
@@ -37,7 +39,7 @@ def reference(cases):
         team_visibility={(1,'bot',201):bool(fresh),(1,'human',202):bool(fresh)}
         priorities={}
         for i in range(1,count+1):
-            if i==dead:continue
+            if i==dead or i==-inject:continue
             if lanes and fresh and math.hypot(float(i),distance)<=50.:priorities[(i,'bot',201)]=-1
             if selected:priorities[(i,'human' if selected==2 else 'bot',202 if selected==2 else 201)]=0
         cycle=next_lane;runtime._incoming_lane_budget=1 if refresh else 0
@@ -59,12 +61,16 @@ def reference(cases):
 class NativeObservationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-observation-');cls.binary=Path(cls.tmp.name)/'host'
+        import sys
+        sys.path.insert(0,str(ROOT/'bigworld'))
+        from prepare_offline_fork import stage_bot_ammo_data
+        stage_bot_ammo_data(cls.source,Path(cls.tmp.name))
         owned=['observation_runtime','decision','parking','planner','strategy','navigation','navigator','perception','step_state','weapon','artillery']
         release=['offline_navigation','offline_async_worker','offline_destructible_geometry','world_stage','offline_simulation_control','offline_visibility','native_visibility_core','offline_simulation_weapons']
-        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native')]
+        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),'-I'+cls.tmp.name]
         command += [str(ROOT/'bigworld'/('stock_native_bot_'+name+'.cpp')) for name in owned]
         command += [str(ROOT/'bigworld'/(name+'.cpp')) for name in ('stock_native_world_pipeline','stock_motion_rotation_batch','stock_offline_query_skin')]
         command += [str(cls.source/'native'/(name+'.cpp')) for name in release]
@@ -80,7 +86,9 @@ class NativeObservationTest(unittest.TestCase):
             if isinstance(n,ast.FunctionDef) and n.name in names:
                 prefix='    @staticmethod\n' if any(isinstance(d,ast.Name) and d.id=='staticmethod' for d in n.decorator_list) else ''
                 methods.append(prefix+textwrap.indent(textwrap.dedent(ast.get_source_segment(text,n)),'    '))
-        cls.oracle=Path(cls.tmp.name)/'oracle.py';cls.oracle.write_text('''import sys,json,math
+        cls.oracle=Path(cls.tmp.name)/'oracle.py';cls.oracle.write_text('sys_path = '+repr(str(cls.source/'src/res/scripts/client/gui/mods/offline_lan_0922'))+'\n'+'''import sys,json,math
+sys.path.insert(0, sys_path)
+import empty_ammo
 _CRITICAL_PARTS_TICK_CACHE="_critical_parts_tick_cache"
 _GUN_PITCH_LIMIT_CACHE="_gun_pitch_limit_cache"
 SHOT_LANE_PHASES=29
@@ -115,6 +123,8 @@ SHOT_LANE_QUERY_DISTANCE=585.
         cases=[]
         for i in range(50):cases.append([i*.1,40 if i<25 else 37,int(i%8!=0),7 if i>10 else 0,int(i%7!=0),1,1 if i%3 else 2,0,700. if i%11==0 else 120.,i%12+1 if i%4==0 else 0])
         self.compare(cases)
+    def test_confirmed_empty_ammunition_is_not_scheduled(self):
+        self.compare([[0.,4,1,0,1,1,1,0,20.,-1], [.5,4,1,0,1,1,1,0,20.,-1]])
     def test_close_urgency_and_stale_cover_jobs_independent_clocks(self):
         self.compare([[i*.05,12,1,0,1,1,1 if i%3 else 0,1,20.,0] for i in range(50)])
 

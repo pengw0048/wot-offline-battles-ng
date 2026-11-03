@@ -13,7 +13,7 @@ import types
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 LAW_NAMES = '''GRAVITY GRAVITY_FACTOR COHESION COH_DECAY_Y COH_DECAY_FACTOR
 COH_DECAY_POW SLOPE_COH_DECAY_Y SLOPE_COH_DECAY COH_DECAY_BOUND POWER_FACTOR
 BKWD_POWER_FRACTION ENGINE_MIN_V DRIVE_TRACTION SLOPE_GRIP_LNG_MIN_Y
@@ -64,7 +64,7 @@ def encode(value,physics):
     out += [o[name] for name in ('advance_push','apply_correction','apply_friction','advance_forward')]
     return ' '.join(str(int(v)) if isinstance(v,bool) else str(v) for v in out)
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class MotionDifferential(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

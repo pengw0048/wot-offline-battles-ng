@@ -14,8 +14,14 @@ ROOT=Path(__file__).resolve().parents[1]
 def reference(cases):
     runtime=Runtime();runtime.states={};runtime._friendly_repositions={};runtime._decision_cache={};runtime.adapter=type('Adapter',(),{})();runtime.adapter.director=type('Director',(),{'map_data':{}})()
     cancelled=[0]
-    def cancel(actor):cancelled[0]+=1
+    def cancel(actor,**kwargs):cancelled[0]+=1
     runtime._cancel_artillery_intent=cancel
+    runtime._physics_params_for=lambda actor: None
+    runtime._mechanical_approach_speed=lambda state:(state.get("speed",0.),"commanded_speed")
+    runtime._gun_yaw_limits={}
+    runtime._magazine_followup_order=lambda *args:None
+    runtime._rear_approach_blocked=lambda *args:False
+    runtime._gun_angle_target_fraction=lambda *args:None
     for actor in range(1,4):runtime.states[actor]=dict(id=actor,team=1,profile=dict(class_tag='SPG' if actor==2 else 'mediumTank'),route=dict(id='r',waypoints=[(0.,0.),(0.,20.),(0.,60.),(0.,200.)]),half_length=3.5)
     result=[]
     for row in cases:
@@ -47,18 +53,22 @@ def reference(cases):
 class NativeDecisionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-decision-');cls.binary=Path(cls.tmp.name)/'host'
+        import sys
+        sys.path.insert(0,str(ROOT/'bigworld'))
+        from prepare_offline_fork import stage_bot_ammo_data
+        stage_bot_ammo_data(cls.source,Path(cls.tmp.name))
         files=['decision','parking','planner','strategy']
-        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native')]+[str(ROOT/'bigworld'/('stock_native_bot_'+name+'.cpp')) for name in files]+[str(ROOT/'tests/stock_native_bot_decision_host.cpp'),'-o',str(cls.binary)]
+        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),'-I'+cls.tmp.name]+[str(ROOT/'bigworld'/('stock_native_bot_'+name+'.cpp')) for name in files]+[str(ROOT/'tests/stock_native_bot_decision_host.cpp'),'-o',str(cls.binary)]
         built=subprocess.run(command,capture_output=True,text=True)
         if built.returncode:raise RuntimeError(built.stderr)
         cls.py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         text=(cls.source/'src/res/scripts/client/gui/mods/offline_lan_0922/bot_runtime.py').read_text();tree=ast.parse(text)
         names=['_number','_point','_position','_distance','_angle_delta','_overlay_live_target_pose']
         functions='\n\n'.join(ast.get_source_segment(text,n) for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names)
-        names=['_mark_friendly_reposition','_rear_laying_order','_artillery_position_order','_gun_angle_rejected','_gun_angle_order','_gun_angle_route_order','_artillery_target_identity','_route_waypoint_xz']
+        names=['_mark_friendly_reposition','_rear_laying_order','_artillery_position_order','_gun_angle_rejected','_gun_angle_order','_gun_angle_route_order','_gun_angle_combat_order','_artillery_target_identity','_route_waypoint_xz']
         body=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BotRuntime');methods=[]
         for node in body.body:
             if isinstance(node,ast.FunctionDef) and node.name in names:
@@ -69,8 +79,9 @@ sys.path.insert(0,sys.argv[1])
 for name in ('gui','gui.mods'):
     m=types.ModuleType(name);m.__path__=[os.path.join(sys.argv[1],*name.split('.'))];sys.modules[name]=m
 from gui.mods.offline_lan_0922.ai import driver as ai_driver
-from gui.mods.offline_lan_0922 import tank_collision
+from gui.mods.offline_lan_0922 import tank_collision, spg_route_travel
 FRIENDLY_REPOSITION_SECONDS=4.
+FRIENDLY_REPOSITION_MAX_SECONDS=16.
 '''+functions+'\nclass Runtime(object):\n'+'\n\n'.join(methods)+'\n'+inspect.getsource(reference)+'\nprint(json.dumps(reference(json.load(sys.stdin))))\n')
     @classmethod
     def tearDownClass(cls):

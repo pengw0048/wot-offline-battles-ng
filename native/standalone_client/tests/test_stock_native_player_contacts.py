@@ -74,7 +74,7 @@ def reference(source):
 
 class PlayerContactsTest(unittest.TestCase):
     def test_plain_python27_boundary(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Fixed gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
@@ -121,7 +121,7 @@ print('Native player plain boundary passed')
             self.assertIn('Native player plain boundary passed', ran.stdout)
 
     def test_native_owner_and_fixed_verdict_law(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Fixed gameplay source is required')
         fork = Path(source); big = ROOT / 'bigworld'

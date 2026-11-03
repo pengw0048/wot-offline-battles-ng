@@ -15,6 +15,8 @@ public:
     virtual ~ImpactTransactions()=default;
     virtual int fall_damage(motion::State&,double impact_speed,
         const std::vector<Point>& witnesses,const Point& normal,bool ground_observed)=0;
+    virtual std::vector<stock_native_vehicle_stack::Surface> roofs(const motion::State&,const Point&,const Point&){return {};}
+    virtual void stack_impact(motion::State&,const stock_native_vehicle_stack::Surface&,double,int){}
 };
 struct Geometry {
     stock_native_bot_turret::MovingDescriptor turret;
@@ -58,7 +60,7 @@ class NativeHost final:public Host {
     offline_math::Body body(const motion::State&,const motion::Descriptor&,bool rotation)const;
     std::optional<std::array<double,4>> overflow(const motion::State&,const Point&,double)const;
     bool pose_safe(const Point&)const;
-    void landing(motion::State&,double,bool,const std::vector<Point>&,const Point&,bool);
+    int landing(motion::State&,double,bool,const std::vector<Point>&,const Point&,bool);
 public:
     explicit NativeHost(Context& context):context_(context){}
     void attach(ID id,PhysicsWorld& world){worlds_[id]=&world;}
@@ -76,9 +78,11 @@ public:
     Vec slide(const motion::State&,const motion::Descriptor&,const Vec&,double&)override;
     Vec passive_move(ID,step::VerticalState&,double,double,double)override;
     void vertical_outcome(motion::State&,const step::VerticalOutcome&)override;
+    std::vector<stock_native_vehicle_stack::Surface> roofs(const motion::State&s,const Point&a,const Point&b)override{return context_.impacts.roofs(s,a,b);}
     // Root retains the release's cohort/cursor scheduling; one invocation
     // performs exactly one actor's target/pose update.
-    bool update_slope_pose(motion::State&,int detail_tier,bool allow_ungrounded=false);
+    bool update_slope_pose(motion::State&,int detail_tier,bool allow_ungrounded=false,bool force_sample=false);
+    bool refresh_support_pose(motion::State&s)override{return update_slope_pose(s,0,false,true);}
     bool guard_realised_pose(motion::State&,const Point& tick_position,bool tick_was_safe,
         double attempted_yaw,const std::optional<SuspensionSnapshot>& suspension_snapshot,
         bool navigation_hazards=true,std::optional<Point> navigation_pose={});

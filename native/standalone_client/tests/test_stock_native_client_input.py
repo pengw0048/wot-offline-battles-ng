@@ -46,7 +46,7 @@ for i in range(300):
  row=copy.deepcopy(base);row.update(forward=random.uniform(-2.,2.),turn=random.uniform(-2.,2.),yaw=random.uniform(-100.,100.),aim_yaw=random.uniform(-100.,100.),gun_pitch=random.uniform(-3.,3.),fire_seq=random.randint(0,200),pose_time_us=i*40000)
  row['gun_checkpoint']['reload_time']=random.uniform(0.,5.);run(row)
 cases=[]
-for field,values in [('forward',[True,'1',None,float('nan'),float('inf')]),('turn',[False,'bad',[]]),('fire_seq',[True,False,-1,1.5,'4','1.5',2**64,None]),('position',[(2001.,0.,0.),(0.,1001.,0.),(0.,0.,-2001.),(float('nan'),None,'2'),(),(1.,2.)]),('up_cosine',[True,'0',-1.01,1.01,float('nan'),None]),('shell_index',[False,1.5,'2',10,-1,None]),('next_shell_index',[False,1.5,10,None]),('shell_change_pending',[1,None,True]),('pose_time_us',[False,1.5,'2',-1,10**16+1]),('gun_checkpoint',[None,{},dict(base['gun_checkpoint'],clip=True),dict(base['gun_checkpoint'],clip=2),dict(base['gun_checkpoint'],dispersion=float('nan')),dict(base['gun_checkpoint'],extra=0)]),('siege_enabled',[True,False,0,'yes']),('ram_contacts',[[dict(id=i,x=i) for i in range(20)],(dict(id=1),),[None,{},1]]),('tank_pushes',[[{'x':float('nan')}],[{'x':object()}]])]:
+for field,values in [('forward',[True,'1',None,float('nan'),float('inf')]),('turn',[False,'bad',[]]),('fire_seq',[True,False,-1,1.5,'4','1.5',2**64,None]),('position',[(2001.,0.,0.),(0.,1001.,0.),(0.,0.,-2001.),(float('nan'),None,'2'),(),(1.,2.)]),('up_cosine',[True,'0',-1.01,1.01,float('nan'),None]),('wreck_pose',[True,False,None,1,'yes']),('shell_index',[False,1.5,'2',10,-1,None]),('next_shell_index',[False,1.5,10,None]),('shell_change_pending',[1,None,True]),('pose_time_us',[False,1.5,'2',-1,10**16+1]),('gun_checkpoint',[None,{},dict(base['gun_checkpoint'],clip=True),dict(base['gun_checkpoint'],clip=2),dict(base['gun_checkpoint'],dispersion=float('nan')),dict(base['gun_checkpoint'],extra=0)]),('siege_enabled',[True,False,0,'yes']),('ram_contacts',[[dict(id=i,x=i) for i in range(20)],(dict(id=1),),[None,{},1]]),('tank_pushes',[[{'x':float('nan')}],[{'x':object()}]])]:
  for value in values:
   row=copy.deepcopy(base);row[field]=value;cases.append(row)
 for row in cases:
@@ -81,9 +81,9 @@ print(json.dumps({'input_frames':300,'invalid_and_edge_cases':len(cases),'ordere
 '''
 class NativeClientInputTests(unittest.TestCase):
     def test_native_producers_reach_tcp_without_a_python_ping(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         import importlib.util
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
@@ -139,9 +139,9 @@ class NativeClientInputTests(unittest.TestCase):
             print(result.stdout.strip())
 
     def test_native_input_matches_wire_and_queue(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         py27 = subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix = subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='native-client-input-') as directory:

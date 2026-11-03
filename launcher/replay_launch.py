@@ -13,10 +13,10 @@ import time
 
 FILE_ENV = 'WOT_OFFLINE_REPLAY_FILE'
 AUTO_ENV = 'WOT_OFFLINE_REPLAY_AUTOSTART'
-MAGIC = b'WOTLANR2'
+MAGIC = b'WOTLANR3'
 RECORD_HEADER = struct.Struct('<BdI')
 MAX_RECORD = 16 * 1024 * 1024
-MAX_TOTAL = 768 * 1024 * 1024
+MAX_TOTAL = 8 * 1024 * 1024 * 1024
 MAX_DURATION = 14400.0
 
 
@@ -71,7 +71,7 @@ def validate(path, progress=None, cancelled=None):
             return raw
 
         if read(len(MAGIC)) != MAGIC:
-            raise ValueError('This replay uses an unsupported format; the NG client requires WOTLANR2.')
+            raise ValueError('This replay uses an unsupported format; the NG client requires WOTLANR3.')
 
         def row():
             kind, moment, size = RECORD_HEADER.unpack(read(RECORD_HEADER.size))

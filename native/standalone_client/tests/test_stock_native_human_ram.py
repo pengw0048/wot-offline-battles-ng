@@ -107,8 +107,8 @@ print('human ram ingress passed')
 '''
 class HumanRam(unittest.TestCase):
     def test_unavailable_armor_reply_finishes_server_probe(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:self.skipTest('set WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:self.skipTest('set WOT_FORK_SOURCE')
         tree=ast.parse((Path(source)/'server/lan_battle_server.py').read_text())
         method=next(node for node in ast.walk(tree) if isinstance(node,ast.FunctionDef) and node.name=='_human_ram_contact_armors')
         namespace={}
@@ -120,8 +120,8 @@ class HumanRam(unittest.TestCase):
         self.assertNotIn(pair,owner.human_ram_probe_requests)
 
     def test_exact_ingress_status_and_local_failures(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:self.skipTest('set WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:self.skipTest('set WOT_FORK_SOURCE')
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='human-ram-') as directory:

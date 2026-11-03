@@ -16,9 +16,9 @@ void erase(std::deque<ArcKey>& values,const ArcKey& key) {
 bool finite(const Point& p) {return std::all_of(p.begin(),p.end(),[](double x){return std::isfinite(x);});}
 }
 bool ArcKey::operator<(const ArcKey& b) const {
-    return std::tie(actor,target,fire_sequence,descriptor_revision,target_kind,shell,arc_mask,source_position,source_angles,
+    return std::tie(actor,target,fire_sequence,descriptor_revision,target_record_revision,target_descriptor_revision,target_kind,shell,arc_mask,source_position,source_angles,
         origin,yaw,pitch,speed,gravity,maximum,flight_time)<
-        std::tie(b.actor,b.target,b.fire_sequence,b.descriptor_revision,b.target_kind,b.shell,b.arc_mask,b.source_position,
+        std::tie(b.actor,b.target,b.fire_sequence,b.descriptor_revision,b.target_record_revision,b.target_descriptor_revision,b.target_kind,b.shell,b.arc_mask,b.source_position,
         b.source_angles,b.origin,b.yaw,b.pitch,b.speed,b.gravity,b.maximum,b.flight_time);
 }
 ArcQueue::ArcQueue(std::size_t jobs,double success,double failure,double age,bool remote,
@@ -131,11 +131,11 @@ std::size_t ArcQueue::advance(double now,std::size_t budget,ArcWorld& world) {
     return used;
 }
 
-std::vector<ArcCandidate> artillery_candidates(const ArtilleryInput& input) {
+static std::vector<ArcCandidate> point_candidates(const ArtilleryInput& input,const Point& target,
+    std::optional<std::size_t> token,bool& outside_pitch) {
     std::vector<ArcCandidate> result;
     if (!input.source_available || !input.valid_pitch || !finite(input.origin) ||
         input.speed<=1. || std::abs(input.gravity)<=.01 || input.maximum<=1.) return result;
-    Point target=input.target;target[1]+=1.;
     const double pi=std::acos(-1.);
     for (bool high : {false,true}) {
         const auto solution=offline_simulation::weapons::ballistic_intercept(input.origin,target,input.velocity,
@@ -146,8 +146,8 @@ std::vector<ArcCandidate> artillery_candidates(const ArtilleryInput& input) {
         AimIntent intent;intent.world_yaw=yaw;intent.world_pitch=solution.pitch;
         const auto local=local_aim_intent(input.pose,intent);
         const auto limits=offline_simulation::weapons::pitch_limits(local.raw_yaw,input.pitch_config);
-        if (local.raw_pitch<limits[0]-.0001 || local.raw_pitch>limits[1]+.0001) continue;
-        ArcCandidate c;c.arc=high?"high":"low";c.aim=solution.aim;c.origin=input.origin;
+        if (local.raw_pitch<limits[0]-.0001 || local.raw_pitch>limits[1]+.0001) {outside_pitch=true;continue;}
+        ArcCandidate c;c.reference_position=input.canonical_motion?input.canonical_motion->first:input.target;c.reference_velocity=input.canonical_motion?input.canonical_motion->second:input.velocity;c.aim_token=token;c.target_record_revision=input.identity.target_record_revision;c.target_descriptor_revision=input.identity.target_descriptor_revision;c.arc=high?"high":"low";c.aim=solution.aim;c.origin=input.origin;
         c.yaw=yaw;c.pitch=solution.pitch;c.flight_time=solution.time;c.speed=input.speed;
         c.gravity=std::abs(input.gravity);c.maximum=input.maximum;
         const int count=std::max(1,static_cast<int>(std::ceil(c.flight_time/.2)));
@@ -157,6 +157,23 @@ std::vector<ArcCandidate> artillery_candidates(const ArtilleryInput& input) {
     }
     return result;
 }
+static std::vector<ArcCandidate> candidates_for(const ArtilleryInput& input,std::optional<std::size_t> token) {
+    bool outside=false;
+    if(token) {
+        if(*token>=input.aim_samples.size() || *token>=9)return {};
+        return point_candidates(input,input.aim_samples[*token],token,outside);
+    }
+    Point target=input.target;target[1]+=1.;
+    auto result=point_candidates(input,target,{},outside);
+    if(!result.empty()||!outside)return result;
+    for(std::size_t i=0;i<std::min<std::size_t>(9,input.aim_samples.size());++i) {
+        result=point_candidates(input,input.aim_samples[i],i,outside);
+        if(!result.empty())return result;
+    }
+    return {};
+}
+std::vector<ArcCandidate> artillery_candidates(const ArtilleryInput& input) {return candidates_for(input,{});}
+
 std::optional<ArcCandidate> artillery_launch_candidate(const ArcKey& key,double step) {
     if (!(key.speed>1.) || !(key.gravity>.01) || !(key.maximum>1.) || !(key.flight_time>0.) ||
         key.flight_time>20. || key.speed*key.flight_time>key.maximum+1.e-6 || !finite(key.origin) ||
@@ -194,7 +211,9 @@ ArcResult ArtilleryController::plan(const ArtilleryInput& input,double now) {
             rejected_.erase(rejected);
         else key.arc_mask=rejected->second.mask;
     }
-    if (previous!=planning_keys_.end() && previous->second.arc_mask==key.arc_mask) {
+    if (previous!=planning_keys_.end() && previous->second.arc_mask==key.arc_mask &&
+        previous->second.target_record_revision==key.target_record_revision &&
+        previous->second.target_descriptor_revision==key.target_descriptor_revision) {
         const auto& p=previous->second;
         double moved=0.,turned=0.;for (int i=0;i<3;++i) {
             const double d=key.source_position[i]-p.source_position[i];moved+=d*d;
@@ -213,8 +232,8 @@ ArcResult ArtilleryController::plan(const ArtilleryInput& input,double now) {
         value=planning_.request(key,std::move(candidates),input.target,now);
     }
     if (value.ready && value.candidate) {
-        const auto arc=value.candidate->arc;value.candidate.reset();
-        for (const auto& current:artillery_candidates(input)) if (current.arc==arc) {value.candidate=current;break;}
+        const auto arc=value.candidate->arc;const auto token=value.candidate->aim_token;value.candidate.reset();
+        for (const auto& current:candidates_for(input,token)) if (current.arc==arc) {value.candidate=current;break;}
     }
     return value;
 }
@@ -274,8 +293,8 @@ bool artillery_reproof_current(ArtilleryIntentState& state,ArtilleryController& 
         r.shell!=input.identity.shell || r.fire_sequence!=next || r.speed!=input.speed ||
         r.gravity!=input.gravity || r.maximum!=input.maximum || distance(r.source.position,input.pose.position)>.05 ||
         angle(r.source.yaw,input.pose.yaw)>.001 || angle(r.source.pitch,input.pose.pitch)>.001 ||
-        angle(r.source.roll,input.pose.roll)>.001 || angle(r.source.turret_yaw,input.pose.turret_yaw)>.001 ||
-        angle(r.source.gun_pitch,input.pose.gun_pitch)>.001 || now>r.deadline+1.e-9;
+        angle(r.source.roll,input.pose.roll)>.001 || now>r.deadline+1.e-9 ||
+        (state.intent&&(angle(state.intent->source.turret_yaw,input.pose.turret_yaw)>.001||angle(state.intent->source.gun_pitch,input.pose.gun_pitch)>.001));
     if (invalid) {state={};controller.cancel_launch(input.identity.actor);return false;}
     return true;
 }
@@ -287,9 +306,15 @@ std::optional<ArcCandidate> artillery_reproof_solution(const ArtilleryInput& inp
         reproof.proof_maximum_step>=.04 && reproof.proof_maximum_step<=.20;
     const double per_chord=adaptive?latency/reproof.proof_chords:0.;
     const double pi=std::acos(-1.);
-    offline_simulation::weapons::BallisticSolution solution;
+    offline_simulation::weapons::BallisticSolution solution;double predicted_latency=latency;
     for (int i=0;i<(adaptive?8:1);++i) {
-        Point predicted=input.target;predicted[1]+=1.;
+        predicted_latency=latency;Point predicted=input.target;
+        if(reproof.hold_solution && reproof.hold_solution->aim_token) {
+            const auto token=*reproof.hold_solution->aim_token;
+            if(token>=input.aim_samples.size() || reproof.hold_solution->target_record_revision!=input.identity.target_record_revision ||
+               reproof.hold_solution->target_descriptor_revision!=input.identity.target_descriptor_revision)return std::nullopt;
+            predicted=input.aim_samples[token];
+        } else predicted[1]+=1.;
         for (int axis=0;axis<3;++axis) predicted[axis]+=input.velocity[axis]*latency;
         solution=offline_simulation::weapons::ballistic_intercept(input.origin,predicted,input.velocity,
             input.speed,input.gravity,-pi*.5,pi*.5,reproof.arc=="high",20.);
@@ -302,7 +327,9 @@ std::optional<ArcCandidate> artillery_reproof_solution(const ArtilleryInput& inp
     if (!solution.valid || solution.time>20. || input.speed*solution.time>input.maximum+1.e-6) return std::nullopt;
     const double yaw=std::atan2(solution.aim[0]-input.origin[0],solution.aim[2]-input.origin[2]);
     if (!world_solution_reachable(frame,hydraulic,input.pitch_config,yaw,solution.pitch)) return std::nullopt;
-    ArcCandidate result;result.arc=reproof.arc;result.aim=solution.aim;result.origin=input.origin;
+    ArcCandidate result;result.reference_position=input.canonical_motion?input.canonical_motion->first:input.target;result.reference_velocity=input.canonical_motion?input.canonical_motion->second:input.velocity;result.prediction_seconds=predicted_latency;result.arc=reproof.arc;result.aim=solution.aim;result.origin=input.origin;
+    if(reproof.hold_solution){result.aim_token=reproof.hold_solution->aim_token;
+        result.target_record_revision=reproof.hold_solution->target_record_revision;result.target_descriptor_revision=reproof.hold_solution->target_descriptor_revision;}
     result.yaw=yaw;result.pitch=solution.pitch;result.flight_time=solution.time;
     result.speed=input.speed;result.gravity=input.gravity;result.maximum=input.maximum;
     return result;
@@ -323,18 +350,19 @@ bool begin_artillery_intent(ArtilleryIntentState& state,ArtilleryController& con
     } else if (state.reproof->attempts) state.reproof->deadline=std::min(state.reproof->absolute_deadline,now+60.);
     offline_simulation::weapons::BurstEdge edge;edge.shot_seq=edge.group_seq=next;edge.count=1;edge.final_round=true;
     const auto shot=dispersed_shot_angles(round,input.identity.actor,edge,input.pose,dispersion);
-    ArtilleryIntent intent;intent.solution=solution;intent.target_position=input.target;
+    ArtilleryIntent intent;intent.source=input.pose;intent.solution=solution;intent.target_position=input.target;
     intent.yaw=shot[0];intent.pitch=shot[1];intent.created=now;state.intent=intent;return true;
 }
 bool artillery_receipt_stale(ArtilleryIntentState& state,ArtilleryController& controller,
     const ArtilleryInput& input,const ArcCandidate& receipt,bool target_alive,double now) {
     if (!state.intent || !state.reproof) return true;
-    Point target=input.target;target[1]+=1.;
-    for (int i=0;i<3;++i) target[i]+=input.velocity[i]*receipt.flight_time;
-    if (!finite(target) || !finite(state.intent->solution.aim)) {
-        state={};controller.cancel_launch(input.identity.actor);return true;
-    }
-    if (distance(target,state.intent->solution.aim)<=1.5+1.e-9) return false;
+    if(state.intent->solution.aim_token){const auto token=*state.intent->solution.aim_token;if(token>=input.aim_samples.size()||state.intent->solution.target_record_revision!=input.identity.target_record_revision||state.intent->solution.target_descriptor_revision!=input.identity.target_descriptor_revision){state={};controller.cancel_launch(input.identity.actor);return true;}}
+    Point target=input.canonical_motion?input.canonical_motion->first:input.target;
+    const Point velocity=input.canonical_motion?input.canonical_motion->second:input.velocity;
+    Point reference=state.intent->solution.reference_position;
+    for(int axis=0;axis<3;++axis){target[axis]+=velocity[axis]*receipt.flight_time;reference[axis]+=state.intent->solution.reference_velocity[axis]*(receipt.flight_time+state.intent->solution.prediction_seconds);}
+    if(!finite(target)||!finite(reference)||!finite(state.intent->solution.aim)){state={};controller.cancel_launch(input.identity.actor);return true;}
+    if(distance(target,reference)<=1.5+1.e-9)return false;
     if (!artillery_reproof_current(state,controller,input,input.identity.fire_sequence+1,target_alive,now)) return true;
     auto& r=*state.reproof;r.proof_latency=std::max(0.,now-state.intent->created);
     r.proof_chords=receipt.path.size()>1 && receipt.path.size()-1<=500 &&

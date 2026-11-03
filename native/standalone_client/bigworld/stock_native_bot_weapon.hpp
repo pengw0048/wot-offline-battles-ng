@@ -19,6 +19,7 @@ struct WeaponFrame {
 struct WeaponAimResult {
     bool origin_available=true, aligned=false, hydraulic_reachable=false;
     double desired_world_yaw=0, horizontal=0, hydraulic_pitch=0;
+    std::optional<double> alignment_error;
     std::vector<offline_simulation::weapons::BurstEdge> edges;
 };
 struct FireConditions {
@@ -86,6 +87,7 @@ struct AimBox { Point lower{},upper{},mount{}; bool turret=false; std::optional<
 struct AimSample { Point mount{},point{}; bool turret=false; std::optional<double> static_yaw; };
 struct AimSelection { std::vector<AimSample> samples; std::size_t cursor=0; std::optional<std::size_t> selected; };
 std::vector<AimSample> vehicle_aim_samples(const std::vector<AimBox>&);
+std::vector<AimSample> ordered_vehicle_aim_samples(const std::vector<AimSample>&);
 Point vehicle_aim_point(const AimSample&,const AimPose&);
 class AimSelectionWorld {
 public:
@@ -94,6 +96,7 @@ public:
     virtual bool wreck_segment_blocked(const Point&,const Point&)=0;
     // Null means material evidence was unavailable, not zero damage.
     virtual std::optional<double> nominal_damage(const Point&,const Point&)=0;
+    virtual std::optional<bool> aim_reachable(const Point&,const Point&){return {};}
 };
 bool select_exposed_aim(AimSelection&,const AimPose& target,const Point& origin,
     double rating,std::int64_t round_id,std::int64_t bot_id,

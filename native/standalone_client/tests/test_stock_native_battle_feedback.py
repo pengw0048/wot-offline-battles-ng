@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 
 FIXTURE = r'''
 import battle_feedback_test as native
@@ -151,7 +151,7 @@ print('Native AFTERBATTLE/music outcome tuple, ordering, idempotence and failure
 '''
 
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class NativeBattleFeedbackTests(unittest.TestCase):
     def test_native_identity_owner_delivers_damage_and_kill_rows(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

@@ -23,6 +23,8 @@ void restore(step::VerticalState& state,const step::VerticalState& old) {
     state.slope_target=old.slope_target;state.slope_basis_yaw=old.slope_basis_yaw;
     state.basic_fall_origin=old.basic_fall_origin;state.straddle_reference=old.straddle_reference;
     state.basic_continuous_support=old.basic_continuous_support;
+    state.edge_support_active=old.edge_support_active;state.basic_support_datum=old.basic_support_datum;
+    state.stack_carrier=old.stack_carrier;
 }
 }
 offline_math::Body NativeHost::body(const motion::State& state,const motion::Descriptor& descriptor,bool rotation)const {
@@ -73,7 +75,18 @@ std::optional<std::array<double,4>> NativeHost::overflow(const motion::State& st
 }
 bool NativeHost::pose_progress(const motion::State& state,const Point& start,double from,const Point& end,double to) {
     auto before=overflow(state,start,from),after=overflow(state,end,to);if(!before||!after)return true;
-    for(unsigned i=0;i<4;++i)if((*after)[i]>(*before)[i]+1.e-6)return false;return true;
+    for(unsigned i=0;i<4;++i)if((*after)[i]>(*before)[i]+1.e-6)return false;
+    if(start==end&&std::all_of(before->begin(),before->end(),[](double v){return v==0.;})) {
+        const auto&d=*context_.actors.at(state.id).descriptor;const double pi=std::acos(-1.);
+        double change=std::fmod(to-from+pi,2.*pi);if(change<0.)change+=2.*pi;change-=pi;
+        const double low=std::min(from,from+change),high=std::max(from,from+change);
+        for(double along:{-d.half_length,d.half_length})for(double across:{-d.half_width,d.half_width})
+            for(double base:{std::atan2(along,across),std::atan2(-across,along)})
+                for(int k=int(std::ceil((low-base)/pi));k<=int(std::floor((high-base)/pi));++k) {
+                    const auto swept=overflow(state,start,base+k*pi);if(swept&&std::any_of(swept->begin(),swept->end(),[](double v){return v>1.e-6;}))return false;
+                }
+    }
+    return true;
 }
 stock_native_world::TurretSweep NativeHost::turret_sweep(const motion::State& before,const motion::State& after) {
     return {std::uint64_t(before.id),pose(before),pose(after)};
@@ -102,7 +115,10 @@ void NativeHost::impact(motion::State& state,double speed,double now) {
     if(context_.impacts.fall_damage(state,value,{hit},normal,false)>0)memory.last_world_impact_time=now;
 }
 void NativeHost::invalidate(ID id,double yaw,bool) {
-    context_.invalidated_decisions.insert(id);context_.motion_plan.cache.erase(id);context_.planner.remember_failure(id,yaw,5.);
+    context_.invalidated_decisions.insert(id);context_.motion_plan.cache.erase(id);
+    const auto actor=context_.actors.find(id);
+    if(actor!=context_.actors.end()&&actor->second.motion)
+        context_.planner.remember_contact(id,yaw,actor->second.motion->position,5.);
 }
 void NativeHost::report_contact(const motion::State& state,const Point& start,const Point& target,double yaw,double now) {
     context_.navigator.reportHardContact(state.id,start,target,yaw,now);
@@ -123,18 +139,19 @@ Vec NativeHost::passive_move(ID id,step::VerticalState& state,double x,double z,
     motion::contact(actor,*a->second.descriptor,response,elapsed,context_.now,*w->second,options);
     state=actor;return {{actor.position[0]-before[0],actor.position[2]-before[2]}};
 }
-void NativeHost::landing(motion::State& state,double impact,bool normal_impact,const std::vector<Point>& witnesses,const Point& normal,bool ground_observed) {
-    if(!state.alive)return;const double lateral=std::sqrt(state.air_lateral_x*state.air_lateral_x+state.air_lateral_z*state.air_lateral_z);
+int NativeHost::landing(motion::State& state,double impact,bool normal_impact,const std::vector<Point>& witnesses,const Point& normal,bool ground_observed) {
+    if(!state.alive)return 0;const double lateral=std::sqrt(state.air_lateral_x*state.air_lateral_x+state.air_lateral_z*state.air_lateral_z);
     if(lateral>.01)state.slide_speed=std::max(state.slide_speed,lateral);state.air_lateral_x=state.air_lateral_z=0.;
     if(!normal_impact)impact=std::sqrt(impact*impact+lateral*lateral);
-    context_.impacts.fall_damage(state,impact,witnesses,normal,ground_observed);
+    return context_.impacts.fall_damage(state,impact,witnesses,normal,ground_observed);
 }
 void NativeHost::vertical_outcome(motion::State& state,const step::VerticalOutcome& outcome) {
     auto& memory=context_.memory[state.id];if(outcome.clear_contact_memory)context_.vertical_memory[state.id]={};
     if(outcome.clear_pose_sample)memory.pose_sample.reset();
     if(outcome.pose_sample_yaw&&memory.pose_sample)(*memory.pose_sample)[2]=*outcome.pose_sample_yaw;
     if(outcome.invalidate_motion)invalidate(state.id,outcome.invalidated_yaw.value_or(state.yaw),true);
-    if(outcome.landing_impact)landing(state,*outcome.landing_impact,outcome.normal_impact,outcome.landing_witnesses,outcome.landing_normal,outcome.ground_observed);
+    if(outcome.landing_impact){const int damage=landing(state,*outcome.landing_impact,outcome.normal_impact,outcome.landing_witnesses,outcome.landing_normal,outcome.ground_observed);
+        if(outcome.landing_surface)context_.impacts.stack_impact(state,*outcome.landing_surface,*outcome.landing_impact,damage);}
 }
 bool NativeHost::pose_safe(const Point& position)const {
     return bool(context_.grid.index(context_.grid.cellFor(position),false))&&!context_.grid.pointHazard(position,9);
@@ -153,14 +170,14 @@ bool NativeHost::guard_realised_pose(motion::State& state,const Point& tick,bool
     }
     invalidate(state.id,attempted,true);return true;
 }
-bool NativeHost::update_slope_pose(motion::State& state,int tier,bool allow_ungrounded) {
+bool NativeHost::update_slope_pose(motion::State& state,int tier,bool allow_ungrounded,bool force_sample) {
     const auto& geometry=context_.geometry.at(state.id);
-    if((geometry.detailed_suspension&&!state.suspension_disabled)||state.airborne||(!allow_ungrounded&&!state.grounded_once))return false;
+    if((state.edge_support_active&&!state.suspension_disabled)||state.airborne||(!allow_ungrounded&&!state.grounded_once))return false;
     if(tier<0||tier>2)throw std::invalid_argument("Slope detail tier is invalid");
     const double travel[]={.35,1.5,4.},turn[]={.05,.15,.40};const bool exact=!geometry.pitch_hull_aiming;
     auto& memory=context_.memory[state.id];double pitch,roll;std::optional<std::array<double,2>> target;
-    if(memory.pose_sample&&std::abs(state.position[0]-(*memory.pose_sample)[0])<travel[tier]&&
-       std::abs(state.position[2]-(*memory.pose_sample)[1])<travel[tier]&&std::abs(state.yaw-(*memory.pose_sample)[2])<turn[tier]) {
+    if(!force_sample&&memory.pose_sample&&std::abs(state.position[0]-(*memory.pose_sample)[0])<travel[tier]&&
+       std::abs(state.position[2]-(*memory.pose_sample)[1])<travel[tier]&&std::abs(std::atan2(std::sin(state.yaw-(*memory.pose_sample)[2]),std::cos(state.yaw-(*memory.pose_sample)[2])))<turn[tier]) {
         if(!state.slope_target||std::max(std::abs((*state.slope_target)[0]-state.terrain_pitch),std::abs((*state.slope_target)[1]-state.roll))<.001)return false;
         ++memory.slope_attempt;
         pitch=exact?(*state.slope_target)[0]:state.terrain_pitch+((*state.slope_target)[0]-state.terrain_pitch)*.5;
@@ -170,21 +187,40 @@ bool NativeHost::update_slope_pose(motion::State& state,int tier,bool allow_ungr
         const auto w=worlds_.find(state.id);if(w==worlds_.end())throw std::invalid_argument("Slope ground world is unavailable");
         const auto& d=*context_.actors.at(state.id).descriptor;const double length=std::max(3.,2.*d.half_length),width=std::max(2.,2.*d.half_width);
         const double sn=std::sin(state.yaw),cs=std::cos(state.yaw),x=state.position[0],z=state.position[2],y=state.position[1];
-        const auto front=w->second->basic_ground(x+sn*length*.5,z+cs*length*.5,y,{}),rear=w->second->basic_ground(x-sn*length*.5,z-cs*length*.5,y,{}),
-            right=w->second->basic_ground(x+cs*width*.5,z-sn*width*.5,y,{}),left=w->second->basic_ground(x-cs*width*.5,z+sn*width*.5,y,{});
+        std::array<Point,4> points{{{0.,0.,length*.5},{0.,0.,-length*.5},{width*.5,0.,0.},{-width*.5,0.,0.}}};
+        std::array<std::optional<double>,4> heights;
+        const auto normal=stock_native_vehicle_stack::offset({0.,1.,0.},state.terrain_pitch,state.roll);
+        for(unsigned i=0;i<points.size();++i){if(exact)points[i]=stock_native_vehicle_stack::offset(points[i],state.terrain_pitch,state.roll);
+            const auto&p=points[i];const double hint=y+(exact&&normal[1]>.01?p[1]:0.);
+            heights[i]=w->second->basic_ground(x+cs*p[0]+sn*p[2],z-sn*p[0]+cs*p[2],hint,{});}
+        const auto&front=heights[0];const auto&rear=heights[1];const auto&right=heights[2];const auto&left=heights[3];
         if(!front||!rear||!right||!left){if(exact)return false;pitch=state.terrain_pitch;roll=state.roll;}
         else {
-            const double grade=(*front-*rear)/length;
-            pitch=exact?-std::atan(grade):-std::atan2(*front-*rear,length)*.9;
-            roll=exact?std::atan2((*right-*left)/width,std::sqrt(1.+grade*grade)):std::atan2(*right-*left,width)*.9;
-            const double tilt=exact?std::hypot(pitch,roll):std::sqrt(pitch*pitch+roll*roll);
-            if(tilt>.61){if(exact){pitch=pitch*.61/tilt;roll=roll*.61/tilt;}else{const double scale=.61/tilt;pitch*=scale;roll*=scale;}}
-            if(!exact){pitch=state.terrain_pitch+(pitch-state.terrain_pitch)*.5;roll=state.roll+(roll-state.roll)*.5;}
+            if(exact){const double fx=points[0][0]-points[1][0],fz=points[0][2]-points[1][2],sx=points[2][0]-points[3][0],sz=points[2][2]-points[3][2],det=fx*sz-fz*sx;
+                if(std::abs(det)<1.e-8)return false;const double fd=*front-*rear,sd=*right-*left;
+                const double grade=(fx*sd-sx*fd)/det,lateral=(fd*sz-sd*fz)/det;
+                pitch=-std::atan(grade);roll=std::atan2(lateral,std::sqrt(1.+grade*grade));
+            }else{pitch=-std::atan2(*front-*rear,length)*.9;roll=std::atan2(*right-*left,width)*.9;
+                const double tilt=std::sqrt(pitch*pitch+roll*roll);if(tilt>.61){const double scale=.61/tilt;pitch*=scale;roll*=scale;}
+                pitch=state.terrain_pitch+(pitch-state.terrain_pitch)*.5;roll=state.roll+(roll-state.roll)*.5;}
         }
         target=exact?std::array<double,2>{{pitch,roll}}:std::array<double,2>{{pitch*2.-state.terrain_pitch,roll*2.-state.roll}};
     }
     auto after=state;after.terrain_pitch=pitch;after.pitch=pitch+state.hydraulic_pitch;after.roll=roll;
     if(turret_blocks(turret_sweep(state,after)))return false;
+    if(exact&&state.basic_support_datum&&std::max(std::abs(pitch-state.terrain_pitch),std::abs(roll-state.roll))>.001) {
+        const auto w=worlds_.find(state.id);if(w==worlds_.end())throw std::invalid_argument("Slope support world is unavailable");
+        const auto& suspension=w->second->suspension_descriptor();
+        const auto current=step::basic_support_status(state,suspension,*w->second);
+        if(std::all_of(current.begin(),current.end(),[](const auto&row){return row.valid;})) {
+            const auto proposed=step::basic_support_status(after,suspension,*w->second);
+            if(!std::all_of(proposed.begin(),proposed.end(),[](const auto&row){return row.valid;})) {
+                state.slope_target=std::array<double,2>{state.terrain_pitch,state.roll};
+                if(target)memory.pose_sample=std::array<double,3>{state.position[0],state.position[2],state.yaw};
+                return false;
+            }
+        }
+    }
     state.terrain_pitch=pitch;state.pitch=after.pitch;state.roll=roll;state.slope_basis_yaw=state.yaw;
     if(target){state.slope_target=target;memory.pose_sample=std::array<double,3>{{state.position[0],state.position[2],state.yaw}};}return true;
 }

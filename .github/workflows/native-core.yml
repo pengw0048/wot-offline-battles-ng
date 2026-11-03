@@ -12,6 +12,42 @@ permissions:
   contents: read
 
 jobs:
+  gameplay-source:
+    name: Pinned gameplay preparation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Fetch the exact gameplay source used by the client build
+        shell: python
+        run: |
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.getcwd())
+          from tools.stage_ng_launcher_source import _copy_fork, pinned_revision
+          source = Path(os.environ['RUNNER_TEMP']) / 'gameplay-source'
+          source.mkdir()
+          revision = pinned_revision()
+          _copy_fork(None, revision, source)
+          (source / 'fork-source.json').write_text(json.dumps({'revision': revision}))
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('WOT_FORK_SOURCE=%s\n' % source)
+      - name: Verify runtime preparation and final wire producers
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python native/standalone_client/bigworld/prepare_offline_fork.py "$WOT_FORK_SOURCE" "$RUNNER_TEMP/gameplay-runtime"
+          python -m unittest discover -s native/standalone_client/tests -p 'test_offline_fork_preparation.py'
+          python -m unittest discover -s native/standalone_client/tests -p 'test_wire_build_integrity.py'
+      - name: Compile the shipped Python payload with CPython 2.7
+        run: >-
+          docker run --rm -v "$RUNNER_TEMP/gameplay-runtime:/payload:ro"
+          python:2.7.18 python -B -c
+          "import os; paths = [os.path.join(base, name) for base, dirs, names in os.walk('/payload') for name in names if name.endswith('.py')]; assert paths, 'No shipped Python payload found'; [compile(open(path, 'rb').read(), path, 'exec') for path in paths]; print('Compiled %d shipped Python files' % len(paths))"
+
   native-core:
     name: Native core (${{ matrix.name }})
     runs-on: ${{ matrix.os }}

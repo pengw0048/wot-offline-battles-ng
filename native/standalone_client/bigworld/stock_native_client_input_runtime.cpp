@@ -63,6 +63,7 @@ bool publishInput(native_battle::Battle&battle,double now,std::optional<bool>sie
     const auto vehicle=frozen?frozen->state:driver.state();const auto controls=frozen?frozen->controls:driver.controls();auto client=p::retain(battle.engine.client.get());
     auto args=p::Ref(PyTuple_Pack(1,client.get())),kwargs=p::dict();const bool braking=vehicle.siege_braking.has_value()||siege.has_value();
     p::set(kwargs.get(),"forward",p::number(braking?0.:controls.forward));p::set(kwargs.get(),"turn",p::number(braking?0.:controls.turn));p::set(kwargs.get(),"aim_yaw",p::number(controls.aim_yaw));p::set(kwargs.get(),"gun_pitch",p::number(controls.gun_pitch));p::set(kwargs.get(),"position",p::tupleNumbers(vehicle.position));p::set(kwargs.get(),"yaw",p::number(vehicle.yaw));p::set(kwargs.get(),"pitch",p::number(vehicle.pitch));p::set(kwargs.get(),"roll",p::number(vehicle.roll));p::set(kwargs.get(),"speed",p::number(vehicle.speed));p::set(kwargs.get(),"up_cosine",p::number(std::clamp(vehicle.surface_up_cosine.value_or(std::cos(vehicle.pitch)*std::cos(vehicle.roll)),-1.,1.)));
+    if(vehicle.wreck_active)p::set(kwargs.get(),"wreck_pose",p::boolean(true));
     if(vehicle.hydraulic_body)p::set(kwargs.get(),"hydraulic_body",p::tupleNumbers(*vehicle.hydraulic_body));
     auto&ledger=*access.publication;p::set(kwargs.get(),"ram_contacts",p::Ref(state::write(frozen?frozen->ram_contacts:ledger.ram_contacts)));p::set(kwargs.get(),"tank_pushes",p::Ref(state::write(frozen?frozen->tank_pushes:ledger.tank_pushes)));p::set(kwargs.get(),"turret_pushes",p::Ref(state::write(frozen?frozen->turret_pushes:ledger.turret_pushes)));p::set(kwargs.get(),"destructible_contacts",p::Ref(state::write(frozen?frozen->destructible_contacts:ledger.destructible_contacts)));
     if(gun){auto checkpoint=p::dict();p::set(checkpoint.get(),"reload_time",p::number(gun->reload_time));p::set(checkpoint.get(),"reload_duration",p::number(gun->reload_duration));p::set(checkpoint.get(),"clip",p::integer(gun->clip));p::set(checkpoint.get(),"clip_size",p::integer(gun->config.clip_size));p::set(checkpoint.get(),"dispersion",p::number(gun->dispersion));p::set(kwargs.get(),"gun_checkpoint",checkpoint);p::set(kwargs.get(),"shell_index",p::integer(gun->shot));p::set(kwargs.get(),"next_shell_index",p::integer(gun->pending.value_or(gun->shot)));p::set(kwargs.get(),"shell_change_pending",p::boolean(gun->pending.has_value()));}
@@ -96,9 +97,10 @@ bool flushLandingAt(native_battle::Battle&battle,double now){
     const bool object=observation.resolved().kind==state::Value::Kind::Object;
     const auto speed=object?observation.get("impact_speed").numeric():observation.numeric();
     auto contacts=object?p::Ref(state::write(observation.get("module_contacts"))):p::list();
+    auto vehicle=object?p::Ref(state::write(observation.get("vehicle_contact"))):p::retain(Py_None);
     if(!sendCurrentAt(battle,now))return false;
     auto current=drive::driverAccess(battle);if(current.driver!=access.driver||current.publication!=access.publication)return false;
-    if(!stock_native_client_landing::sendObservation(battle.engine.client.get(),speed,contacts.get()))return false;
+    if(!stock_native_client_landing::sendObservation(battle.engine.client.get(),speed,contacts.get(),vehicle.get()))return false;
     current=drive::driverAccess(battle);if(current.driver!=access.driver||current.publication!=access.publication)return false;
     if(!ledger.landingAdmitted())throw p::Error("Native landing frontier changed during publication");
     access.driver->landing_admitted();return true;
