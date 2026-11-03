@@ -4527,3 +4527,23 @@ per-draw timers. Actual normalmap/normalmap_specmap/lightonly host microbenchmar
 show only about 0.025 ms per 1,000 draws available from a proposed packing
 rewrite, so that rewrite is deliberately omitted. Neither the report nor the
 host benchmark establishes a matched FPS improvement or GPU stage attribution.
+
+
+The next 28_desert desktop report identifies a CPU-heavy interval: 18.753 ms
+wall/frame, 18.203 ms main-thread CPU and 10.391 ms render-thread CPU, with
+0.220 ms synchronous wait. A later interval admits 133.71 synchronous buffer
+locks/frame. These windows do not identify the exact camera pose or establish
+a GPU-stage cost. The existing summary now attributes synchronous buffer locks
+to bounded caller-RVA/descriptor groups and reports five coarse main-loop wall
+intervals (tick, animation, draw, main scene, terrain). Main scene and terrain
+are subsets of draw; the intervals are not additive or exclusive CPU times.
+The normal Profiler remains disabled; no per-draw timer or full profiler build
+is introduced.
+
+Original terrain border arithmetic and real Adapter/Runtime register/texture
+uploads pass host checks, including the exact 28_desert settings. Missing red
+map-edge markings remain unproved at the final Windows draw. Bounded terrain
+samples read actual binding/device state after BeginPass, once for each colour
+kind and once when that kind first draws an arena-edge tile. This is diagnostic
+readback, not a red-line repair or proof of final composition. It must not
+change TerrainSettings object layout or overwrite the original rendering path.

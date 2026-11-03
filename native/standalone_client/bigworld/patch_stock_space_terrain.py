@@ -185,6 +185,7 @@ SETTINGS_DECLARATIONS = '''
     bool initStockCompiled(const std::shared_ptr<wot::StockTerrainBinary>& data,
         const BW::vector<BW::string>& resources, const BW::map<BW::string, uint32>& mappings);
     const wot::StockTerrainBinary* stockCompiledData() const { return stockCompiledData_.get(); }
+    const std::shared_ptr<const wot::StockTerrainBinary>& stockCompiledOwner() const { return stockCompiledData_; }
     uint8 stockTextureMask(float minimum, float maximum) const;
     bool loadStockCompiledResources(const BW::string& spaceDir);
     const SmartPointer<Moo::BaseTexture>& stockBorderMap() const { return stockBorderMap_; }
@@ -199,6 +200,40 @@ SETTINGS_MEMBERS = '''
     SmartPointer<Moo::BaseTexture> stockBorderMap_;
 #endif
 '''
+
+# Exact generated blocks from the initial diagnostic preparation.
+PREVIOUS_DIAGNOSTIC_DECLARATIONS = '''
+#ifndef MF_SERVER
+    bool initStockCompiled(const std::shared_ptr<wot::StockTerrainBinary>& data,
+        const BW::vector<BW::string>& resources, const BW::map<BW::string, uint32>& mappings);
+    const wot::StockTerrainBinary* stockCompiledData() const { return stockCompiledData_.get(); }
+    uint8 stockTextureMask(float minimum, float maximum) const;
+    bool loadStockCompiledResources(const BW::string& spaceDir);
+    const SmartPointer<Moo::BaseTexture>& stockBorderMap() const { return stockBorderMap_; }
+    bool stockNeedsBorderDiagnostic(unsigned kind) const
+    {
+        const uint32 bits = uint32(9) << kind;
+        return (stockBorderDiagnosticMask_ & bits) != bits;
+    }
+    bool stockTakeBorderDiagnostic(unsigned index)
+    {
+        const uint32 bit = uint32(1) << index;
+        if (stockBorderDiagnosticMask_ & bit) return false;
+        stockBorderDiagnosticMask_ |= bit;
+        return true;
+    }
+#endif
+'''
+PREVIOUS_DIAGNOSTIC_MEMBERS = '''
+#ifndef MF_SERVER
+    std::shared_ptr<const wot::StockTerrainBinary> stockCompiledData_;
+    BW::vector<BW::string> stockCompiledResources_;
+    BW::map<BW::string, uint32> stockCompiledMappings_;
+    SmartPointer<Moo::BaseTexture> stockBorderMap_;
+    uint32 stockBorderDiagnosticMask_;
+#endif
+'''
+
 
 RESET_COMPILED = '''
 #ifndef MF_SERVER
@@ -268,6 +303,117 @@ MATERIAL_CONSTANTS = '''
     }
 '''
 
+# Read the actual final material/device state only once per colour kind and
+# once when that kind first draws an arena-edge tile. A weak compiled-space
+# owner resets the mask on teardown without changing TerrainSettings layout.
+BORDER_DIAGNOSTIC = r'''                if (i == 0 && !Moo::rc().reflectionScene() &&
+                    (drawMethod == DM_BLEND || drawMethod == DM_BUMP || drawMethod == DM_SINGLE_LOD))
+                {
+                    const unsigned kind = drawMethod == DM_SINGLE_LOD ? 0 : drawMethod == DM_BLEND ? 1 : 2;
+                    const wot::StockTerrainBinary* data = pBlock->settings()->stockCompiledData();
+                    static std::weak_ptr<const wot::StockTerrainBinary> observed;
+                    static const wot::StockTerrainBinary* previous = NULL;
+                    static uint32 mask = 0;
+                    if (data && (previous != data || observed.expired()))
+                    {
+                        observed = pBlock->settings()->stockCompiledOwner();
+                        previous = data;
+                        mask = 0;
+                    }
+                    const uint32 bits = uint32(9) << kind;
+                    if (data && (mask & bits) != bits)
+                    {
+                        const Vector3 low = Moo::rc().world().applyToOrigin();
+                        const Vector3 high = Moo::rc().world().applyPoint(Vector3(pBlock->blockSize(), 0.f, pBlock->blockSize()));
+                        const bool edge =
+                            (((low.x <= data->settingFloat(20) && high.x >= data->settingFloat(20)) ||
+                              (low.x <= data->settingFloat(22) && high.x >= data->settingFloat(22))) &&
+                             low.z <= data->settingFloat(23) && high.z >= data->settingFloat(21)) ||
+                            (((low.z <= data->settingFloat(21) && high.z >= data->settingFloat(21)) ||
+                              (low.z <= data->settingFloat(23) && high.z >= data->settingFloat(23))) &&
+                             low.x <= data->settingFloat(22) && high.x >= data->settingFloat(20));
+                        const uint32 bit = uint32(1) << (kind + (edge ? 3 : 0));
+                        if (!(mask & bit))
+                        {
+                            mask |= bit;
+                            ID3DXEffect* effect = pEffectMaterial->pEffect()->pEffect();
+                            D3DXTECHNIQUE_DESC technique = {};
+                            effect->GetTechniqueDesc(effect->GetCurrentTechnique(), &technique);
+                            D3DXVECTOR4 outer = {}, inverse = {};
+                            float blend = 0.f;
+                            const HRESULT outerResult = effect->GetVector(pMaterial->stockOuterBorder_, &outer);
+                            const HRESULT inverseResult = effect->GetVector(pMaterial->stockInverseBorder_, &inverse);
+                            const HRESULT blendResult = effect->GetFloat(pMaterial->stockBorderBlend_, &blend);
+                            DX::BaseTexture* boundMap = NULL;
+                            const HRESULT mapResult = effect->GetTexture(pMaterial->stockBorderMap_, &boundMap);
+                            const bool gridOnly = technique.Name && BW::string(technique.Name) == "ColorGridOnly";
+                            const unsigned firstRegister = kind == 0 ? (gridOnly ? 18 : 13) : (gridOnly ? 29 : 24);
+                            unsigned sampler = 0;
+                            DWORD sampledSlots = 0;
+                            float actual[12] = {};
+                            const HRESULT registerResult = Moo::rc().device()->GetVertexShaderConstantF(firstRegister, actual, 3);
+                            DX::BaseTexture* sampledMap = NULL;
+                            HRESULT samplerResult = S_OK;
+                            for (unsigned slot = 0; slot < 16; ++slot)
+                            {
+                                DX::BaseTexture* candidate = NULL;
+                                const HRESULT result = Moo::rc().device()->GetTexture(slot, &candidate);
+                                if (FAILED(result)) samplerResult = result;
+                                if (boundMap && candidate == boundMap)
+                                {
+                                    sampledSlots |= DWORD(1) << slot;
+                                    if (!sampledMap) { sampledMap = candidate; sampler = slot; candidate = NULL; }
+                                }
+                                if (candidate) candidate->Release();
+                            }
+                            DWORD addressing[2] = {}, filtering[2] = {};
+                            const HRESULT addressU = Moo::rc().device()->GetSamplerState(sampler, D3DSAMP_ADDRESSU, &addressing[0]);
+                            const HRESULT addressV = Moo::rc().device()->GetSamplerState(sampler, D3DSAMP_ADDRESSV, &addressing[1]);
+                            const HRESULT minFilter = Moo::rc().device()->GetSamplerState(sampler, D3DSAMP_MINFILTER, &filtering[0]);
+                            const HRESULT magFilter = Moo::rc().device()->GetSamplerState(sampler, D3DSAMP_MAGFILTER, &filtering[1]);
+                            D3DSURFACE_DESC mapDesc = {}, targetDesc = {};
+                            HRESULT descResult = E_FAIL, targetResult = E_FAIL;
+                            if (sampledMap && sampledMap->GetType() == D3DRTYPE_TEXTURE)
+                                descResult = static_cast<DX::Texture*>(sampledMap)->GetLevelDesc(0, &mapDesc);
+                            DX::Surface* target = NULL;
+                            targetResult = Moo::rc().device()->GetRenderTarget(2, &target);
+                            if (SUCCEEDED(targetResult) && target) targetResult = target->GetDesc(&targetDesc);
+                            DWORD writeMask = 0;
+                            const HRESULT writeResult = Moo::rc().device()->GetRenderState(D3DRS_COLORWRITEENABLE2, &writeMask);
+                            const Vector3 camera = Moo::rc().lodInvView().applyToOrigin();
+                            const auto expected = data->borderParameters();
+                            const SmartPointer<Moo::BaseTexture>& resource = pBlock->settings()->stockBorderMap();
+                            INFO_MSG("TerrainBorder draw kind=%u edge=%u technique=%s tile=(%.3f,%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) arena=(%.3f,%.3f,%.3f,%.3f) width=%.6f authoredBlend=%.6f resource=%s\n",
+                                kind, unsigned(edge), technique.Name ? technique.Name : "<unknown>", low.x, low.z, high.x, high.z, camera.x, camera.y, camera.z,
+                                data->settingFloat(20), data->settingFloat(21), data->settingFloat(22), data->settingFloat(23),
+                                data->settingFloat(24), data->settingFloat(25), resource ? resource->resourceID().c_str() : "<none>");
+                            INFO_MSG("TerrainBorder binding hr=(%08lx,%08lx,%08lx,%08lx) outer=(%.6f,%.6f,%.6f,%.6f) inverse=(%.6f,%.6f,%.6f,%.6f) blend=%.6f expectedBlend=%.6f\n",
+                                static_cast<unsigned long>(outerResult), static_cast<unsigned long>(inverseResult),
+                                static_cast<unsigned long>(blendResult), static_cast<unsigned long>(mapResult),
+                                outer.x, outer.y, outer.z, outer.w, inverse.x, inverse.y, inverse.z, inverse.w, blend, expected.blend);
+                            INFO_MSG("TerrainBorder device hr=(%08lx,%08lx,%08lx,%08lx,%08lx) c%u=(%.6f,%.6f,%.6f,%.6f) c%u=(%.6f,%.6f,%.6f,%.6f) c%u.x=%.6f s%u_bound=%u sampledSlots=%04lx texture=(%u,%u,%u) color2=(%u,%u,%u) writeMask=%lu\n",
+                                static_cast<unsigned long>(registerResult), static_cast<unsigned long>(samplerResult),
+                                static_cast<unsigned long>(descResult), static_cast<unsigned long>(targetResult), static_cast<unsigned long>(writeResult),
+                                firstRegister, actual[0], actual[1], actual[2], actual[3], firstRegister + 1,
+                                actual[4], actual[5], actual[6], actual[7], firstRegister + 2, actual[8], sampler,
+                                unsigned(boundMap && boundMap == sampledMap), static_cast<unsigned long>(sampledSlots), mapDesc.Width, mapDesc.Height, unsigned(mapDesc.Format),
+                                targetDesc.Width, targetDesc.Height, unsigned(targetDesc.Format), static_cast<unsigned long>(writeMask));
+                            INFO_MSG("TerrainBorder sampler s%u hr=(%08lx,%08lx,%08lx,%08lx) address=(%lu,%lu) filter=(%lu,%lu)\n",
+                                sampler, static_cast<unsigned long>(addressU), static_cast<unsigned long>(addressV),
+                                static_cast<unsigned long>(minFilter), static_cast<unsigned long>(magFilter),
+                                static_cast<unsigned long>(addressing[0]), static_cast<unsigned long>(addressing[1]),
+                                static_cast<unsigned long>(filtering[0]), static_cast<unsigned long>(filtering[1]));
+                            if (target) target->Release();
+                            if (sampledMap) sampledMap->Release();
+                            if (boundMap) boundMap->Release();
+                        }
+                    }
+                }
+
+'''
+
+PREVIOUS_DIAGNOSTIC_READBACK = '                if (i == 0 && !Moo::rc().reflectionScene() &&\n                    (drawMethod == DM_BLEND || drawMethod == DM_BUMP || drawMethod == DM_SINGLE_LOD))\n                {\n                    const unsigned kind = drawMethod == DM_SINGLE_LOD ? 0 : drawMethod == DM_BLEND ? 1 : 2;\n                    const wot::StockTerrainBinary* data = pBlock->settings()->stockCompiledData();\n                    if (data && pBlock->settings()->stockNeedsBorderDiagnostic(kind))\n                    {\n                        const Vector3 low = Moo::rc().world().applyToOrigin();\n                        const Vector3 high = Moo::rc().world().applyPoint(Vector3(pBlock->blockSize(), 0.f, pBlock->blockSize()));\n                        const bool edge =\n                            (((low.x <= data->settingFloat(20) && high.x >= data->settingFloat(20)) ||\n                              (low.x <= data->settingFloat(22) && high.x >= data->settingFloat(22))) &&\n                             low.z <= data->settingFloat(23) && high.z >= data->settingFloat(21)) ||\n                            (((low.z <= data->settingFloat(21) && high.z >= data->settingFloat(21)) ||\n                              (low.z <= data->settingFloat(23) && high.z >= data->settingFloat(23))) &&\n                             low.x <= data->settingFloat(22) && high.x >= data->settingFloat(20));\n                        if (pBlock->settings()->stockTakeBorderDiagnostic(kind + (edge ? 3 : 0)))\n                        {\n                            ID3DXEffect* effect = pEffectMaterial->pEffect()->pEffect();\n                            D3DXVECTOR4 outer = {}, inverse = {};\n                            float blend = 0.f;\n                            const HRESULT outerResult = effect->GetVector(pMaterial->stockOuterBorder_, &outer);\n                            const HRESULT inverseResult = effect->GetVector(pMaterial->stockInverseBorder_, &inverse);\n                            const HRESULT blendResult = effect->GetFloat(pMaterial->stockBorderBlend_, &blend);\n                            DX::BaseTexture* boundMap = NULL;\n                            const HRESULT mapResult = effect->GetTexture(pMaterial->stockBorderMap_, &boundMap);\n                            const unsigned firstRegister = kind == 0 ? 13 : 24, sampler = kind == 0 ? 0 : 4;\n                            float actual[12] = {};\n                            const HRESULT registerResult = Moo::rc().device()->GetVertexShaderConstantF(firstRegister, actual, 3);\n                            DX::BaseTexture* sampledMap = NULL;\n                            const HRESULT samplerResult = Moo::rc().device()->GetTexture(sampler, &sampledMap);\n                            D3DSURFACE_DESC mapDesc = {}, targetDesc = {};\n                            HRESULT descResult = E_FAIL, targetResult = E_FAIL;\n                            if (sampledMap && sampledMap->GetType() == D3DRTYPE_TEXTURE)\n                                descResult = static_cast<DX::Texture*>(sampledMap)->GetLevelDesc(0, &mapDesc);\n                            DX::Surface* target = NULL;\n                            targetResult = Moo::rc().device()->GetRenderTarget(2, &target);\n                            if (SUCCEEDED(targetResult) && target) targetResult = target->GetDesc(&targetDesc);\n                            DWORD writeMask = 0;\n                            const HRESULT writeResult = Moo::rc().device()->GetRenderState(D3DRS_COLORWRITEENABLE2, &writeMask);\n                            const Vector3 camera = Moo::rc().lodInvView().applyToOrigin();\n                            const auto expected = data->borderParameters();\n                            const SmartPointer<Moo::BaseTexture>& resource = pBlock->settings()->stockBorderMap();\n                            INFO_MSG("TerrainBorder draw kind=%u edge=%u tile=(%.3f,%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) arena=(%.3f,%.3f,%.3f,%.3f) width=%.6f authoredBlend=%.6f resource=%s\\n",\n                                kind, unsigned(edge), low.x, low.z, high.x, high.z, camera.x, camera.y, camera.z,\n                                data->settingFloat(20), data->settingFloat(21), data->settingFloat(22), data->settingFloat(23),\n                                data->settingFloat(24), data->settingFloat(25), resource ? resource->resourceID().c_str() : "<none>");\n                            INFO_MSG("TerrainBorder binding hr=(%08lx,%08lx,%08lx,%08lx) outer=(%.6f,%.6f,%.6f,%.6f) inverse=(%.6f,%.6f,%.6f,%.6f) blend=%.6f expectedBlend=%.6f\\n",\n                                static_cast<unsigned long>(outerResult), static_cast<unsigned long>(inverseResult),\n                                static_cast<unsigned long>(blendResult), static_cast<unsigned long>(mapResult),\n                                outer.x, outer.y, outer.z, outer.w, inverse.x, inverse.y, inverse.z, inverse.w, blend, expected.blend);\n                            INFO_MSG("TerrainBorder device hr=(%08lx,%08lx,%08lx,%08lx,%08lx) c%u=(%.6f,%.6f,%.6f,%.6f) c%u=(%.6f,%.6f,%.6f,%.6f) c%u.x=%.6f s%u_bound=%u texture=(%u,%u,%u) color2=(%u,%u,%u) writeMask=%lu\\n",\n                                static_cast<unsigned long>(registerResult), static_cast<unsigned long>(samplerResult),\n                                static_cast<unsigned long>(descResult), static_cast<unsigned long>(targetResult), static_cast<unsigned long>(writeResult),\n                                firstRegister, actual[0], actual[1], actual[2], actual[3], firstRegister + 1,\n                                actual[4], actual[5], actual[6], actual[7], firstRegister + 2, actual[8], sampler,\n                                unsigned(boundMap && boundMap == sampledMap), mapDesc.Width, mapDesc.Height, unsigned(mapDesc.Format),\n                                targetDesc.Width, targetDesc.Height, unsigned(targetDesc.Format), static_cast<unsigned long>(writeMask));\n                            if (target) target->Release();\n                            if (sampledMap) sampledMap->Release();\n                            if (boundMap) boundMap->Release();\n                        }\n                    }\n                }\n\n'
+
 TECHNIQUE_HELPER = '''
     bool selectStockTerrainTechnique(Moo::EffectMaterial& material,
         const char* legacy, const char* original)
@@ -286,6 +432,16 @@ def replace_once(text, before, after):
     if text.count(before) != 1:
         raise ValueError('Unrecognized pinned terrain seam: ' + before[:90])
     return text.replace(before, after)
+
+
+def upgrade_block(text, previous, current):
+    """Upgrade one known cached block, including our interrupted duplicate state."""
+    old_count, new_count = text.count(previous), text.count(current)
+    if old_count > 1 or new_count > 1:
+        raise ValueError('Unrecognized duplicate cached terrain block')
+    if old_count:
+        return text.replace(previous, '' if new_count else current, 1)
+    return text
 
 
 def function(text, signature, replacement):
@@ -347,6 +503,16 @@ def patch(root):
     settings_source_path = root / 'lib/terrain/terrain_settings.cpp'
     settings_header = settings_header_path.read_text(encoding='utf-8-sig')
     settings_source = settings_source_path.read_text(encoding='utf-8-sig')
+    # Cached preparations already contain the pre-diagnostic owner. Upgrade
+    # complete known blocks before the pristine insertion seams are considered.
+    previous_declarations = SETTINGS_DECLARATIONS.replace(
+        '    const std::shared_ptr<const wot::StockTerrainBinary>& stockCompiledOwner() const { return stockCompiledData_; }\n', '')
+    previous_settings = SETTINGS.replace('    stockBorderMap_ = NULL;\n',
+        '    stockBorderMap_ = NULL;\n    stockBorderDiagnosticMask_ = 0;\n', 1)
+    settings_header = upgrade_block(settings_header, PREVIOUS_DIAGNOSTIC_DECLARATIONS, SETTINGS_DECLARATIONS)
+    settings_header = upgrade_block(settings_header, previous_declarations, SETTINGS_DECLARATIONS)
+    settings_header = upgrade_block(settings_header, PREVIOUS_DIAGNOSTIC_MEMBERS, SETTINGS_MEMBERS)
+    settings_source = upgrade_block(settings_source, previous_settings, SETTINGS)
     settings_header = replace_once(settings_header, '#include "resmgr/datasection.hpp"',
         '#include "resmgr/datasection.hpp"\n#include "cstdmf/bw_map.hpp"\n#include <memory>\n'
         'namespace wot { struct StockTerrainBinary; }')
@@ -451,6 +617,9 @@ def patch(root):
         '                else if (DM_SHADOW_CAST != drawMethod && DM_Z_ONLY != drawMethod)',
         '                else if (DM_SHADOW_CAST != drawMethod && DM_Z_ONLY != drawMethod &&\n'
         '                    (!wot::is_stock_effect(pEffectMaterial->pEffect()->pEffect()) || !Moo::rc().reflectionScene()))')
+    renderer = upgrade_block(renderer, PREVIOUS_DIAGNOSTIC_READBACK, BORDER_DIAGNOSTIC)
+    renderer = replace_once(renderer, '                // draw single material',
+        BORDER_DIAGNOSTIC + '                // draw single material')
     graphics_path = root / 'lib/terrain/terrain_graphics_options.cpp'
     graphics = graphics_path.read_text(encoding='utf-8-sig')
     # #1513 adaed0, Holder<GraphicsOption> value+8. Texture/bump scales and

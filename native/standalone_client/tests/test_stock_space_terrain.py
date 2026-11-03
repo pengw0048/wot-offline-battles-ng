@@ -375,6 +375,7 @@ int main(){
         TerrainSettings::s_useLodTexture_=false;
         assert(settings.stockTextureMask(1001,1100)==42); // Real blend-only mode.
         assert(settings.stockCompiledData()==data.get());
+        assert(settings.stockCompiledOwner().get()==data.get());
         assert(settings.loadStockCompiledResources("spaces/100_thepit/"));
         auto& textures=*Moo::TextureManager::instance();
         assert(textures.requested.back()=="maps/landscape/100_thepit/border.dds");
@@ -394,6 +395,102 @@ int main(){
     assert(border.inverseDifference[0]<0&&border.inverseDifference[2]>0);
 }
 '''
+
+BORDER_DIAGNOSTIC_PROBE = r"""
+#include "wot/stock_terrain_binary.hpp"
+#include <cassert>
+#include <cstdarg>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <vector>
+namespace BW{using string=std::string;}
+using uint32=std::uint32_t;using DWORD=unsigned long;using HRESULT=long;
+const unsigned D3DSAMP_ADDRESSU=1,D3DSAMP_ADDRESSV=2,D3DSAMP_MINFILTER=6,D3DSAMP_MAGFILTER=5;
+const HRESULT S_OK=0,E_FAIL=-1;const unsigned D3DRTYPE_TEXTURE=3,D3DRS_COLORWRITEENABLE2=192;
+#define SUCCEEDED(x) ((x)>=0)
+#define FAILED(x) ((x)<0)
+struct D3DXTECHNIQUE_DESC{const char*Name=nullptr;};
+struct D3DXVECTOR4{float x=0,y=0,z=0,w=0;};
+struct Vector3{float x,y,z;Vector3(float a=0,float b=0,float c=0):x(a),y(b),z(c){}};
+struct Matrix{Vector3 origin;Vector3 applyToOrigin()const{return origin;}
+    Vector3 applyPoint(Vector3 p)const{return Vector3(origin.x+p.x,origin.y+p.y,origin.z+p.z);}};
+struct D3DSURFACE_DESC{unsigned Width=0,Height=0,Format=0;};
+namespace DX{
+struct BaseTexture{int refs=1;unsigned GetType()const{return D3DRTYPE_TEXTURE;}void Release(){--refs;}};
+struct Texture:BaseTexture{HRESULT GetLevelDesc(unsigned,D3DSURFACE_DESC*d){*d={16,16,21};return S_OK;}};
+struct Surface{int refs=1;HRESULT GetDesc(D3DSURFACE_DESC*d){*d={1280,720,21};return S_OK;}void Release(){--refs;}};
+}
+DX::Texture texture;DX::Surface target;
+int reads=0;bool fail=false;std::vector<std::string> logs;
+void logMessage(const char*format,...){char line[2048];va_list args;va_start(args,format);
+    std::vsnprintf(line,sizeof(line),format,args);va_end(args);logs.push_back(line);}
+#define INFO_MSG(...) logMessage(__VA_ARGS__)
+struct ID3DXEffect{
+ const char*GetCurrentTechnique(){return "Color";}
+ HRESULT GetTechniqueDesc(const char*,D3DXTECHNIQUE_DESC*d){d->Name="Color";return S_OK;}
+ HRESULT GetVector(const char*name,D3DXVECTOR4*v){++reads;*v=name[0]=='o'?D3DXVECTOR4{-500.5f,-500.5f,500.5f,500.5f}:D3DXVECTOR4{-1.2f,-1.2f,1.2f,1.2f};return fail?E_FAIL:S_OK;}
+ HRESULT GetFloat(const char*,float*v){*v=1.2f;return S_OK;}
+ HRESULT GetTexture(const char*,DX::BaseTexture**v){*v=&texture;++texture.refs;return S_OK;}
+};
+struct Device{
+ HRESULT GetSamplerState(unsigned,unsigned state,DWORD*v){*v=state;return S_OK;}
+ HRESULT GetVertexShaderConstantF(unsigned,float*values,unsigned){for(unsigned i=0;i<12;++i)values[i]=float(i);return fail?E_FAIL:S_OK;}
+ unsigned borderSlot=7;
+ HRESULT GetTexture(unsigned slot,DX::BaseTexture**v){*v=slot==borderSlot?&texture:nullptr;if(*v)++texture.refs;return S_OK;}
+ HRESULT GetRenderTarget(unsigned index,DX::Surface**v){assert(index==2);*v=&target;++target.refs;return S_OK;}
+ HRESULT GetRenderState(unsigned,DWORD*v){*v=15;return S_OK;}
+};
+namespace Moo{
+struct BaseTexture{std::string resourceID()const{return "system/maps/col_white.dds";}};
+struct Context{bool reflection=false;Matrix transform;Device gpu;
+ bool reflectionScene()const{return reflection;}const Matrix&world()const{return transform;}
+ const Matrix&lodInvView()const{return transform;}Device*device(){return &gpu;}};
+Context context;Context&rc(){return context;}
+}
+template<class T>using SmartPointer=std::shared_ptr<T>;
+struct Settings{
+ wot::StockTerrainBinary data;SmartPointer<Moo::BaseTexture> resource=std::make_shared<Moo::BaseTexture>();
+ std::shared_ptr<const wot::StockTerrainBinary> owner{&data,[](const wot::StockTerrainBinary*){}};
+ const std::shared_ptr<const wot::StockTerrainBinary>&stockCompiledOwner()const{return owner;}
+ const wot::StockTerrainBinary*stockCompiledData()const{return &data;}
+ const SmartPointer<Moo::BaseTexture>&stockBorderMap()const{return resource;}
+};
+struct Block{Settings cfg;Settings*settings(){return &cfg;}float blockSize()const{return 100.f;}};
+struct Managed{ID3DXEffect effect;ID3DXEffect*pEffect(){return &effect;}};
+struct Material{Managed managed;Managed*pEffect(){return &managed;}};
+struct BaseMaterial{
+ const char*stockOuterBorder_="outer";const char*stockInverseBorder_="inverse";
+ const char*stockBorderBlend_="blend";const char*stockBorderMap_="map";
+};
+enum{DM_Z_ONLY,DM_SHADOW_CAST,DM_SINGLE_LOD,DM_SINGLE_OVERRIDE,DM_BLEND,DM_BUMP};
+void draw(Block*pBlock,Material*pEffectMaterial,BaseMaterial*pMaterial,unsigned drawMethod,unsigned i=0){
+@DIAGNOSTIC@
+}
+int main(){Block block;Material material;BaseMaterial base;
+ auto set=[&](unsigned i,float f){std::memcpy(&block.cfg.data.settings[i],&f,4);};
+ set(20,-500);set(21,-500);set(22,500);set(23,500);set(24,1);set(25,.6f);
+ draw(&block,&material,&base,DM_Z_ONLY);assert(logs.empty());
+ Moo::context.reflection=true;draw(&block,&material,&base,DM_BLEND);assert(logs.empty());
+ Moo::context.reflection=false;draw(&block,&material,&base,DM_BLEND,1);assert(logs.empty());
+ draw(&block,&material,&base,DM_BLEND);assert(logs.size()==4&&reads==2);
+ assert(logs[0].find("kind=1 edge=0")!=std::string::npos);
+ assert(logs[2].find("c24=")!=std::string::npos&&logs[2].find("s7_bound=1 sampledSlots=0080")!=std::string::npos);
+ for(unsigned i=0;i<100;++i){draw(&block,&material,&base,DM_BLEND);}
+ assert(logs.size()==4);
+ Moo::context.transform.origin=Vector3(400,0,700);
+ draw(&block,&material,&base,DM_BLEND);assert(logs.size()==4); // A line extension outside the arena is not its edge.
+ Moo::context.transform.origin=Vector3(400,0,0);fail=true;
+ draw(&block,&material,&base,DM_BLEND);assert(logs.size()==8&&logs[4].find("edge=1")!=std::string::npos);
+ draw(&block,&material,&base,DM_BLEND);assert(logs.size()==8);
+ Moo::context.gpu.borderSlot=0;
+ draw(&block,&material,&base,DM_SINGLE_LOD);assert(logs.size()==12&&logs[10].find("c13=")!=std::string::npos);
+ draw(&block,&material,&base,DM_BUMP);assert(logs.size()==16);
+ assert(texture.refs==1&&target.refs==1); // Both GetTexture references and the target are released even on failed readback.
+ Block another;another.cfg.data=block.cfg.data;draw(&another,&material,&base,DM_BLEND);assert(logs.size()==20);
+}
+"""
+
 
 SHADER_PROBE = r'''
 #include "wot/stock_shader_binary.hpp"
@@ -658,6 +755,50 @@ class StockSpaceTerrainTests(unittest.TestCase):
         header = without_includes((self.root / 'lib/terrain/terrain_settings.hpp').read_text())
         binary = self.compile('settings', self.prelude + SETTINGS_PROBE.replace(
             '@HEADER@', header).replace('@METHODS@', methods))
+        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_exact_pre_diagnostic_and_interrupted_cached_preparations_upgrade(self):
+        paths = [self.root / name for name in FILES]
+        final = {path: path.read_bytes() for path in paths}
+        header = self.root / 'lib/terrain/terrain_settings.hpp'
+        source = self.root / 'lib/terrain/terrain_settings.cpp'
+        renderer = self.root / 'lib/terrain/terrain2/terrain_renderer2.cpp'
+        previous_api = patch.SETTINGS_DECLARATIONS.replace(
+            '    const std::shared_ptr<const wot::StockTerrainBinary>& stockCompiledOwner() const { return stockCompiledData_; }\n', '')
+        old_settings = patch.SETTINGS.replace('    stockBorderMap_ = NULL;\n',
+            '    stockBorderMap_ = NULL;\n    stockBorderDiagnosticMask_ = 0;\n', 1)
+        try:
+            # The entire old cached state, not a second call on today's patch.
+            header.write_text(header.read_text().replace(patch.SETTINGS_DECLARATIONS, previous_api))
+            renderer.write_text(renderer.read_text().replace(patch.BORDER_DIAGNOSTIC, ''))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            # The failed preparation inserted new+old complete declarations,
+            # members and implementation. Only these exact known blocks retire.
+            header.write_text(header.read_text().replace(patch.SETTINGS_DECLARATIONS,
+                patch.PREVIOUS_DIAGNOSTIC_DECLARATIONS + previous_api).replace(patch.SETTINGS_MEMBERS,
+                patch.PREVIOUS_DIAGNOSTIC_MEMBERS + patch.SETTINGS_MEMBERS))
+            source.write_text(source.read_text().replace(patch.SETTINGS, old_settings + patch.SETTINGS))
+            renderer.write_text(renderer.read_text().replace(patch.BORDER_DIAGNOSTIC,
+                patch.PREVIOUS_DIAGNOSTIC_READBACK))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            # The native instance fields remain byte-for-byte the old layout.
+            self.assertNotIn('stockBorderDiagnosticMask_', header.read_text())
+            self.assertEqual(header.read_text().count('bool initStockCompiled('), 1)
+            self.assertEqual(source.read_text().count('bool TerrainSettings::initStockCompiled('), 1)
+        finally:
+            for path, data in final.items():
+                path.write_bytes(data)
+
+    def test_final_border_readback_is_bounded_and_releases_device_references(self):
+        renderer = (self.root / 'lib/terrain/terrain2/terrain_renderer2.cpp').read_text()
+        draw = source_function(renderer, 'bool TerrainRenderer2::drawTerrainMaterial(')
+        self.assertLess(draw.index('pEffectMaterial->beginPass(i)'), draw.index(patch.BORDER_DIAGNOSTIC))
+        self.assertLess(draw.index(patch.BORDER_DIAGNOSTIC), draw.index('pBlock->draw( pEffectMaterial )'))
+        binary = self.compile('border-diagnostic', BORDER_DIAGNOSTIC_PROBE.replace(
+            '@DIAGNOSTIC@', patch.BORDER_DIAGNOSTIC))
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

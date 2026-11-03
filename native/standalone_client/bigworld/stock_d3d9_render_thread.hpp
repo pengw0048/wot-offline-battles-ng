@@ -2,8 +2,23 @@
 #define STOCK_D3D9_RENDER_THREAD_HPP
 
 #include <d3d9.h>
+#include <cstdint>
 
 namespace wot { namespace d3d9rt {
+
+// Coarse main-loop intervals; nested scene/terrain intervals are subsets of draw.
+std::uint64_t begin_frame_stage();
+void end_frame_stage(unsigned stage, std::uint64_t begin);
+class FrameStage {
+public:
+    explicit FrameStage(unsigned stage) : stage_(stage), begin_(begin_frame_stage()) {}
+    ~FrameStage() { end_frame_stage(stage_, begin_); }
+    FrameStage(const FrameStage&) = delete;
+    FrameStage& operator=(const FrameStage&) = delete;
+private:
+    unsigned stage_;
+    std::uint64_t begin_;
+};
 
 // Returns the wrapper that records calls for the render thread, or device when the thread is off.
 IDirect3DDevice9* wrap_device(IDirect3DDevice9* device, bool ex);

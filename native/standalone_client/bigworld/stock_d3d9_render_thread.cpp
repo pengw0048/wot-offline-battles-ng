@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
+#include <intrin.h>
 #include "stock_d3d9_render_thread.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +50,8 @@ static volatile LONG g_framesQueued, g_framesDone;
 static LARGE_INTEGER g_freq;
 static long long g_frames, g_frameStart, g_frameTicks, g_syncTicks, g_paceTicks, g_bytes, g_syncCount;
 static std::unordered_map<const char*, long> g_syncBy;
+static long long g_stageTicks[5];
+static unsigned g_stageCalls[5];
 static inline long long now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 inline bool onMain() { return g_started && GetCurrentThreadId() == g_main; }
 inline bool onRender() { return GetCurrentThreadId() == g_renderId; }
@@ -221,6 +224,29 @@ IDirect3DSwapChain9* wrapOut(void*, IDirect3DSwapChain9* r); IDirect3DBaseTextur
 struct LevelCache { std::vector<D3DSURFACE_DESC> levels; };
 // Mirrors keep dynamic buffer bytes on the main thread so DISCARD/NOOVERWRITE locks never wait.
 struct Mirror { std::vector<uint8_t> data; bool pending = false, valid = false; UINT off = 0, len = 0; DWORD flags = 0; uint8_t* real = nullptr; };
+// Attribute only synchronous buffer locks, with fixed storage and no stack walk.
+// The wrapper's direct caller is resolved against the matching executable/PDB.
+struct BufferLockSummary {
+    const void* caller; UINT size; DWORD usage, pool, flags; bool vertex;
+    unsigned count;
+};
+static BufferLockSummary g_bufferLocks[32];
+static unsigned g_bufferLockKinds, g_bufferLockOverflow;
+static void recordBufferLock(const void* caller, UINT size, DWORD usage,
+    DWORD pool, DWORD flags, bool vertex) {
+    if (!rt::g_stats || !rt::onMain()) return;
+    for (unsigned i = 0; i < g_bufferLockKinds; ++i) {
+        auto& row = g_bufferLocks[i];
+        if (row.caller == caller && row.size == size && row.usage == usage &&
+            row.pool == pool && row.flags == flags && row.vertex == vertex) {
+            ++row.count; return;
+        }
+    }
+    if (g_bufferLockKinds < 32)
+        g_bufferLocks[g_bufferLockKinds++] = {caller, size, usage, pool, flags, vertex, 1};
+    else ++g_bufferLockOverflow;
+}
+
 static std::unordered_map<void*, LevelCache> g_levels;          // texture/cube wrapper -> level descs (written once at wrap)
 static std::unordered_map<void*, D3DSURFACE_DESC> g_surfDesc;
 static std::unordered_map<void*, D3DVOLUME_DESC> g_volDesc;
@@ -673,7 +699,7 @@ static HRESULT wrapContainer(IUnknown* c, REFIID riid, void** o) {
 HRESULT WSurface::GetContainer(REFIID riid, void** o) { return rt::sync([&]() -> HRESULT { void* c = nullptr; HRESULT h = real->GetContainer(riid, &c); if (FAILED(h)) { *o = nullptr; return h; } return wrapContainer((IUnknown*)c, riid, o); }, "Surface.GetContainer"); }
 HRESULT WVolume::GetContainer(REFIID riid, void** o) { return rt::sync([&]() -> HRESULT { void* c = nullptr; HRESULT h = real->GetContainer(riid, &c); if (FAILED(h)) { *o = nullptr; return h; } return wrapContainer((IUnknown*)c, riid, o); }, "Volume.GetContainer"); }
 
-template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len, void** out, DWORD flags, Desc desc) {
+template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len, void** out, DWORD flags, Desc desc, const void* caller, bool vertex) {
     auto* r = w->real;
     const bool fast = rt::onMain() && (flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE)) && !(flags & D3DLOCK_READONLY);
     if (fast) {
@@ -686,6 +712,7 @@ template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len
             if (off + len <= desc.Size) { m.pending = true; m.off = off; m.len = len; m.flags = flags; *out = m.data.data() + off; return D3D_OK; }
         }
     }
+    recordBufferLock(caller, desc.Size, desc.Usage, desc.Pool, flags, vertex);
     HRESULT h = rt::sync([&]() -> HRESULT { return r->Lock(off, len, out, flags); }, "Buffer.Lock");
     if (rt::onMain() && SUCCEEDED(h) && w->ext) { Mirror& m = *static_cast<Mirror*>(w->ext); m.real = (uint8_t*)*out; m.off = off; m.len = len ? len : desc.Size; }
     return h;
@@ -704,9 +731,9 @@ template<class W> static HRESULT bufferUnlock(W* w) {
     }
     return rt::sync([&]() -> HRESULT { return rt::reportResult("Buffer.Unlock", r->Unlock()); }, "Buffer.Unlock");
 }
-HRESULT WVB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_vbDesc, (void*)this)); }
+HRESULT WVB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_vbDesc, (void*)this), _ReturnAddress(), true); }
 HRESULT WVB::Unlock() { return bufferUnlock(this); }
-HRESULT WIB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_ibDesc, (void*)this)); }
+HRESULT WIB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_ibDesc, (void*)this), _ReturnAddress(), false); }
 HRESULT WIB::Unlock() { return bufferUnlock(this); }
 
 // Reset needs every reference to default-pool surfaces gone: drop shadow references and run pending retirements first.
@@ -811,6 +838,23 @@ static void flushStats() {
         rt::threadCpuDelta(GetCurrentThread(), rt::g_mainCpu) / f,
         rt::threadCpuDelta(rt::g_renderThread, rt::g_renderCpu) / f);
     for (auto& e : rt::g_syncBy) fprintf(rt::g_log, "  sync %s per_frame=%.2f\n", e.first, e.second / f);
+    static const char* stages[] = {"tick", "animation", "draw", "main_scene", "terrain"};
+    for (unsigned i = 0; i < 5; ++i) {
+        fprintf(rt::g_log, "  stage %s ms/frame=%.3f calls/frame=%.2f\n",
+            stages[i], rt::g_stageTicks[i] * ms / f, rt::g_stageCalls[i] / f);
+        rt::g_stageTicks[i] = 0; rt::g_stageCalls[i] = 0;
+    }
+    const uintptr_t image = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    for (unsigned i = 0; i < g_bufferLockKinds; ++i) {
+        const auto& row = g_bufferLocks[i];
+        fprintf(rt::g_log, "  buffer_lock kind=%s caller_rva=%08llx size=%u usage=%08lx pool=%lu flags=%08lx per_frame=%.2f\n",
+            row.vertex ? "vertex" : "index",
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(row.caller) - image),
+            row.size, static_cast<unsigned long>(row.usage), static_cast<unsigned long>(row.pool),
+            static_cast<unsigned long>(row.flags), row.count / f);
+    }
+    if (g_bufferLockOverflow) fprintf(rt::g_log, "  buffer_lock unclassified_per_frame=%.2f\n", g_bufferLockOverflow / f);
+    g_bufferLockKinds = g_bufferLockOverflow = 0;
     fflush(rt::g_log);
     rt::g_frames = rt::g_frameTicks = rt::g_syncCount = rt::g_syncTicks = rt::g_paceTicks = rt::g_bytes = 0; rt::g_syncBy.clear();
 }
@@ -858,6 +902,14 @@ static void restoreShadowed(IDirect3DDevice9Ex* r, const sh::Snapshot& s, IDirec
 }  // namespace
 
 namespace wot { namespace d3d9rt {
+std::uint64_t begin_frame_stage() {
+    return rt::g_stats && rt::onMain() ? static_cast<std::uint64_t>(rt::now()) : 0;
+}
+void end_frame_stage(unsigned stage, std::uint64_t begin) {
+    if (!begin || stage >= 5 || !rt::onMain()) return;
+    rt::g_stageTicks[stage] += rt::now() - static_cast<long long>(begin);
+    ++rt::g_stageCalls[stage];
+}
 IDirect3DDevice9* wrap_device(IDirect3DDevice9* device, bool ex) {
     if (!device) return device;
     // The thread owns one device for the process; a recreated device stays direct.

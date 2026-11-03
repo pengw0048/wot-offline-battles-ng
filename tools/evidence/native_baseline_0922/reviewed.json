@@ -39,7 +39,8 @@
     "test_stock_effect_selected_resources",
     "test_stock_space_models",
     "test_stock_scene_intersection",
-    "test_stock_instancing_upload"
+    "test_stock_instancing_upload",
+    "test_stock_frame_stages"
   ],
   "evidence_basis": {
     "latest_bounded_windows_journey": {
