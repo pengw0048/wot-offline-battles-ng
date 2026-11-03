@@ -310,6 +310,8 @@ def _load_runtime():
     import Math
     import ProjectileMover
     import SoundGroups
+    import MusicControllerWWISE
+    from gui.sounds.ambients import BattleResultsEnv
     import Vehicle
     import VehicleGunRotator
     from AvatarInputHandler.DynamicCameras import AccelerationSmoother
@@ -371,6 +373,8 @@ def _load_runtime():
     runtime.remote_filter_type = _RemoteFilter
     runtime.segment_collision_result_type = Vehicle.SegmentCollisionResult
     runtime.sound_groups_module = SoundGroups
+    runtime.music_module = MusicControllerWWISE
+    runtime.results_environment_type = BattleResultsEnv
     runtime.sniper_camera_type = SniperCamera
     runtime.strategic_camera_type = StrategicCamera
     runtime.steady_vehicle_matrix = SteadyVehicleMatrix
@@ -2636,6 +2640,10 @@ class OfflineCompatibility(object):
             runtime.bigworld.serverTime = server_time
             if self._original_debug_update is not None:
                 debug_panel_type.updateDebugInfo = debug_update
+            if getattr(runtime, 'music_module', None) is not None:
+                from gui.mods.offline_lan_0922 import music_lifecycle
+                music_lifecycle.install(
+                    runtime.music_module, runtime.results_environment_type)
             self._installed = True
         except Exception:
             self._rollback_install()
@@ -2656,6 +2664,8 @@ class OfflineCompatibility(object):
         self._host_added = True
 
     def _rollback_install(self):
+        from gui.mods.offline_lan_0922 import music_lifecycle
+        music_lifecycle.uninstall()
         runtime = self._runtime
         account_type = runtime.account_module.PlayerAccount
         avatar_type = runtime.avatar_module.PlayerAvatar
