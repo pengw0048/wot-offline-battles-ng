@@ -7,7 +7,9 @@ using namespace stock_native_bot_physics;
 namespace nav=stock_native_bot_navigation;
 namespace world=stock_native_world;
 struct Scene:world::Scene {
+    std::vector<std::array<Point,2>> rays;
     world::QueryStatus segment(const Point&a,const Point&b,std::uint16_t,const world::Filter&,world::Hit&hit)override {
+        rays.push_back({a,b});
         const double y=float(.05*a[0]+.1*a[2]);if(a[1]>=y&&b[1]<=y){hit.point={{a[0],y,a[2]}};hit.normal={{0.,1.,0.}};return world::QueryStatus::Found;}return world::QueryStatus::Miss;
     }
     world::QueryStatus material(const Point&,const Point&,const Point&,world::MaterialHit&)override{return world::QueryStatus::Miss;}
@@ -43,6 +45,15 @@ int main(int argc,char**argv) {
     Scene scene;world::Registry registry;world::Pipeline pipeline(registry,scene,0);step::SuspensionDescriptor suspension;int budget=0;
     PhysicsWorld physics(pipeline,host,state,descriptor,vertical[7],suspension,budget,{},0.);host.attach(7,physics);
     auto& body=geometry[7].turret;body.chassis.bounds={{{-1.,0.,-2.}},{{1.,1.,2.}}};body.hull=body.chassis;
+    if(argc>1&&std::string(argv[1])=="follow") {
+        descriptor.body_minimum=descriptor.hull_minimum={-1.,0.,-2.};descriptor.body_maximum=descriptor.hull_maximum={1.,2.,2.};
+        state.position={0.,10.,0.};state.pitch=state.terrain_pitch=.3;state.roll=.2;
+        const auto query=[&](bool grounded,bool airborne,bool detailed){state.grounded_once=grounded;state.airborne=airborne;state.edge_support_active=detailed;scene.rays.clear();physics.rotation(state,descriptor,state.position,0.,.2,.1,0.,0.,{});return scene.rays;};
+        const auto fixed=query(false,false,false),grounded=query(true,false,false);
+        assert(!fixed.empty()&&!grounded.empty()&&fixed!=grounded);
+        assert(query(true,true,false)==fixed&&query(true,false,true)==fixed);state.alive=false;assert(query(true,false,false)==grounded);
+        std::cout<<"ok\n";return 0;
+    }
     if(argc>1&&std::string(argv[1])=="boundary") {double from,to;while(std::cin>>state.position[0]>>state.position[2]>>from>>to>>descriptor.half_length>>descriptor.half_width)std::cout<<host.pose_progress(state,state.position,from,state.position,to)<<'\n';return 0;}
     if(argc>1) {
         state.position={{99.,0.,0.}};state.yaw=0.;state.speed=17.;state.push_x=6.;state.alive=false;state.pitch=.8;

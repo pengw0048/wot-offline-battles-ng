@@ -2,12 +2,20 @@
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import sys
 import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[1]
+@unittest.skipUnless(sys.platform == "darwin" and shutil.which("pyenv"),
+                     "The macOS CPython 2.7 extension harness is required")
 class NativePresentationTest(unittest.TestCase):
     def test_worker_pose_lifecycle(self):
-        py27=subprocess.check_output(['pyenv','which','python2.7'],text=True,env=dict(os.environ,PYENV_VERSION='2.7.18')).strip()
+        try:
+            py27=subprocess.check_output(['pyenv','which','python2.7'],text=True,
+                stderr=subprocess.PIPE,env=dict(os.environ,PYENV_VERSION='2.7.18')).strip()
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest('CPython 2.7.18 is required for the native extension harness')
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='bot-presentation-') as directory:
             folder=Path(directory)

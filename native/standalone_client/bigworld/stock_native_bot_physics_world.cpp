@@ -42,6 +42,7 @@ bool PhysicsWorld::rotation(const motion::State & state,const motion::Descriptor
     input.position=position;input.body.minimum=descriptor.body_minimum;input.body.maximum=descriptor.body_maximum;
     input.start_yaw=from;input.end_yaw=to;input.pitch=state.terrain_pitch;input.roll=state.roll;input.pivot_offset=0.;input.translation=translation;
     input.max_angle_step=pi/36.;input.max_steps=16;input.drivable_gradient=1.28;input.include_static=true;
+    input.follow_ground=state.grounded_once&&!state.airborne&&!state.edge_support_active;
     request.hull_minimum=descriptor.hull_minimum;request.hull_maximum=descriptor.hull_maximum;request.dt=dt;
     request.has_rotation_speed_cap=true;request.rotation_speed_cap=speed_cap;
     request.has_drive_speed_cap=speed_cap!=0.;request.drive_speed_cap=request.has_drive_speed_cap?std::abs(driveCap(descriptor,0.)):0.;

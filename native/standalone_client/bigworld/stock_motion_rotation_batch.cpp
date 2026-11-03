@@ -98,7 +98,9 @@ WorldSnapshot worldSnapshot(const Snapshot & input, const Bounds & body,
     result.bounds[0]=body.minimum[0]; result.bounds[1]=body.maximum[0];
     result.bounds[2]=-body.minimum[2]; result.bounds[3]=body.maximum[2];
     result.heights[0]=body.minimum[1]; result.heights[1]=body.maximum[1];
-    result.passive=translating?1u:0u; result.exact_footprint=translating?0u:1u;
+    // Stationary rotation also poses the complete body; its explicit motion
+    // heading must not select the powered, unpitched look-ahead lane law.
+    result.passive=1u; result.exact_footprint=translating?0u:1u;
     result.supplied_departing=supplied?1u:0u;
     return result;
 }
@@ -119,7 +121,7 @@ public:
             checked_=true;
             for (double direction: {1.e-6,-1.e-6}) {
                 const auto snapshot=worldSnapshot(input_,input_.body,input_.position,
-                    input_.start_yaw,direction,false,0.,false);
+                    input_.start_yaw,direction,false,input_.start_yaw,false);
                 ++result_.world_calls; ++result_.previous_world_calls;
                 const auto outcome=engine_.run(snapshot,nullptr);
                 validateOutcome(outcome,result_);
@@ -262,10 +264,20 @@ Result run(const Snapshot & input, WorldEngine & engine)
         start[0]+=input.translation[0]*lower;start[2]+=input.translation[1]*lower;
         Snapshot departing=input;departing.position=start;departing.start_yaw=first;departing.end_yaw=last;departing.translation=travel;
         RotationDeparture policy(departing,previous,result);
-        const double motion_yaw=distance?std::atan2(travel[0],travel[1]):0.;
+        const double motion_yaw=distance?std::atan2(travel[0],travel[1]):yaw;
         const double speeds[2]={distance?distance:1.e-6,-1.e-6};
         for (unsigned direction=0;direction<(distance?1u:2u);++direction) {
-            const auto snapshot=worldSnapshot(input,interval,position,yaw,speeds[direction],distance!=0.,motion_yaw,true);
+            auto snapshot=worldSnapshot(input,interval,position,yaw,speeds[direction],distance!=0.,motion_yaw,true);
+            if(input.follow_ground) {
+                // Preserve the accepted world-space support normal under this
+                // midpoint yaw, exactly ground_pose_for_yaw's YPR order.
+                const double sr=std::sin(input.roll),cr=std::cos(input.roll);
+                const double nx=-sr,ny=std::cos(input.pitch)*cr,nz=std::sin(input.pitch)*cr;
+                const double turn=angleDelta(input.start_yaw,yaw),sn=std::sin(turn),cs=std::cos(turn);
+                const double local_x=cs*nx-sn*nz,local_z=sn*nx+cs*nz;
+                snapshot.pitch=std::atan2(local_z,ny);
+                snapshot.roll=std::atan2(-local_x,std::hypot(ny,local_z));
+            }
             ++result.world_calls;
             const auto outcome=engine.run(snapshot,&policy);
             validateOutcome(outcome,result);

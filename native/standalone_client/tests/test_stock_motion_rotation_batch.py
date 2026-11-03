@@ -60,7 +60,7 @@ def snapshot(**changes):
         minimum=(-1., 0., -2.), maximum=(1., 2., 2.),
         start=0., end=.2, pitch=0., roll=0., pivot=0., translation=(0., 0.),
         step=math.pi / 36., gradient=1.28, maximum_steps=16,
-        include_static=True, reader=True, replacement=False)
+        include_static=True, reader=True, replacement=False, follow_ground=False)
     value.update(changes)
     return value
 
@@ -77,7 +77,7 @@ def input_values(value):
     return list(value['position']) + list(value['minimum']) + list(value['maximum']) + [
         value[name] for name in ('start', 'end', 'pitch', 'roll', 'pivot')] + list(
         value['translation']) + [value['step'], value['gradient'], value['maximum_steps'],
-        int(value['include_static']), int(value['reader']), int(value['replacement'])]
+        int(value['include_static']), int(value['reader']), int(value['replacement']), int(value['follow_ground'])]
 
 
 def encode(cases):
@@ -103,16 +103,26 @@ class Oracle:
         scripts = fork / 'src/res/scripts/client/gui/mods/offline_lan_0922'
         world = types.SimpleNamespace()
         world_env = dict(_MAX_DRIVABLE_GRADIENT=1.28)
+        exec(selected((scripts / 'destructibles_sensor.py').read_text(),
+                      {'_descriptor_value', '_vehicle_hull_bbox'}), world_env)
         exec(selected((scripts / 'world_collision.py').read_text(),
-                      {'_hull_pose_y', '_drivable_surface'}), world_env)
+                      {'_hull_pose_y', '_drivable_surface', 'PreparedBodySweep',
+                       '_read_vehicle_motion_geometry', '_vehicle_motion_geometry'}), world_env)
         world._hull_pose_y = world_env['_hull_pose_y']
         world._drivable_surface = world_env['_drivable_surface']
+        world.PreparedBodySweep = world_env['PreparedBodySweep']
+        world._vehicle_motion_geometry = world_env['_vehicle_motion_geometry']
         physics_env = dict(math=math)
         exec(selected((scripts / 'vehicle_physics.py').read_text(),
-                      {'track_pivot_position'}), physics_env)
+                      {'track_pivot_position', 'suspension_point_offset',
+                       '_suspension_point_offset', '_suspension_rotation'}), physics_env)
+        physics = types.SimpleNamespace(**physics_env)
+        ground_env = dict(math=math, vehicle_physics=physics)
+        exec(selected((scripts / 'bot_runtime.py').read_text(),
+                      {'_angle_delta', 'ground_pose_for_yaw'}), ground_env)
         native_math = types.SimpleNamespace(_load=lambda: None)
         self.env = dict(math=math, native_math=native_math, world_collision=world,
-            vehicle_physics=types.SimpleNamespace(track_pivot_position=physics_env['track_pivot_position']))
+            vehicle_physics=physics, ground_pose_for_yaw=ground_env['ground_pose_for_yaw'])
         exec(selected((scripts / 'battle_runtime.py').read_text(), FUNCTIONS), self.env)
         self.world = world
         # Execute the exact pinned wrapper's native call / exception boundary.
@@ -176,11 +186,13 @@ class Oracle:
         def check(unused_bw, unused_math, unused_space, pos, yaw, speed, descriptor,
                   airborne, dt, return_status, allow, kinetic, **options):
             index = len(calls)
-            box = descriptor['hull']['hitTester'].bbox
+            # Use the pinned native wrapper's actual prepared/live descriptor
+            # reader, including the synthetic envelope's cached geometry.
+            bounds, heights = self.world._vehicle_motion_geometry(descriptor)
             motion = options.get('motion_yaw')
             calls.append([pos.x, pos.y, pos.z, yaw, speed, dt, options['pitch'],
-                options['roll'], 0. if motion is None else motion, box[0][0], box[1][0],
-                -box[0][2], box[1][2], box[0][1], box[1][1], int(motion is not None),
+                options['roll'], 0. if motion is None else motion, *bounds,
+                *heights, int(motion is not None),
                 int(airborne), int(options.get('exact_footprint', False)),
                 int(options.get('departing_contact') is not None)])
             if index >= len(records):
@@ -222,7 +234,8 @@ class Oracle:
         result = self.env['_native_world_rotation_is_clear'](owner, value['position'],
             value['start'], value['end'], {'physics': {}}, pitch=value['pitch'],
             roll=value['roll'], record_local=False, pivot_offset=value['pivot'],
-            contact_trace=trace, include_static=value['include_static'], translation=value['translation'])
+            contact_trace=trace, include_static=value['include_static'], translation=value['translation'],
+            follow_ground=value['follow_ground'])
         main_calls = sum(row[-1] for row in calls)
         translating = bool(math.hypot(*value['translation']))
         slices = main_calls if translating else (main_calls+1)//2
@@ -274,6 +287,16 @@ class RotationBatchTest(unittest.TestCase):
             snapshot(include_static=False, replacement=True),
             snapshot(position=(16777217., .123456789, -16777217.), end=.01)):
             cases.append(dict(mode=2, input=value, scripts=[script() for unused in range(40)]))
+        # The ordinary grounded Bot follows its accepted support normal at
+        # every yaw midpoint. Airborne/detailed callers retain the original
+        # body attitude; exercise both paths with the same sloped poses.
+        for unused in range(30):
+            value=snapshot(start=rng.uniform(-math.pi,math.pi),pitch=rng.uniform(-.7,.7),
+                roll=rng.uniform(-.6,.6),pivot=rng.choice((0.,-1.,1.)),
+                translation=rng.choice(((0.,0.),(.2,-.1))))
+            value['end']=value['start']+rng.uniform(-.6,.6)
+            for follow in (False,True):
+                cases.append(dict(mode=2,input=dict(value,follow_ground=follow),scripts=[script() for index in range(40)]))
         base = snapshot(position=(0., 0., 0.), start=1.2, end=1.4)
         outside = contact((-2.2, 1., 4.), (1., 0., 0.))
         same_plane = contact((-2.2, 1., .2), (1., 0., 0.))

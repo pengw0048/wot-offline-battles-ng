@@ -27,6 +27,7 @@ struct Snapshot {
     double max_angle_step, drivable_gradient;
     std::uint32_t max_steps;
     bool include_static, replacement_reader_available, replacement_active;
+    bool follow_ground=false;
 };
 
 // Preserve the actual hard-contact record rather than reconstructing it from

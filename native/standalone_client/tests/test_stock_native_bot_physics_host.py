@@ -21,6 +21,7 @@ class PhysicsHost(unittest.TestCase):
             command += [str(ROOT/'tests/stock_native_bot_physics_host_fixture.cpp'),'-o',str(binary)]
             built=subprocess.run(command,capture_output=True,text=True);self.assertEqual(built.returncode,0,built.stderr)
             self.assertEqual(subprocess.check_output([str(binary),'scenarios'],text=True).strip(),'ok')
+            self.assertEqual(subprocess.check_output([str(binary),'follow'],text=True).strip(),'ok')
             text=(base/'src/res/scripts/client/gui/mods/offline_lan_0922/bot_runtime.py').read_text();tree=ast.parse(text)
             slope=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='slope_pose')
             update=next(m for n in tree.body if isinstance(n,ast.ClassDef) for m in n.body if isinstance(m,ast.FunctionDef) and m.name=='_refresh_slope_pose');update.decorator_list=[]

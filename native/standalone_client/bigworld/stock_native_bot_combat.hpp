@@ -27,9 +27,17 @@ struct CrewFactorRow {
     double relay=0.;bool last_effort=false,designated=false;
 };
 struct CrewFactors {std::vector<std::string> roster;std::vector<CrewFactorRow> rows;};
-inline const CrewFactorRow* crew_factors_row(const CrewFactors* factors,const std::set<std::string>& knocked,bool fire) {
-    if(!factors)return nullptr;std::size_t mask=0;for(std::size_t i=0;i<factors->roster.size();++i)if(knocked.count(factors->roster[i]))mask|=std::size_t(1)<<i;
-    const auto index=mask*2+std::size_t(fire);if(index>=factors->rows.size())throw std::invalid_argument("Native Bot crew projection is unavailable");return &factors->rows[index];
+inline const CrewFactorRow* crew_factors_row(const CrewFactors* factors,
+    const std::set<std::string>& knocked, bool fire) {
+    if (!factors) return nullptr;
+    std::size_t mask = 0;
+    for (std::size_t i = 0; i < factors->roster.size(); ++i) {
+        if (knocked.count(factors->roster[i])) mask |= std::size_t(1) << i;
+    }
+    const auto index = mask * 2 + std::size_t(fire);
+    if (index >= factors->rows.size())
+        throw std::invalid_argument("Native Bot crew projection is unavailable");
+    return &factors->rows[index];
 }
 struct CriticalState {
     std::map<std::string,Device> devices;
