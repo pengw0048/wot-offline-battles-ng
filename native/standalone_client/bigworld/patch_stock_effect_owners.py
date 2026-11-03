@@ -268,6 +268,10 @@ def patch_gui_materials(root):
     ])
     signature = 'bool SimpleGUIComponent::setupTechniqueTable( Moo::EffectMaterialPtr material )'
     apply_file(root, ashes / 'simple_gui_component.cpp', [
+        ('\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType_ );',
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType_ );',
+         'GUI manual filter uses its draw binding'),
         (signature, GUI_MATERIAL_TECHNIQUE + signature, 'GUI material technique names'),
         ('\t// Additionally, the GUI effect lists its techniques in order based on \n'
          '\t// materialFX enum',
@@ -294,6 +298,25 @@ def patch_gui_materials(root):
          '\ttechnique_ = materialTechnique(material_, materialFX());\n'
          '\treturn technique_ != NULL;', 'font GUI uses the same materialFX names'),
     ])
+    apply_file(root, Path('client/minimap.cpp'), [
+        ('\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType() );',
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tmaterial_->pEffect()->pEffect()->SetInt( "filterType", filterType() );',
+         'minimap manual filter uses its draw binding'),
+    ])
+
+
+def patch_legacy_shared_constants(text):
+    old = '''\t\t\t//-- If the parameter has a Semantic, set it up as an automatic constant, but if
+\t\t\t//--     it is also shared skip it because shared constants are set by effect pool
+\t\t\t//--\t mechanism only once per frame for all effect files.
+\t\t\tif (!isShared(pEffect, param) || isEffectPool_)'''
+    new = '''\t\t\t// ARIE shared constants belong to its UniformContext. Legacy D3DX
+\t\t\t// effects have no effect pool here, so bind their shared semantics
+\t\t\t// to the same live producers as their nonshared parameters.
+\t\t\tif (!isShared(pEffect, param) || isEffectPool_ ||
+\t\t\t\t!wot::is_stock_effect(pEffect))'''
+    return replace_once(text, old, new, "legacy shared semantic producers")
 
 
 def patch(root):
@@ -344,6 +367,7 @@ def patch(root):
     text = replace_once(text, old, new, "real ARIE factory")
     text = replace_once(text, " \tpEffect_ =  pEffect;", "\tactiveBinding_ = NULL;\n\tstockPass_ = UINT_MAX;\n \tpEffect_ =  pEffect;", "reload binding reset")
     text = replace_once(text, "(*pValue)( pEffect_.pComObject(), it->first );", "(*pValue)( pEffect(), it->first );", "automatic constants destination")
+    text = patch_legacy_shared_constants(text)
     text = patch_managed_lifecycle(text)
     path.write_text(text)
     apply_file(root, moo / "effect_material.cpp", [
@@ -375,6 +399,63 @@ def patch(root):
     patch_macro_settings(root)
     patch_renderer_startup(root)
     patch_resource_names(root)
+    patch_parameter_caches(root)
+
+
+def patch_parameter_caches(root):
+    # These public Romp draw owners still cache the definition; water already
+    # selects its private binding in patch_stock_water_ripples.py.
+    # A Definition is immutable draw metadata; manual values must target the
+    # material's private binding, including after recompilation/device reset.
+    apply_file(root, Path('lib/romp/flora_renderer.cpp'), [
+        ('#include "flora_texture.hpp"',
+         '#include "flora_texture.hpp"\n#include "stock_effect_adapter.hpp"',
+         'flora binding lifecycle include'),
+        ('    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
+         '    standardParams_.effect(material_->pEffect()->pEffect());\n'
+         '    material_->beginPass(0);\n\n    parameters_ = &standardParams_;',
+         'flora runtime parameter binding'),
+        ('''    if(material_.exists())
+    {
+        material_->pEffect()->pEffect()->SetTexture("blendMap", NULL);
+        standardParams_.commitChanges();
+    }
+    //-- ToDo (b_sviglo): reconsider shadow material in flora. It seems useless.
+    if(shadowMaterial_->pEffect())
+    {
+        shadowMaterial_->pEffect()->pEffect()->SetTexture("blendMap", NULL);
+        shadowParams_.commitChanges();
+    }''', '''    // end() restores the Definition; retire this material's actual Binding.
+    // Its tint copy is DEFAULT-pool; the diffuse atlas keeps its semantic owner.
+    if (material_.exists() && material_->pEffect())
+    {
+        ID3DXEffect* binding = material_->properties().existingStockBinding();
+        if (binding) binding->SetTexture("g_tintMap", NULL);
+        ID3DXEffect* current = material_->pEffect()->pEffect();
+        if (current && current != binding && !wot::is_stock_effect(current))
+        {
+            current->SetTexture("g_tintMap", NULL);
+            current->SetTexture("blendMap", NULL);
+        }
+    }
+    if (shadowMaterial_.exists() && shadowMaterial_->pEffect())
+    {
+        ID3DXEffect* current = shadowMaterial_->pEffect()->pEffect();
+        if (current && !wot::is_stock_effect(current)) current->SetTexture("blendMap", NULL);
+    }
+    // Drop cached effect references and their handles; preDraw binds afresh.
+    standardParams_.effect(NULL);
+    shadowParams_.effect(NULL);
+    parameters_ = NULL;''', 'flora manual texture retirement'),
+    ])
+    apply_file(root, Path('lib/romp/sky_gradient_dome.cpp'), [
+        ('\t//calculate runtime effect values',
+         '\t// Select the draw binding before writing cached manual constants.\n'
+         '\tif (!material_->properties().select(*material_->pEffect())) return;\n'
+         '\tparameters_.effect(material_->pEffect()->pEffect());\n\n'
+         '\t//calculate runtime effect values',
+         'sky runtime parameter binding'),
+    ])
 
 
 SHARED_SCREEN_LOOKUP = (
@@ -650,7 +731,183 @@ public:
 '''
 
 
+def staged_instance_uploads(text):
+    text = replace_once(text, '\t\t\tMF_ASSERT( instancedVB_.valid() );',
+        '\t\t\t// Buffer failures are isolated to their actual stream consumers at flush.',
+        'collect CPU instances independently of unused public GPU storage')
+    text = replace_once(text,
+        '\tvoid openInstancingBuffer()\n\t{\n\t\tif (instancedVB_.valid())',
+        '\tvoid openInstancingBuffer()\n\t{\n\t\tif (!instanceMatrixArray_)',
+        'open CPU staging independently of public GPU storage')
+    text = replace_once(text, '\t\t\tMF_ASSERT(success);',
+        '\t\t\tif (!success) ERROR_MSG("Instancing: public matrix buffer creation failed\\n");',
+        'contain public matrix allocation failure at its consumer boundary')
+    text = replace_once(text, 'BW::vector<Matrix> stockInstanceMatrices_;',
+        'BW::vector<Matrix> stockInstanceMatrices_;\n'
+        '\tBW::vector<Matrix> stockInstanceScratch_;\n'
+        '\tbool stockNeedsPublicInstanceUpload_ = false;\n'
+        '\tbool stockPublicInstanceUploadReady_ = true;', 'CPU instance staging owner')
+    text = replace_once(text,
+        '\t\t\tstockInstanceMatrices_.push_back(*rop->instanceData_->matrix());',
+        '\t\t\tif (!wot::is_stock_effect(rop->effect_->pEffect())) stockNeedsPublicInstanceUpload_ = true;\n'
+        '\t\t\tstockInstanceMatrices_.push_back(*rop->instanceData_->matrix());',
+        'mark the actual public matrix-stream consumer')
+    text = replace_once(text,
+        '\t\t\tinstancedVB_.lock( 0, MAX_NUM_INSTANCED_MATRICES * InstancingStream::ELEMENT_SIZE,\n'
+        '\t\t\t\t(void**)&instanceMatrixArray_, D3DLOCK_DISCARD );',
+        '''            // ARIE consumes its matrix constants and FLOAT1 index stream,
+            // so collect on the CPU without uploading an unused public stream.
+            if (stockInstanceScratch_.size() != MAX_NUM_INSTANCED_MATRICES)
+            {
+                stockInstanceScratch_.resize(MAX_NUM_INSTANCED_MATRICES);
+                stockInstanceMatrices_.reserve(MAX_NUM_INSTANCED_MATRICES);
+            }
+            instanceMatrixArray_ = stockInstanceScratch_.data();
+            stockNeedsPublicInstanceUpload_ = false;
+            stockPublicInstanceUploadReady_ = true;''', 'defer matrix-stream upload until its consumers are known')
+    text = replace_once(text, '\t\t\tinstancedVB_.unlock();',
+        '''            if (stockNeedsPublicInstanceUpload_)
+            {
+                const uint32 bytes = uint32(nextInstanceMatrix_ - instanceMatrixArray_) * InstancingStream::ELEMENT_SIZE;
+                void* destination = NULL;
+                const HRESULT locked = instancedVB_.valid() ?
+                    instancedVB_.lock(0, bytes, &destination, D3DLOCK_DISCARD) : E_FAIL;
+                stockPublicInstanceUploadReady_ = SUCCEEDED(locked) && destination;
+                if (stockPublicInstanceUploadReady_)
+                {
+                    memcpy(destination, instanceMatrixArray_, bytes);
+                    stockPublicInstanceUploadReady_ = SUCCEEDED(instancedVB_.unlock());
+                }
+                else if (SUCCEEDED(locked)) instancedVB_.unlock();
+                if (!stockPublicInstanceUploadReady_)
+                    ERROR_MSG("Instancing: public matrix upload failed\\n");
+            }''', 'upload only a consumed public matrix prefix')
+    text = replace_once(text,
+        '            if (wot::is_stock_effect(rop->effect_->pEffect()))\n'
+        '            {\n                if (!stockInstanceIndexVB_.valid()) return;',
+        '            if (!stockPublicInstanceUploadReady_ && !wot::is_stock_effect(rop->effect_->pEffect())) return;\n'
+        '            if (wot::is_stock_effect(rop->effect_->pEffect()))\n'
+        '            {\n                if (!stockInstanceIndexVB_.valid()) return;',
+        'contain a failed public upload without cancelling native packets')
+    return text
+
+
+SHARED_INSTANCE_INDEX_OWNER = r'''// Every DrawContext uses the device's same immutable FLOAT1 indices.
+// The visual context retires this callback before RenderContext/DeviceCallback fini.
+class StockInstanceIndexStream : public DeviceCallback
+{
+public:
+    ~StockInstanceIndexStream() { deleteUnmanagedObjects(); }
+    void createUnmanagedObjects() override
+    {
+        if (buffer_.valid() || !rc().isHWInstancingAvailable()) return;
+        if (FAILED(buffer_.create(16 * sizeof(float), D3DUSAGE_WRITEONLY,
+            0, D3DPOOL_DEFAULT, "vertex buffer/original instance indices"))) return;
+        float* indices = NULL;
+        const HRESULT locked = buffer_.lock(0, 16 * sizeof(float),
+            reinterpret_cast<void**>(&indices), 0);
+        if (FAILED(locked) || !indices)
+        {
+            if (SUCCEEDED(locked)) buffer_.unlock();
+            buffer_.release();
+            return;
+        }
+        for (uint32 i = 0; i < 16; ++i) indices[i] = static_cast<float>(i);
+        if (FAILED(buffer_.unlock())) buffer_.release();
+    }
+    void deleteUnmanagedObjects() override { buffer_.release(); }
+    bool bind()
+    {
+        createUnmanagedObjects();
+        if (!buffer_.valid()) return false;
+        buffer_.set(InstancingStream::STREAM_NUMBER, 0, sizeof(float));
+        return true;
+    }
+private:
+    VertexBuffer buffer_;
+};
+
+bool EffectVisualContext::stockBindInstanceIndexStream()
+{
+    if (!stockInstanceIndexStream_)
+        stockInstanceIndexStream_.reset(new StockInstanceIndexStream);
+    return stockInstanceIndexStream_->bind();
+}
+
+'''
+
+
+def shared_instance_streams(text):
+    """Upgrade the reviewed per-processor stream owner, including cached SDKs."""
+    if 'effectVisualContext_.stockBindInstanceIndexStream()' in text:
+        return text
+    field = '\tVertexBuffer stockInstanceIndexVB_;\n'
+    if text.count(field) != 1:
+        raise RuntimeError('Unexpected native index stream owner')
+    text = text.replace(field, '', 1)
+    first = text.index('        if (!stockInstanceIndexVB_.valid() && rc().isHWInstancingAvailable())')
+    last = text.index('        if (!instancedVB_.valid() && rc().isHWInstancingAvailable())', first)
+    text = text[:first] + text[last:]
+    teardown = '\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n'
+    if text.count(teardown) != 1:
+        raise RuntimeError('Unexpected native index stream teardown')
+    text = text.replace(teardown, '', 1)
+    text = replace_once(text,
+        '                if (!stockInstanceIndexVB_.valid()) return;\n'
+        '                stockInstanceIndexVB_.set(InstancingStream::STREAM_NUMBER, 0, sizeof(float));',
+        '                if (!effectVisualContext_.stockBindInstanceIndexStream()) return;',
+        'bind the shared immutable native index stream')
+    first = text.index('\tvoid\tcreateUnmanagedObjects()')
+    last = text.index('\n\tvoid\tdeleteUnmanagedObjects()', first)
+    text = text[:first] + '''\tvoid\tcreateUnmanagedObjects()
+{
+    // CPU staging and the shared native index stream need no local GPU buffer.
+}
+
+bool ensurePublicInstancingBuffer()
+{
+    if (instancedVB_.valid()) return true;
+    return rc().isHWInstancingAvailable() && SUCCEEDED(instancedVB_.create(
+        InstancingStream::ELEMENT_SIZE * MAX_NUM_INSTANCED_MATRICES,
+        D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT,
+        "vertex buffer/visual batcher VB"));
+}
+''' + text[last:]
+    text = replace_once(text,
+        'const HRESULT locked = instancedVB_.valid() ?\n',
+        'const HRESULT locked = ensurePublicInstancingBuffer() ?\n',
+        'allocate the public matrix stream only for an admitted consumer')
+    return text
+
+
+def patch_shared_instance_index_owner(root):
+    apply_file(root, Path('lib/moo/effect_visual_context.hpp'), [
+        ('#include "visual.hpp"', '#include "visual.hpp"\n#include <memory>', 'shared index owner storage'),
+        ('namespace Moo\n{', 'namespace Moo\n{\nclass StockInstanceIndexStream;', 'shared index callback declaration'),
+        ('    void stockInstancingStream(const Matrix* matrices, uint32 count)',
+         '    bool stockBindInstanceIndexStream();\n    void stockInstancingStream(const Matrix* matrices, uint32 count)',
+         'shared index stream binding API'),
+        ('\tfloat\t\t\t\t\tcurrentObjectID_;',
+         '\tfloat\t\t\t\t\tcurrentObjectID_;\n'
+         '\t// Append device ownership without changing existing inline field offsets.\n'
+         '\tstd::unique_ptr<StockInstanceIndexStream> stockInstanceIndexStream_;',
+         'visual context owns the device index stream'),
+    ])
+    apply_file(root, Path('lib/moo/effect_visual_context.cpp'), [
+        ('#include "effect_visual_context.hpp"', '#include "effect_visual_context.hpp"\n'
+         '#include "device_callback.hpp"\n#include "vertex_buffer.hpp"\n#include "vertex_streams.hpp"',
+         'shared index callback dependencies'),
+        ('class StockInstancingStreamConstant : public EffectConstantValue',
+         SHARED_INSTANCE_INDEX_OWNER + 'class StockInstancingStreamConstant : public EffectConstantValue',
+         'shared immutable native index resource'),
+    ])
+
+
 def patch_instancing(root):
+    path = root / 'lib/moo/draw_context.cpp'
+    if 'effectVisualContext_.stockBindInstanceIndexStream()' in path.read_text():
+        patch_shared_instance_index_owner(root)
+        return
     apply_file(root, Path("lib/moo/effect_visual_context.hpp"), [
         ("const Matrix*\t\tworldMatrix() const { return worldMatrix_; }", r'''const Matrix*        worldMatrix() const { return worldMatrix_; }
     void stockInstancingStream(const Matrix* matrices, uint32 count)
@@ -722,7 +979,8 @@ def patch_instancing(root):
     old = "\t\tBW_GUARD;\n\t\tif (instancedVB_.valid())"
     new = "\t\tBW_GUARD;\n\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n\t\tif (instancedVB_.valid())"
     text = replace_once(text, old, new, "native index device teardown")
-    path.write_text(text)
+    path.write_text(shared_instance_streams(staged_instance_uploads(text)))
+    patch_shared_instance_index_owner(root)
 
 
 # The upstream constructor body is one whitespace-only line; keep it exact.

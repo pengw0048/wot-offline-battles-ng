@@ -43,13 +43,23 @@ struct Matrix {
 Vector3* D3DXVec3TransformCoord(Vector3* out,const Vector3* value,const Matrix* matrix){*out=matrix->applyPoint(*value);return out;}
 Vector3* D3DXVec3TransformNormal(Vector3* out,const Vector3* value,const Matrix* matrix){*out=matrix->applyVector(*value);return out;}
 Matrix* D3DXMatrixMultiply(Matrix* out,const Matrix* a,const Matrix* b){out->multiply(*a,*b);return out;}
-struct BoundingBox {
+class BoundingBox {
+public:
  Vector3 low{1,1,1},high{-1,-1,-1};static const BoundingBox s_insideOut_;
  BoundingBox(){}BoundingBox(Vector3 a,Vector3 b):low(a),high(b){}
  bool insideOut()const{return low.x>high.x||low.y>high.y||low.z>high.z;}
  void transformBy(const Matrix& m){low.x+=m[3][0];low.y+=m[3][1];low.z+=m[3][2];high.x+=m[3][0];high.y+=m[3][1];high.z+=m[3][2];}
 };
 const BoundingBox BoundingBox::s_insideOut_{};using AABB=BoundingBox;
+// GPU query mechanics are exercised by test_stock_scene_occlusion.py. This
+// boundary records the real scene owner's mapping lifetime and pose changes.
+class StockSceneOcclusionMapping {
+public:
+ explicit StockSceneOcclusionMapping(size_t count):instances(count){}
+ size_t instances;bool retired=false;std::vector<uint32> invalidated;
+ void invalidate(uint32 index){invalidated.push_back(index);}
+ void retire(){retired=true;}
+};
 struct BinaryBlock{};using BinaryPtr=SmartPointer<BinaryBlock>;
 struct DataSection {BinaryPtr readBinary(const char* name){assert(std::string(name)=="bsp2");return new BinaryBlock;}};
 using DataSectionPtr=SmartPointer<DataSection>;

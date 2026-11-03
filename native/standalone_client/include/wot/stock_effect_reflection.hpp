@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 
 namespace wot {
 
@@ -31,14 +32,14 @@ public:
     const StockEffectBinary& definition() const { return *definition_; }
     std::size_t parameter_count() const { return parameters_.size(); }
     std::uint32_t parameter(std::size_t index) const;
-    std::uint32_t parameter_by_name(const std::string& name) const;
-    std::uint32_t parameter_by_semantic(const std::string& semantic) const;
+    std::uint32_t parameter_by_name(std::string_view name) const;
+    std::uint32_t parameter_by_semantic(std::string_view semantic) const;
     const StockEffectParameterReference* parameter_reference(std::uint32_t handle) const;
     std::uint32_t technique(std::size_t index) const;
-    std::uint32_t technique_by_name(const std::string& name) const;
+    std::uint32_t technique_by_name(std::string_view name) const;
     std::optional<std::size_t> technique_source_index(std::uint32_t handle) const;
     std::uint32_t annotation(std::uint32_t object, std::size_t index) const;
-    std::uint32_t annotation_by_name(std::uint32_t object, const std::string& name) const;
+    std::uint32_t annotation_by_name(std::uint32_t object, std::string_view name) const;
     const StockEffectAnnotation* annotation_reference(std::uint32_t handle) const;
     const StockEffectType* parameter_type(std::uint32_t handle) const;
     std::uint32_t parameter_elements(std::uint32_t handle) const;

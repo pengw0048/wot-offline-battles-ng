@@ -263,7 +263,7 @@ class StockHangarPresentationTest(unittest.TestCase):
             paths = []
             with zipfile.ZipFile(Path(client) / 'res/packages/shaders.pkg') as package:
                 for name in ('post_processing/background', 'edgeDetect/transfer', 'edgeDetect/z_pass',
-                             'edgeDetect/z_pass_skinned'):
+                             'edgeDetect/z_pass_skinned', 'edgeDetect/tank_region_selector'):
                     for variant in (10, 11):
                         member = 'shaders/%s.%d.dx9.fxo' % (name, variant)
                         with zipfile.ZipFile(io.BytesIO(package.read(member))) as effect:
@@ -272,9 +272,10 @@ class StockHangarPresentationTest(unittest.TestCase):
                             paths.append(str(path))
             result = subprocess.run([str(binary)] + paths, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(result.stdout.count('binding owns, reset clears'), 4)
+            self.assertEqual(result.stdout.count('binding owns, reset clears'), 8)
             self.assertEqual(result.stdout.count('successive members reach the binding'), 4)
             self.assertEqual(result.stdout.count('four colours reach the binding'), 2)
+            self.assertEqual(result.stdout.count('original selector techniques are bound'), 2)
             print(result.stdout.strip())
 
     def test_original_wrappers_match_the_production_contract(self):

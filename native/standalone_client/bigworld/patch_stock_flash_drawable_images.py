@@ -22,8 +22,8 @@ static void executeStockFlashDrawableImageCommand(Render::ThreadCommand* command
     const bool capsSaved = device && SUCCEEDED(device->GetDeviceCaps(&caps));
     const unsigned targetCount = capsSaved ? (caps.NumSimultaneousRTs < 4 ? caps.NumSimultaneousRTs : 4) : 0;
     if (device && !capsSaved) ERROR_MSG("Scaleform: cannot query DrawableImage device caps\n");
-    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) &&
-        state && SUCCEEDED(state->Capture());
+    // D3D9 CreateStateBlock already captures the requested device state.
+    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) && state;
     if (device && !stateSaved) ERROR_MSG("Scaleform: cannot capture DrawableImage device state\n");
     const bool viewportSaved = device && SUCCEEDED(device->GetViewport(&viewport));
     if (device && !viewportSaved) ERROR_MSG("Scaleform: cannot capture DrawableImage viewport\n");
@@ -82,6 +82,16 @@ FILES = (HEADER, SOURCE, MOVIE)
 
 
 def patch_sources(sources):
+    # Upgrade only the exact earlier installed executor; validate all seams
+    # before writing so a cached SDK cannot retain redundant Capture calls.
+    legacy = EXECUTOR.replace(
+        "    // D3D9 CreateStateBlock already captures the requested device state.\n"
+        "    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) && state;",
+        "    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) &&\n"
+        "        state && SUCCEEDED(state->Capture());")
+    if sources[SOURCE].count(legacy) == 1:
+        sources = dict(sources)
+        sources[SOURCE] = sources[SOURCE].replace(legacy, EXECUTOR, 1)
     final = all(sources[name].count(after) == 1 and sources[name].count(before) == after.count(before)
                 for name, before, after in SEAMS)
     if final: return dict(sources)

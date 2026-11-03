@@ -76,6 +76,15 @@ owner.result=RuntimeError('callback failed')
 try:probe.query(owner,1,2,71,'objects/fragile.model',1,(3,4,12))
 except RuntimeError as error:assert str(error)=='callback failed'
 else:raise AssertionError('callback error became clearance')
+owner.result=False
+assert probe.query(owner,0x80000000,7,71,'',1.5,(0,0,3)) is False
+assert owner.calls[-1]==(-2147483648,7,71,'',1.5,3.0)
+calls=len(owner.calls)
+for scale in (float('nan'),float('inf'),-1):
+    try:probe.query(owner,1,2,71,'',scale,(0,0,3))
+    except RuntimeError:pass
+    else:raise AssertionError('invalid scale reached stock callback')
+assert len(owner.calls)==calls
 print('Actual CPython 2.7 destruction callback ABI and explicit error boundary checks passed')
 '''
 

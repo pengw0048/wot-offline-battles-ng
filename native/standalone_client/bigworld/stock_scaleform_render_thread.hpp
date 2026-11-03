@@ -2,6 +2,7 @@
 #define STOCK_SCALEFORM_RENDER_THREAD_HPP
 
 #include "stock_d3d9_render_thread.hpp"
+#include "stock_flash_overlay_target.hpp"
 
 namespace BW { namespace ScaleformBW {
 
@@ -20,10 +21,17 @@ struct StockRenderThread
         struct Nothing { void operator()() const {} } nothing;
         runSync(nothing);
     }
+    static void drainCommands() { ::wot::d3d9rt::drain_commands(); }
     // Takes ownership of a heap job; the job deletes itself after running.
     template<class J> static void postJob(J* job)
     {
         ::wot::d3d9rt::post([](void* c) { J* j = static_cast<J*>(c); (*j)(); delete j; }, job);
+    }
+    // SDK service/DrawableImage commands can be admitted while their producer
+    // holds a Context lock. Admission must never wait or query device state.
+    template<class J> static void postCommand(J* job)
+    {
+        ::wot::d3d9rt::post_command([](void* c) { J* j = static_cast<J*>(c); (*j)(); delete j; }, job);
     }
 };
 

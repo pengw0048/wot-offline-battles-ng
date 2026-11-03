@@ -82,12 +82,12 @@ IMPLEMENT_CHUNK_ITEM( StockChunkModel, wotModel, 0 )
 bool readStockObstacleIdentity( const CollisionObstacle & obstacle,
     StockObstacleIdentity & output )
 {
-    const SceneObject & object = obstacle.sceneObject();
-    if (!object.isType<ChunkItem>()) return false;
-    const StockChunkModel * model = dynamic_cast<const StockChunkModel *>(
-        object.getAs<ChunkItem>() );
     StockObstacleIdentity identity;
-    if (!model || !model->identity( identity )) return false;
+    // Both chunk models and compiled instances own original item keys. The
+    // compiled StaticModelFeature deliberately supplies an empty model name;
+    // that is an available value, not missing metadata or a primitive path.
+    if (!readStockObstacleItem( obstacle, identity.chunkID, identity.itemIndex ) ||
+        !readStockObstacleFilename( obstacle, identity.filename )) return false;
     // Exact prediction callback 0x006efa80 uses the world X-basis length.
     // Compute it from the same transform used for this collision, including
     // any mapping transform, instead of caching a scale from another pose.

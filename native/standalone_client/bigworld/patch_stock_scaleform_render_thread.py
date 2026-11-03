@@ -37,12 +37,19 @@ static void executeStockFlashDrawableImageCommandNow(Render::ThreadCommand* comm
          r'''    if (state) state->Release();
     if (device) Moo::rc().invalidateStateCache();
 }
-// The caller may hold Scaleform locks that render-thread work needs, so the
-// command runs here once every queued HAL job has finished.
+// Context shutdown and DrawableImage destruction can enqueue while holding
+// SDK locks. Keep a lease and return; the HAL owner executes after admitted
+// display jobs, once the producer has released its lock.
 static void executeStockFlashDrawableImageCommand(Render::ThreadCommand* command)
 {
-    StockRenderThread::drain();
-    executeStockFlashDrawableImageCommandNow(command);
+    struct CommandJob
+    {
+        Ptr<Render::ThreadCommand> command;
+        void operator()() { executeStockFlashDrawableImageCommandNow(command.GetPtr()); }
+    };
+    CommandJob* job = new CommandJob();
+    job->command = command;
+    StockRenderThread::postCommand(job);
 }
 
 '''),
@@ -270,6 +277,9 @@ DECLARE_DEBUG_COMPONENT2( "2DComponents", 0 )
 
 DECLARE_DEBUG_COMPONENT2( "2DComponents", 0 )
 '''),
+        ('\tRender::TreeRootDisplayHandle &displayHandle = *const_cast<Render::TreeRootDisplayHandle*>(&Manager::instance().pTextManager()->GetDisplayHandle());',
+         '\tPtr<GFx::DrawTextManager> textManager = Manager::instance().pTextManager();\n'
+         '\tif (!textManager) return;'),
         (r'''
 
 void FlashTextGUIComponent::drawSelf( bool reallyDraw, bool overlay )
@@ -328,6 +338,8 @@ void FlashTextGUIComponent::drawSelf( bool reallyDraw, bool overlay )
 
 		// We are done with the text
 '''),
+        ('\t\t// begin text rendering\n\t\tManager::instance().pTextManager()->SetViewport(gv);',
+         '\t\t// begin text rendering\n\t\ttextManager->SetViewport(gv);'),
     ),
     'lib/scaleform/py_movie_view.cpp': (
         (r'''#include "moo/render_context.hpp"
@@ -369,17 +381,208 @@ HAL_HEADER = 'Src/Render/D3D9/D3D9_HAL.h'
 HAL_CONTRACT = '''                  UInt32 halConfigFlags = 0,
                   ThreadId renderThreadId = ThreadId())'''
 
+LEGACY_COMMAND_EXECUTOR = r'''    if (state) state->Release();
+    if (device) Moo::rc().invalidateStateCache();
+}
+// The caller may hold Scaleform locks that render-thread work needs, so the
+// command runs here once every queued HAL job has finished.
+static void executeStockFlashDrawableImageCommand(Render::ThreadCommand* command)
+{
+    StockRenderThread::drain();
+    executeStockFlashDrawableImageCommandNow(command);
+}
+
+'''
+
+
+def render_thread_shutdown(text):
+    # SDK producers can request Context retirement while releasing DrawText
+    # and Loader on their original caller. Their commands must finish before
+    # renderer/HAL destruction, which itself belongs to the actual HAL thread.
+    before = '''\t\tpRenderer_ = NULL;
+\t\tpRenderHAL_ = NULL;
+\t\tdrawableImageQueue_.configure(Render::Interfaces());
+\t\tpLogger_ = NULL;
+\t\tpTexMgr_ = NULL;'''
+    after = '''\t\t// Retiring caller-side contexts may admit more native commands.
+\t\t// Establish their consumer fence before admitting final owner release.
+\t\tStockRenderThread::drainCommands();
+\t\t{
+\t\t\tauto releaseRenderOwners = [this]() {
+\t\t\t\tpRenderer_ = NULL;
+\t\t\t\tpRenderHAL_ = NULL;
+\t\t\t\tpTexMgr_ = NULL;
+\t\t\t};
+\t\t\tStockRenderThread::runSync(releaseRenderOwners);
+\t\t}
+\t\tdrawableImageQueue_.configure(Render::Interfaces());
+\t\tpLogger_ = NULL;'''
+    return replace_once(text, before, after, 'Scaleform render owner shutdown')
+
+
+def command_scene_ownership(text):
+    # The main thread keeps recording Moo state while native commands execute.
+    # Its scene nesting counter, resource preload and profiling are not RT state.
+    text = text.replace(
+        '    const HRESULT scene = device ? Moo::rc().beginScene() : S_OK;',
+        '    const bool nativeOwner = StockRenderThread::id() != 0;\n'
+        '    bool openedScene = false;\n'
+        '    const HRESULT scene = nativeOwner ?\n'
+        '        ::wot::d3d9rt::begin_command_scene(device, openedScene) :\n'
+        '        (device ? Moo::rc().beginScene() : S_OK);')
+    text = text.replace(
+        '    if (device && FAILED(Moo::rc().endScene()))',
+        '    const HRESULT ended = nativeOwner ?\n'
+        '        ::wot::d3d9rt::end_command_scene(device, openedScene) :\n'
+        '        (device ? Moo::rc().endScene() : S_OK);\n'
+        '    if (FAILED(ended))')
+    return text.replace('    if (device) Moo::rc().invalidateStateCache();',
+                        '    if (device && !nativeOwner) Moo::rc().invalidateStateCache();')
+
+
+def viewport_before_capture(text):
+    # #1513 aa84df/aa84f4 publishes the viewport before aa8504 captures it.
+    # Capture freezes root viewport/matrix data; writing afterwards only
+    # updates the next snapshot, including the first draw after a clip change.
+    return text.replace(
+        '\t\t\tpMovieView->Capture();\n\t\t\tpMovieView->SetViewport(gvFullScreen);',
+        '\t\t\tpMovieView->SetViewport(gvFullScreen);\n\t\t\tpMovieView->Capture();').replace(
+        '\t{\n\t\tPROFILER_SCOPED( GUI_FlashCapture );\n'
+        '\t\tpMovieView_->pMovieView()->Capture();\n\t}\n'
+        '\tpMovieView_->pMovieView()->SetViewport( gv );',
+        '\tpMovieView_->pMovieView()->SetViewport( gv );\n'
+        '\t{\n\t\tPROFILER_SCOPED( GUI_FlashCapture );\n'
+        '\t\tpMovieView_->pMovieView()->Capture();\n\t}')
+
+
+def render_job_ownership(text):
+    text = text.replace('renderer->BeginFrame();', 'if (!renderer->BeginFrame()) return;')
+    text = text.replace(
+        '\t\tRender::TreeRootDisplayHandle handle;',
+        '\t\tPtr<GFx::DrawTextManager> owner;\n\t\tRender::TreeRootDisplayHandle handle;')
+    text = text.replace(
+        '\t\t\tif (handle.NextCapture(renderer->GetContextNotify()))\n'
+        '\t\t\t\trenderer->Display(handle);\n\t\t}',
+        '\t\t\tif (!renderer->BeginFrame()) return;\n'
+        '\t\t\tif (handle.NextCapture(renderer->GetContextNotify()))\n'
+        '\t\t\t\trenderer->Display(handle);\n'
+        '\t\t\trenderer->EndFrame();\n\t\t}')
+    if 'struct TextDisplayJob' in text:
+        text = text.replace(
+            '\t\tPtr<GFx::DrawTextManager> owner;\n',
+            '\t\tPtr<GFx::DrawTextManager> owner;\n\t\tbool overlay;\n')
+        text = text.replace(
+            '\t\t\tif (!renderer->BeginFrame()) return;\n',
+            '\t\t\tif (!renderer->BeginFrame()) return;\n'
+            '\t\t\tif (!overlay)\n\t\t\t{\n'
+            '\t\t\t\tif (!renderer->BeginScene()) { renderer->EndFrame(); return; }\n'
+            '\t\t\t\t// BeginDisplay keeps an explicitly opened scene. Restore the\n'
+            '\t\t\t\t// original world-text depth mask after HAL scene defaults.\n'
+            '\t\t\t\tIDirect3DDevice9* device = Moo::rc().device();\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILENABLE, TRUE);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILREF, 2);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);\n'
+            '\t\t\t\tdevice->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);\n'
+            '\t\t\t}\n')
+        text = text.replace('\t\t\trenderer->EndFrame();\n',
+                            '\t\t\tif (!overlay) renderer->EndScene();\n\t\t\trenderer->EndFrame();\n')
+    text = text.replace(
+        'void postTextDisplay(Ptr<Render::Renderer2D>& renderer, Render::TreeRootDisplayHandle& handle)',
+        'void drawTextDisplay(Ptr<Render::Renderer2D>& renderer, const Ptr<GFx::DrawTextManager>& textManager, bool overlay)')
+    text = text.replace(
+        '\t\tjob->handle = handle;\n\t\tStockRenderThread::postJob(job);',
+        '\t\tjob->owner = textManager;\n'
+        '\t\tjob->overlay = overlay;\n'
+        '\t\ttextManager->Capture();\n'
+        '\t\tjob->handle = textManager->GetDisplayHandle();\n'
+        '\t\tStockRenderThread::postJob(job);\n'
+        '\t\t// All components share this context; consume this snapshot before\n'
+        '\t\t// the next component changes its viewport or text transforms.\n'
+        '\t\tStockRenderThread::drain();')
+    text = text.replace('postTextDisplay(pRenderer, displayHandle);', 'drawTextDisplay(pRenderer, textManager, overlay);')
+    text = text.replace('Manager::instance().pTextManager()->SetViewport(gv);', 'textManager->SetViewport(gv);')
+    return text.replace(
+        'auto job = [hal]() { hal->RestoreAfterReset(); };',
+        'auto job = [hal]() {\n'
+        '\t\t\t\tif (!hal->RestoreAfterReset())\n'
+        '\t\t\t\t\tERROR_MSG("Scaleform: HAL restore after device reset failed\\n");\n'
+        '\t\t\t};')
+
+
+def overlay_surface_ownership(text):
+    if 'struct DisplayJob' in text:
+        text = text.replace('\t\tGFx::MovieDisplayHandle handle;',
+                            '\t\tGFx::MovieDisplayHandle handle;\n\t\tbool overlay;')
+        text = text.replace('\tjob->renderer = pRenderer;',
+                            '\tjob->renderer = pRenderer;\n\tjob->overlay = overlay;')
+    if any(marker in text for marker in ('struct GlobalMoviesJob', 'struct DisplayJob', 'struct TextDisplayJob')):
+        overlay = 'true' if 'struct GlobalMoviesJob' in text else 'overlay'
+        indent = '\t\t\t\t' if 'struct GlobalMoviesJob' in text else '\t\t\t'
+        frame = indent + 'if (!renderer->BeginFrame()) return;'
+        scope = (indent + 'StockFlashOverlayTarget::Scope target(Manager::instance().overlayTarget(),\n' +
+                 indent + '\tstatic_cast<Render::D3D9::HAL*>(renderer->GetHAL()), Moo::rc().device(), ' + overlay + ');\n' +
+                 indent + 'if (!target) return;\n')
+        text = text.replace(frame, scope + frame)
+    text = text.replace('auto drain = []() {};', 'auto drain = [this]() { overlayTarget_.reset(); };')
+    return text.replace('auto job = [hal]() { hal->PrepareForReset(); };',
+                        'auto job = [hal, this]() { overlayTarget_.reset(); hal->PrepareForReset(); };')
+
+
+def patch_overlay_lifecycle(root):
+    path = Path(root) / 'lib/scaleform/manager.hpp'
+    text = path.read_text()
+    for before, after in (
+            ('#include "loader.hpp"', '#include "loader.hpp"\n#include "stock_flash_overlay_target.hpp"'),
+            ('\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }',
+             '\t\tStockFlashOverlayTarget& overlayTarget() { return overlayTarget_; }\n'
+             '\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }'),
+            ('\t\tRender::D3D9::TextureManager *pTexMgr_;',
+             '\t\tRender::D3D9::TextureManager *pTexMgr_;\n\t\tStockFlashOverlayTarget overlayTarget_;')):
+        text = replace_once(text, before, after, 'Scaleform overlay surface lifecycle')
+    path.write_text(text)
+
+
+def patch_render_thread_source(relative, text):
+    edits = EDITS[relative]
+    if relative == 'lib/scaleform/manager.cpp' and LEGACY_COMMAND_EXECUTOR in text:
+        text = replace_once(text, LEGACY_COMMAND_EXECUTOR, edits[2][1],
+                            'Scaleform asynchronous command upgrade')
+    for old, new in edits:
+        viewport_ordered = viewport_before_capture(new)
+        render_owned = render_job_ownership(viewport_ordered)
+        ordered = overlay_surface_ownership(render_owned)
+        if relative == 'lib/scaleform/manager.cpp':
+            ordered = command_scene_ownership(ordered)
+        # Upgrade the preceding render-thread adapter in cached SDK trees.
+        for previous in (new, viewport_ordered, render_owned):
+            if ordered != previous and previous in text:
+                text = replace_once(text, previous, ordered, relative)
+        text = replace_once(text, old, ordered, relative)
+    if relative == 'lib/scaleform/manager.cpp':
+        text = render_thread_shutdown(text)
+        text = command_scene_ownership(text)
+    return text
+
 
 def patch(root, scaleform_root):
     # Display jobs rely on the D3D9 HAL accepting the render thread at init.
     if HAL_CONTRACT not in (Path(scaleform_root) / HAL_HEADER).read_text():
         raise RuntimeError("Scaleform D3D9 HAL lacks the render thread init parameter")
-    for relative, edits in EDITS.items():
+    patch_reset_lifecycle(root)
+    for relative in EDITS:
         path = Path(root) / relative
-        text = path.read_text()
-        for old, new in edits:
-            text = replace_once(text, old, new, relative)
-        path.write_text(text)
+        path.write_text(patch_render_thread_source(relative, path.read_text()))
+    patch_overlay_lifecycle(root)
+
+
+def patch_reset_lifecycle(root):
+    path = Path(root) / 'lib/scaleform/manager.hpp'
+    old = '\t\tvoid createUnmanagedObjects();'
+    new = (old + '\n'
+           '\t\t// ResetEx preserves textures, but replaces HAL backbuffer/render-buffer state.\n'
+           '\t\tbool recreateForD3DExDevice() const override { return true; }')
+    path.write_text(replace_once(path.read_text(), old, new, 'Scaleform ResetEx lifecycle'))
 
 
 def main():

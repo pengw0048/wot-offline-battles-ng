@@ -2,6 +2,7 @@
 
 #if defined(BW_CLIENT)
 #include "cstdmf/profiler.hpp"
+#include "cstdmf/stock_startup_timing.hpp"
 #endif
 
 #include <algorithm>
@@ -48,6 +49,9 @@ StockDx9EffectRuntime::StockDx9EffectRuntime(IDirect3DDevice9* device, ID3DXEffe
 bool StockDx9EffectRuntime::create(IDirect3DDevice9* device, ID3DXEffectStateManager* state_manager,
     std::shared_ptr<const StockEffectBinary> definition,
     std::shared_ptr<StockDx9EffectRuntime>& output, std::string& error) {
+#if defined(BW_CLIENT)
+    wot_startup::Scope startupStage("fx.original_runtime", true);
+#endif
     if (!device || !state_manager || !definition) return invalid("Effect runtime requires a device, state manager, and definition", error);
     auto runtime = std::shared_ptr<StockDx9EffectRuntime>(new StockDx9EffectRuntime(device, state_manager, definition));
     runtime->vertex_shaders_.resize(definition->shaders.size());
@@ -61,11 +65,17 @@ bool StockDx9EffectRuntime::create(IDirect3DDevice9* device, ID3DXEffectStateMan
                     [](const StockShaderResourceBinding& resource) { return resource.kind == 1; }) &&
                 !check_vertex_textures(device, error)) return false;
             IDirect3DVertexShader9* object = nullptr;
+#if defined(BW_CLIENT)
+            wot_startup::Scope shaderStage("driver.vertex_shader_create", true);
+#endif
             const auto result = device->CreateVertexShader(code, &object);
             runtime->vertex_shaders_[i].reset(object);
             if (failed(result, "CreateVertexShader", error)) return false;
         } else if (shader.stage == 2) {
             IDirect3DPixelShader9* object = nullptr;
+#if defined(BW_CLIENT)
+            wot_startup::Scope shaderStage("driver.pixel_shader_create", true);
+#endif
             const auto result = device->CreatePixelShader(code, &object);
             runtime->pixel_shaders_[i].reset(object);
             if (failed(result, "CreatePixelShader", error)) return false;

@@ -240,9 +240,12 @@ bool StockTemporalAASupport::beginOpaque()
     // 9a00a0 normalises against the actual current viewport, separately from
     // the physical texture allocation used by the nine-tap history kernel.
     const float width=static_cast<float>(viewport.Width),height=static_cast<float>(viewport.Height);
-    parameters_ = Vector4(frame_.jitterX/width, frame_.jitterY/height, 1.f/width, 1.f/height);
-    jitter_.setTranslate((frame_.jitterX+frame_.jitterX)/width,
-        (frame_.jitterY*-2.f)/height, 0.f);
+    // A mode change can disable temporal projection before endFrame advances
+    // the previous sample. Publish exactly the jitter used by this scene.
+    const float jitterX=temporalEnabled()?frame_.jitterX:0.f;
+    const float jitterY=temporalEnabled()?frame_.jitterY:0.f;
+    parameters_ = Vector4(jitterX/width, jitterY/height, 1.f/width, 1.f/height);
+    jitter_.setTranslate((jitterX+jitterX)/width, (jitterY*-2.f)/height, 0.f);
     frameViewProjection_ = Moo::rc().viewProjection();
     // Reuse the public LastViewProjection provider, backed by the actual main
     // view history. Reflection/shadow view changes never advance this owner.

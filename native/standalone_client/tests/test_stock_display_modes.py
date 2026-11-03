@@ -25,6 +25,7 @@ HOST = r'''
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 #define WOT_STOCK_DISPLAY_MODES_PORTABLE
 #define BW_BEGIN_NAMESPACE
 #define BW_END_NAMESPACE
@@ -92,7 +93,7 @@ struct RenderContext {
     unsigned nDevices(){return unsigned(adapters.size());}const DeviceInfo& deviceInfo(unsigned i){return adapters.at(i);}
     unsigned deviceIndex(){return activeDevice;}unsigned modeIndex(){return activeMode;}bool windowed(){return ::windowed;}
     float fullScreenRatio=16.f/9.f,halfWidth=400.f,halfHeight=300.f;
-    float fullScreenAspectRatio(){return fullScreenRatio;}
+    float fullScreenAspectRatio(){return fullScreenRatio;}void fullScreenAspectRatio(float value){fullScreenRatio=value;}
     float screenWidth(){return halfWidth+halfWidth;}float screenHeight(){return halfHeight+halfHeight;}
     bool changeMode(unsigned index,bool target){++changes;if(!changeOK)return false;activeMode=index;::windowed=target;return true;}
     bool resetDevice(){++resets;return resetOK;}
@@ -136,6 +137,30 @@ int main(){
         PyObject* f=PyCFunction_NewEx(&link.def,nullptr,nullptr);assert(f);
         assert(PyObject_SetAttrString(module,link.def.ml_name,f)==0);Py_DECREF(f);
     }
+    @STARTUP_CASES@
+    // TV rates can precede desktop rates. Neither startup nor Alt+Enter uses
+    // the first enumerated rate or the normal window's 800x600 dimensions.
+    const auto savedModes=Moo::rc().adapters[1].displayModes_;
+    Moo::rc().adapters[1].displayModes_={{2560,1440,23,D3DFMT_X8R8G8B8},
+        {2560,1440,144,D3DFMT_X8R8G8B8},{2560,1440,60,D3DFMT_X8R8G8B8},
+        {800,600,144,D3DFMT_X8R8G8B8},{2560,1440,144,D3DFMT_R5G6B5}};
+    assert(stockPreferredDisplayMode(1,2560,1440,0)==1);
+    assert(stockPreferredDisplayMode(1,2560,1440,23)==0);
+    assert(stockPreferredDisplayMode(1,2560,1440,60)==2);
+    assert(stockPreferredDisplayMode(1,2560,1440,143)==1);
+    assert(stockPreferredDisplayMode(1,1111,777,144)==-1);
+    assert(stockPreferredDisplayMode(99,2560,1440,144)==-1);
+    activeMode=3;
+    assert(stockToggleFullscreen());assert(!windowed&&activeMode==1);
+    assert(Moo::rc().fullScreenRatio==float(2560)/1440);
+    assert(stockChangeVideoMode(-1,EXCLUSIVE));assert(activeMode==1);
+    assert(stockToggleFullscreen());assert(windowed&&activeMode==1);
+    assert(preferenceReads==std::vector<int>({EXCLUSIVE,EXCLUSIVE,WINDOWED}));
+    changeOK=false;activeMode=3;Moo::rc().fullScreenRatio=1.25f;
+    assert(!stockToggleFullscreen());assert(windowed&&activeMode==3);
+    assert(Moo::rc().fullScreenRatio==1.25f);changeOK=true;
+    Moo::rc().adapters[1].displayModes_=savedModes;
+    activeMode=0;resets=0;changes=0;preferenceReads.clear();Moo::rc().fullScreenRatio=16.f/9.f;
     PyModule_AddIntConstant(module,"WindowModeWindowed",WINDOWED);
     PyModule_AddIntConstant(module,"WindowModeExclusiveFullscreen",EXCLUSIVE);
     PyModule_AddIntConstant(module,"WindowModeBorderless",BORDERLESS);
@@ -229,6 +254,11 @@ int main(){
     deviceReady=false;PyObject* args=PyTuple_New(0);assert(!py_listVideoModesAllMonitors(args));
     assert(PyErr_ExceptionMatches(PyExc_RuntimeError));PyErr_Clear();Py_DECREF(args);deviceReady=true;
     // Optional exact-bytecode integration uses the real production wrappers.
+    // The stock settings UI reads the active mode's rate, including when a
+    // graphics quality apply asks for changeVideoMode(-1, currentWindowMode).
+    Moo::rc().adapters[1].displayModes_={{2560,1440,23,D3DFMT_X8R8G8B8},
+        {2560,1440,144,D3DFMT_X8R8G8B8}};
+    activeMode=1;
     run("import os\n"
         "if os.environ.get('DISPLAY_GRAPHICS_PYC'):\n"
         " import marshal,sys,types\n"
@@ -238,7 +268,26 @@ int main(){
         " graphics=types.ModuleType('display_graphics_contract')\n"
         " eval(marshal.loads(open(os.environ['DISPLAY_GRAPHICS_PYC'],'rb').read()[8:]),graphics.__dict__)\n"
         " assert graphics.g_monitorSettings.activeMonitor==0\n"
-        " assert graphics.g_monitorSettings.videoModes[-1].refreshRate==75\n");
+        " assert graphics.g_monitorSettings.videoModes[-1].refreshRate==75\n"
+        " if os.environ.get('DISPLAY_SETTINGS_PYC'):\n"
+        "  def code_named(code,name):\n"
+        "   for value in code.co_consts:\n"
+        "    if isinstance(value,types.CodeType):\n"
+        "     if value.co_name==name:return value\n"
+        "     found=code_named(value,name)\n"
+        "     if found:return found\n"
+        "  namespace=dict(__name__='display_storage_contract',BigWorld=B,g_monitorSettings=graphics.g_monitorSettings)\n"
+        "  code=marshal.loads(open(os.environ['DISPLAY_SETTINGS_PYC'],'rb').read()[8:])\n"
+        "  attributes=eval(code_named(code,'VideoSettingsStorage'),namespace,{})\n"
+        "  Storage=type('VideoSettingsStorage',(object,),attributes)\n"
+        "  storage=Storage();storage._settings={};storage._core=None\n"
+        "  __import__('_display_host').windowMonitor(1)\n"
+        "  assert storage.refreshRate==144\n"
+        "  assert storage.videoModeForAdapterOutputIndex(1).index==1\n"
+        "  storage._settings['refreshRate']=23\n"
+        "  assert storage.refreshRate==23\n"
+        "  assert storage.videoModeForAdapterOutputIndex(1).index==0\n");
+    Moo::rc().adapters[1].displayModes_=savedModes;activeMode=0;
     run("import os\n"
         "if os.environ.get('DISPLAY_CALLBACK_CONSUMER'):\n"
         " execfile(os.environ['DISPLAY_CALLBACK_CONSUMER'])\n");
@@ -251,6 +300,63 @@ int main(){
 
 
 class DisplayModesTest(unittest.TestCase):
+    def startup_cases(self, folder):
+        """Execute the patched DeviceApp defaults, reads, selection and save seam."""
+        archive = Path(os.environ.get('WOT_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.exists():
+            self.skipTest('Pinned public engine source archive required')
+        names = ('client/script_bigworld.cpp', 'lib/moo/render_context.cpp', 'client/bw_winmain.cpp',
+                 'client/device_app.cpp', 'client/app.cpp')
+        with tarfile.open(archive) as original:
+            prefix = next(name[:-len(names[0])] for name in original.getnames() if name.endswith('/' + names[0]))
+            for name in names:
+                path = folder / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original.extractfile(prefix + name).read())
+        spec = importlib.util.spec_from_file_location('startup_display_patch', ROOT / 'bigworld/patch_stock_display_modes.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.patch(folder)
+        source = (folder / 'client/device_app.cpp').read_text()
+        from test_stock_runtime_services import between
+        defaults = between(source, '    const D3DDISPLAYMODE & desktopMode', '    // load graphics settings', False)
+        reads = between(source, '            windowed     = devicePreferences->readBool',
+                        '            fullscreenRefresh = devicePreferences->readInt("fullscreenRefresh", fullscreenRefresh);')
+        select = between(source, '    const int preferredMode = stockPreferredDisplayMode',
+                         '    modeIndex = std::min(modeIndex, maxModeIndex);')
+        saves = between(source, '            devPref->writeInt( "fullscreenWidth", mode.Width );',
+                        '            devPref->writeInt( "fullscreenRefresh", mode.RefreshRate );')
+        return r'''
+    struct Prefs {
+        bool window;int width,height,refresh;
+        bool readBool(const char* key,bool fallback){return !strcmp(key,"windowed")?window:fallback;}
+        float readFloat(const char*,float fallback){return fallback;}
+        int readInt(const char* key,int fallback){return !strcmp(key,"fullscreenWidth")?width:
+            !strcmp(key,"fullscreenHeight")?height:!strcmp(key,"fullscreenRefresh")?refresh:fallback;}
+        void writeInt(const char* key,int value){if(!strcmp(key,"fullscreenWidth"))width=value;
+            else if(!strcmp(key,"fullscreenHeight"))height=value;else if(!strcmp(key,"fullscreenRefresh"))refresh=value;}
+    };
+    auto startup=[&](unsigned deviceIndex,bool load,Prefs& prefs){
+        const Moo::DeviceInfo& di=Moo::rc().deviceInfo(deviceIndex);
+        @DEFAULTS@
+        auto* devicePreferences=&prefs;
+        if(load){@READS@}
+        int modeIndex=0,maxModeIndex=int(di.displayModes_.size())-1;
+        @SELECT@
+        assert(modeIndex>=0);
+        const auto& mode=di.displayModes_[modeIndex];auto* devPref=&prefs;
+        @SAVES@
+        return std::vector<int>{int(windowed),int(mode.Width),int(mode.Height),int(mode.RefreshRate)};
+    };
+    Prefs prefs={true,0,0,0};
+    assert(startup(1,false,prefs)==std::vector<int>({0,2560,1440,144}));
+    assert(prefs.width==2560&&prefs.height==1440&&prefs.refresh==144);
+    prefs={true,1920,1080,75};
+    assert(startup(0,true,prefs)==std::vector<int>({1,1920,1080,75}));
+    prefs={false,1920,1080,0};
+    assert(startup(0,true,prefs)==std::vector<int>({0,1920,1080,60}));
+'''.replace('@DEFAULTS@', defaults).replace('@READS@', reads).replace('@SELECT@', select).replace('@SAVES@', saves)
+
     def test_original_inactive_mode_setter_dispatches_zero_argument_notification(self):
         client = os.environ.get('WOT_0922_CLIENT')
         if not client:
@@ -284,8 +390,9 @@ class DisplayModesTest(unittest.TestCase):
             support = support.replace('@AUTO_MACROS@',
                 between(script, '// Section: Macros: Module Links', '// Section: Macros: Enums', False) +
                 between(script, '// Section: Macros: Recursion utilities', '// Section: PyModuleLink', False))
+            startup = self.startup_cases(folder / 'startup')
             source.write_text(HOST.replace('@PRODUCTION@', str(ROOT / 'bigworld/stock_display_modes.cpp'))
-                              .replace('@CALLBACK_SUPPORT@', support))
+                              .replace('@CALLBACK_SUPPORT@', support).replace('@STARTUP_CASES@', startup))
             flags = [item for item in shlex.split(subprocess.check_output([str(config), '--cflags'], text=True))
                      if item != '-DNDEBUG']
             libs = shlex.split(subprocess.check_output([str(config), '--ldflags'], text=True))
@@ -298,6 +405,9 @@ class DisplayModesTest(unittest.TestCase):
                 with zipfile.ZipFile(Path(client) / 'res/packages/scripts.pkg') as archive:
                     pyc = folder / 'graphics.pyc'
                     pyc.write_bytes(archive.read('scripts/client/gui/shared/utils/graphics.pyc'))
+                    storage = folder / 'settings_storages.pyc'
+                    storage.write_bytes(archive.read('scripts/client/account_helpers/settings_core/settings_storages.pyc'))
+                environment['DISPLAY_SETTINGS_PYC'] = str(storage)
                 environment['DISPLAY_GRAPHICS_PYC'] = str(pyc)
             subprocess.run([str(binary)], env=environment, check=True)
 
@@ -308,7 +418,8 @@ class DisplayModesTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('display_patch', ROOT / 'bigworld/patch_stock_display_modes.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        names = ('client/script_bigworld.cpp', 'lib/moo/render_context.cpp', 'client/bw_winmain.cpp')
+        names = ('client/script_bigworld.cpp', 'lib/moo/render_context.cpp', 'client/bw_winmain.cpp',
+                 'client/device_app.cpp', 'client/app.cpp')
         with tarfile.open(archive) as original:
             prefix = next(name[:-len(names[0])] for name in original.getnames() if name.endswith('/' + names[0]))
             contents = {name: original.extractfile(prefix + name).read() for name in names}
@@ -363,6 +474,41 @@ class DisplayModesTest(unittest.TestCase):
                 script = (root / 'client/script_bigworld.cpp').read_text()
                 self.assertEqual(script.count('#include "stock_display_modes.hpp"'), 1)
                 self.assertEqual(script.count('stockChangeVideoMode( modeIndex, windowMode )'), 1)
+
+    def test_startup_patch_composes_with_device_preferences_and_worker_owners(self):
+        archive = Path(os.environ.get('WOT_BIGWORLD_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        if not archive.exists():
+            self.skipTest('Unmodified public-source archive unavailable')
+        modules = {}
+        for name in ('display_modes', 'worker_runtime', 'hangar_presentation', 'antialiasing',
+                     'graphics_detection', 'preferences_callbacks', 'runtime_services'):
+            path = ROOT / ('bigworld/patch_stock_' + name + '.py')
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            modules[name] = (module, path.read_text())
+        display, display_source = modules.pop('display_modes')
+        with tarfile.open(archive) as source:
+            members = set(source.getnames())
+            prefix = next(n[:-len('client/app.cpp')] for n in members if n.endswith('/client/app.cpp'))
+            for name, (other, text) in modules.items():
+                names = set(re.findall(r'''['"]((?:client|lib)/[^'"\s]+\.(?:cpp|hpp|ipp))['"]''',
+                                       display_source + text))
+                original = {n: source.extractfile(prefix + n).read() for n in names if prefix + n in members}
+                for order in ((display, other), (other, display)):
+                    with self.subTest(owner=name, first=order[0].__name__), tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        (root / 'lib/cstdmf').mkdir(parents=True)
+                        for relative, content in original.items():
+                            path = root / relative
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(content)
+                        for module in order:
+                            module.patch(root)
+                        first = {n: (root / n).read_bytes() for n in original}
+                        for module in reversed(order):
+                            module.patch(root)
+                        self.assertEqual(first, {n: (root / n).read_bytes() for n in original})
 
 
 if __name__ == '__main__':

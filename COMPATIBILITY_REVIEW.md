@@ -3731,10 +3731,10 @@ checks.
 The native Scaleform manager supplies the same render-command queue to its HAL
 and every Movie instance. This enables real DrawableImage allocation for the
 stock damage panel's BitmapData atlas, preserving SDK completion events and
-references through synchronous readback and shutdown. The current engine's
-Movie creation, advancement and retirement all execute on the render thread;
-the queue retains that boundary and uses Moo's nested scene owner while
-preserving device state. A Windows D3D9/SDK probe reproduces the missing image
+references through synchronous readback and shutdown. Movie advancement and
+Capture execute on the caller thread; retained HAL display jobs execute on the
+render thread. Creation/retirement and queued resource ownership preserve that
+separation, using Moo's nested scene owner and explicit device-state restoration. A Windows D3D9/SDK probe reproduces the missing image
 without the queue, then checks atlas copyPixels, exact pixel values, disposal,
 two Movie rounds and three SDK lifecycles with it. TextFieldEx also exposes the
 original vertical autosize setter/getter and delegates layout to the existing
@@ -4161,3 +4161,473 @@ The host differential fixtures exercise the pinned Python laws, publication
 retry order and startup/resource transitions. They do not establish rendering,
 native memory ownership, gameplay feel or frame-time improvements; those
 boundaries require the matching Windows client and exercised scene.
+
+
+### Native rendering parameter and snapshot ownership
+
+The renderer mounts both original ARIE effects and public D3DX fallback effects.
+ARIE shared values retain their UniformContext owner. Public D3DX shared
+semantics must also register the existing live providers: their former effect
+pools are absent, so skipping those semantics leaves camera, projection and
+scene inputs at defaults. This applies to the public dynamic/semi-dynamic
+shadow resolves and other retained fallback passes, not just one map.
+Manual ARIE writes select the material's private binding before setting values.
+SimpleGUI and MiniMap filtering follow the same rule as Flora and sky caches.
+HDR and Flora retire manual render-target references from existing bindings
+before releasing the targets; cleanup never allocates a binding. Automatic
+semantic textures keep their existing producer and device-loss lifecycle.
+
+The original #1513 ARIE SHADOW vertex shader adds `ShadowAlgoParams.x * w`
+to raster clip-z while its pixel shader writes unbiased z to COLOR0. The
+retained public directional-shadow owner samples an R32F COLOR atlas, so its
+receiver must account for that difference. Original DX9 split setup at 9cc42a
+and arithmetic at 9ceba0 give normalized light-depth bias
+`p22 * max(.7 * abs(2/(width*p00)), .7 * abs(2/(height*p11)), abs(1/(2^24*p22)))`.
+Each split uses its own light projection and actual tile viewport dimensions,
+not the full atlas width. Subtracting that bias from receiver z preserves the
+stock depth-comparison sign for these orthographic splits without rewriting
+ARIE bytecode or replacing atlas resources. The split array resets on resource
+recreation/retirement and is uploaded with the matching matrix count. Native
+instruction and host boundary regressions prove the arithmetic and ownership;
+removal of moving vehicle-surface stripes still requires Windows image evidence.
+
+Flash movies publish viewport/clip state before Capture. A display-handle copy
+retains a context, not a particular immutable frame. Global and component
+movies keep their asynchronous ownership; shared DrawTextManager calls capture
+and consume serially before another component changes that owner. Text jobs
+establish a frame, preserve the existing world-text stencil contract, and skip
+submission when frame/scene creation fails. Device reset drains old jobs and
+reports a failed HAL restore without pretending that restoration succeeded.
+
+Focused regressions execute public producer/consumer code, original #1513
+FXO bindings and SDK snapshot copy-on-write behavior, with failing old-code
+controls. These establish ownership and interface contracts. They do not prove
+that a photographed GTX 1070 brightness boundary or intermittent garage frame
+has disappeared; that remains a matching Windows scene-validation boundary.
+
+### Sparse compiled destructible cells and movement
+
+`stockDestructibleChunks` enumerates the sparse WGDE metadata census, not every
+100-metre grid cell. An absent cell is proved empty only after all registered
+mappings have bound their metadata and the gameplay catalog expects no tree
+or boxless falling identity there. Publish an empty ready tree index in that
+case; retain Pending for an expected identity whose native metadata is missing.
+The stream revision retires both loaded and empty-cell proofs. Static geometry,
+terrain support and arena bounds keep their independent collision checks.
+
+A Windows Type 64 drive on `35_steppes` reproduced the old behavior: forward
+and forward-plus-turn stopped at approximately (213.51, -303.44), with normal
+modules and Pending tree contact, while reversing and detouring remained
+possible. The complete map WGDE omits the adjacent forward and lateral cells.
+This distinguishes the empty-cell ownership defect from an actual tree or
+terrain collision. Bounded MOBILITY state transitions additionally preserve
+module, input, support and contact evidence for future damage-related stops.
+The later Airfield session records a functional canonical track repair while
+an older locally owned auto-repair overlay still blocks movement. A repair kit
+is not an acknowledgement of that overlay's checkpoint: newer canonical
+functional tracks now supersede it independently, preserving an unrepaired
+opposite track and the sequence fence against stale acknowledgements. Tests
+exercise actual core equipment repair through Status and the movement gate,
+including subsequent damage. This establishes the local cause and correction;
+the complete kit-to-motion journey still requires Windows acceptance.
+
+### Reproducible native, renderer and GUI baseline review
+
+`tools/audit_native_baseline.py` is the repeatable entry point for the reviewed
+#1513 census and the related contract regressions. Its checked-in review data is
+`tools/evidence/native_baseline_0922/reviewed.json`; generated code-object,
+registration and shader inventories stay outside the repository. The baseline
+records observed evidence classifications and remaining defects. It is not a
+claim of complete native, GPU or gameplay parity.
+
+Run the host/optional-data contract group with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B tools/audit_native_baseline.py \
+  --mode contracts --output-dir "$AUDIT_OUTPUT/contracts"
+```
+
+The report aggregates actual unittest test/failure/error/skip counts and retains
+per-test skip reasons alongside both command logs. A completed run with skips
+is labeled explicitly. Exact-client
+instruction/consumer tests additionally use `WOT_0922_CLIENT`, `WOT_PYTHON27`
+(and `PY27` for the retained water fixture); SDK host tests use
+`WOT_PUBLIC_ENGINE_ARCHIVE`, `WOT_SCALEFORM_SDK_GIT` and, where required,
+`WOT_PUBLIC_RESOURCES`. Missing optional inputs are skipped evidence, not native
+success. This mode does not run a Windows client or collect a current runtime
+snapshot.
+
+Repeat the full static census with explicit original resources, a compatible
+CPython 2.7 interpreter, public source archive, reviewed original native API
+inventory, and an actual NG runtime module/type snapshot:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B tools/audit_native_baseline.py \
+  --mode capture --client "$WOT_0922_CLIENT" \
+  --python27 "$WOT_PYTHON27" --sdk-archive "$WOT_PUBLIC_ENGINE_ARCHIVE" \
+  --original-api "$ORIGINAL_NATIVE_API_INVENTORY" \
+  --runtime-snapshot "$NG_NATIVE_API_SNAPSHOT" --output-dir "$AUDIT_OUTPUT"
+```
+
+Both collectors run the exact-client inspector before using original data.
+`audit_native_interfaces.py` reads every PYC through CPython 2.7, retains exact
+member/code-path/bytecode-offset and guard evidence, inventories source
+registrations and inherited class schemas, and lets actual runtime `dir`
+observations override source candidates. Only positively reviewed original
+registrations/schemas are baseline evidence; old NG implementation labels from
+an external inventory are ignored. Original export gaps require current PE
+registration instruction/name/binding validation. A registration that fails
+that verification remains unconfirmed. Positive reviewed member tables are
+identified separately from verified export instructions.
+
+`audit_renderer_abi.py` decodes every `.10.dx9.fxo` and `.11.dx9.fxo` effect in
+the original shader package through the repository's actual effect decoder.
+It records uniform/resource layout, shader usage, literal source provider and
+manual setter candidates, target formats, resource mount candidates, and the
+public Scaleform binding declaration schemas. Source literals in pristine SDK
+files and old/new patch anchors are candidates, not a census of final linked
+owners. Shader records are scanned with default selector bindings; alternative selector
+combinations are not exhaustively enumerated. Compiled shader use is not proof
+that a live technique is selected.
+
+The review gate rejects lost runtime evidence, a formerly covered name becoming
+missing/unresolved, new missing or unresolved consumers, disappeared reviewed
+exact-client demand, effect decode failures, new unexplained used semantics,
+and public Scaleform declaration/schema drift. A new available name or a
+resolved gap still does not prove behavior. Reviewed residual gaps remain in
+`baseline-review.json`. Existing reports can be checked with `--mode review
+--native-report ... --renderer-report ...`; that mode does not refresh them.
+The report preserves source revision/worktree status and input paths. Capture
+also preserves snapshot binary/stage labels literally: a caller-supplied label
+is not proof that the snapshot matches the current source or executable.
+
+The reviewed 2026-11-02 capture covers 3,943 PYC members, 80,523 code objects,
+6,142 extracted references and 871 distinct required native paths, with 464
+original effects decoded. These are bounded census results, not all dynamic
+`getattr`, native-internal calls, arbitrary return-object schemas or live
+resource mounts. Its snapshot contains runtime observations for BigWorld,
+GUI and Math; other modules can retain source-only evidence. The supplied
+snapshot identifies itself as `diagnostic-garage-probe1`, `garage-ready`, even
+when stored in a later probe directory. That label alone is not fresh binary acceptance.
+
+The residual native census contains 64 missing-name candidates: 33 exports
+with verified original registrations, five positive reviewed original members,
+four exports whose original registration instruction check remains unresolved,
+and 22 candidates lacking a reviewed original export/member baseline. Another
+14 dynamic members and 44 unresolved member schemas require instance/schema
+review. The feature classifications distinguish ordinary UI, downloaded image
+memory, map-selected areas/activities, physics setup, replay/seasonal metadata,
+external online/browser services, bootcamp, development logging, hardware
+peripherals and selected camera configuration. A dormant or offline-bypassed
+consumer is not automatically a current gameplay defect; it must not receive
+a fabricated successful native implementation.
+
+The renderer/GUI classifications also preserve these limits and known gaps:
+
+- Dynamic shadow plane/filtering, legacy reconstruction, static shadow channel,
+  D3DX current-value reads and atlas retirement have source/host regressions.
+  Their moving vehicle-surface stripe diagnosis and Windows image acceptance
+  remain unproved. Static ASM terrain depth bias, cascade equivalence and
+  activated ASM semantics on water/vegetation require separate evidence.
+- The source census retains 12 unexplained used semantics as provider/live
+  variant candidates. No literal provider alone is insufficient to diagnose a
+  selected material. ST6/Flora-ST6, original bloom/lens-flare/dirt/god-ray owners
+  and SSR have explicit capability differences; tPS external/nested emitters
+  are rejected with diagnostics. These are not attributed to the reported
+  firing line or heap failure without an exercised path.
+- The Scaleform overlay's former INTZ/D24S8 owner split is repaired within a
+  bounded Windows trace: 35 top-level scene entries and 3,464 default-target
+  operations show matching D24S8 ownership. That trace spans 1.422 seconds;
+  visible flicker, reset and lifecycle stress require separate acceptance.
+- Protocol image upload has real RGBA/DXT row/block-stride and bounds tests.
+  The former 3x5 RGBA copy could copy 512 bytes into 60 bytes. The camouflage
+  URI path has exact Python producer, original x86 compositor/SetPixel and
+  installed Windows ResIL/ILU CPU-buffer evidence, including a 16,384-pixel
+  comparison. The controlled SWF thumbnail and actual style preview/apply-exit
+  now have separate matching VM evidence, bounded to the exercised scene.
+- Downloaded memory-texture APIs remain separate original export gaps. Legacy
+  sticker production remains a placeholder without a confirmed original PYC
+  producer; authored SWF literals are not yet closed. Public Movie/DisplayInfo,
+  font/DPI/CJK/tooltip/filter-cache and retirement tests do not certify every
+  original argument/default/error conversion or visual lifecycle.
+- Pre-mip-repair probe6 still faulted in `CreateTexture`/`prl_umdd` after the
+  row-copy and overlay repairs. The pinned SDK `RawImage::Decode` separately
+  carried a destination pointer between mip levels although mapped mips can
+  have independent allocations. Actual SDK geometry/decoder tests reject the
+  old writes and exercise three original emblem/inscription DDS resources;
+  the repair selects and bounds each destination mip independently.
+- The rebuilt `garage-probe3` package, identified by the runner as
+  `vm-93d69269-202611021305`, completed the later
+  `acceptance-probe8-complete` Windows journey with exit 0: 148 hover inputs,
+  repeated emblem/inscription/paint/style/camouflage transitions, an actual
+  style outfit change from styleId 0 to 1, stock `buyAndExit` with one pending
+  purchase and view closure, two battle shots, return to garage and normal
+  quit. The test restored the user's saved garage bytes. Its driver deliberately
+  entered hidden paint tabs with zero items; that is not a product defect.
+  This bounded run did not reproduce the previous emblem crash. It does not
+  diagnose every driver fault, certify future crash freedom, or replace
+  controlled SWF-thumbnail and moving-shadow image acceptance.
+
+The follow-up mask/filter review closes another producer-consumer boundary:
+`battle.swf` enables `cacheAsBitmap` on `entriesContainerMask`, but the public
+D3D9 HAL temporarily enables color writes for an uncached mask and formerly
+restored the parent stencil-only contract after its final composite. This could
+paint the mask shader's fixed red fill into scene color. The patch restores
+color writes to zero after returning to the parent target and before that
+composite. Extracted production functions cover 48 cached/uncached, nested,
+stencil/depth and filter cases: eight baseline leaks, zero patched leaks.
+A matching diagnostic Windows battle records five uncached mask passes and
+2,490 parent mask composites over 23.516 seconds, all with actual hardware
+`COLORWRITEENABLE=0`. Normal non-mask color rendering remains enabled. This is
+bounded runtime state evidence; it does not certify all future minimap frames.
+
+The controlled camouflage-grid run clears the original filters and records
+actual AS3 requests for all 12 images. An early provider-ACK screenshot was
+blank, but that acknowledgement precedes completed image presentation. The
+full display tree subsequently contains twelve opaque 128x128 BitmapData
+objects. Separate readback, no-readback and finally no-display-tree-inspection
+controls all visibly render the camouflage grid and filter icons after normal
+frame progression. No WeakRef, Loader constructor, forced queue flush or GPU
+upload workaround was added for that premature observation. The exercised VM
+scene has rendered-thumbnail evidence; provider requests alone remain
+insufficient as image-complete or render acknowledgement.
+
+### Original graphics preset resource ownership
+
+The loose public SDK preset table shadowed `misc.pkg` and supplied twelve
+settings per profile instead of #1513's nineteen. Its HIGH shadow option also
+differed from the original authored choice. Remove that single SDK resource
+from the generated overlay and let the already mounted original catalogue
+supply all preset values. Do not rewrite the user's original package. The
+resource-precedence test executes the real original lookup and the existing
+native/Python2 catalogue contract retains every original profile field.
+Full HIGH Windows acceptance applies this original nineteen-entry preset and
+records both requested and effective values, including texture and object LOD;
+setting only a subset of quality controls is not full-preset evidence.
+
+### Directional shadow comparison and near-focus ownership
+
+The public R32F receiver discarded the original D16 sampler's bilinear
+comparison weights. Comparing four neighbouring depths before interpolating
+coverage restores that filtering contract; raw-depth interpolation is not
+equivalent. Receiver-plane correction and clamping apply at each physical
+sample, including the unequal atlas tile boundaries.
+
+The subsequent HIGH-quality vehicle playtest still showed changing, coarse
+shadows on small protrusions. Exact quality-table and effect selection now
+identify further differences: original HIGH and MEDIUM both select
+`dynamic_shadows` shader 12, a fixed weighted nine-sample kernel with no screen
+noise, not the public rotating Poisson kernel. The adapter preserves its DEF
+weights, sample order, `.9 / atlasDimensions` offsets and `1 - weightedVisibility`
+output without an invented normalization. This requires 36 explicit R32F reads
+rather than the previous 32. MAX/LOW receiver algorithms remain outside this fix.
+
+The camera also lost its original directional-shadow focus publication:
+CursorCamera and the Homing/Free shared base only notified tree hiding. The
+original renderer publishes the same provider to shadows independently of the
+tree-hide flag. The restored owner retains it until explicit script teardown,
+snapshots callback-visible state, and rejects re-entrant replacement.
+
+For HIGH/MEDIUM the nearest cascade now uses its original 2048-pixel tile and
+tight, unsnapped light-space rectangle. At close focus distances the first far
+plane becomes camera-to-focus distance plus `.5`; at the reviewed 12..30m
+interval it instead fits a thin world-axis focus box. Remaining tiles retain
+1024 pixels. The adapter packs these into a 4096x2048 row atlas and passes
+physical bounds to the receiver; light-space containment selects the nearest
+applicable cascade. The exact rectangle arithmetic matches 250 original x86
+instruction-oracle cases bit for bit. Host tests additionally exercise focus
+lifecycle, translating projected receivers and mixed-tile canaries.
+
+This restores the demonstrated HIGH/MEDIUM near-focus and filtering contracts.
+It does not certify the complete original projection wrapper, MAX PCSS, LOW,
+far-cascade radius hysteresis, original full-distance/ASM agreement, or all
+GTX 1070 temporal artifacts. A Windows VM compiles the new receiver and completes full HIGH-quality
+Type 62 translation, rotation and garage return with exit 0. A separate
+close native-camera sequence preserves the stock input camera and its focus
+provider; its moving captures show stable, finer protrusion shadows. Neither
+sequence lowers lighting quality for acceptance. This is bounded VM evidence;
+GTX 1070 image acceptance remains separate from source, host arithmetic and
+instruction-oracle evidence.
+
+### Scaleform command and retirement thread ownership
+
+`ThreadCommandQueue` is shared by DrawableImage work and native context
+shutdown. `Context::Shutdown(true)` admits its RT service command while holding
+the context lock, then waits after unlocking; DrawableImage destruction also
+forbids flushing that queue while a capture lock may be held. The former
+`drain(); Execute()` adapter violated these producer contracts and could release
+MeshKey cache objects on the caller instead of the configured HAL thread.
+
+Retain each command and post it asynchronously without querying device state
+or waiting in Push. Main and foreign submissions share one FIFO and capture a
+monotonic published-record fence without reserving ring capacity. Commands run
+after prior device records and before later records. A queue sentinel provides
+an explicit completion acknowledgement before the renderer/HAL are finally
+released on their owning thread. Existing foreign synchronous calls retain
+their separate behavior. RT commands save/restore actual device state and use
+tracked real BeginScene/EndScene/Reset outcomes; they do not touch the main
+RenderContext's scene nesting, preload, profiling or state-cache fields.
+
+Actual SDK shutdown, command leases, completion events, thread-off operation,
+producer/consumer ordering and scene-state tests cover these contracts with
+failing old-behavior controls. Matching PDB symbols place an intermittent exit
+AV in MeshKeyManager cleanup, including a candidate predating the near-shadow
+change. That address evidence alone is not a native crash diagnosis: no matching
+crash dump was captured, and these independently demonstrated protocol repairs
+do not establish the AV's precise cause.
+
+### Deferred work with no active consumer
+
+The restored tone mapper disables bloom, but the public HDR resolve still
+called its bloom pyramid. The pinned Steppes and Mannerheim sky settings enable
+that producer; its successful 4K path contains 27 draws. Omit that unused chain
+and bind the pinned finite-black managed texture instead of an uninitialised
+floating-point target. Keep luminance, exposure, AA and their reused targets.
+When both DBE light consumers are disabled, clear the selected physical target
+to neutral RGBA and skip depth-copy, reconstruction and filters. Disable its
+unused ScalarTAA owner so reactivation recreates and seeds temporal history.
+
+Automatic uniform capture retains numeric layout and writer policy without
+copying immutable descriptor strings. Named reflection uses call-local string
+views, preserving sorting, encoded handles and embedded-NUL semantics without
+retaining caller memory. Allocation-counting old-behaviour controls and actual
+producer/cleanup tests cover these changes. These checks do not establish GPU
+stage times or a GTX1070 frame-rate gain. A runtime pipeline switch requires a
+restart before comparing forward and deferred profiles; a requested preset
+alone does not identify the active renderer.
+
+
+The building-heavy submission review additionally removes a value copy from
+DynamicSceneProvider's callback-free intersection query; callback-bearing
+collision queries keep their snapshots. The patch accepts both the original
+and reviewed ground-decal tree expression, in either application order.
+Original stock instancing retains its matrix constants and index stream but
+uses CPU staging instead of uploading an unused full-matrix GPU stream. Public
+and mixed operations retain offsets, upload only the used prefix, and isolate
+allocation/lock failures without disabling valid stock draws.
+
+Effect submission refreshes only automatic textures consumed by the selected
+vertex/pixel shaders. Selection metadata is cached; live texture values still
+refresh each draw. A pending-declaration count and immutable capture index
+replace repeated shared-schema scans. Executable contract tests cover selected
+provider failures, late schema registration, retained handles and old-behavior
+negative controls. Existing low-frequency D3D9 submission summaries are enabled
+by default, with the existing environment opt-out. These changes remove proved
+redundant CPU/upload work; they do not establish a GTX1070 FPS gain. The inspected
+original small-object culling branch is dormant behind a constant-return
+producer, so it is not restored as a speculative optimization.
+
+
+The subsequent 28_desert desktop session spans roughly 45--51 FPS initially
+and 79--94 FPS later, with lower intervals still present. Render-thread sync
+waits average 0.2--1.6 ms/frame and do not account for the full slow-frame cost.
+The existing 600-frame summary now samples Windows main/render thread CPU
+consumption via GetThreadTimes, excluding waits and GPU work. It adds no
+per-draw timers. Actual normalmap/normalmap_specmap/lightonly host microbenchmarks
+show only about 0.025 ms per 1,000 draws available from a proposed packing
+rewrite, so that rewrite is deliberately omitted. Neither the report nor the
+host benchmark establishes a matched FPS improvement or GPU stage attribution.
+
+
+The next 28_desert desktop report identifies a CPU-heavy interval: 18.753 ms
+wall/frame, 18.203 ms main-thread CPU and 10.391 ms render-thread CPU, with
+0.220 ms synchronous wait. A later interval admits 133.71 synchronous buffer
+locks/frame. These windows do not identify the exact camera pose or establish
+a GPU-stage cost. The existing summary now attributes synchronous buffer locks
+to bounded caller-RVA/descriptor groups and reports five coarse main-loop wall
+intervals (tick, animation, draw, main scene, terrain). Main scene and terrain
+are subsets of draw; the intervals are not additive or exclusive CPU times.
+The normal Profiler remains disabled; no per-draw timer or full profiler build
+is introduced.
+
+Original terrain border arithmetic and real Adapter/Runtime register/texture
+uploads pass host checks, including the exact 28_desert settings. Missing red
+map-edge markings remain unproved at the final Windows draw. Bounded terrain
+samples read actual binding/device state after BeginPass, once for each colour
+kind and once when that kind first draws an arena-edge tile. This is diagnostic
+readback, not a red-line repair or proof of final composition. It must not
+change TerrainSettings object layout or overwrite the original rendering path.
+
+
+The original main scene additionally has an active GPU occlusion draw-set
+consumer, independently of the dormant small-object branch discussed above.
+WorldApp 0x636c05 calls query owner 0xabad80 (the original enabling global has
+initial value 1); 0x636dd1 reaches 0xabad00 and the visibility consumer. Exact
+instruction slices update query history via 0xac20a0 and route the same eligible
+candidate to skip (0xac1e64) or draw-set append (0xac1e3f) according to its
+visibility result. The previously reviewed NG compiled-space main scene performed frustum
+culling without that original GPU-query result filter. This is an identified
+renderer parity gap, not evidence of a particular FPS gain. Query admission,
+proxy geometry, eligibility, temporal history and camera/teardown rules must
+be established before implementing it; no speculative object rejection is
+included in the diagnostic candidate.
+
+
+The 00:41 desktop report attributes 271.89 synchronous locks/frame in its
+28.887 ms peak window to the matching executable's RenderOpProcessor resource
+creation (64-byte DEFAULT/WRITEONLY vertex buffers). Main-scene and terrain
+intervals are only 1.130 and 0.805 ms respectively in that window; all-draw work
+is 17.910 ms. This is independent evidence of repeated resource setup, not a
+measurement of the occlusion gap. The immutable FLOAT1 index stream is now
+owned once by the device visual context, with DeviceCallback loss/reset and
+failure retry. Ephemeral draw contexts no longer allocate it individually or
+allocate an unused 256 KiB public matrix stream. A real public consumer lazily
+allocates that separate stream. Host tests exercise 300 processors with one
+64-byte initialization and zero public allocations, preserving mixed offsets,
+16-instance packets, rollover, failure isolation and reset recovery. The new
+owner is appended after existing visual-context members, retaining their
+inline field offsets. Windows desktop performance improvement remains pending.
+Terrain readback uses the collected render log directly because the Consumer
+build compiles its former INFO_MSG output away.
+
+
+The red-line defect is now traced to two missing manual uniforms:
+terrainUProjection/terrainVProjection. Their original defaults are zero, which
+samples border.dds at its transparent centre. The original ae95b0/acd5d0 path
+selects the first case-insensitive color_tex layer and forwards its authored
+projections, rather than deriving them from arena bounds. The adapter now does
+the same. Host coverage includes all 52 original spaces, real A8 mask samples
+and final ordinary/LOD VS registers. Matching package vm-fdc3346c-202611030132
+completes a Windows VM full-HIGH/deferred 28_desert camera sequence with both
+arena edges visibly red, garage return and exit 0. This proves the exercised
+border behavior; the VM resolution and hardware do not establish GTX1070 FPS
+or complete renderer parity. Temporary camera/entry hooks and saved state are
+restored after the run.
+
+
+The primary compiled static-model colour draw now consumes bounded GPU
+occlusion results. Scene-wide query resources are shared across mappings with
+an original-derived 4000-resource limit; creation is lazy and receipts recycle
+only after completion. Queries use the original position material and bounds
+proxy after opaque/terrain depth population. Revision, mapping, viewport,
+depth and device lifetime checks reject stale receipts. Near-plane candidates,
+unready results, errors, capacity exhaustion and 100 ms timeouts remain visible.
+The render-thread query wrapper propagates terminal failures and invalidates
+receipts at reset. State-block capture/apply preserves actual device outcomes
+and the borrowed effect visual context. Host coverage includes 1130 original
+history instruction comparisons, failure mutations and full production owner
+lifecycle tests. Windows GPU behavior and desktop FPS remain separate evidence.
+
+The terrain uniform audit also restores per-batch colorSlot/invColorSlot
+selection, including no-match reset, and the original reflected-terrain enableAO
+gate from the current SSAO owner. Real shader/register tests cover all 256
+selection variants and all 6980 original terrain blocks; no additional atlas
+compatibility path is introduced.
+
+
+The first desktop occlusion package also exposed implementation overhead: a
+933.56-query/frame window has 1.566 ms/frame synchronous wait, and ordinary
+frames create three state blocks and capture/apply four. These are different
+camera intervals, not a matched FPS regression percentage. Query poll admission
+now indexes pending membership instead of scanning the queue on every BEGIN
+and END; swap-removal maintains the index through reissue and reset. All
+compiled mappings share one primary-view state capture/restore. A known,
+full frontend state-block snapshot can restore cached bindings after successful
+native Apply while retaining uncaptured depth/target ownership; interleaved
+captures, owner captures or unknown live state fall back to native readback.
+The DrawableImage executor avoids an immediately redundant Capture after
+CreateStateBlock, whose D3D9 contract already captures state at creation.
+Failure propagation and visibility history are unchanged. Focused host tests
+cover large pending queues, lifecycle/reset, snapshot invalidation, MRT/depth
+ownership and both shared-scope success and capture failure. Actual desktop
+frame improvement remains a runtime measurement.

@@ -130,6 +130,169 @@ def apply(root):
          '    for (auto& material : m_debug_materials) clearStockDeferredLegacyDecalInputs(material);',
          '    for (auto& material : m_materials) clearStockDeferredLegacyDecalInputs(material);')
 
+    # Original ARIE SHADOW writes unbiased depth into COLOR but biases raster
+    # depth through ShadowAlgoParams. The public atlas samples R32F COLOR,
+    # so apply the original uniform split bias on the receiver side instead.
+    header = 'lib/moo/dynamic_shadow.hpp'
+    edit(header, '        BW::vector<Matrix>          m_textureMatrices;',
+         '        BW::vector<Matrix>          m_textureMatrices;\n'
+         '        BW::vector<float>           m_stockShadowDepthBiases;')
+    cpp = 'lib/moo/dynamic_shadow.cpp'
+    edit(cpp, '#include "dynamic_shadow.hpp"',
+         '#include "dynamic_shadow.hpp"\n#include "wot/stock_directional_shadow.hpp"',
+         '#include "wot/stock_directional_shadow.hpp"')
+    edit(cpp, '        m_textureMatrices.resize(m_shadowQuality.m_numSplit);',
+         '        m_textureMatrices.resize(m_shadowQuality.m_numSplit);\n'
+         '        m_stockShadowDepthBiases.assign(m_shadowQuality.m_numSplit, 0.f);')
+    edit(cpp, '                    lightProjMatrices[i] = proj;',
+         '                    lightProjMatrices[i] = proj;\n'
+         '                    m_stockShadowDepthBiases[i] = wot::stock_directional_shadow_depth_bias(\n'
+         '                        proj(0, 0), proj(1, 1), proj(2, 2),\n'
+         '                        m_dynamicShadowMapSize, m_dynamicShadowMapSize);',
+         'm_stockShadowDepthBiases[i] = wot::stock_directional_shadow_depth_bias(')
+    edit(cpp, '        m_dynamicShadowMapAtlas = NULL;',
+         '        m_dynamicShadowMapAtlas = NULL;\n        m_stockShadowDepthBiases.clear();')
+    edit(cpp, '    void DynamicShadow::deleteUnmanagedObjects()\n    {',
+         '    void DynamicShadow::deleteUnmanagedObjects()\n    {\n'
+         '        // Legacy D3DX SetTexture retains the DEFAULT-pool atlas.\n'
+         '        if (m_fillScreenMap && m_fillScreenMap->pEffect())\n'
+         '        {\n'
+         '            ID3DXEffect* effect = m_fillScreenMap->pEffect()->pEffect();\n'
+         '            if (effect) effect->SetTexture("g_shadowMapAtlas", NULL);\n'
+         '        }')
+    edit('lib/moo/semi_dynamic_shadow.cpp',
+         'void SemiDynamicShadow::Impl::deleteUnmanagedObjects()\n{\n    BW_GUARD;',
+         'void SemiDynamicShadow::Impl::deleteUnmanagedObjects()\n{\n    BW_GUARD;\n'
+         '    // Retire the legacy receiver COM references before their targets.\n'
+         '    if (m_receiveEM && m_receiveEM->pEffect())\n'
+         '    {\n'
+         '        ID3DXEffect* effect = m_receiveEM->pEffect()->pEffect();\n'
+         '        if (effect)\n'
+         '        {\n'
+         '            const char* inputs[] = {"g_indirectionMapProj", "g_indirectionMapTc",\n'
+         '                "g_shadowMapHeight", "g_shadowMapLow"};\n'
+         '            for (const char* input : inputs) effect->SetTexture(input, NULL);\n'
+         '        }\n'
+         '    }')
+    edit(cpp, '        if (m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)',
+         '        if (numSplit == 0 || m_shadowQuality.m_numSplit == numSplit || numSplit > BW_SHADOWS_MAX_SPLIT_COUNT)')
+    # #1513 HIGH and MEDIUM select the same fixed nine-comparison receiver.
+    # Keep MAX/LOW on their existing paths until their full producers match.
+    edit(cpp, '{ 3, 0, DynamicShadow::QM_DINAMYC_CAST_ALL             }, //-- HIGH',
+         '{ 3, 3, DynamicShadow::QM_DINAMYC_CAST_ALL             }, //-- HIGH')
+    edit(cpp, '{ 3, 1, DynamicShadow::QM_DINAMYC_CAST_ALL             }, //-- MEDIUM',
+         '{ 3, 3, DynamicShadow::QM_DINAMYC_CAST_ALL             }, //-- MEDIUM')
+    edit(cpp, '            effect->SetFloat("g_splitCount", (float)m_shadowQuality.m_numSplit);',
+         '            effect->SetFloat("g_splitCount", (float)m_shadowQuality.m_numSplit);\n'
+         '            effect->SetFloatArray("stockShadowDepthBiases",\n'
+         '                &m_stockShadowDepthBiases[0], m_shadowQuality.m_numSplit);')
+
+    edit(header, '        BW::vector<float>           m_stockShadowDepthBiases;',
+         '        BW::vector<float>           m_stockShadowDepthBiases;\n'
+         '        BW::vector<uint>            m_stockShadowTileSizes;\n'
+         '        BW::vector<Vector4>         m_stockShadowTileBounds;\n'
+         '        Vector4                     m_stockShadowAtlasDimensions;')
+    edit(cpp, '#include "wot/stock_directional_shadow.hpp"',
+         '#include "wot/stock_directional_shadow.hpp"\n#include "stock_directional_shadow.hpp"',
+         '#include "stock_directional_shadow.hpp"')
+    edit(cpp, '''        float wh = 1.f / m_shadowQuality.m_numSplit;
+        for (uint i = 0; i < m_shadowQuality.m_numSplit; ++i)
+        {
+            m_atlasLayout[i] = AtlasRect(wh * i, 0.0f, wh, 1.0f); // 0
+        }''', '''        // #1513 HIGH/MEDIUM reserve 2048 pixels for the nearest cascade.
+        // Pack the unequal tiles in one row; sampling uses physical bounds.
+        m_stockShadowTileSizes.assign(m_shadowQuality.m_numSplit, m_dynamicShadowMapSize);
+        if (m_shadowQuality.m_blurQuality == 3) m_stockShadowTileSizes[0] = 2048;
+        uint atlasWidth = 0, atlasHeight = 0;
+        for (uint size : m_stockShadowTileSizes)
+        {
+            atlasWidth += size;
+            atlasHeight = std::max(atlasHeight, size);
+        }
+        m_stockShadowAtlasDimensions.set(float(atlasWidth), float(atlasHeight),
+            1.f / atlasWidth, 1.f / atlasHeight);
+        m_stockShadowTileBounds.resize(m_shadowQuality.m_numSplit);
+        uint tileX = 0;
+        for (uint i = 0; i < m_shadowQuality.m_numSplit; ++i)
+        {
+            const float size = float(m_stockShadowTileSizes[i]);
+            m_atlasLayout[i] = AtlasRect(float(tileX) / atlasWidth, 0.f,
+                size / atlasWidth, size / atlasHeight);
+            m_stockShadowTileBounds[i].set(float(tileX) / atlasWidth, 0.f,
+                (tileX + size) / atlasWidth, size / atlasHeight);
+            tileX += m_stockShadowTileSizes[i];
+        }''')
+    edit(cpp, '''            m_dynamicShadowMapSize * m_shadowQuality.m_numSplit,
+            m_dynamicShadowMapSize,
+            format,''', '''            atlasWidth,
+            atlasHeight,
+            format,''')
+    edit(cpp, '        m_stockShadowDepthBiases.clear();',
+         '        m_stockShadowDepthBiases.clear();\n'
+         '        m_stockShadowTileSizes.clear();\n'
+         '        m_stockShadowTileBounds.clear();')
+    edit(cpp, '''        calcSplitDistances(&m_splitPlanes[0], m_shadowQuality.m_numSplit, mainCamera.nearPlane(), m_viewDist, g_splitSchemeLambda);''',
+         '''        Matrix stockFocus;
+        bool stockFocusBox = false;
+        const bool stockTightNear = m_shadowQuality.m_blurQuality == 3;
+        const bool stockHasFocus = stockTightNear && stockDirectionalShadowFocus(stockFocus);
+        const float stockFocusDistance = stockHasFocus ?
+            (stockFocus.applyToOrigin() - Moo::rc().invView().applyToOrigin()).length() : 30.f;
+        const float stockFocusThreshold = std::min(m_viewDist / 70.f, 1.f) * 12.f;
+        stockFocusBox = stockHasFocus && stockFocusDistance < 30.f &&
+            stockFocusDistance >= stockFocusThreshold;
+        calcSplitDistances(&m_splitPlanes[0], m_shadowQuality.m_numSplit, mainCamera.nearPlane(), m_viewDist,
+            stockFocusBox ? .4f : g_splitSchemeLambda);
+        if (stockHasFocus && stockFocusDistance < 30.f && stockFocusDistance < stockFocusThreshold)
+            m_splitPlanes[1] = stockFocusDistance + .5f;''')
+    edit(cpp, '''                newViewport.X = DWORD(m_dynamicShadowMapSize * i);
+                newViewport.Y = 0;
+                newViewport.Width = m_dynamicShadowMapSize;
+                newViewport.Height = m_dynamicShadowMapSize;''',
+         '''                newViewport.X = DWORD(m_stockShadowTileBounds[i].x * m_stockShadowAtlasDimensions.x);
+                newViewport.Y = 0;
+                newViewport.Width = m_stockShadowTileSizes[i];
+                newViewport.Height = m_stockShadowTileSizes[i];''')
+    edit(cpp, '''                if (_calculateLightMatrices(view, proj, m_textureMatrices[i], cullViewProj, mainCamera,
+                    mainCameraViewMat, lightDir, g_lightCamDistDynamic,
+                    np, fp))''', '''                bool stockMatricesReady = false;
+                if (stockTightNear && i == 0)
+                {
+                    Matrix splitViewProjection;
+                    if (stockFocusBox)
+                    {
+                        // 9cb2c1: world-axis focus box, not the vehicle's rotated bounds.
+                        const float halfWidth = .75f * (fp - np);
+                        const float halfHeight = std::min(.4f * halfWidth, 3.f);
+                        Matrix focusBox;
+                        focusBox.setScale(halfWidth, halfHeight, 2.f * halfWidth);
+                        const Vector3 focusPosition = stockFocus.applyToOrigin();
+                        focusBox.translation(Vector3(focusPosition.x, focusPosition.y, focusPosition.z - halfWidth));
+                        splitViewProjection.invert(focusBox);
+                    }
+                    else
+                    {
+                        Matrix splitProjection;
+                        splitProjection.perspectiveProjection(mainCamera.fov(), mainCamera.aspectRatio(), np, fp);
+                        splitViewProjection.multiply(mainCameraViewMat, splitProjection);
+                    }
+                    stockMatricesReady = stockDirectionalShadowTightMatrices(view, proj,
+                        m_textureMatrices[i], cullViewProj, splitViewProjection, lightDir, g_lightCamDistDynamic);
+                }
+                else
+                {
+                    stockMatricesReady = _calculateLightMatrices(view, proj, m_textureMatrices[i],
+                        cullViewProj, mainCamera, mainCameraViewMat, lightDir, g_lightCamDistDynamic, np, fp);
+                }
+                if (stockMatricesReady)''')
+    edit(cpp, '                        m_dynamicShadowMapSize, m_dynamicShadowMapSize);',
+         '                        m_stockShadowTileSizes[i], m_stockShadowTileSizes[i]);')
+    edit(cpp, '            effect->SetTexture("g_noiseMapShadow", m_pNoiseMap.pComObject());',
+         '            effect->SetTexture("g_noiseMapShadow", m_pNoiseMap.pComObject());\n'
+         '            effect->SetVector("stockShadowAtlasDimensions", &m_stockShadowAtlasDimensions);\n'
+         '            effect->SetVectorArray("stockShadowTileBounds",\n'
+         '                &m_stockShadowTileBounds[0], m_shadowQuality.m_numSplit);')
+
     cpp = 'lib/romp/ssao_support.cpp'
     edit(cpp, '#include "ssao_support.hpp"',
          '#include "ssao_support.hpp"\n#include "stock_deferred_buffers.hpp"',
@@ -235,6 +398,12 @@ def apply(root):
                (application.parent / 'include/wot/stock_deferred_buffers.hpp',
                 root / 'lib/wot/stock_deferred_buffers.hpp'))
     sources = [(destination, source.read_text()) for source, destination in headers]
+    sources.append((root / 'lib/wot/stock_directional_shadow.hpp',
+        (application.parent / 'include/wot/stock_directional_shadow.hpp').read_text()))
+    sources.append((root / 'lib/stock_directional_shadow.hpp',
+        (application / 'stock_directional_shadow.hpp').read_text()))
+    sources.append((root / 'lib/wot/stock_shadow_rectangle.hpp',
+        (application.parent / 'include/wot/stock_shadow_rectangle.hpp').read_text()))
     for relative, text in pending.items():
         (root / relative).write_text(text)
     for destination, text in sources:
@@ -290,6 +459,18 @@ sampler stockLinearDepthSampler = sampler_state
     MINFILTER = POINT; MAGFILTER = POINT; MIPFILTER = NONE;
     ADDRESSU = CLAMP; ADDRESSV = CLAMP;
 };''', 'texture stockLinearDepthMap : HierarchicalZMap;')
+    edit(reader, 'float4 stockSceneDRR : DRRParams;',
+         'float4 stockSceneDRR : DRRParams;\nfloat4 stockSceneTAA : TAAParams;')
+    edit(reader, '\tfloat3 dir_l = lerp(g_cameraDirs[0], g_cameraDirs[1], uv.y).xyz;',
+         '\t// Original VS0 keeps the ray at the raster point while its texture\n'
+         '\t// UV receives FSQuadTCAdjust. Legacy i.tc/SC2TC already contain that\n'
+         '\t// half texel: remove it and temporal jitter from the ray only.\n'
+         '\tuv -= stockSceneTAA.xy;\n'
+         '\tfloat3 dir_l = lerp(g_cameraDirs[0], g_cameraDirs[1], uv.y).xyz;',
+         'stockSceneTAA.xy')
+    # Upgrade already-patched resources as well as fresh public trees.
+    edit(reader, '\tuv -= stockSceneTAA.xy;',
+         '\tuv -= stockSceneTAA.xy + .5f * stockSceneTAA.zw;')
     text = pending.get(reader, (root / reader).read_text(encoding='latin1'))
     text = text.replace('unpackFloatFromVec3(tex2D(g_GBufferChannel0Sml, uv).rgb)',
                         'tex2D(stockLinearDepthSampler, uv).r')
@@ -312,6 +493,184 @@ sampler stockLinearDepthSampler = sampler_state
     text = (root / lighting).read_text(encoding='latin1')
     text = text.replace('screenXY = SC2TC(vPos);', 'screenXY = SC2TC(vPos) / stockSceneDRR.xy;')
     pending[lighting] = text
+
+    shadow = 'shaders/shadow/dynamic_resolve.fx'
+    edit(shadow, 'float\t\tg_splitCount;',
+         'float\t\tg_splitCount;\nfloat stockShadowDepthBiases[MaxNumSplits];')
+    edit(shadow, 'float stockShadowDepthBiases[MaxNumSplits];',
+         'float stockShadowDepthBiases[MaxNumSplits];\n'
+         'float4 stockShadowAtlasDimensions;\nfloat4 stockShadowTileBounds[MaxNumSplits];')
+    edit(shadow, '#include "read_g_buffer.fxh"',
+         '#include "read_g_buffer.fxh"\n#include "stock_directional_shadow.fxh"')
+    text = pending.get(shadow, (root / shadow).read_text(encoding='latin1'))
+    start = text.index('float rotated_PCF_filter(')
+    end = text.index('//-- Sampling appropriate split.', start)
+    point_filter = '''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
+    float zReceiver, float2 depthGradient, int split, const int samplesCount)
+{
+    // Splits occupy a horizontal atlas, not a square 2x2 allocation.
+    float2 dimensions = float2(g_dynamicShadowMapResolution * g_splitCount,
+                               g_dynamicShadowMapResolution);
+    float2 texel = 1.f / dimensions;
+    float2 lower = float2(split / g_splitCount, 0.f) + .5f * texel;
+    float2 upper = float2((split + 1.f) / g_splitCount, 1.f) - .5f * texel;
+    float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+    float2 noise = tex2D(noiseMapSampler, noiseUV).rg;
+    float2x2 rotation = {noise.r, -noise.g, noise.g, noise.r};
+    float blurFactor = lerp(2.f, 1.f, split / g_splitCount);
+    float sum = 0.f;
+    [unroll]
+    for (int i = 0; i < samplesCount; ++i)
+    {
+        float2 coords = mul(poissonDisk[i], rotation);
+        float2 uv = clamp(shadowUV + coords * (.5f * texel) * blurFactor, lower, upper);
+        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);
+    }
+    return sum / samplesCount;
+}
+
+'''
+    filtered = point_filter.replace('''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);''', '''        float2 grid = uv * dimensions - .5f;
+        float2 base = floor(grid);
+        float2 phase = grid - base;
+        float2 uv00 = clamp((base + float2(.5f, .5f)) * texel, lower, upper);
+        float2 uv10 = clamp((base + float2(1.5f, .5f)) * texel, lower, upper);
+        float2 uv01 = clamp((base + float2(.5f, 1.5f)) * texel, lower, upper);
+        float2 uv11 = clamp((base + float2(1.5f, 1.5f)) * texel, lower, upper);
+        float topLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv00, dimensions) > tex2D(s, uv00).x;
+        float topRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv10, dimensions) > tex2D(s, uv10).x;
+        float bottomLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv01, dimensions) > tex2D(s, uv01).x;
+        float bottomRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv11, dimensions) > tex2D(s, uv11).x;
+        sum += stockShadowBilinearCoverage(topLeft, topRight,
+            bottomLeft, bottomRight, phase);''')
+    # Accept only the reviewed public shader, the previous POINT adapter,
+    # or this comparison-filtered adapter. Cached resource upgrades must not
+    # silently keep an older kernel or overwrite an unreviewed local edit.
+    def filter_tokens(value):
+        return re.sub(r'\s+', '', re.sub(r'//[^\n]*|/\*.*?\*/', '', value, flags=re.S))
+
+    public_filter = (
+        'floatrotated_PCF_filter(samplers,infloat2screenUV,float2shadowUV,floatzReceiver,floatsplitBlurFactor'
+        ',constintsamplesCount){halfsum=0.0f;half2adjust=1/(2*g_dynamicShadowMapResolution);float2noiseUV=scr'
+        'eenUV*(g_screen.xy/float2(256,256));half2noise=tex2D(noiseMapSampler,noiseUV).rg;half2x2rotMat={+noi'
+        'se.r,-noise.g,+noise.g,+noise.r};halfblurFactor=lerp(2.0f,1.0f,splitBlurFactor);#if0[unroll]for(inti'
+        '=0;i<samplesCount;++i){float2coords=mul(poissonDisk[i],rotMat);sum+=(zReceiver>tex2D(s,shadowUV+coor'
+        'ds*adjust*blurFactor).x);}#elseconsthalfadjustBlurFactor=adjust*blurFactor;[unroll]for(inti=0;i<samp'
+        'lesCount;i+=4){half4coords01;half4coords23;coords01.xy=mul(poissonDisk[i+0],rotMat);coords01.zw=mul('
+        'poissonDisk[i+1],rotMat);coords23.xy=mul(poissonDisk[i+2],rotMat);coords23.zw=mul(poissonDisk[i+3],r'
+        'otMat);coords01*=adjustBlurFactor;coords23*=adjustBlurFactor;float4depths;depths[0]=tex2D(s,shadowUV'
+        '+coords01.xy).x;depths[1]=tex2D(s,shadowUV+coords01.zw).x;depths[2]=tex2D(s,shadowUV+coords23.xy).x;'
+        'depths[3]=tex2D(s,shadowUV+coords23.zw).x;half4res=(zReceiver.xxxx>depths)?1.0f:0.0f;sum+=dot(res,1)'
+        ';}#endifreturn(sum/samplesCount);}'
+    )
+    fixed_filtered = filtered.replace(
+        '''    float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+    float2 noise = tex2D(noiseMapSampler, noiseUV).rg;''',
+        '''    float2 noise = float2(1.f, 0.f);
+    if (samplesCount != 9)
+    {
+        float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+        noise = tex2D(noiseMapSampler, noiseUV).rg;
+    }''').replace(
+        '''        float2 coords = mul(poissonDisk[i], rotation);
+        float2 uv = clamp(shadowUV + coords * (.5f * texel) * blurFactor, lower, upper);''',
+        '''        float2 offset;
+        float weight;
+        if (samplesCount == 9)
+        {
+            offset = stockShadowHighKernelOffset(i) * (stockShadowHighKernelScale() * texel);
+            weight = stockShadowHighKernelWeight(i);
+        }
+        else
+        {
+            float2 coords = mul(poissonDisk[i], rotation);
+            offset = coords * (.5f * texel) * blurFactor;
+            weight = 1.f;
+        }
+        float2 uv = clamp(shadowUV + offset, lower, upper);''').replace(
+        '''sum += stockShadowBilinearCoverage(topLeft, topRight,
+            bottomLeft, bottomRight, phase);''',
+        '''float coverage = stockShadowBilinearCoverage(topLeft, topRight,
+            bottomLeft, bottomRight, phase);
+        sum += weight * (samplesCount == 9 ? 1.f - coverage : coverage);''').replace(
+        '    return sum / samplesCount;',
+        '    return samplesCount == 9 ? 1.f - sum : sum / samplesCount;')
+    layout_filtered = fixed_filtered.replace(
+        '''    float2 dimensions = float2(g_dynamicShadowMapResolution * g_splitCount,
+                               g_dynamicShadowMapResolution);''',
+        '''    float2 dimensions = stockShadowAtlasDimensions.xy;''').replace(
+        '''    float2 lower = float2(split / g_splitCount, 0.f) + .5f * texel;
+    float2 upper = float2((split + 1.f) / g_splitCount, 1.f) - .5f * texel;''',
+        '''    float2 lower = stockShadowTileBounds[split].xy + .5f * texel;
+    float2 upper = stockShadowTileBounds[split].zw - .5f * texel;''')
+    current_filter = filter_tokens(text[start:end])
+    if current_filter not in (public_filter, filter_tokens(point_filter), filter_tokens(filtered),
+                              filter_tokens(fixed_filtered), filter_tokens(layout_filtered)):
+        raise ValueError('Deferred resource directional filter changed: ' + shadow)
+    text = text[:start] + layout_filtered + text[end:]
+    pending[shadow] = text
+    edit(shadow, 'PixelShader g_pixelShaders[3]', 'PixelShader g_pixelShaders[4]')
+    edit(shadow, 'compile ps_3_0 PS(1)\n', 'compile ps_3_0 PS(1),\n\tcompile ps_3_0 PS(9)\n')
+    edit(shadow, 'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);',
+         'float3 wPos = g_buffer_readWorldPos(i.tc, g_nvStereoParams.w);\n'
+         '\tfloat3 worldDx = ddx(wPos);\n\tfloat3 worldDy = ddy(wPos);',
+         'float3 worldDx = ddx(wPos);')
+    edit(shadow, '''\t\tif (viewZ < g_splitPlanesArray[idx])''',
+         '''        bool stockInside = viewZ < g_splitPlanesArray[idx];
+        if (samplesCount == 9)
+        {
+            // The tight nearest volume can contain the vehicle beyond its
+            // camera split plane. Match the light-space bounds selector.
+            float4 candidate = mul(float4(wPos, 1.f), g_textureMatrices[idx]);
+            float3 coordinate = candidate.xyz / candidate.w;
+            float4 bounds = stockShadowTileBounds[idx];
+            stockInside = coordinate.x >= bounds.x && coordinate.x <= bounds.z &&
+                coordinate.y >= bounds.y && coordinate.y <= bounds.w &&
+                coordinate.z >= 0.f && coordinate.z <= 1.f;
+        }
+        if (stockInside)''')
+    edit(shadow, 'float3 smTC = sp.xyz / sp.w;',
+         'float3 smTC = sp.xyz / sp.w;\n'
+         '\tfloat3 shadowDx = mul(float4(worldDx, 0.f), g_textureMatrices[split]).xyz;\n'
+         '\tfloat3 shadowDy = mul(float4(worldDy, 0.f), g_textureMatrices[split]).xyz;\n'
+         '\tfloat2 depthGradient = stockShadowDepthGradient(shadowDx, shadowDy);',
+         'float2 depthGradient = stockShadowDepthGradient(shadowDx, shadowDy);')
+    edit(shadow, '\t\tsmTC.z,', '\t\tsmTC.z - stockShadowDepthBiases[split],')
+    edit(shadow, '\t\tsplit / g_splitCount,', '\t\tdepthGradient,\n\t\tsplit,')
+
+    semi = 'shaders/shadow/semi_resolve.fx'
+    edit(semi, '#include "read_g_buffer.fxh"',
+         '#include "read_g_buffer.fxh"\n#include "stock_directional_shadow.fxh"')
+    text = pending.get(semi, (root / semi).read_text(encoding='latin1'))
+    # Original asm.receive writes BLUE, which the original SUN consumes with
+    # RED dynamic coverage. GREEN is not a separate terrain-shadow input.
+    text = re.sub(r'z > (tex2D\([^;]+?\)\.rg)',
+                  r'stockShadowStaticCoverage(\1, z)', text)
+    text = text.replace('return float4(0, t, 0);', 'return float4(0, 0, t.x, 0);')
+    text = text.replace('COLORWRITEENABLE = GREEN | BLUE;', 'COLORWRITEENABLE = BLUE;')
+    pending[semi] = text
+    helper = 'shaders/std_effects/shadow_helpers.fxh'
+    text = (root / helper).read_text(encoding='latin1')
+    if 'stockShadowCombinedCoverage(' not in text:
+        start = text.index('\t\t// Channels: r - dynamic; g - semi terrain; b - semi object')
+        end = text.index('\n\t}', start)
+        text = text[:start] + '''\t\t// Original #1513 SSSM: RED dynamic coverage, BLUE static coverage.
+\t\thalf3 shadows = tex2D(g_ssShadowMapSml, tc).rgb;
+\t\treturn min(1.0h - stockShadowCombinedCoverage(shadows.r, shadows.b), backedShadow);''' + text[end:]
+        text = '#include "stock_directional_shadow.fxh"\n' + text
+    # EffectIncludes resolves nested includes relative to the main effect,
+    # not to this helper (e.g. the water effect lives in shaders/water).
+    text = text.replace('#include "stock_directional_shadow.fxh"',
+                        '#include "shaders/shadow/stock_directional_shadow.fxh"')
+    pending[helper] = text
 
     ssao = 'shaders/ssao/ssao.fx'
     edit(ssao, 'texture g_depth;', 'texture g_depth;\nfloat2 stockDepthUVScale = float2(1.f,1.f);',
@@ -392,6 +751,13 @@ sampler stockLinearDepthSampler = sampler_state
     for relative, text in pending.items():
         (root / relative).write_text(text,encoding='latin1')
     (root / 'shaders/std_effects/stock_deferred_legacy_decal.fxh').write_text(legacy)
+    (root / 'shaders/shadow/stock_directional_shadow.fxh').write_text(
+        Path(__file__).with_name('stock_directional_shadow.fxh').read_text())
+    # The SDK's shorter preset table shadows the pinned client's catalogue.
+    # Preserve #1513's complete per-preset quality choices through its own mount.
+    presets = root / 'system/data/graphics_settings_presets.xml'
+    if presets.is_file():
+        presets.unlink()
 
 
 if __name__ == '__main__':

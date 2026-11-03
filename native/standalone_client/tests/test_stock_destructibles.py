@@ -61,10 +61,13 @@ def build_binding(test,directory):
 
 class StockDestructiblesTests(unittest.TestCase):
     def test_complete_binding_and_wgde_callback_lifecycle(self):
-        client=exact_client(self)
+        client=os.environ.get('WOT_0922_CLIENT')
+        if not client:self.skipTest('Exact #1513 script package required')
+        scripts=Path(client)/'res/packages/scripts.pkg'
+        if not scripts.is_file():self.skipTest('Exact #1513 script package unavailable')
         with tempfile.TemporaryDirectory(prefix='stock-destructibles-binding-')as name:
             binary=build_binding(self,Path(name))
-            subprocess.run([str(binary),str(ROOT/'tests/stock_destructibles_consumer.py'),str(Path(client)/'res/packages/scripts.pkg')],check=True)
+            subprocess.run([str(binary),str(ROOT/'tests/stock_destructibles_consumer.py'),str(scripts)],check=True)
 
     def test_production_tree_metadata_reads_live_owner_and_masked_slots(self):
         source=(ROOT/'bigworld/stock_tree_scene.cpp').read_text()

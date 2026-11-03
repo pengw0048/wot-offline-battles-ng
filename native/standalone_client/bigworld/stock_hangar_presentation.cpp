@@ -1,6 +1,7 @@
 #ifndef WOT_STOCK_HANGAR_PRESENTATION_PORTABLE
 #include "pch.hpp"
 #include "stock_hangar_presentation.hpp"
+#include "stock_customization_helper.hpp"
 #include "stock_effect_adapter.hpp"
 #include "stock_tps_scene.hpp"
 #include "app.hpp"
@@ -372,6 +373,7 @@ bool initialiseStockHangarPresentation()
 
 void finaliseStockHangarPresentation()
 {
+    finiStockCustomization();
     if (edgeDetector) edgeDetector->close();
     edgeDetector.reset();
     if (background) background->close();
@@ -387,7 +389,8 @@ bool drawStockGUIBackground()
 
 bool drawStockEdgeDetection()
 {
-    return !edgeDetector || edgeDetector->draw();
+    const bool customization = drawStockCustomization();
+    return (!edgeDetector || edgeDetector->draw()) && customization;
 }
 
 bool prepareStockEdgeDetection()

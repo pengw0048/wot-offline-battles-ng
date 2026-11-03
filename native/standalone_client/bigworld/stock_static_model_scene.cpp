@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_static_model_scene.hpp"
+#include "stock_scene_occlusion.hpp"
 #include "stock_destructibles.hpp"
 #include "stock_destructibles_data.hpp"
 #include "stock_space_sounds.hpp"
@@ -85,6 +86,7 @@ struct StockStaticModelSceneLoader::State : std::enable_shared_from_this<State>,
     std::vector<float> lodThresholds;
     std::vector<std::shared_ptr<BSPTree>> colliders;
     std::vector<Instance> instances;
+    std::shared_ptr<StockSceneOcclusionMapping> occlusionMapping;
     std::map<size_t,DynamicObjectHandle> membership;
     StockDestructibles destructibleOwner;
     const StringTable* strings=NULL;
@@ -193,6 +195,7 @@ bool StockStaticModelSceneLoader::State::refresh(const std::vector<uint32>& chan
     for(const auto index:unique)
     {
         if(index>=instances.size()){error="The compiled destructible update is outside BSMI";return false;}
+        if (occlusionMapping) occlusionMapping->invalidate(index);
         auto& instance=instances[index];const auto model=binary.instances.models[index];
         if(model>=colliders.size()||model>=binary.models.bounds.size())
         {error="The compiled replacement model is outside BSMO";return false;}
@@ -530,6 +533,7 @@ bool StockStaticModelSceneLoader::State::load( BinaryFormat & file,
         sections[2].data(), sections[2].size(), error )) return fail( error.c_str() );
     if (!loadMaterials( strings ) || !loadModels( strings ) || !loadAnimations( strings )) return false;
     instances.resize( binary.instances.transforms.size() );
+    occlusionMapping = std::make_shared<StockSceneOcclusionMapping>(instances.size());
     for (size_t index = 0; index < instances.size(); ++index)
     {
         auto & instance = instances[index];
@@ -774,6 +778,20 @@ bool StockStaticModelSceneLoader::modelFilename(const SceneObject& object, BW::s
     filename.clear();return true;
 }
 
+bool StockStaticModelSceneLoader::occlusionTarget(const SceneObject& object,
+    std::shared_ptr<StockSceneOcclusionMapping>& mapping, uint32& index, BoundingBox& bounds)
+{
+    if (!object.isType<State::Instance>()) return false;
+    const auto* instance = object.getAs<State::Instance>();
+    if (!instance || !instance->owner) return false;
+    auto state = instance->owner->shared_from_this();
+    if (!state->bound || !State::available(*instance) || !state->occlusionMapping) return false;
+    mapping = state->occlusionMapping;
+    index = uint32(instance->index);
+    bounds = instance->visibility;
+    return true;
+}
+
 bool StockStaticModelSceneLoader::collectStockDecalTriangles(const SceneObject& object,
     const Vector3& center, const Vector3& first, const Vector3& second, const Vector3& third,
     BW::vector<WorldTriangle>& output)
@@ -887,6 +905,7 @@ bool StockStaticModelSceneLoader::doBind()
 void StockStaticModelSceneLoader::removeMembership( const std::shared_ptr<State> & state )
 {
     state->bound = false;
+    if (state->occlusionMapping) state->occlusionMapping->retire();
     unregisterStockDestructibleObjects(state->destructibleOwner,state->soundMapping,false);state->destructibleOwner.reset();
     std::vector<StockSpaceSoundHandle> sounds;sounds.swap( state->soundHandles );
     for (const auto handle:sounds) removeStockSpaceSound( state->soundOwner, handle );

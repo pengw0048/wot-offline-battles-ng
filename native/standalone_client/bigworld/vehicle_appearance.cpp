@@ -778,6 +778,16 @@ public:
                 } );
         }
     }
+    bool visitParts( const std::function<void( PyModel *, const Matrix &, int )> & visitor )
+    {
+        if (!state_->active || !this->visible()) return false;
+        CompoundEvaluationScope evaluation( state_ );
+        std::vector<CompoundPartRef> parts = compoundPartRefs( *state_ );
+        for (size_t index = 0; index < parts.size() && state_->active; ++index)
+            visitor( parts[index].model.get(), state_->nodes[parts[index].mount].world,
+                static_cast<int>( index ) );
+        return state_->active;
+    }
     virtual void enterWorld()
     {
         PyAttachment::enterWorld();
@@ -1727,6 +1737,13 @@ bool stockVehicleModelBounds( PyObject * model, BoundingBox & bounds )
     else
         return false;
     return true;
+}
+
+bool stockVisitVehicleCompoundParts( PyObject * compound,
+    const std::function<void( PyModel *, const Matrix &, int )> & visitor )
+{
+    return compound && PyCompoundModel::Check( compound ) &&
+        static_cast<PyCompoundModel *>( compound )->visitParts( visitor );
 }
 
 bool stockVehicleCompoundContext( PyObject * compound, uint32 & spaceID,

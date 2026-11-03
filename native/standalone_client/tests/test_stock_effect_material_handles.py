@@ -187,6 +187,9 @@ void exercise(const Effect& effect, bool producersAtLoad) {
         check(at(states->pixelFloats, 0, "PS register")[c] == (&colour.x)[c], "PS c0 must hold factor");
     if (manualTexture)
         check(at(states->textures, DWORD(0), "PS texture slot") == texture, "PS s0 must hold the Binding's diffuseMap");
+    else if (registered)
+        check(at(states->textures, DWORD(0), "automatic font texture slot") == texture,
+              "PS s0 must hold the current automatic FontMap");
     // A fresh sibling keeps the original defaults and no texture.
     draw(sibling, states);
     for (int r = 0; r < 4; ++r)
@@ -205,7 +208,10 @@ void exercise(const Effect& effect, bool producersAtLoad) {
     for (int c = 0; c < 4; ++c)
         check(at(states->pixelFloats, 0, "PS register")[c] == (&colour.x)[c], "Binding factor must survive sibling writes");
     check(accepted, "Resource producers must write through their destination handles");
-    check(producersAtLoad || live, "Bindings created after producer registration apply their resources");
+    // GUI definitions also declare GBuffer resources unused by FX_SOLID.
+    // Only the automatic font texture is consumed by this exercised pass.
+    check(producersAtLoad || manualTexture || live,
+          "Bindings created after producer registration apply consumed resources");
     texture->Release();
     sibling->Release(); binding->Release(); definition->Release(); context->detach_providers();
     states->Release(); device->Release();

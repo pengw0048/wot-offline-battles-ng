@@ -90,6 +90,8 @@ struct TestDestructibles:StockDestructibleObjects {
  }
  bool transform(uint32 index,const Matrix& world,float wind,std::string&)override{calls.push_back({0,int(index),int(world.v[12]),int(world.v[14]),int(wind)});return !retired;}
  bool destroy(uint32 index,bool animate,bool shot,bool havok,std::string&)override{calls.push_back({1,int(index),animate,shot,havok});return !retired;}
+ bool destroyNative(uint32 index,bool animate,bool shot,bool havok,std::string& error,const std::function<bool(uint32)>& child)override{
+  return destroy(index,animate,shot,havok,error)&&(!child||child(index));}
  bool restore(std::string&)override{calls.push_back({2,0,0,0,0});return !retired;}
 };
 struct TestLoader:CompiledSpace::StockDestructiblesSceneLoader {

@@ -23,9 +23,21 @@ TONEMAPPING = '''void HDRSupport::doTonemapping()
     MF_ASSERT( m_bloomMaps.size() );
 
     if (!drawStockToneMapping(m_toneMappingMat, g_cfg, m_finalAvgLumRT.get(), m_hdrRT.get(),
-            m_bloomMaps[0].second.get(), m_stockColorCorrection))
+            m_stockDisabledBloom, m_stockColorCorrection))
         ERROR_MSG("HDR: original tone mapping failed\\n");
 }
+'''
+
+RELEASE_TARGETS = '''static void clearStockHdrTexture(const Moo::EffectMaterialPtr& material, const char* name)
+{
+    if (!material || !material->pEffect()) return;
+    ID3DXEffect* binding = material->properties().existingStockBinding();
+    if (binding) binding->SetTexture(name, NULL);
+    ID3DXEffect* current = material->pEffect()->pEffect();
+    if (current && current != binding && !wot::is_stock_effect(current))
+        current->SetTexture(name, NULL);
+}
+
 '''
 
 
@@ -102,12 +114,42 @@ def patch_support(root, pending):
     text = replace_once(text, '\tMoo::EffectMaterialPtr\t\t\t\tm_toneMappingMat;\n',
         '\tMoo::EffectMaterialPtr\t\t\t\tm_toneMappingMat;\n'
         '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n', 'HDR colour correction owner')
+    text = replace_once(text, '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n',
+        '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n'
+        '\tMoo::BaseTexturePtr\t\t\t\tm_stockDisabledBloom;\n', 'HDR disabled bloom owner')
     pending[path] = text
 
     path = root / 'lib/romp/hdr_support.cpp'
     text = path.read_text()
     text = replace_once(text, '#include "hdr_support.hpp"\n',
         '#include "hdr_support.hpp"\n#include "stock_hdr.hpp"\n', 'HDR support include')
+    text = replace_once(text, '#include "stock_hdr.hpp"\n',
+        '#include "stock_hdr.hpp"\n#include "stock_effect_adapter.hpp"\n', 'HDR binding lifecycle include')
+    text = replace_once(text, '    bool success = true;\n',
+        '    bool success = true;\n'
+        '    m_stockDisabledBloom = loadStockDisabledBloom();\n'
+        '    success &= bool(m_stockDisabledBloom);\n', 'HDR finite disabled bloom input')
+    text = replace_once(text, '    m_gaussianBlurMat     = NULL;\n',
+        '    m_gaussianBlurMat     = NULL;\n'
+        '    m_stockDisabledBloom  = NULL;\n', 'HDR disabled bloom retirement')
+    text = replace_once(text, '        calcBloom();\n',
+        '        // ToneMapping has no bloom owner; its finite black input is managed separately.\n',
+        'HDR unused bloom work')
+    signature = 'void HDRSupport::deleteUnmanagedObjects()\n'
+    text = replace_once(text, signature, RELEASE_TARGETS + signature, 'HDR manual texture cleanup helper')
+    text = replace_once(text, signature + '{\n    BW_GUARD;\n',
+        signature + '{\n    BW_GUARD;\n'
+        '    // Manual DEFAULT-pool targets belong to this material Binding.\n'
+        '    // Release them before their render-target owners, without allocating a Binding.\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_previousMipMap");\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_avgLumMap1");\n'
+        '    clearStockHdrTexture(m_averageLuminanceMat, "g_avgLumMap2");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_avgLumMap");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_HDRMap");\n'
+        '    clearStockHdrTexture(m_toneMappingMat, "g_bloomMap");\n'
+        '    clearStockHdrTexture(m_bloomMat, "g_srcMap");\n'
+        '    clearStockHdrTexture(m_bloomMat, "g_prevMipMap");\n'
+        '    clearStockHdrTexture(m_gaussianBlurMat, "g_srcMap");\n', 'HDR manual texture retirement')
     # a70300 publishes (1,1,1,1) while HDR is disabled.
     text = replace_once(text, '            Vector4 params(0.0f, 1.0f, 1.0f, 1.0f);\n',
         '            Vector4 params(1.0f, 1.0f, 1.0f, 1.0f);\n', 'HDR disabled environment multipliers')

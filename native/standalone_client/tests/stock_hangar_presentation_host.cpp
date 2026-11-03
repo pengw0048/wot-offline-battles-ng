@@ -652,6 +652,9 @@ template <class T> PyObject * getRetData(const T & data) { return getData(data);
 
 @PYAUTO_MACROS@
 
+// This host isolates the edge/background owner from the customization renderer.
+namespace BW { bool drawStockCustomization() { return true; }
+void finiStockCustomization() {} }
 #include "stock_hangar_presentation.cpp"
 
 namespace {

@@ -310,7 +310,7 @@ bool StockDeferredBuffers::ambientOcclusionEnabled() const
 
 bool StockDeferredBuffers::contactShadowsEnabled() const
 {
-    return activeScreenShadows.enabled && depthQuality_.contactShadowsEnabled();
+    return depthQuality_.lighting<3 && activeScreenShadows.enabled && depthQuality_.contactShadowsEnabled();
 }
 
 void StockDeferredBuffers::createManagedObjects()
@@ -493,7 +493,8 @@ bool StockDeferredBuffers::begin()
     if(!ready() || FAILED(Moo::rc().device()->GetDepthStencilSurface(&previousDepth_)))return false;
     // a6a940 enables DBE ScalarTAA at construction. a6b890/a6b8f0 retain it
     // for high lighting quality or active high-quality contact shadows.
-    const bool scalar=depthQuality_.lighting<2 || contactShadowsEnabled();
+    const bool scalar=(ambientOcclusionEnabled() || contactShadowsEnabled()) &&
+        (depthQuality_.lighting<2 || contactShadowsEnabled());
     if(!temporalAA_.beginFrame(scalar))
     {
         previousDepth_=NULL;return false;
@@ -661,6 +662,19 @@ bool StockDeferredBuffers::blurDepthEffects(const Moo::RenderTargetPtr& input,
 
 bool StockDeferredBuffers::fillDepthEffects()
 {
+    if(!ambientOcclusionEnabled() && !contactShadowsEnabled())
+    {
+        // Keep a finite neutral input for shared/debug samplers, without
+        // downsampling depth or filtering channels no active light consumes.
+        const bool half=depthQuality_.directHalfResolution();
+        const Moo::RenderTargetPtr output=half?depthEffectsHalf_:depthEffectsFull_;
+        ComObjectWrap<DX::Surface> neutral;
+        if(FAILED(output->pSurface(neutral)))return false;
+        TargetScope target;
+        return target.bind(neutral,half?reducedDepth_->depthBuffer():depthSurface_.pComObject(),
+            output->width(),output->height(),false) &&
+            SUCCEEDED(Moo::rc().device()->Clear(0,NULL,D3DCLEAR_TARGET,0x00ff00ffu,1.f,0));
+    }
     const uint width=depthEffectsHalf_->width(),height=depthEffectsHalf_->height();
     const bool temporal=temporalAA_.scalarEnabled();
     const float sampleIndex=temporal?static_cast<float>(Moo::rc().frameTimestamp()&1u):0.f;

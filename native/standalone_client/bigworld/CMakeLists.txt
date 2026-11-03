@@ -33,6 +33,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_lifecycle.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_space_sounds.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_static_model_scene.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_scene_occlusion.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_destructibles.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_destructible_falling_query.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_destructible_falling_solver.cpp"
@@ -92,6 +93,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_environment_constants.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_deferred_lighting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_deferred_buffers.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_directional_shadow.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_antialiasing.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_antialiasing_runtime.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_temporal_antialiasing.cpp"
@@ -136,6 +138,8 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_vehicle_rendering.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_trajectory_drawer.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_hangar_presentation.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_customization_helper.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_desktop_utilities.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_flash.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_marker_canvas.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_battle_minimap.cpp"
@@ -381,6 +385,16 @@ target_include_directories(particle PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../include")
 # Scaleform display jobs post to the D3D9 render thread owner.
 target_include_directories(scaleform PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
+# The original generated-image compositor rounds each scalar step with SSE2.
+# Keep it outside the legacy engine's fast-math PCH and floating-point model.
+target_sources(scaleform PRIVATE "${CMAKE_CURRENT_LIST_DIR}/stock_flash_camouflage.cpp")
+if(MSVC)
+    set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/stock_flash_camouflage.cpp"
+        PROPERTIES COMPILE_FLAGS "" COMPILE_OPTIONS "/fp:strict;/arch:SSE2")
+else()
+    set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/stock_flash_camouflage.cpp"
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/wwise_sdk.cmake")
 target_link_libraries(bwclient WotWwiseSdk)
 include("${CMAKE_CURRENT_LIST_DIR}/gloox_sdk.cmake")

@@ -22,7 +22,9 @@ bool mayBreakDestructible(const PyEntity* owner,const StockObstacleIdentity& ite
     // 0x006ea2f0 calls the original unbound class method with the owner as its
     // first argument. IDs cross the original signed32 Python-int boundary;
     // scale and speed cross the original float32-to-Python-float boundary.
-    if (item.filename.empty() || !std::isfinite(item.scale) || item.scale<0.f) {
+    // Compiled StaticModelFeature supplies a known empty name. The stock
+    // Vehicle method resolves no descriptor for it and returns False (solid).
+    if (!std::isfinite(item.scale) || item.scale<0.f) {
         PyErr_SetString(PyExc_RuntimeError,"WGVehicleFilter destructible identity is incomplete");
         return false;
     }

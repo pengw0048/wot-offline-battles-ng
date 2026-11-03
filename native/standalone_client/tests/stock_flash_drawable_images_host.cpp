@@ -3,13 +3,14 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 #include "stock_flash_drawable_images.hpp"
 using Scaleform::Ptr;
 namespace Render = Scaleform::Render;
 using HRESULT = long;
-const HRESULT E_FAIL = -1, S_OK = 0, D3DERR_NOTFOUND = -2;
+const HRESULT E_FAIL = -1, S_OK = 0, D3D_OK = 0, D3DERR_NOTFOUND = -2, D3DERR_INVALIDCALL = -3;
 const int D3DSBT_ALL = 1;
 #define SUCCEEDED(value) ((value) >= 0)
 #define FAILED(value) ((value) < 0)
@@ -24,9 +25,12 @@ struct IDirect3DDevice9
     IDirect3DSurface9* depth = &z;
     D3DVIEWPORT9 viewport;
     int state=37;
-    unsigned targetCount=4;
+    unsigned targetCount=4, stateCaptures=0;
     HRESULT GetDeviceCaps(D3DCAPS9* caps){caps->NumSimultaneousRTs=targetCount;return S_OK;}
     bool captureFail=false, restoreFail=false;
+    bool sceneOpen=false,sceneFail=false;unsigned beginCalls=0,endCalls=0;
+    HRESULT BeginScene(){++beginCalls;if(sceneFail)return E_FAIL;if(sceneOpen)return D3DERR_INVALIDCALL;sceneOpen=true;return S_OK;}
+    HRESULT EndScene(){++endCalls;if(!sceneOpen)return D3DERR_INVALIDCALL;sceneOpen=false;return S_OK;}
     HRESULT CreateStateBlock(int, IDirect3DStateBlock9**);
     HRESULT GetViewport(D3DVIEWPORT9* value){*value=viewport;return S_OK;}
     HRESULT GetDepthStencilSurface(IDirect3DSurface9** value){*value=depth;if(depth)depth->AddRef();return depth?S_OK:D3DERR_NOTFOUND;}
@@ -39,12 +43,12 @@ struct IDirect3DStateBlock9
 {
     IDirect3DDevice9* device;
     int state=0;
-    explicit IDirect3DStateBlock9(IDirect3DDevice9* value):device(value){}
-    HRESULT Capture(){state=device->state;return device->captureFail?E_FAIL:S_OK;}
+    explicit IDirect3DStateBlock9(IDirect3DDevice9* value):device(value),state(value->state){}
+    HRESULT Capture(){++device->stateCaptures;state=device->state;return device->captureFail?E_FAIL:S_OK;}
     HRESULT Apply(){device->state=state;return device->restoreFail?E_FAIL:S_OK;}
     void Release(){delete this;}
 };
-HRESULT IDirect3DDevice9::CreateStateBlock(int,IDirect3DStateBlock9** value){*value=new IDirect3DStateBlock9(this);return S_OK;}
+HRESULT IDirect3DDevice9::CreateStateBlock(int,IDirect3DStateBlock9** value){*value=nullptr;if(captureFail)return E_FAIL;*value=new IDirect3DStateBlock9(this);return S_OK;}
 namespace Moo
 {
 struct Context
@@ -53,15 +57,39 @@ struct Context
     int sceneCount=0, beginCalls=0, endCalls=0, invalidations=0;
     bool sceneFail=false;
     IDirect3DDevice9* device(){return value;}
-    HRESULT beginScene(){++beginCalls;++sceneCount;return sceneFail?E_FAIL:S_OK;}
-    HRESULT endScene(){++endCalls;--sceneCount;return S_OK;}
-    void invalidateStateCache(){++invalidations;}
+    HRESULT beginScene(){assert(Scaleform::currentThread!=2);++beginCalls;if(value&&!sceneCount)value->sceneOpen=true;++sceneCount;return sceneFail?E_FAIL:S_OK;}
+    HRESULT endScene(){assert(Scaleform::currentThread!=2);++endCalls;--sceneCount;if(value&&!sceneCount)value->sceneOpen=false;return S_OK;}
+    void invalidateStateCache(){assert(Scaleform::currentThread!=2);++invalidations;}
 };
 Context& rc(){static Context value;return value;}
 }
 std::vector<std::string> errors;
 void logError(const char* value,...){errors.push_back(value);}
 #define ERROR_MSG(...) logError(__VA_ARGS__)
+namespace wot {namespace d3d9rt {namespace rt {static bool g_sceneOpen;}
+// @SCENE_HELPERS@
+}}
+bool sdkContextLock=false;
+struct StockRenderThread
+{
+    static std::vector<std::function<void()>> jobs;
+    static unsigned ownerThread;
+    static unsigned id(){return ownerThread;}
+    template<class J>static void postCommand(J* job)
+    {if(!id()){(*job)();delete job;}else jobs.push_back([job](){(*job)();delete job;});}
+    static void drain()
+    {
+        assert(!sdkContextLock);
+        unsigned caller=Scaleform::currentThread;Scaleform::currentThread=2;
+        while(!jobs.empty()){auto job=jobs.front();jobs.erase(jobs.begin());job();}
+        Scaleform::currentThread=caller;
+    }
+    static void drainCommands(){drain();}
+    template<class F>static void runSync(F& function)
+    {assert(!sdkContextLock);drain();unsigned caller=Scaleform::currentThread;Scaleform::currentThread=2;function();Scaleform::currentThread=caller;}
+};
+std::vector<std::function<void()>> StockRenderThread::jobs;
+unsigned StockRenderThread::ownerThread=2;
 @EXECUTOR@
 
 bool queueReleased=false, completed=false, commandDestroyed=false;
@@ -91,10 +119,11 @@ struct DICommandSet
     explicit DICommandSet(DICommandQueue*){}
     void ExecuteCommandsRT(DICommandContext&)
     {
+        assert((Scaleform::currentThread==2||!StockRenderThread::id())&&!sdkContextLock);
         auto& context=Moo::rc();
         if(context.value)
         {
-            assert(context.sceneCount>=1);
+            assert(context.value->sceneOpen||context.value->sceneFail);
             context.value->state=99;
             context.value->viewport.X=123;
             for(unsigned i=0;i<context.value->targetCount;++i)context.value->targets[i]=&context.value->changed;
@@ -112,10 +141,12 @@ static void one(bool nullDevice, bool sceneFail, bool captureFail, bool restoreF
     Moo::rc().value=nullDevice?NULL:&device;
     Moo::rc().sceneCount=nested;
     Moo::rc().sceneFail=sceneFail;
+    device.sceneOpen=nested>0;device.sceneFail=sceneFail;
+    wot::d3d9rt::rt::g_sceneOpen=device.sceneOpen;
     device.captureFail=captureFail;device.restoreFail=restoreFail;
     BW::ScaleformBW::StockFlashDrawableImageQueue queue(&executeStockFlashDrawableImageCommand);
     Render::Interfaces expected;
-    expected.RenderThreadID=Scaleform::GetCurrentThreadId();
+    expected.RenderThreadID=2;
     queue.configure(expected);
     Render::Interfaces actual;queue.GetRenderInterfaces(&actual);
     assert(actual.RenderThreadID==expected.RenderThreadID);
@@ -124,16 +155,22 @@ static void one(bool nullDevice, bool sceneFail, bool captureFail, bool restoreF
     // Actual ExecuteCommandsAndWait adds this SDK reference, then waits for its event.
     command->AddRef();
     queueReleased=completed=commandDestroyed=false;errors.clear();
+    sdkContextLock=true;
     queue.PushThreadCommand(command);
+    assert(!queueReleased&&!completed&&!commandDestroyed);
+    sdkContextLock=false;
+    StockRenderThread::drain();
     assert(queueReleased && completed && !commandDestroyed);
     command->Release();
     assert(commandDestroyed);
     assert(Moo::rc().sceneCount==nested);
-    assert(Moo::rc().beginCalls==(nullDevice?0:1));
-    assert(Moo::rc().endCalls==(nullDevice?0:1));
+    assert(device.stateCaptures==0);
+    assert(Moo::rc().beginCalls==0&&Moo::rc().endCalls==0&&Moo::rc().invalidations==0);
+    assert(device.beginCalls==unsigned(!nullDevice&&!nested));
+    assert(device.endCalls==unsigned(!nullDevice&&!nested&&!sceneFail));
     if(!nullDevice)
     {
-        assert(Moo::rc().invalidations==1);
+        assert(device.sceneOpen==(nested>0));
         for(auto* surface:{&device.a,&device.b,&device.c,&device.d,&device.z})assert(surface->refs==1);
         if(!captureFail && !restoreFail)assert(device.state==37);
         if(!restoreFail)
@@ -143,18 +180,31 @@ static void one(bool nullDevice, bool sceneFail, bool captureFail, bool restoreF
         }
     }
     assert(errors.empty()==(!sceneFail && !captureFail && !restoreFail));
-    // A service command after renderer/context retirement still completes without
-    // opening a D3D scene. No queued closure survives this call or queue destruction.
+    // Interfaces are cleared only after the admitted command has completed.
     queue.configure(Render::Interfaces());
 }
-int main(int argc,char**)
+static void noRenderThread()
 {
+    StockRenderThread::ownerThread=0;Scaleform::currentThread=1;
+    IDirect3DDevice9 device;Moo::rc()=Moo::Context();Moo::rc().value=&device;
+    BW::ScaleformBW::StockFlashDrawableImageQueue queue(&executeStockFlashDrawableImageCommand);
+    DICommandQueue owner;owner.pRTCommandQueue=&queue;
+    auto* command=new DICommandQueue::ExecuteCommand(&owner);command->AddRef();
+    queueReleased=completed=commandDestroyed=false;errors.clear();
+    queue.PushThreadCommand(command);
+    assert(queueReleased&&completed&&!commandDestroyed);command->Release();assert(commandDestroyed);
+    assert(Moo::rc().beginCalls==1&&Moo::rc().endCalls==1&&Moo::rc().invalidations==1);
+    assert(Moo::rc().sceneCount==0&&!device.sceneOpen&&device.state==37&&errors.empty());
+    assert(StockRenderThread::jobs.empty());
+}
+int main(int argc,char** argv)
+{
+    if(argc>1&&!std::strcmp(argv[1],"thread-off")){
+        noRenderThread();std::puts("PASS legacy thread-off caller scene owner");return 0;
+    }
     if(argc>1)
     {
-        BW::ScaleformBW::StockFlashDrawableImageQueue queue(&executeStockFlashDrawableImageCommand);
-        Scaleform::currentThread=2;
-        queue.configure(Render::Interfaces());
-        return 0;
+        Scaleform::currentThread=3;
     }
     one(false,false,false,false,0);
     one(false,false,false,false,2);

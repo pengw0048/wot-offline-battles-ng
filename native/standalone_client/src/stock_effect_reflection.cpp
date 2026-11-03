@@ -15,6 +15,9 @@ std::optional<std::uint32_t> index_of(std::uint32_t handle, std::uint32_t kind, 
 std::uint32_t handle_for(std::size_t index, std::size_t count, std::uint32_t kind) {
     return index < count ? static_cast<std::uint32_t>(index+1) | kind : 0;
 }
+std::string_view name_view(const std::string& name) {
+    return {name.data(), name.size()};
+}
 } // namespace
 
 StockEffectReflection::StockEffectReflection(std::shared_ptr<const StockEffectBinary> definition,
@@ -67,14 +70,14 @@ StockEffectReflection::StockEffectReflection(std::shared_ptr<const StockEffectBi
 std::uint32_t StockEffectReflection::parameter(std::size_t index) const {
     return handle_for(index, parameters_.size(), 0x1000);
 }
-std::uint32_t StockEffectReflection::parameter_by_name(const std::string& name) const {
+std::uint32_t StockEffectReflection::parameter_by_name(std::string_view name) const {
     const auto found = std::lower_bound(parameters_.begin(), parameters_.end(), name,
-        [](const auto& parameter, const auto& key) { return parameter.name < key; });
-    return found != parameters_.end() && found->name == name ? parameter(found-parameters_.begin()) : 0;
+        [](const auto& parameter, const auto& key) { return name_view(parameter.name) < key; });
+    return found != parameters_.end() && name_view(found->name) == name ? parameter(found-parameters_.begin()) : 0;
 }
-std::uint32_t StockEffectReflection::parameter_by_semantic(const std::string& semantic) const {
+std::uint32_t StockEffectReflection::parameter_by_semantic(std::string_view semantic) const {
     const auto found = std::find_if(parameters_.begin(), parameters_.end(), [&](const auto& parameter) {
-        return parameter.semantic_present && parameter.semantic == semantic;
+        return parameter.semantic_present && name_view(parameter.semantic) == semantic;
     });
     return found != parameters_.end() ? parameter(found-parameters_.begin()) : 0;
 }
@@ -85,10 +88,10 @@ const StockEffectParameterReference* StockEffectReflection::parameter_reference(
 std::uint32_t StockEffectReflection::technique(std::size_t index) const {
     return handle_for(index, techniques_.size(), 0x4000);
 }
-std::uint32_t StockEffectReflection::technique_by_name(const std::string& name) const {
+std::uint32_t StockEffectReflection::technique_by_name(std::string_view name) const {
     const auto found = std::lower_bound(techniques_.begin(), techniques_.end(), name,
-        [&](auto index, const auto& key) { return definition_->techniques[index].name < key; });
-    return found != techniques_.end() && definition_->techniques[*found].name == name ?
+        [&](auto index, const auto& key) { return name_view(definition_->techniques[index].name) < key; });
+    return found != techniques_.end() && name_view(definition_->techniques[*found].name) == name ?
         technique(found-techniques_.begin()) : 0;
 }
 std::optional<std::size_t> StockEffectReflection::technique_source_index(std::uint32_t handle) const {
@@ -106,12 +109,12 @@ std::uint32_t StockEffectReflection::annotation(std::uint32_t object, std::size_
     return group && index < definition_->annotations[*group].size() ?
         handle_for(annotation_starts_[*group]+index, annotations_.size(), 0x2000) : 0;
 }
-std::uint32_t StockEffectReflection::annotation_by_name(std::uint32_t object, const std::string& name) const {
+std::uint32_t StockEffectReflection::annotation_by_name(std::uint32_t object, std::string_view name) const {
     const auto group = annotation_group(object);
     if (!group) return 0;
     const auto& annotations = definition_->annotations[*group];
     for (std::size_t i = 0; i < annotations.size(); ++i)
-        if (annotations[i].name == name) return annotation(object, i);
+        if (name_view(annotations[i].name) == name) return annotation(object, i);
     return 0;
 }
 const StockEffectAnnotation* StockEffectReflection::annotation_reference(std::uint32_t handle) const {

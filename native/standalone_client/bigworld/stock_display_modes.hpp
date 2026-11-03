@@ -9,5 +9,7 @@ void stockRememberDisplayWindow();
 void stockDisplayWindowMessage( UINT message, WPARAM wParam, LPARAM lParam );
 bool stockDisplayDeviceLost();
 bool stockChangeVideoMode( int modeIndex, int windowMode );
+int stockPreferredDisplayMode( unsigned deviceIndex, int width, int height, int refresh );
+bool stockToggleFullscreen();
 void stockResizeWindow( int width, int height );
 BW_END_NAMESPACE

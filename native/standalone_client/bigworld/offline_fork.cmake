@@ -1,6 +1,18 @@
 # The source input is downloaded at the fixed release commit by the builder.
 # Only our binding copy changes; the fork's numerical algorithms stay intact.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+# Preparation runs at configure time, so edits to its local adapters must
+# reconfigure before an incremental build can reuse the staged runtime.
+file(GLOB WOT_OFFLINE_FORK_ADAPTER_INPUTS CONFIGURE_DEPENDS LIST_DIRECTORIES false
+    "${CMAKE_CURRENT_LIST_DIR}/*.py"
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.py"
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${WOT_OFFLINE_FORK_ADAPTER_INPUTS}
+    "${CMAKE_CURRENT_LIST_DIR}/wgde_empty_rows.json"
+    "${CMAKE_CURRENT_LIST_DIR}/../wire/gen_cpp.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../wire/codec.py"
+    "${CMAKE_CURRENT_LIST_DIR}/../wire/schema.py")
 set(WOT_OFFLINE_FORK_GENERATED "${CMAKE_BINARY_DIR}/generated/offline-fork")
 execute_process(COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_LIST_DIR}/prepare_offline_fork.py"

@@ -7,6 +7,7 @@
 #endif
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -60,6 +61,7 @@ struct StockEffectSharedContext::Impl {
     std::shared_ptr<class StockEffectAdapter> writer;
   };
   std::map<std::size_t, Shared> declarations;
+  std::size_t pending_initialisations = 0;
   std::map<std::pair<std::size_t, std::size_t>, std::string> failures;
   // A Properties owner may retain a previous Definition after shader reload.
   // Current Moo Definitions still notify those live runtimes at device loss.
@@ -244,7 +246,7 @@ private:
   HRESULT apply_current();
   HRESULT begin_pass(UINT pass, bool apply);
   friend HRESULT begin_stock_effect_pass_for_commit(ID3DXEffect *, UINT);
-  bool update_resources();
+  bool update_resources(const StockDx9PassSelection &selected);
   bool validate_shared(const StockDx9PassSelection &selected,
                        std::string &error);
   std::shared_ptr<const StockEffectBinary> definition_;
@@ -253,9 +255,16 @@ private:
   StockEffectSharedContext &context_;
   StockEffectReflection reflection_;
   std::unique_ptr<StockDx9EffectMaterial> material_;
+  bool definitionDefaultReads_ = true;
   // Filled once by initialise(); handles point into this contiguous storage.
   std::vector<Destination> destinations_;
+  std::vector<std::size_t> capture_starts_;
   std::size_t first_resource_ = 0;
+  // Only cache immutable selection metadata; used providers still run per draw.
+  bool resource_plan_valid_ = false;
+  std::uint64_t resource_plan_version_ = 0;
+  StockDx9PassSelection resource_plan_selection_;
+  std::vector<unsigned char> required_resources_;
   LONG references_ = 1;
   D3DXHANDLE technique_ = nullptr;
   bool begun_ = false;
@@ -280,7 +289,8 @@ StockEffectAdapter::StockEffectAdapter(
       context_owner_(std::move(context)), context_(*context_owner_),
       reflection_(reflection),
       material_(
-          new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)) {
+          new StockDx9EffectMaterial(runtime_, context_.impl_->uniforms)),
+      definitionDefaultReads_(false) {
   initialise();
 }
 StockEffectAdapter::StockEffectAdapter(const StockEffectAdapter &source)
@@ -289,7 +299,7 @@ StockEffectAdapter::StockEffectAdapter(const StockEffectAdapter &source)
       reflection_(source.reflection_),
       material_(new StockDx9EffectMaterial(*source.material_,
                                            context_.impl_->uniforms)),
-      technique_(source.technique_) {
+      definitionDefaultReads_(false), technique_(source.technique_) {
   initialise();
 }
 StockEffectAdapter::StockEffectAdapter(
@@ -324,14 +334,16 @@ void StockEffectAdapter::initialise() {
   std::lock_guard<std::recursive_mutex> lock(context_.impl_->mutex);
   if (!technique_)
     technique_ = effect_handle(reflection_.technique(0));
+  capture_starts_.resize(definition_->uniform_buffers.size());
   for (std::size_t i = 0; i < definition_->uniform_buffers.size(); ++i) {
     const auto &buffer = definition_->uniform_buffers[i];
     if (!(buffer.flags & 1))
       continue;
     const auto declaration = context_.impl_->pool.register_buffer(buffer);
-    if (runtime_)
-      context_.impl_->declarations.emplace(
-          declaration, StockEffectSharedContext::Impl::Shared{definition_, i, false, nullptr});
+    if (runtime_ && context_.impl_->declarations.emplace(
+          declaration, StockEffectSharedContext::Impl::Shared{definition_, i, false, nullptr}).second)
+      ++context_.impl_->pending_initialisations;
+    capture_starts_[i] = destinations_.size();
     for (std::size_t j = 0; j < buffer.uniforms.size(); ++j)
       destinations_.push_back(Destination{false, i, j, declaration});
   }
@@ -356,11 +368,12 @@ StockEffectAdapter::destination(D3DXHANDLE handle) const {
 }
 D3DXHANDLE StockEffectAdapter::capture(std::size_t buffer,
                                        std::size_t member) const {
-  for (const auto &target : destinations_)
-    if (!target.resource && target.owner == buffer &&
-        target.member == member)
-      return reinterpret_cast<D3DXHANDLE>(&target);
-  return nullptr;
+  if (buffer >= capture_starts_.size()) return nullptr;
+  const auto &declaration = definition_->uniform_buffers[buffer];
+  if (!(declaration.flags & 1) || member >= declaration.uniforms.size()) return nullptr;
+  // initialise() groups immutable destinations by buffer; form the address
+  // only after all vector growth has finished, preserving retained handles.
+  return reinterpret_cast<D3DXHANDLE>(&destinations_[capture_starts_[buffer] + member]);
 }
 std::uint32_t StockEffectAdapter::parameter_number(D3DXHANDLE handle) const {
   if (reinterpret_cast<std::uintptr_t>(handle) >= 0x10000)
@@ -418,8 +431,12 @@ HRESULT StockEffectAdapter::write_capture(const Destination &target,
                      uniform.semantic;
     return E_INVALIDARG;
   }
-  auto writable = uniform;
-  writable.flags &= ~2u;
+  // Storage consumes the numeric layout only. Keep producer writes writable
+  // without copying the immutable name/semantic strings on every capture.
+  const StockEffectUniform writable{
+      uniform.flags & ~2u, {}, {}, uniform.semantic_present, uniform.type_index,
+      uniform.byte_offset, uniform.elements, uniform.element_padding,
+      uniform.annotations};
   if (!storage->write_uniform(writable, type, data, size, error)) {
     capture_error_ = error;
     return E_INVALIDARG;
@@ -458,16 +475,91 @@ HRESULT StockEffectAdapter::read(D3DXHANDLE parameter, void *data, UINT size,
       std::memcpy(data, annotation->value.data(), size);
     return S_OK;
   }
-  return reflection_.default_value(parameter_number(parameter), data, size)
-             ? S_OK
-             : E_INVALIDARG;
+  // Reflection owns immutable Definition defaults. D3DX material callers,
+  // however, read the Binding they just changed, not that default template.
+  const StockEffectUniform* uniform = nullptr;
+  const std::vector<unsigned char>* bytes = nullptr;
+  std::shared_ptr<StockEffectUniformStorage> storage;
+  if (const auto* target = destination(parameter)) {
+    if (target->resource) return E_INVALIDARG;
+    uniform = &definition_->uniform_buffers[target->owner].uniforms[target->member];
+    storage = context_.impl_->uniforms.shared(target->declaration);
+  } else if (material_ && !definitionDefaultReads_) {
+    const auto* reference = reflection_.parameter_reference(parameter_number(parameter));
+    if (!reference || (reference->kind != StockEffectParameterKind::uniform &&
+        reference->kind != StockEffectParameterKind::uniform_buffer)) return E_INVALIDARG;
+    const auto& buffer = definition_->uniform_buffers[reference->owner];
+    if (reference->kind == StockEffectParameterKind::uniform)
+      uniform = &buffer.uniforms[reference->member];
+    if (buffer.name == "$Selection") bytes = &material_->binding().selection();
+    else storage = material_->binding().uniform_buffer(reference->owner);
+  } else {
+    // Definition adapters and internal provider default-property reads keep
+    // the original immutable contract, even when their template defaults
+    // differ from a previously registered Binding-pool declaration.
+    return reflection_.default_value(parameter_number(parameter), data, size)
+               ? S_OK : E_INVALIDARG;
+  }
+  if (storage) bytes = &storage->bytes();
+  if (!bytes) return E_INVALIDARG;
+  const std::size_t offset = uniform ? uniform->byte_offset : 0;
+  if (uniform && uniform->element_padding && uniform->elements > 1) {
+    const auto& type = definition_->types[uniform->type_index];
+    const std::uint64_t elementSize = type.byte_size;
+    const std::uint64_t stride = elementSize + uniform->element_padding;
+    if (!elementSize || size > elementSize * uniform->elements) return E_INVALIDARG;
+    const std::uint64_t last = size ? (size - 1) / elementSize : 0;
+    const std::uint64_t end = offset + last * stride + (size ? (size - 1) % elementSize + 1 : 0);
+    if (end > bytes->size()) return E_INVALIDARG;
+    // SetValue and typed array setters accept tightly packed logical elements;
+    // their matching getters skip the UBB's inter-element storage padding.
+    auto* output = static_cast<unsigned char*>(data);
+    std::size_t copied = 0;
+    while (copied < size) {
+      const std::size_t count = (std::min)(std::size_t(elementSize), std::size_t(size) - copied);
+      std::memcpy(output + copied, bytes->data() + offset + (copied / elementSize) * stride, count);
+      copied += count;
+    }
+  } else {
+    // Preserve the original caller-selected byte width and enclosing UBB bound
+    // for scalar/vector/matrix and whole-buffer reads.
+    if (offset > bytes->size() || size > bytes->size() - offset) return E_INVALIDARG;
+    if (size) std::memcpy(data, bytes->data() + offset, size);
+  }
+  return S_OK;
 }
-bool StockEffectAdapter::update_resources() {
+bool StockEffectAdapter::update_resources(const StockDx9PassSelection &selected) {
   capture_error_.clear();
   if (!context_.impl_->provider)
     return true;
+  const auto version = material_->binding().selection_version();
+  if (!resource_plan_valid_ || resource_plan_version_ != version ||
+      resource_plan_selection_.vertex_shader != selected.vertex_shader ||
+      resource_plan_selection_.pixel_shader != selected.pixel_shader) {
+    resource_plan_valid_ = false;
+    required_resources_.assign(definition_->resource_views.size(), 0);
+    for (const auto shader : {selected.vertex_shader, selected.pixel_shader}) {
+      if (!shader) continue;
+      for (const auto &binding : definition_->shaders[*shader].resources) {
+        if (binding.kind != 2) continue;
+        std::optional<std::uint32_t> index;
+        if (!resolve_stock_effect_reference(*definition_, material_->binding().selection(),
+              StockEffectResourceTable::resource_view, binding.resource_index, index, capture_error_))
+          return false;
+        if (!index || *index >= required_resources_.size()) {
+          capture_error_ = "Shader refers to an invalid texture view";
+          return false;
+        }
+        required_resources_[*index] = 1;
+      }
+    }
+    resource_plan_selection_ = selected;
+    resource_plan_version_ = version;
+    resource_plan_valid_ = true;
+  }
   for (auto target = destinations_.begin() + first_resource_;
        target != destinations_.end(); ++target) {
+    if (!required_resources_[target->owner]) continue;
     const auto &resource = definition_->resource_views[target->owner];
     if (!context_.impl_->provider(resource.semantic, this,
                                   reinterpret_cast<D3DXHANDLE>(&*target)) ||
@@ -533,17 +625,14 @@ HRESULT StockEffectAdapter::apply_current() {
     return D3DERR_INVALIDCALL;
   // A material may first load after the frame's shared update. Publish its
   // actual current producer values on first use, rather than drawing defaults.
-  if (std::any_of(context_.impl_->declarations.begin(),
-                  context_.impl_->declarations.end(), [](const auto &entry) {
-                    return !entry.second.initialised;
-                  })) {
+  if (context_.impl_->pending_initialisations) {
     std::string initial_error;
     update_stock_effect_shared_constants(context_, 7, initial_error);
   }
   StockDx9PassSelection selected;
   std::string error;
   if (!material_->binding().select_pass(*technique, *pass_, selected, error) ||
-      !validate_shared(selected, error) || !update_resources() ||
+      !validate_shared(selected, error) || !update_resources(selected) ||
       !material_->apply(*technique, *pass_, error)) {
     if (context_.impl_->failure_reporter)
       context_.impl_->failure_reporter(error.empty() ? capture_error_ : error);
@@ -957,12 +1046,18 @@ HRESULT STDMETHODCALLTYPE StockEffectAdapter::GetTexture(
   if (!texture)
     return E_POINTER;
   *texture = nullptr;
-  const auto *reference =
-      reflection_.parameter_reference(parameter_number(parameter));
-  if (!material_ || !reference ||
-      reference->kind != StockEffectParameterKind::resource_view)
-    return E_INVALIDARG;
-  *texture = material_->texture(reference->owner);
+  if (!material_) return E_INVALIDARG;
+  std::size_t index;
+  if (const auto* target = destination(parameter)) {
+    if (!target->resource) return E_INVALIDARG;
+    index = target->owner;
+  } else {
+    const auto* reference = reflection_.parameter_reference(parameter_number(parameter));
+    if (!reference || reference->kind != StockEffectParameterKind::resource_view)
+      return E_INVALIDARG;
+    index = reference->owner;
+  }
+  *texture = material_->texture(index);
   if (*texture)
     (*texture)->AddRef();
   return S_OK;
@@ -1269,7 +1364,10 @@ bool update_stock_effect_shared_constants(StockEffectSharedContext &context,
                                                    : 0u;
     if (!(mask & flag))
       continue;
-    entry.second.initialised = true;
+    if (!entry.second.initialised) {
+      entry.second.initialised = true;
+      --context.impl_->pending_initialisations;
+    }
     if (!entry.second.writer)
       entry.second.writer = std::make_shared<StockEffectAdapter>(shared.definition, context);
     StockEffectAdapter &writer = *entry.second.writer;

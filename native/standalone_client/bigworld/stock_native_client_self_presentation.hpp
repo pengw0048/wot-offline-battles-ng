@@ -8,6 +8,8 @@ struct SliceTrace;
 // Owns the one local matrix/overlay, camera motion and native appearance feed.
 // The first ready call cold-installs resource references; subsequent slices
 // consume only the shared driver and native providers.
+// Bind the complete body before BattleLoading closes, without advancing motion.
+void attachSelfPresentation(native_battle::Battle&,_object* entity);
 void selfPresentation(native_battle::Battle&,_object* entity,PlayerDriver&,
     double elapsed,const SliceTrace&,bool stopped);
 void retireSelfPresentation(native_battle::Battle&);

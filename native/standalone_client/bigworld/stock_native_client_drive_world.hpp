@@ -52,6 +52,7 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     std::map<stock_native_bot_turret::Owner,std::string>turret_failures_;
     std::optional<ID>motion_anchor_;double motion_anchor_local_=0.,now_=0.;
     int drown_level_=0,overturn_level_=0;bool damage_pending_=false,battle_over_=false;
+    std::string mobility_report_;double next_mobility_report_=0.;bool mobility_blocked_=false;
     void current()const;
     std::array<double,4>violations(const Point&,double)const;
     stock_native_world::TurretPose turretPose(const PlayerState&,const Point&,double)const;
@@ -61,6 +62,7 @@ class NativePlayerWorld final:public PlayerWorld,public ContactWorld {
     std::vector<Point>groundWitnesses(const Point&,double);
     void impactGeometry();
     void ensureRegion(const Point&,const Point&,double extra=0.);
+    void reportMobility(const PlayerState&,const SliceTrace&,bool stopped);
 public:
     NativePlayerWorld(native_battle::Battle&,_object*entity,std::shared_ptr<stock_native_client_state::State>,
         std::shared_ptr<stock_native_client_state::Actor>,PlayerDriver&,stock_native_world::NativeScene&,

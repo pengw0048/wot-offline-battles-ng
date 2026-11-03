@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "stock_cursor_camera.hpp"
+#include "stock_directional_shadow.hpp"
 #include "stock_tree_scene.hpp"
 
 #include "duplo/pymodel.hpp"
@@ -170,17 +171,20 @@ bool collideStockCursorCameraModels( const BW::vector< PyObjectPtr > & owners,
 void publishStockCursorCameraHiding( MatrixProvider * target, bool enabled )
 {
     setStockTreeCameraTarget( enabled ? target : NULL );
+    setStockDirectionalShadowFocus( target );
 }
 
 
 void initStockCursorCameraHiding()
 {
     openStockTreeCameraTarget();
+    openStockDirectionalShadowFocus();
 }
 
 
 void finiStockCursorCameraHiding()
 {
+    closeStockDirectionalShadowFocus();
     closeStockTreeCameraTarget();
 }
 

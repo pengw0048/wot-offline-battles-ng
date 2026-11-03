@@ -324,7 +324,7 @@ void attachPresentation(Battle& b) {
     auto model = py::optional(entity.get(), "model");
     if (model.get() == Py_None) throw p::Error("player compound model is unavailable");
     py::set(model.get(), "matrix", bodyPose(l).get());
-    // Body swinging and engine audio motion bind natively on the first drive slice (self presentation).
+    // Bind body swinging before countdown; motion remains locked until battle.
     compat::bindVehiclePoseSources(b, b.engine.avatar.get(), entity.get());
     l.model = own(std::move(model));
     b.feature("persistent Siege mode hint", [&] { enableSiegeHints(b); });

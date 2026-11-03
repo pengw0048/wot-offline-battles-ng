@@ -8,11 +8,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
+#include <intrin.h>
 #include "stock_d3d9_render_thread.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <deque>
 #include <new>
 #include <type_traits>
 #include <unordered_map>
@@ -26,17 +28,37 @@ static FILE* reportLog() { if (!g_log) g_log = fopen("d3d9_render_thread.log", "
 static DWORD g_main, g_renderId; static bool g_started;
 static const uint32_t RING = 128u << 20;
 static uint8_t* g_ring; static volatile LONG g_head, g_tail, g_sleeping, g_foreign;
-static HANDLE g_work, g_idle;
+// Count real records before publishing head; wrap markers are not records.
+// External command admission reads this atomically without reserving ring space.
+alignas(8) static volatile LONG64 g_published;
+static HANDLE g_work, g_idle, g_renderThread;
+static unsigned long long g_mainCpu, g_renderCpu;
+// Sample CPU consumption only at the existing summary cadence, not per draw.
+// Unlike wall-frame time, these values exclude thread waits and GPU execution.
+static double threadCpuDelta(HANDLE thread, unsigned long long& previous) {
+    FILETIME created, exited, kernel, user;
+    if (!thread || !GetThreadTimes(thread, &created, &exited, &kernel, &user)) return -1.;
+    const unsigned long long current =
+        (static_cast<unsigned long long>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+        (static_cast<unsigned long long>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+    const double elapsed = current >= previous ? double(current - previous) / 10000. : 0.;
+    previous = current;
+    return elapsed;
+}
 static uint32_t g_sinceWake;
 static volatile LONG g_framesQueued, g_framesDone;
 static LARGE_INTEGER g_freq;
 static long long g_frames, g_frameStart, g_frameTicks, g_syncTicks, g_paceTicks, g_bytes, g_syncCount;
 static std::unordered_map<const char*, long> g_syncBy;
+static long long g_stageTicks[5];
+static unsigned g_stageCalls[5];
 static inline long long now() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 inline bool onMain() { return g_started && GetCurrentThreadId() == g_main; }
 inline bool onRender() { return GetCurrentThreadId() == g_renderId; }
 // While the render thread is parked for a window-thread Reset, the main thread owns the device.
 static bool g_parked;
+// Written only while the actual device owner executes BeginScene/EndScene.
+static bool g_sceneOpen;
 inline bool mainOwnsDevice() { return g_parked && onMain(); }
 
 struct Rec { uint32_t size; void (*fn)(void*); };
@@ -61,6 +83,7 @@ static void* reserve(uint32_t payload, void (*fn)(void*)) {
 static void commit(bool flush = false) {
     const uint32_t size = reinterpret_cast<Rec*>(g_ring + g_head)->size;
     g_bytes += size; g_sinceWake += size;
+    InterlockedIncrement64(&g_published);
     MemoryBarrier(); InterlockedExchange(&g_head, g_head + size);
     if (flush || g_sinceWake > (32u << 10)) { g_sinceWake = 0; wake(); }
 }
@@ -86,12 +109,16 @@ template<class F> void postData(const void* data, uint32_t n, F&& f) {
 struct SyncTask { void (*run)(void*); void* ctx; volatile LONG done; HANDLE ev; };
 static void runTask(SyncTask* t) { t->run(t->ctx); InterlockedExchange(&t->done, 1); SetEvent(t->ev); }
 static CRITICAL_SECTION g_foreignLock; static std::vector<SyncTask*> g_foreignTasks;
+struct AsyncCommand { void (*run)(void*); void* ctx; LONG64 fence; };
+static std::deque<AsyncCommand> g_foreignCommands;
+static volatile LONG g_commandsPending;
 static HANDLE threadEvent() { static thread_local HANDLE ev = CreateEventA(nullptr, FALSE, FALSE, nullptr); return ev; }
 void stallReport(const char* name);   // logs the render thread's stack once when a sync stalls
 template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
     using R = decltype(f());
     if (!g_started || onRender() || mainOwnsDevice()) return f();
-    struct Ctx { F* f; R r; } ctx{&f, R()};
+    using Callable = typename std::remove_reference<F>::type;
+    struct Ctx { Callable* f; R r; } ctx{&f, R()};
     SyncTask task{[](void* c) { auto* x = static_cast<Ctx*>(c); x->r = (*x->f)(); }, &ctx, 0, threadEvent()};
     if (onMain()) {
         long long t = now(); ++g_syncCount; ++g_syncBy[name];
@@ -105,9 +132,29 @@ template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
     }
     return ctx.r;
 }
+static HRESULT reportResult(const char* name, HRESULT result) {
+    // Device execution is serialized on its owner. Keep one record per failure
+    // kind, with a fixed bound, so a rejected draw cannot flood the log.
+    struct Failure { const char* name; HRESULT result; };
+    static Failure failures[64]; static unsigned count;
+    if (FAILED(result) && count < 64) {
+        for (unsigned i = 0; i < count; ++i)
+            if (failures[i].result == result && !strcmp(failures[i].name, name)) return result;
+        failures[count++] = {name, result};
+        if (FILE* log = reportLog()) {
+            fprintf(log, "device_failure operation=%s hr=%08lx thread=%lu\n",
+                name, static_cast<unsigned long>(result), GetCurrentThreadId());
+            fflush(log);
+        }
+    }
+    return result;
+}
 template<class F> HRESULT async(F&& f, const char* name) {
-    if (onMain()) { post(std::forward<F>(f)); return D3D_OK; }
-    return sync([&]() -> HRESULT { f(); return D3D_OK; }, name);
+    if (onMain() && !mainOwnsDevice()) {
+        post([call = std::forward<F>(f), name]() mutable { reportResult(name, call()); });
+        return D3D_OK; // Admission only; execution failures are recorded above.
+    }
+    return sync([&]() -> HRESULT { return reportResult(name, f()); }, name);
 }
 
 // Retirement: a wrapper's real object is released after every command that may still use it.
@@ -153,6 +200,7 @@ template<class I> struct RefBase : I {
 
 struct WDevice; struct WSurface; struct WTexture; struct WCube; struct WVolTex; struct WVolume; struct WVB; struct WIB;
 struct WVS; struct WPS; struct WDecl; struct WSB; struct WQuery; struct WSwap;
+static void initQuery(WQuery*);
 namespace rt {
 static WDevice* g_dev;
 inline IDirect3DDevice9Ex* device();
@@ -178,6 +226,29 @@ IDirect3DSwapChain9* wrapOut(void*, IDirect3DSwapChain9* r); IDirect3DBaseTextur
 struct LevelCache { std::vector<D3DSURFACE_DESC> levels; };
 // Mirrors keep dynamic buffer bytes on the main thread so DISCARD/NOOVERWRITE locks never wait.
 struct Mirror { std::vector<uint8_t> data; bool pending = false, valid = false; UINT off = 0, len = 0; DWORD flags = 0; uint8_t* real = nullptr; };
+// Attribute only synchronous buffer locks, with fixed storage and no stack walk.
+// The wrapper's direct caller is resolved against the matching executable/PDB.
+struct BufferLockSummary {
+    const void* caller; UINT size; DWORD usage, pool, flags; bool vertex;
+    unsigned count;
+};
+static BufferLockSummary g_bufferLocks[32];
+static unsigned g_bufferLockKinds, g_bufferLockOverflow;
+static void recordBufferLock(const void* caller, UINT size, DWORD usage,
+    DWORD pool, DWORD flags, bool vertex) {
+    if (!rt::g_stats || !rt::onMain()) return;
+    for (unsigned i = 0; i < g_bufferLockKinds; ++i) {
+        auto& row = g_bufferLocks[i];
+        if (row.caller == caller && row.size == size && row.usage == usage &&
+            row.pool == pool && row.flags == flags && row.vertex == vertex) {
+            ++row.count; return;
+        }
+    }
+    if (g_bufferLockKinds < 32)
+        g_bufferLocks[g_bufferLockKinds++] = {caller, size, usage, pool, flags, vertex, 1};
+    else ++g_bufferLockOverflow;
+}
+
 static std::unordered_map<void*, LevelCache> g_levels;          // texture/cube wrapper -> level descs (written once at wrap)
 static std::unordered_map<void*, D3DSURFACE_DESC> g_surfDesc;
 static std::unordered_map<void*, D3DVOLUME_DESC> g_volDesc;
@@ -240,7 +311,7 @@ IDirect3DVertexShader9* wrapOut(void*, IDirect3DVertexShader9* r) { return wrapI
 IDirect3DPixelShader9* wrapOut(void*, IDirect3DPixelShader9* r) { return wrapIdentity<WPS>(r); }
 IDirect3DVertexDeclaration9* wrapOut(void*, IDirect3DVertexDeclaration9* r) { return wrapIdentity<WDecl>(r); }
 IDirect3DStateBlock9* wrapOut(void*, IDirect3DStateBlock9* r) { return wrapIdentity<WSB>(r); }
-IDirect3DQuery9* wrapOut(void*, IDirect3DQuery9* r) { return wrapIdentity<WQuery>(r); }
+IDirect3DQuery9* wrapOut(void*, IDirect3DQuery9* r) { return wrapIdentity<WQuery>(r, initQuery); }
 IDirect3DSwapChain9* wrapOut(void*, IDirect3DSwapChain9* r) {
     IDirect3DSwapChain9Ex* ex = nullptr; bool isEx = SUCCEEDED(r->QueryInterface(__uuidof(IDirect3DSwapChain9Ex), (void**)&ex)); if (ex) ex->Release();
     auto* w = static_cast<WSwap*>(wrapIdentity<WSwap>(static_cast<IDirect3DSwapChain9Ex*>(r))); w->ex = isEx; return w;
@@ -267,7 +338,7 @@ static bool known = true, declKnown = true, fvfKnown = true;
 static DWORD fvfAfterDecl;
 struct Snapshot { D3DVIEWPORT9 vp; RECT scissor; IDirect3DSurface9* ds; IDirect3DVertexBuffer9* vb[16]; UINT off[16], stride[16], freq[16];
     IDirect3DIndexBuffer9* ib; IDirect3DVertexDeclaration9* decl; DWORD fvf; IDirect3DVertexShader9* vs; IDirect3DPixelShader9* ps; float npatch;
-    IDirect3DBaseTexture9* tex[264]; bool declKnown, fvfKnown; };
+    IDirect3DBaseTexture9* tex[264]; bool declKnown, fvfKnown; LONG blockGeneration = 0; };
 static void saveRaw(Snapshot& s) { s.vp = vp; s.scissor = scissor; s.ds = ds; memcpy(s.vb, vb, sizeof vb); memcpy(s.off, off, sizeof off); memcpy(s.stride, stride, sizeof stride);
     memcpy(s.freq, freq, sizeof freq); s.ib = ib; s.decl = decl; s.fvf = fvf; s.vs = vs; s.ps = ps; s.npatch = npatch; memcpy(s.tex, tex, sizeof tex); s.declKnown = declKnown; s.fvfKnown = fvfKnown; }
 static void loadRaw(const Snapshot& s) { vp = s.vp; scissor = s.scissor; ds = s.ds; memcpy(vb, s.vb, sizeof vb); memcpy(off, s.off, sizeof off); memcpy(stride, s.stride, sizeof stride);
@@ -327,7 +398,7 @@ HRESULT WDevice::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* p) { *p = 
 HRESULT WDevice::GetDirect3D(IDirect3D9** o) { *o = g_d3d; g_d3d->AddRef(); return D3D_OK; }
 
 // ------------------------------------------------------------------ device: recorded state
-#define ASYNC(name, body) rt::async([=]() { body; }, name)
+#define ASYNC(name, body) rt::async([=]() -> HRESULT { return body; }, name)
 static void markQueuedUse(IDirect3DBaseTexture9* t) {
     if (t && rt::isWrapper(t) && t->GetType() == D3DRTYPE_TEXTURE) InterlockedExchange(&static_cast<WTexture*>(static_cast<IDirect3DTexture9*>(t))->queuedUse, 1);
 }
@@ -377,8 +448,8 @@ HRESULT WDevice::SetSoftwareVertexProcessing(BOOL b) { auto r = REAL; return ASY
 #define CONSTS(Name, T, W) \
 HRESULT WDevice::Name(UINT s, const T* v, UINT c) { \
     auto r = REAL; \
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->Name(s, v, c); }, #Name); \
-    rt::postData(v, c * W, [r, s, c](const uint8_t* d) { r->Name(s, reinterpret_cast<const T*>(d), c); }); return D3D_OK; }
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult(#Name, r->Name(s, v, c)); }, #Name); \
+    rt::postData(v, c * W, [r, s, c](const uint8_t* d) { rt::reportResult(#Name, r->Name(s, reinterpret_cast<const T*>(d), c)); }); return D3D_OK; }
 CONSTS(SetVertexShaderConstantF, float, 16) CONSTS(SetVertexShaderConstantI, int, 16) CONSTS(SetVertexShaderConstantB, BOOL, 4)
 CONSTS(SetPixelShaderConstantF, float, 16) CONSTS(SetPixelShaderConstantI, int, 16) CONSTS(SetPixelShaderConstantB, BOOL, 4)
 HRESULT WDevice::SetStreamSource(UINT n, IDirect3DVertexBuffer9* b, UINT o, UINT s) {
@@ -419,12 +490,12 @@ HRESULT WDevice::SetLight(DWORD i, const D3DLIGHT9* l) { auto r = REAL; D3DLIGHT
 HRESULT WDevice::LightEnable(DWORD i, BOOL e) { auto r = REAL; return ASYNC("LightEnable", r->LightEnable(i, e)); }
 HRESULT WDevice::Clear(DWORD n, const D3DRECT* rects, DWORD f, D3DCOLOR c, float z, DWORD s) {
     auto r = REAL; if (!rects) n = 0;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->Clear(n, rects, f, c, z, s); }, "Clear");
-    rt::postData(rects, n * sizeof(D3DRECT), [r, n, f, c, z, s](const uint8_t* d) { r->Clear(n, n ? reinterpret_cast<const D3DRECT*>(d) : nullptr, f, c, z, s); });
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("Clear", r->Clear(n, rects, f, c, z, s)); }, "Clear");
+    rt::postData(rects, n * sizeof(D3DRECT), [r, n, f, c, z, s](const uint8_t* d) { rt::reportResult("Clear", r->Clear(n, n ? reinterpret_cast<const D3DRECT*>(d) : nullptr, f, c, z, s)); });
     return D3D_OK;
 }
-HRESULT WDevice::BeginScene() { auto r = REAL; return ASYNC("BeginScene", r->BeginScene()); }
-HRESULT WDevice::EndScene() { auto r = REAL; return ASYNC("EndScene", r->EndScene()); }
+HRESULT WDevice::BeginScene() { auto r = REAL; return ASYNC("BeginScene", ([r]() { const HRESULT result = r->BeginScene(); if (SUCCEEDED(result)) rt::g_sceneOpen = true; return result; })()); }
+HRESULT WDevice::EndScene() { auto r = REAL; return ASYNC("EndScene", ([r]() { const HRESULT result = r->EndScene(); if (SUCCEEDED(result)) rt::g_sceneOpen = false; return result; })()); }
 HRESULT WDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE t, INT b, UINT m, UINT n, UINT s, UINT c) { auto r = REAL; return ASYNC("DrawIndexedPrimitive", r->DrawIndexedPrimitive(t, b, m, n, s, c)); }
 HRESULT WDevice::DrawPrimitive(D3DPRIMITIVETYPE t, UINT s, UINT c) { auto r = REAL; return ASYNC("DrawPrimitive", r->DrawPrimitive(t, s, c)); }
 static UINT vertsFor(D3DPRIMITIVETYPE t, UINT c) {
@@ -433,17 +504,17 @@ static UINT vertsFor(D3DPRIMITIVETYPE t, UINT c) {
 }
 HRESULT WDevice::DrawPrimitiveUP(D3DPRIMITIVETYPE t, UINT c, const void* v, UINT stride) {
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->DrawPrimitiveUP(t, c, v, stride); }, "DrawPrimitiveUP");
-    rt::postData(v, vertsFor(t, c) * stride, [r, t, c, stride](const uint8_t* d) { r->DrawPrimitiveUP(t, c, d, stride); });
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("DrawPrimitiveUP", r->DrawPrimitiveUP(t, c, v, stride)); }, "DrawPrimitiveUP");
+    rt::postData(v, vertsFor(t, c) * stride, [r, t, c, stride](const uint8_t* d) { rt::reportResult("DrawPrimitiveUP", r->DrawPrimitiveUP(t, c, d, stride)); });
     sh::set(sh::vb[0], (IDirect3DVertexBuffer9*)nullptr); sh::off[0] = 0; sh::stride[0] = 0;
     return D3D_OK;
 }
 HRESULT WDevice::DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE t, UINT minV, UINT nV, UINT c, const void* idx, D3DFORMAT f, const void* v, UINT stride) {
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return r->DrawIndexedPrimitiveUP(t, minV, nV, c, idx, f, v, stride); }, "DrawIndexedPrimitiveUP");
+    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return rt::reportResult("DrawIndexedPrimitiveUP", r->DrawIndexedPrimitiveUP(t, minV, nV, c, idx, f, v, stride)); }, "DrawIndexedPrimitiveUP");
     const UINT ib = vertsFor(t, c) * (f == D3DFMT_INDEX32 ? 4 : 2), ibA = (ib + 7) & ~7u, vb = (minV + nV) * stride;
     std::vector<uint8_t> buf(ibA + vb); memcpy(buf.data(), idx, ib); memcpy(buf.data() + ibA, v, vb);
-    rt::postData(buf.data(), UINT(buf.size()), [r, t, minV, nV, c, f, stride, ibA](const uint8_t* d) { r->DrawIndexedPrimitiveUP(t, minV, nV, c, d, f, d + ibA, stride); });
+    rt::postData(buf.data(), UINT(buf.size()), [r, t, minV, nV, c, f, stride, ibA](const uint8_t* d) { rt::reportResult("DrawIndexedPrimitiveUP", r->DrawIndexedPrimitiveUP(t, minV, nV, c, d, f, d + ibA, stride)); });
     sh::set(sh::vb[0], (IDirect3DVertexBuffer9*)nullptr); sh::off[0] = 0; sh::stride[0] = 0; sh::set(sh::ib, (IDirect3DIndexBuffer9*)nullptr);
     return D3D_OK;
 }
@@ -496,81 +567,261 @@ HRESULT WSwap::Present(const RECT* s, const RECT* d, HWND w, const RGNDATA* rg, 
 }
 
 // ------------------------------------------------------------------ queries: created and polled by the render thread
-struct QState { volatile LONG pending = 0, ready = 0; DWORD size = 0; uint8_t data[16]; };
-static std::unordered_map<void*, QState> g_qstate; static SRWLOCK g_qLock = SRWLOCK_INIT;
-static std::vector<WQuery*> g_qpoll;   // render thread only
-static QState& qstate(void* q) { AcquireSRWLockExclusive(&g_qLock); QState& s = g_qstate[q]; ReleaseSRWLockExclusive(&g_qLock); return s; }
-static std::unordered_map<void*, D3DQUERYTYPE> g_qtype;
+struct QState {
+    D3DQUERYTYPE type = D3DQUERYTYPE(0);
+    DWORD size = 0;
+    uint64_t generation = 0;
+    HRESULT creation = S_FALSE, result = S_FALSE, buildingResult = S_OK;
+    bool flush = false, building = false;
+    size_t pollIndex = size_t(-1); // Render-thread-only membership in g_qpoll.
+    uint8_t data[16] = {};
+};
+static std::unordered_map<void*, QState> g_qstate;
+static SRWLOCK g_qLock = SRWLOCK_INIT;
+struct QPoll { WQuery* query; uint64_t generation; };
+static std::vector<QPoll> g_qpoll; // render thread only; each row owns one reference
 static DWORD qsize(D3DQUERYTYPE t) {
     switch (t) { case D3DQUERYTYPE_EVENT: return sizeof(BOOL); case D3DQUERYTYPE_OCCLUSION: return sizeof(DWORD);
     case D3DQUERYTYPE_TIMESTAMP: case D3DQUERYTYPE_TIMESTAMPFREQ: return sizeof(UINT64); case D3DQUERYTYPE_TIMESTAMPDISJOINT: return sizeof(BOOL); default: return 0; }
 }
+static void freeQueryState(void* query) {
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate.erase(query);
+    ReleaseSRWLockExclusive(&g_qLock);
+}
+static void initQueryState(WQuery* w, D3DQUERYTYPE type, DWORD size, HRESULT creation) {
+    QState state;
+    state.type = type; state.size = size; state.creation = creation;
+    if (FAILED(creation)) state.result = creation;
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate[w] = state; // A recycled wrapper address must start with fresh data/generation.
+    w->ext = w; w->extFree = freeQueryState;
+    ReleaseSRWLockExclusive(&g_qLock);
+}
+static void initQuery(WQuery* w) {
+    initQueryState(w, w->real->GetType(), w->real->GetDataSize(), S_OK);
+}
+static void removeQueryPoll(size_t index) {
+    WQuery* w = g_qpoll[index].query;
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate.at(w).pollIndex = size_t(-1);
+    g_qpoll[index] = g_qpoll.back(); g_qpoll.pop_back();
+    if (index < g_qpoll.size()) g_qstate.at(g_qpoll[index].query).pollIndex = index;
+    ReleaseSRWLockExclusive(&g_qLock);
+    w->Release();
+}
+static void clearQueryPolls() {
+    AcquireSRWLockExclusive(&g_qLock);
+    for (auto& entry : g_qstate) {
+        auto& state = entry.second;
+        ++state.generation; state.creation = state.result = D3DERR_DEVICELOST;
+    }
+    ReleaseSRWLockExclusive(&g_qLock);
+    while (!g_qpoll.empty()) removeQueryPoll(g_qpoll.size() - 1);
+}
 static void pollQueries() {
     for (size_t i = 0; i < g_qpoll.size();) {
-        WQuery* w = g_qpoll[i]; QState& st = qstate(w); uint8_t buf[16] = {}; DWORD n = st.size;
-        if (w->real && w->real->GetData(buf, n, 0) == S_OK) {
-            memcpy(st.data, buf, n); MemoryBarrier(); if (!st.pending) InterlockedExchange(&st.ready, 1);
-            g_qpoll[i] = g_qpoll.back(); g_qpoll.pop_back(); w->Release();
-        } else ++i;
+        const QPoll poll = g_qpoll[i]; WQuery* w = poll.query;
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w);
+        const bool current = poll.generation == state.generation;
+        const DWORD size = state.size, flags = state.flush ? D3DGETDATA_FLUSH : 0;
+        state.flush = false;
+        ReleaseSRWLockExclusive(&g_qLock);
+        // No caller or queued operation can consume a query held only by this poll.
+        if (!current || InterlockedCompareExchange(&w->refs, 0, 0) == 1) {
+            removeQueryPoll(i); continue;
+        }
+        uint8_t data[16] = {};
+        const HRESULT result = rt::reportResult("Query.GetData", w->real ?
+            w->real->GetData(data, size, flags) : D3DERR_INVALIDCALL);
+        if (result == S_FALSE) { ++i; continue; }
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& latest = g_qstate.at(w);
+        if (poll.generation == latest.generation) {
+            latest.result = result;
+            if (result == S_OK) memcpy(latest.data, data, size);
+        }
+        ReleaseSRWLockExclusive(&g_qLock);
+        removeQueryPoll(i); // Errors are terminal too; never retain a failed native poll.
     }
 }
 HRESULT WDevice::CreateQuery(D3DQUERYTYPE t, IDirect3DQuery9** o) {
     auto r = REAL;
     if (!o || qsize(t) == 0 || !rt::onMain())
-        return rt::sync([&]() -> HRESULT { HRESULT h = r->CreateQuery(t, o); if (o && *o) *o = rt::wrapOut(this, *o); return h; }, "CreateQuery");
+        return rt::sync([&]() -> HRESULT {
+            if (o) *o = nullptr;
+            HRESULT h = r->CreateQuery(t, o);
+            if (SUCCEEDED(h) && o && *o) *o = rt::wrapOut(this, *o);
+            return h;
+        }, "CreateQuery");
+    *o = nullptr;
     WQuery* w = new WQuery(nullptr);
     bool known = false; for (int i = 0; i < rt::g_vtblCount; ++i) known |= rt::g_vtbls[i] == *(void**)w;
+    if (!known && rt::g_vtblCount == 16) { delete w; return E_OUTOFMEMORY; }
     if (!known) rt::g_vtbls[rt::g_vtblCount++] = *(void**)w;
-    AcquireSRWLockExclusive(&g_qLock); g_qtype[w] = t; g_qstate[w].size = qsize(t); ReleaseSRWLockExclusive(&g_qLock);
-    rt::post([r, t, w] { r->CreateQuery(t, &w->real); });
-    *o = w; return D3D_OK;
-}
-D3DQUERYTYPE WQuery::GetType() { AcquireSRWLockShared(&g_qLock); auto it = g_qtype.find(this); D3DQUERYTYPE t = it != g_qtype.end() ? it->second : D3DQUERYTYPE(0); ReleaseSRWLockShared(&g_qLock);
-    if (!t) t = rt::sync([&]() -> D3DQUERYTYPE { return real->GetType(); }, "Query.GetType"); return t; }
-DWORD WQuery::GetDataSize() { DWORD s = qsize(GetType()); return s ? s : rt::sync([&]() -> DWORD { return real->GetDataSize(); }, "Query.GetDataSize"); }
-HRESULT WQuery::Issue(DWORD f) {
-    QState& st = qstate(this); if (!st.size) st.size = qsize(GetType());
-    InterlockedIncrement(&st.pending); InterlockedExchange(&st.ready, 0);
-    WQuery* w = this; AddRef();
-    auto run = [w, f] {
-        w->real->Issue(f); QState& s = qstate(w); InterlockedDecrement(&s.pending);
-        if (f & D3DISSUE_END) { bool listed = false; for (auto* q : g_qpoll) listed |= q == w; if (!listed) { w->AddRef(); g_qpoll.push_back(w); } }
+    initQueryState(w, t, qsize(t), S_FALSE);
+    w->AddRef(); // Creation itself owns a lease, even if the caller releases immediately.
+    rt::post([r, t, w] {
+        HRESULT result = rt::reportResult("CreateQuery", r->CreateQuery(t, &w->real));
+        if (SUCCEEDED(result) && !w->real) result = D3DERR_INVALIDCALL;
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w); state.creation = result;
+        if (FAILED(result)) state.result = result;
+        ReleaseSRWLockExclusive(&g_qLock);
         w->Release();
-    };
-    if (rt::onMain()) { rt::post(run); return D3D_OK; }
-    return rt::sync([&]() -> HRESULT { run(); return D3D_OK; }, "Query.Issue");
+    });
+    *o = w; return D3D_OK; // Admission only; deferred failures are returned by Issue/GetData.
 }
-HRESULT WQuery::GetData(void* d, DWORD s, DWORD f) {
-    if (rt::onRender()) return real ? real->GetData(d, s, f) : S_FALSE;
-    QState& st = qstate(this);
-    if (st.ready) { if (d && s) memcpy(d, st.data, s < st.size ? s : st.size); return S_OK; }
-    if (f & D3DGETDATA_FLUSH) rt::wake();
-    return S_FALSE;
+D3DQUERYTYPE WQuery::GetType() {
+    AcquireSRWLockShared(&g_qLock);
+    const D3DQUERYTYPE type = g_qstate.at(this).type;
+    ReleaseSRWLockShared(&g_qLock);
+    return type;
+}
+DWORD WQuery::GetDataSize() {
+    AcquireSRWLockShared(&g_qLock);
+    const DWORD size = g_qstate.at(this).size;
+    ReleaseSRWLockShared(&g_qLock);
+    return size;
+}
+HRESULT WQuery::Issue(DWORD flags) {
+    if (flags != D3DISSUE_BEGIN && flags != D3DISSUE_END) return D3DERR_INVALIDCALL;
+    AcquireSRWLockExclusive(&g_qLock);
+    auto& state = g_qstate.at(this);
+    const HRESULT creation = state.creation;
+    if (FAILED(creation)) { ReleaseSRWLockExclusive(&g_qLock); return creation; }
+    const uint64_t generation = ++state.generation;
+    state.result = S_FALSE; state.flush = false;
+    ReleaseSRWLockExclusive(&g_qLock);
+    WQuery* w = this; AddRef();
+    auto run = [w, flags, generation]() -> HRESULT {
+        AcquireSRWLockShared(&g_qLock);
+        const HRESULT creation = g_qstate.at(w).creation;
+        ReleaseSRWLockShared(&g_qLock);
+        HRESULT result = rt::reportResult("Query.Issue", FAILED(creation) ? creation :
+            (w->real ? w->real->Issue(flags) : D3DERR_INVALIDCALL));
+        AcquireSRWLockExclusive(&g_qLock);
+        auto& state = g_qstate.at(w);
+        if (flags == D3DISSUE_BEGIN) {
+            state.building = true; state.buildingResult = result;
+        } else {
+            // A queued END must not hide its BEGIN's failure just because the
+            // caller admitted both commands before native execution started.
+            if (state.building && FAILED(state.buildingResult)) result = state.buildingResult;
+            state.building = false;
+        }
+        const bool current = generation == state.generation;
+        if (current) state.result = FAILED(result) ? result : S_FALSE;
+        const bool buffered = state.size != 0 && state.size <= sizeof(state.data) &&
+            state.size == qsize(state.type);
+        const size_t previousPoll = state.pollIndex;
+        ReleaseSRWLockExclusive(&g_qLock);
+        // BEGIN/END usually introduce a new query. Do not scan every other
+        // pending query twice per bounds proxy; replacement is indexed too.
+        if (previousPoll != size_t(-1)) removeQueryPoll(previousPoll);
+        if (current && SUCCEEDED(result) && (flags & D3DISSUE_END) && buffered) {
+            AcquireSRWLockExclusive(&g_qLock);
+            g_qstate.at(w).pollIndex = g_qpoll.size();
+            ReleaseSRWLockExclusive(&g_qLock);
+            w->AddRef(); g_qpoll.push_back({w, generation});
+        }
+        w->Release();
+        return result;
+    };
+    if (rt::onMain() && !rt::mainOwnsDevice()) { rt::post(run); return D3D_OK; }
+    return rt::sync(run, "Query.Issue");
+}
+HRESULT WQuery::GetData(void* data, DWORD size, DWORD flags) {
+    if ((!data && size) || (flags & ~DWORD(D3DGETDATA_FLUSH))) return D3DERR_INVALIDCALL;
+    AcquireSRWLockExclusive(&g_qLock);
+    auto& state = g_qstate.at(this);
+    if (size && size != state.size) { ReleaseSRWLockExclusive(&g_qLock); return D3DERR_INVALIDCALL; }
+    const HRESULT result = state.result;
+    const bool buffered = state.size != 0 && state.size <= sizeof(state.data) &&
+        state.size == qsize(state.type);
+    if (buffered && result == S_OK && size) memcpy(data, state.data, size);
+    if (flags & D3DGETDATA_FLUSH) state.flush = true;
+    ReleaseSRWLockExclusive(&g_qLock);
+    if (FAILED(result)) return result;
+    if (rt::onRender() || rt::mainOwnsDevice() || !buffered)
+        return rt::sync([&]() -> HRESULT {
+            return real ? real->GetData(data, size, flags) : D3DERR_INVALIDCALL;
+        }, "Query.GetData");
+    if (result != S_OK && (flags & D3DGETDATA_FLUSH)) rt::wake();
+    return result;
 }
 
 // ------------------------------------------------------------------ state blocks
-HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE t, IDirect3DStateBlock9** o) {
+// Only the device owner advances this after a successful native capture.
+// Any capture invalidates older frontend snapshots, including owner-side calls
+// which cannot safely access the main-thread snapshot map.
+static volatile LONG g_sbCaptureGeneration = 0;
+HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
+    if (!out) return D3DERR_INVALIDCALL;
+    *out = nullptr;
+    const bool frontend = rt::onMain();
+    if (frontend) ensureShadows();
+    LONG generation = 0;
     auto r = REAL;
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { HRESULT h = r->CreateStateBlock(t, o); if (*o) *o = rt::wrapOut(this, *o); return h; }, "CreateStateBlock");
-    ensureShadows();
-    WSB* w = new WSB(nullptr);
-    bool known = false; for (int i = 0; i < rt::g_vtblCount; ++i) known |= rt::g_vtbls[i] == *(void**)w;
-    if (!known) rt::g_vtbls[rt::g_vtblCount++] = *(void**)w;
-    if (t == D3DSBT_ALL) { auto* s = new sh::Snapshot(); sh::saveRaw(*s); sh::addRefs(*s); g_sbShadow[w] = s; }
-    rt::post([r, t, w] { r->CreateStateBlock(t, &w->real); });
-    *o = w; return D3D_OK;
+    const HRESULT result = rt::sync([&]() -> HRESULT {
+        IDirect3DStateBlock9* block = nullptr;
+        const HRESULT result = rt::reportResult("CreateStateBlock", r->CreateStateBlock(type, &block));
+        if (FAILED(result)) { if (block) block->Release(); return result; }
+        if (!block) return D3DERR_INVALIDCALL;
+        *out = rt::wrapOut(this, block);
+        generation = InterlockedIncrement(&g_sbCaptureGeneration);
+        return result;
+    }, "CreateStateBlock");
+    if (SUCCEEDED(result) && frontend && type == D3DSBT_ALL) {
+        auto* snapshot = new sh::Snapshot();
+        sh::saveRaw(*snapshot); sh::addRefs(*snapshot);
+        snapshot->blockGeneration = generation;
+        g_sbShadow[*out] = snapshot;
+    }
+    return result;
 }
 HRESULT WSB::Capture() {
-    if (rt::onRender()) return real->Capture();
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return real->Capture(); }, "SB.Capture");
-    ensureShadows(); auto it = g_sbShadow.find(this); if (it != g_sbShadow.end()) sh::save(*it->second);
-    WSB* w = this; AddRef(); rt::post([w] { w->real->Capture(); w->Release(); }); return D3D_OK;
+    const bool frontend = rt::onMain();
+    if (frontend) ensureShadows();
+    LONG generation = 0;
+    const HRESULT result = rt::sync([&]() -> HRESULT {
+        const HRESULT result = rt::reportResult("SB.Capture", real ? real->Capture() : D3DERR_INVALIDCALL);
+        if (SUCCEEDED(result)) generation = InterlockedIncrement(&g_sbCaptureGeneration);
+        return result;
+    }, "SB.Capture");
+    if (SUCCEEDED(result) && frontend) {
+        auto it = g_sbShadow.find(this);
+        if (it != g_sbShadow.end()) {
+            sh::save(*it->second); it->second->blockGeneration = generation;
+        }
+    }
+    return result;
 }
 HRESULT WSB::Apply() {
-    if (rt::onRender()) return real->Apply();
-    if (!rt::onMain()) return rt::sync([&]() -> HRESULT { return real->Apply(); }, "SB.Apply");
-    auto it = g_sbShadow.find(this); if (it != g_sbShadow.end()) sh::load(*it->second); else sh::known = false;
-    WSB* w = this; AddRef(); rt::post([w] { w->real->Apply(); w->Release(); }); return D3D_OK;
+    sh::Snapshot* snapshot = nullptr;
+    if (rt::onMain()) {
+        auto it = g_sbShadow.find(this);
+        if (it != g_sbShadow.end()) snapshot = it->second;
+    }
+    return rt::sync([&]() -> HRESULT {
+        const HRESULT result = rt::reportResult("SB.Apply", real ? real->Apply() : D3DERR_INVALIDCALL);
+        if (SUCCEEDED(result)) {
+            if (sh::known && snapshot && snapshot->blockGeneration ==
+                    InterlockedCompareExchange(&g_sbCaptureGeneration, 0, 0)) {
+                // D3DSBT_ALL restores captured bindings, but does not capture
+                // render targets or the depth-stencil surface. Keep their
+                // current ownership rather than rolling depth back with it.
+                sh::Snapshot restored = *snapshot; restored.ds = sh::ds;
+                sh::load(restored);
+            } else {
+                refreshShadows(reinterpret_cast<IDirect3DDevice9*>(rt::unwrap(rt::device())));
+            }
+        }
+        else
+            sh::known = false;
+        return result;
+    }, "SB.Apply");
 }
 
 // ------------------------------------------------------------------ resources: cached descriptions, locks
@@ -613,11 +864,11 @@ static bool lockDirect(WTexture* w, UINT l) {
     auto c = lookup(g_levels, (void*)w); return l < c.levels.size() && c.levels[l].Pool != D3DPOOL_DEFAULT;
 }
 HRESULT WTexture::LockRect(UINT l, D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { if (lockDirect(this, l)) return real->LockRect(l, lr, x, f); return rt::sync([&]() -> HRESULT { return real->LockRect(l, lr, x, f); }, "Texture.LockRect"); }
-HRESULT WTexture::UnlockRect(UINT l) { if (lockDirect(this, l)) return real->UnlockRect(l); auto r = real; return rt::async([r, l] { r->UnlockRect(l); }, "Texture.UnlockRect"); }
+HRESULT WTexture::UnlockRect(UINT l) { if (lockDirect(this, l)) return real->UnlockRect(l); auto r = real; return rt::async([r, l] { return r->UnlockRect(l); }, "Texture.UnlockRect"); }
 HRESULT WCube::LockRect(D3DCUBEMAP_FACES face, UINT l, D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { return rt::sync([&]() -> HRESULT { return real->LockRect(face, l, lr, x, f); }, "Cube.LockRect"); }
-HRESULT WCube::UnlockRect(D3DCUBEMAP_FACES face, UINT l) { auto r = real; return rt::async([r, face, l] { r->UnlockRect(face, l); }, "Cube.UnlockRect"); }
+HRESULT WCube::UnlockRect(D3DCUBEMAP_FACES face, UINT l) { auto r = real; return rt::async([r, face, l] { return r->UnlockRect(face, l); }, "Cube.UnlockRect"); }
 HRESULT WSurface::LockRect(D3DLOCKED_RECT* lr, const RECT* x, DWORD f) { return rt::sync([&]() -> HRESULT { return real->LockRect(lr, x, f); }, "Surface.LockRect"); }
-HRESULT WSurface::UnlockRect() { auto r = real; return rt::async([r] { r->UnlockRect(); }, "Surface.UnlockRect"); }
+HRESULT WSurface::UnlockRect() { auto r = real; return rt::async([r] { return r->UnlockRect(); }, "Surface.UnlockRect"); }
 static HRESULT wrapContainer(IUnknown* c, REFIID riid, void** o) {
     if (!c) { *o = nullptr; return E_NOINTERFACE; }
     if (riid == __uuidof(IDirect3DTexture9) || riid == __uuidof(IDirect3DBaseTexture9) || riid == __uuidof(IDirect3DCubeTexture9) || riid == __uuidof(IDirect3DVolumeTexture9) || riid == __uuidof(IDirect3DResource9)) {
@@ -630,7 +881,7 @@ static HRESULT wrapContainer(IUnknown* c, REFIID riid, void** o) {
 HRESULT WSurface::GetContainer(REFIID riid, void** o) { return rt::sync([&]() -> HRESULT { void* c = nullptr; HRESULT h = real->GetContainer(riid, &c); if (FAILED(h)) { *o = nullptr; return h; } return wrapContainer((IUnknown*)c, riid, o); }, "Surface.GetContainer"); }
 HRESULT WVolume::GetContainer(REFIID riid, void** o) { return rt::sync([&]() -> HRESULT { void* c = nullptr; HRESULT h = real->GetContainer(riid, &c); if (FAILED(h)) { *o = nullptr; return h; } return wrapContainer((IUnknown*)c, riid, o); }, "Volume.GetContainer"); }
 
-template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len, void** out, DWORD flags, Desc desc) {
+template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len, void** out, DWORD flags, Desc desc, const void* caller, bool vertex) {
     auto* r = w->real;
     const bool fast = rt::onMain() && (flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE)) && !(flags & D3DLOCK_READONLY);
     if (fast) {
@@ -643,6 +894,7 @@ template<class W, class Desc> static HRESULT bufferLock(W* w, UINT off, UINT len
             if (off + len <= desc.Size) { m.pending = true; m.off = off; m.len = len; m.flags = flags; *out = m.data.data() + off; return D3D_OK; }
         }
     }
+    recordBufferLock(caller, desc.Size, desc.Usage, desc.Pool, flags, vertex);
     HRESULT h = rt::sync([&]() -> HRESULT { return r->Lock(off, len, out, flags); }, "Buffer.Lock");
     if (rt::onMain() && SUCCEEDED(h) && w->ext) { Mirror& m = *static_cast<Mirror*>(w->ext); m.real = (uint8_t*)*out; m.off = off; m.len = len ? len : desc.Size; }
     return h;
@@ -653,31 +905,32 @@ template<class W> static HRESULT bufferUnlock(W* w) {
         Mirror* mp = static_cast<Mirror*>(w->ext);
         if (mp && mp->pending) {
             Mirror& m = *mp; m.pending = false; const UINT off = m.off, len = m.len; const DWORD flags = m.flags;
-            rt::postData(m.data.data() + off, len, [r, off, len, flags](const uint8_t* d) { void* p = nullptr; if (SUCCEEDED(r->Lock(off, len, &p, flags)) && p) { memcpy(p, d, len); r->Unlock(); } });
+            rt::postData(m.data.data() + off, len, [r, off, len, flags](const uint8_t* d) { void* p = nullptr; if (SUCCEEDED(rt::reportResult("Buffer.Lock", r->Lock(off, len, &p, flags))) && p) { memcpy(p, d, len); rt::reportResult("Buffer.Unlock", r->Unlock()); } });
             return D3D_OK;
         }
         if (mp && mp->real) { Mirror& m = *mp; if (m.off + m.len <= m.data.size()) memcpy(m.data.data() + m.off, m.real, m.len); m.real = nullptr; }
-        rt::post([r] { r->Unlock(); }); return D3D_OK;
+        rt::post([r] { rt::reportResult("Buffer.Unlock", r->Unlock()); }); return D3D_OK;
     }
-    return rt::sync([&]() -> HRESULT { return r->Unlock(); }, "Buffer.Unlock");
+    return rt::sync([&]() -> HRESULT { return rt::reportResult("Buffer.Unlock", r->Unlock()); }, "Buffer.Unlock");
 }
-HRESULT WVB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_vbDesc, (void*)this)); }
+HRESULT WVB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_vbDesc, (void*)this), _ReturnAddress(), true); }
 HRESULT WVB::Unlock() { return bufferUnlock(this); }
-HRESULT WIB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_ibDesc, (void*)this)); }
+HRESULT WIB::Lock(UINT o, UINT s, void** p, DWORD f) { return bufferLock(this, o, s, p, f, lookup(g_ibDesc, (void*)this), _ReturnAddress(), false); }
 HRESULT WIB::Unlock() { return bufferUnlock(this); }
 
 // Reset needs every reference to default-pool surfaces gone: drop shadow references and run pending retirements first.
-static void beforeReset() { rt::g_inlineRetire = true; sh::clearAll(); rt::runDeferred(); rt::g_inlineRetire = false; }
+static void beforeReset() { rt::g_inlineRetire = true; clearQueryPolls(); sh::clearAll(); rt::runDeferred(); rt::g_inlineRetire = false; }
 // D3D9 rejects Reset/ResetEx (D3DERR_INVALIDCALL) from any thread but the device window's.
 // The render thread drains the queue and parks; the window thread resets the device it then owns.
 template<class F> static HRESULT resetOnWindowThread(IDirect3DDevice9Ex* real, F&& reset, const char* name) {
-    if (!rt::onMain() || rt::g_parked) return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = reset(); refreshShadows(real); return h; }, name);
+    if (!rt::onMain() || rt::g_parked) return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = reset(); refreshShadows(real); if (SUCCEEDED(h)) rt::g_sceneOpen = false; return h; }, name);
     static HANDLE parked = CreateEventA(nullptr, FALSE, FALSE, nullptr), resume = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     rt::post([] { beforeReset(); SetEvent(parked); WaitForSingleObject(resume, INFINITE); });
     rt::g_sinceWake = 0; rt::wake();
     WaitForSingleObject(parked, INFINITE);
     rt::g_parked = true;
     HRESULT h = reset(); refreshShadows(real);
+    if (SUCCEEDED(h)) rt::g_sceneOpen = false;
     rt::g_parked = false;
     SetEvent(resume);
     return h;
@@ -716,27 +969,45 @@ void rt::stallReport(const char* name) {
 static DWORD WINAPI renderThread(void*) {
     rt::g_renderId = GetCurrentThreadId();
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    LONG64 completed = 0;
     for (;;) {
         if (rt::g_foreign) {
             std::vector<rt::SyncTask*> tasks;
             EnterCriticalSection(&rt::g_foreignLock); tasks.swap(rt::g_foreignTasks); InterlockedExchange(&rt::g_foreign, 0); LeaveCriticalSection(&rt::g_foreignLock);
             for (auto* t : tasks) rt::runTask(t);
         }
-        const uint32_t tail = rt::g_tail;
-        if (tail != (uint32_t)rt::g_head) {
-            MemoryBarrier();
+        // Snapshot the ring before checking command readiness. If a producer
+        // admits a command after this check, only records already in this
+        // snapshot may execute before the next command check.
+        const uint32_t tail = rt::g_tail, head = rt::g_head;
+        MemoryBarrier();
+        if (rt::g_commandsPending) {
+            rt::AsyncCommand command = {};
+            bool ready = false;
+            EnterCriticalSection(&rt::g_foreignLock);
+            if (!rt::g_foreignCommands.empty() && completed >= rt::g_foreignCommands.front().fence) {
+                command = rt::g_foreignCommands.front();
+                rt::g_foreignCommands.pop_front();
+                ready = true;
+            }
+            InterlockedExchange(&rt::g_commandsPending, !rt::g_foreignCommands.empty());
+            LeaveCriticalSection(&rt::g_foreignLock);
+            if (ready) { command.run(command.ctx); continue; }
+        }
+        if (tail != head) {
             rt::Rec* r = reinterpret_cast<rt::Rec*>(rt::g_ring + tail);
             if (!r->fn) { InterlockedExchange(&rt::g_tail, 0); continue; }
             r->fn(r + 1);
+            ++completed;
             MemoryBarrier(); InterlockedExchange(&rt::g_tail, tail + r->size);
             continue;
         }
         rt::runDeferred(); pollQueries();
         SetEvent(rt::g_idle);
-        int spins = 0; while (rt::g_tail == rt::g_head && !rt::g_foreign && spins++ < 4000) YieldProcessor();
-        if (rt::g_tail != rt::g_head || rt::g_foreign) continue;
+        int spins = 0; while (rt::g_tail == rt::g_head && !rt::g_foreign && !rt::g_commandsPending && spins++ < 4000) YieldProcessor();
+        if (rt::g_tail != rt::g_head || rt::g_foreign || rt::g_commandsPending) continue;
         InterlockedExchange(&rt::g_sleeping, 1);
-        if (rt::g_tail == rt::g_head && !rt::g_foreign) WaitForSingleObject(rt::g_work, g_qpoll.empty() ? 2 : 1);
+        if (rt::g_tail == rt::g_head && !rt::g_foreign && !rt::g_commandsPending) WaitForSingleObject(rt::g_work, g_qpoll.empty() ? 2 : 1);
         InterlockedExchange(&rt::g_sleeping, 0);
     }
 }
@@ -745,7 +1016,27 @@ static void flushStats() {
     const double f = double(rt::g_frames), ms = 1000.0 / double(rt::g_freq.QuadPart);
     fprintf(rt::g_log, "frames=%lld avg_frame_ms=%.3f syncs/frame=%.2f sync_wait_ms/frame=%.3f pace_wait_ms/frame=%.3f queue_kb/frame=%.1f\n",
         rt::g_frames, rt::g_frameTicks * ms / f, rt::g_syncCount / f, rt::g_syncTicks * ms / f, rt::g_paceTicks * ms / f, rt::g_bytes / 1024.0 / f);
+    fprintf(rt::g_log, "  cpu main_thread_ms/frame=%.3f render_thread_ms/frame=%.3f\n",
+        rt::threadCpuDelta(GetCurrentThread(), rt::g_mainCpu) / f,
+        rt::threadCpuDelta(rt::g_renderThread, rt::g_renderCpu) / f);
     for (auto& e : rt::g_syncBy) fprintf(rt::g_log, "  sync %s per_frame=%.2f\n", e.first, e.second / f);
+    static const char* stages[] = {"tick", "animation", "draw", "main_scene", "terrain"};
+    for (unsigned i = 0; i < 5; ++i) {
+        fprintf(rt::g_log, "  stage %s ms/frame=%.3f calls/frame=%.2f\n",
+            stages[i], rt::g_stageTicks[i] * ms / f, rt::g_stageCalls[i] / f);
+        rt::g_stageTicks[i] = 0; rt::g_stageCalls[i] = 0;
+    }
+    const uintptr_t image = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    for (unsigned i = 0; i < g_bufferLockKinds; ++i) {
+        const auto& row = g_bufferLocks[i];
+        fprintf(rt::g_log, "  buffer_lock kind=%s caller_rva=%08llx size=%u usage=%08lx pool=%lu flags=%08lx per_frame=%.2f\n",
+            row.vertex ? "vertex" : "index",
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(row.caller) - image),
+            row.size, static_cast<unsigned long>(row.usage), static_cast<unsigned long>(row.pool),
+            static_cast<unsigned long>(row.flags), row.count / f);
+    }
+    if (g_bufferLockOverflow) fprintf(rt::g_log, "  buffer_lock unclassified_per_frame=%.2f\n", g_bufferLockOverflow / f);
+    g_bufferLockKinds = g_bufferLockOverflow = 0;
     fflush(rt::g_log);
     rt::g_frames = rt::g_frameTicks = rt::g_syncCount = rt::g_syncTicks = rt::g_paceTicks = rt::g_bytes = 0; rt::g_syncBy.clear();
 }
@@ -771,7 +1062,8 @@ static IDirect3DDevice9Ex* wrapDevice(IDirect3DDevice9* real, bool isEx) {
 
         auto it = g_sbShadow.find(w); if (it != g_sbShadow.end()) { sh::Snapshot* sn = it->second; g_sbShadow.erase(it); sh::releaseRefs(*sn); delete sn; } };
     rt::g_started = true;
-    CreateThread(nullptr, 0, renderThread, nullptr, 0, nullptr);
+    rt::threadCpuDelta(GetCurrentThread(), rt::g_mainCpu);
+    rt::g_renderThread = CreateThread(nullptr, 0, renderThread, nullptr, 0, nullptr);
     return w;
 }
 
@@ -779,8 +1071,9 @@ static IDirect3DDevice9Ex* wrapDevice(IDirect3DDevice9* real, bool isEx) {
 // Post runs fn on the render thread in queue order, then restores every shadowed binding, so the
 // main thread's view of the device stays true. Run executes fn there and waits.
 static void restoreShadowed(IDirect3DDevice9Ex* r, const sh::Snapshot& s, IDirect3DSurface9* const* rts) {
-    for (DWORD i = 0; i < 4 && i < g_caps.NumSimultaneousRTs; ++i) if (rts[i] || i) r->SetRenderTarget(i, rt::unwrap(rts[i]));
-    r->SetDepthStencilSurface(rt::unwrap(s.ds)); r->SetViewport(&s.vp); r->SetScissorRect(&s.scissor);
+    for (DWORD i = 0; i < 4 && i < g_caps.NumSimultaneousRTs; ++i) if (rts[i] || i) rt::reportResult("Post.RestoreRenderTarget", r->SetRenderTarget(i, rt::unwrap(rts[i])));
+    rt::reportResult("Post.RestoreDepthStencilSurface", r->SetDepthStencilSurface(rt::unwrap(s.ds)));
+    rt::reportResult("Post.RestoreViewport", r->SetViewport(&s.vp)); r->SetScissorRect(&s.scissor);
     for (UINT n = 0; n < 16; ++n) { r->SetStreamSource(n, rt::unwrap(s.vb[n]), s.off[n], s.stride[n]); r->SetStreamSourceFreq(n, s.freq[n] ? s.freq[n] : 1); }
     r->SetIndices(rt::unwrap(s.ib));
     if (s.declKnown) r->SetVertexDeclaration(rt::unwrap(s.decl)); else if (s.fvfKnown) r->SetFVF(s.fvf);
@@ -791,13 +1084,24 @@ static void restoreShadowed(IDirect3DDevice9Ex* r, const sh::Snapshot& s, IDirec
 }  // namespace
 
 namespace wot { namespace d3d9rt {
+std::uint64_t begin_frame_stage() {
+    return rt::g_stats && rt::onMain() ? static_cast<std::uint64_t>(rt::now()) : 0;
+}
+void end_frame_stage(unsigned stage, std::uint64_t begin) {
+    if (!begin || stage >= 5 || !rt::onMain()) return;
+    rt::g_stageTicks[stage] += rt::now() - static_cast<long long>(begin);
+    ++rt::g_stageCalls[stage];
+}
 IDirect3DDevice9* wrap_device(IDirect3DDevice9* device, bool ex) {
     if (!device) return device;
     // The thread owns one device for the process; a recreated device stays direct.
     if (rt::g_dev) { rt::g_retired = true; return device; }
     const char* mode = getenv("WOT_D3D9_RENDER_THREAD");
     if (mode && !strcmp(mode, "0")) return device;
-    rt::g_stats = getenv("WOT_D3D9_RENDER_THREAD_STATS") != nullptr;
+    // Counters are already collected; retain their low-frequency summary in
+    // normal reports so a slow view can be separated from sync/queue waits.
+    const char* statistics = getenv("WOT_D3D9_RENDER_THREAD_STATS");
+    rt::g_stats = !statistics || strcmp(statistics, "0") != 0;
     QueryPerformanceFrequency(&rt::g_freq);
     return wrapDevice(device, ex);
 }
@@ -818,5 +1122,49 @@ void post(void (*fn)(void*), void* ctx) {
         restoreShadowed(r, *snap, rts);
         sh::releaseRefs(*snap); delete snap; for (int i = 0; i < 4; ++i) if (rts[i]) rts[i]->Release(); delete[] rts;
     });
+}
+void post_command(void (*fn)(void*), void* ctx) {
+    if (!render_thread_id() || rt::onRender() || rt::mainOwnsDevice()) { fn(ctx); return; }
+    // Any SDK producer can hold a Context lock needed by a queued Display.
+    // Admission must not wait for ring capacity. This one queue also orders
+    // commands from main and foreign producers by their lock acquisition.
+    EnterCriticalSection(&rt::g_foreignLock);
+    // Publish pending before taking the fence. Otherwise a foreign producer
+    // paused after its fence read could let a later ring record pass unnoticed.
+    InterlockedExchange(&rt::g_commandsPending, 1);
+    const LONG64 fence = InterlockedCompareExchange64(&rt::g_published, 0, 0);
+    rt::g_foreignCommands.push_back({fn, ctx, fence});
+    LeaveCriticalSection(&rt::g_foreignLock);
+    rt::wake();
+}
+void drain_commands() {
+    if (!render_thread_id() || rt::onRender() || rt::mainOwnsDevice()) return;
+    struct Barrier { volatile LONG done; HANDLE event; } completed{0, rt::threadEvent()};
+    // The shared command queue acknowledges every prior command and the real
+    // records published before this sentinel, independently of ring capacity.
+    post_command([](void* context) {
+        auto* barrier = static_cast<Barrier*>(context);
+        const HANDLE event = barrier->event;
+        InterlockedExchange(&barrier->done, 1);
+        SetEvent(event);
+    }, &completed);
+    for (unsigned waits = 0; !completed.done; ++waits) {
+        WaitForSingleObject(completed.event, 5);
+        if (waits == 2000) rt::stallReport("d3d9rt::drain_commands");
+    }
+}
+HRESULT begin_command_scene(IDirect3DDevice9* device, bool& opened) {
+    opened = false;
+    if (!device || rt::g_sceneOpen) return D3D_OK;
+    const HRESULT result = device->BeginScene();
+    opened = SUCCEEDED(result);
+    if (opened) rt::g_sceneOpen = true;
+    return result;
+}
+HRESULT end_command_scene(IDirect3DDevice9* device, bool opened) {
+    if (!device || !opened) return D3D_OK;
+    const HRESULT result = device->EndScene();
+    if (SUCCEEDED(result)) rt::g_sceneOpen = false;
+    return result;
 }
 }}

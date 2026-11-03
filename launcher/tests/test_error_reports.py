@@ -210,6 +210,24 @@ class ErrorReportTest(unittest.TestCase):
             error_reports._trim_old_log(path)
         self.assertEqual(0, os.path.getsize(path))
 
+    def test_render_failures_are_collected_only_from_the_current_process_session(self):
+        roles = (error_reports.ROLE_VISIBLE_CLIENT, error_reports.ROLE_HIDDEN_WORKER)
+        paths = [error_reports._render_log_path(self.game, role) for role in roles]
+        for path in paths:
+            self._write(path, b"old render failure\n")
+        session = error_reports.begin_session(self.game, needs_worker=True,
+                                             session_id=self.SESSION_1)
+        for index, path in enumerate(paths):
+            self._write(path, ("current render %s\n" % index).encode())
+        error_reports.finalize_session(session)
+        payloads = self._archive(error_reports.create_report())
+        self.assertEqual(b"current render 0\n", payloads["visible-client.d3d9.log"])
+        self.assertEqual(b"current render 1\n", payloads["hidden-worker.d3d9.log"])
+        error_reports.begin_session(self.game, needs_worker=True,
+                                    session_id=self.SESSION_2)
+        with self.assertRaises(core.LauncherError):
+            error_reports.create_report()
+
     def test_single_player_report_contains_only_this_session_log_slices(self):
         visible = self._game_log(error_reports.ROLE_VISIBLE_CLIENT)
         worker = self._game_log(error_reports.ROLE_HIDDEN_WORKER)
