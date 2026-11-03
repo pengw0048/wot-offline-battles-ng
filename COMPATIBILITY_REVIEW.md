@@ -4547,3 +4547,17 @@ samples read actual binding/device state after BeginPass, once for each colour
 kind and once when that kind first draws an arena-edge tile. This is diagnostic
 readback, not a red-line repair or proof of final composition. It must not
 change TerrainSettings object layout or overwrite the original rendering path.
+
+
+The original main scene additionally has an active GPU occlusion draw-set
+consumer, independently of the dormant small-object branch discussed above.
+WorldApp 0x636c05 calls query owner 0xabad80 (the original enabling global has
+initial value 1); 0x636dd1 reaches 0xabad00 and the visibility consumer. Exact
+instruction slices update query history via 0xac20a0 and route the same eligible
+candidate to skip (0xac1e64) or draw-set append (0xac1e3f) according to its
+visibility result. The current NG compiled-space main scene performs frustum
+culling without that original GPU-query result filter. This is an identified
+renderer parity gap, not evidence of a particular FPS gain. Query admission,
+proxy geometry, eligibility, temporal history and camera/teardown rules must
+be established before implementing it; no speculative object rejection is
+included in the diagnostic candidate.

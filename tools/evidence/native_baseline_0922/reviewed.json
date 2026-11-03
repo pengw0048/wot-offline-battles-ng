@@ -1283,6 +1283,13 @@
       "source": "bigworld/patch_stock_space_models.py; bigworld/patch_stock_effect_owners.py; bigworld/stock_effect_adapter.cpp",
       "evidence_and_boundary": "Actual SDK bodies preserve intersection sets, collision callback copies, instance ordering/offsets and stock/public failure isolation. Pure-stock batches require no public matrix upload; mixed batches upload their used prefix. Used automatic texture values still refresh each draw; only their selection metadata is retained. Shared initialisation and capture indexing retain producer/cleanup contracts. No GTX1070 frame-rate gain is established by host tests; the dormant original small-object cull branch is not treated as an active parity gap.",
       "status": "source_and_host_fixed_windows_combined_acceptance_pending"
+    },
+    {
+      "area": "main-scene-gpu-occlusion",
+      "finding": "Original main-scene GPU occlusion history filters eligible objects before draw-set admission; the NG compiled-space main scene currently uses frustum culling without this query-result filter.",
+      "source": "Original #1513 WorldApp 0x636c05/0x636dd1, query owner 0xabad80, history 0xac20a0 and consumer 0xac1d95; public client/world_app.cpp compiled-space path.",
+      "evidence_and_boundary": "Exact instruction producer/consumer slices route an identical eligible candidate to skip 0xac1e64 or append 0xac1e3f according to GPU-query visibility history. This is distinct from the dormant small-object branch. No desktop FPS contribution or safe replacement query lifecycle has been established.",
+      "status": "confirmed_original_consumer_missing_ng_implementation_pending"
     }
   ],
   "renderer_unmatched_semantics": {
