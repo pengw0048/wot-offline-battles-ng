@@ -17,6 +17,8 @@ int stockActiveToneMapping(const HDRSettings& settings);
 Moo::BaseTexturePtr loadStockColorCorrection(const BW::string& resource);
 // Finite black input for the disabled bloom consumer; no uninitialised RT.
 Moo::BaseTexturePtr loadStockDisabledBloom();
+// a72669..a726b3: zero both newly created exposure history targets.
+bool clearStockHdrLuminanceHistory(Moo::RenderTarget* target);
 // a729d0: the original ToneMapping pass into the current target.
 bool drawStockToneMapping(const Moo::EffectMaterialPtr& material, const HDRSettings& settings,
     Moo::RenderTarget* averageLuminance, Moo::RenderTarget* hdr,
