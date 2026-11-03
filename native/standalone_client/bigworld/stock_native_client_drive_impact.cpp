@@ -33,21 +33,22 @@ std::vector<step::ImpactHit>PlayerImpact::interior_segment(const Point&a,const P
         segments[i]={point(frames.component_inverse[i].applyPoint(root.applyPoint(start))),point(frames.component_inverse[i].applyPoint(root.applyPoint(end))),true};}
     const auto delta=end-start;return step::internal_hits(interior_,segments,delta.length());
 }
-int PlayerImpact::observe(double speed,const std::vector<Point>&witnesses,const Point&normal){
+int PlayerImpact::observe(double speed,const std::vector<Point>&witnesses,const Point&normal,std::optional<stock_native_vehicle_stack::Identity> carrier){
     const int damage=int(config_.maximum_health*std::max(0.,std::abs(speed)-config_.safe_speed)*.03);if(damage<=0)return 0;
     speed=std::min(config_.maximum_speed,std::abs(speed));Value observation=number(speed);
     if(!witnesses.empty()){const auto contacts=step::collect_impact_contacts(witnesses,normal,speed,*this);if(!contacts.empty()){
         observation.kind=Value::Kind::Object;observation.object["impact_speed"]=number(speed);auto&rows=observation.object["module_contacts"];rows.kind=Value::Kind::Array;
         for(const auto&contact:contacts){Value row;row.kind=Value::Kind::Object;auto&name=row.object["name"];name.kind=Value::Kind::Text;name.text=contact.name;row.object["weight"]=number(contact.weight);rows.array.push_back(std::move(row));}}}
+    if(carrier){if(observation.kind!=Value::Kind::Object){observation.kind=Value::Kind::Object;observation.object["impact_speed"]=number(speed);}auto&key=observation.object["vehicle_contact"];key.kind=Value::Kind::Array;Value kind;kind.kind=Value::Kind::Text;kind.text=carrier->human?"player":"bot";key.array.push_back(std::move(kind));Value id;id.kind=Value::Kind::Integer;id.integer=carrier->id;key.array.push_back(std::move(id));}
     publication_.queueLanding(std::move(observation),config_.maximum_pending);return damage;
 }
-int PlayerImpact::landing(PlayerState&s,double speed,bool normal_impact,const std::vector<Point>&witnesses,const Point&normal,std::optional<Point>position){
+int PlayerImpact::landing(PlayerState&s,double speed,bool normal_impact,const std::vector<Point>&witnesses,const Point&normal,std::optional<Point>position,std::optional<stock_native_vehicle_stack::Identity> carrier){
     const double lateral=std::sqrt(s.air_lateral_x*s.air_lateral_x+s.air_lateral_z*s.air_lateral_z);if(lateral>.01)s.slide_speed=std::max(s.slide_speed,lateral);s.air_lateral_x=s.air_lateral_z=0.;
     if(!normal_impact)speed=std::sqrt(speed*speed+lateral*lateral);const auto saved=pose_;if(position){if(pose_.hydraulic_body)pose_.hydraulic_body=geo::rebaseHydraulicBody(*pose_.hydraulic_body,
         {pose_.position[0],pose_.position[1],pose_.position[2],pose_.yaw,pose_.pitch,pose_.roll},
         {(*position)[0],(*position)[1],(*position)[2],s.yaw,s.pitch,s.roll});
         pose_.position=*position;if(pose_.hydraulic_body){pose_.yaw=s.yaw;pose_.pitch=s.pitch;pose_.roll=s.roll;}}
-    try{const int damage=observe(speed,witnesses,normal);pose_=saved;return damage;}catch(...){pose_=saved;throw;}
+    try{const int damage=observe(speed,witnesses,normal,carrier);pose_=saved;return damage;}catch(...){pose_=saved;throw;}
 }
 double PlayerImpact::world(const PlayerState&s,const ContactTrace&trace,double speed,double yaw,double now){
     if(!s.airborne||!trace.point)return 0.;double impact=0.;if(trace.normal){const auto&normal=*trace.normal;const double length=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);

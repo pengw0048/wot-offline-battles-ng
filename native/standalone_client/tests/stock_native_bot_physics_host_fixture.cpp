@@ -32,7 +32,7 @@ struct Queries:nav::World,nav::CandidateWorld,nav::MotionQueryWorld {
 struct Impacts:ImpactTransactions {double speed=-1.;bool observed=false;int calls=0;
     int fall_damage(motion::State&,double value,const std::vector<Point>&,const Point&,bool ground)override {speed=value;observed=ground;++calls;return 1;}
 };
-int main(int argc,char**) {
+int main(int argc,char**argv) {
     std::cout<<std::setprecision(17);Queries queries;offline_navigation::MapInput map;map.width=map.height=41;map.cell_size=5.;map.origin_x=map.origin_z=-100.;map.has_bounds=true;map.bounds={{-100.,-100.,100.,100.}};map.heights.resize(1681,0.);map.hazards.resize(1681,0);map.links.resize(1681,255);
     nav::Grid grid(map,queries,.5,.5);nav::Navigator navigator(grid);nav::MotionPlan plan(queries);stock_native_bot_planner::Planner planner;
     motion::State state;state.id=7;motion::Descriptor descriptor;descriptor.half_length=3.5;descriptor.half_width=1.8;descriptor.collision_shape={{1.8,3.5,0.,2.}};
@@ -43,6 +43,7 @@ int main(int argc,char**) {
     Scene scene;world::Registry registry;world::Pipeline pipeline(registry,scene,0);step::SuspensionDescriptor suspension;int budget=0;
     PhysicsWorld physics(pipeline,host,state,descriptor,vertical[7],suspension,budget,{},0.);host.attach(7,physics);
     auto& body=geometry[7].turret;body.chassis.bounds={{{-1.,0.,-2.}},{{1.,1.,2.}}};body.hull=body.chassis;
+    if(argc>1&&std::string(argv[1])=="boundary") {double from,to;while(std::cin>>state.position[0]>>state.position[2]>>from>>to>>descriptor.half_length>>descriptor.half_width)std::cout<<host.pose_progress(state,state.position,from,state.position,to)<<'\n';return 0;}
     if(argc>1) {
         state.position={{99.,0.,0.}};state.yaw=0.;state.speed=17.;state.push_x=6.;state.alive=false;state.pitch=.8;
         SuspensionSnapshot snapshot;snapshot.state.pitch=.3;snapshot.state.alive=true;snapshot.state.speed=40.;snapshot.state.basic_continuous_support=true;snapshot.pose_sample={{1.,2.,3.}};

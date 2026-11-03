@@ -27,19 +27,19 @@ def listed(value):
     return value
 assert state['launches'][0]==listed(launch),(state['launches'][0],launch)
 assert state['rows']==[[1,2,3]] and state['source_batch_horizon_us']==100
-assert state['push_contacts']==dict(contacts=[dict(seq=5,attacker_kind='human',attacker_id=2,target_kind='bot',target_id=1)],hazards=[1],falls=[[1,20]],critical_totals=[[1,'collision',4,2]],environment_fires=[2])
+assert state['push_contacts']==dict(contacts=[dict(seq=5,attacker_kind='human',attacker_id=2,target_kind='bot',target_id=1)],hazards=[1],falls=[[1,20]],critical_totals=[[1,'collision',4,2]],environment_fires=[2],stacks=[])
 assert result[1]==dict(type='bot_ram',bot_id=1,target_kind='bot',target_id=2,ram_seq=8,damage_to_bot=4,damage_to_target=6,track_contacts_bot=['leftTrackHealth'],track_contacts_target=[],track_impact_speed=7.,contact_positions=[1.,2.,3.,4.])
 assert result[2]['ram_contact_player_id']==2 and result[2]['ram_contact_seq']==12
 assert 'contact_positions' not in result[2]
 obs=result[3]
 assert obs['player_vision_ranges']==[dict(id=2,radius=350.)]
 assert obs['radio_links']==[dict(kind='human',id=2,allies=[dict(kind='bot',id=1)])]
-assert obs['contacts'][0]==dict(observing_team=1,target_team=2,target_kind='human',target_id=2,visible=True,fresh=True,time_left=.5,radio_recipients=[dict(kind='bot',id=1,time_left=.4)],visible_by_player_ids=[],visible_by_bot_ids=[1],shootable_by_bot_ids=[1],threatened_bot_ids=[],x=10.,y=20.,z=30.,health=50,max_health=100,class_tag='heavyTank',armor=80.)
+assert obs['contacts'][0]==dict(observing_team=1,target_team=2,target_kind='human',target_id=2,visible=True,fresh=True,time_left=.5,radio_recipients=[dict(kind='bot',id=1,time_left=.4,sources=[dict(kind='human',id=3,time_left=.3)])],visible_by_player_ids=[],visible_by_bot_ids=[1],shootable_by_bot_ids=[1],threatened_bot_ids=[],x=10.,y=20.,z=30.,health=50,max_health=100,class_tag='heavyTank',armor=80.)
 print('native publication boundary passed')
 '''
 class PublicationTests(unittest.TestCase):
     def test_fixed_launch_and_complete_event_shapes(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
+        source=os.environ.get('WOT_FORK_SOURCE')
         if not source:self.skipTest('fixed gameplay source is required')
         py27=subprocess.check_output(['pyenv','which','python2.7'],text=True,env=dict(os.environ,PYENV_VERSION='2.7.18')).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()

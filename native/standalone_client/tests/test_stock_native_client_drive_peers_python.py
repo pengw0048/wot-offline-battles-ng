@@ -91,8 +91,8 @@ print(json.dumps(dict(rating_cases=ratings,descriptor_parameter_cases=240,motion
 '''
 class NativePeerInstallerTests(unittest.TestCase):
  def test_original_replica_parameters_and_cold_owner(self):
-  source=os.environ.get('WOT_FORK_0101_SOURCE')
-  if not source:self.skipTest('Fixed v0.10.1 source input is required')
+  source=os.environ.get('WOT_FORK_SOURCE')
+  if not source:self.skipTest('Pinned v1.1.1 source input is required')
   py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip();prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
   with tempfile.TemporaryDirectory(prefix='native-peer-installer-') as directory:
    folder=Path(directory);native=Path(source)/'native';law=(native/'offline_release_drive_python.inc').read_text().split('PyObject *WOT_CDECL release_drive(')[0];(folder/'offline_release_drive_law.hpp').write_text('#pragma once\n#include <cmath>\n#include <algorithm>\n'+law)

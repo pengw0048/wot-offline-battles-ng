@@ -13,11 +13,12 @@ Point plain(const BW::Vector3& p){return {p.x,p.y,p.z};}
 BW::Vector3 native(const Point& p){return BW::Vector3(float(p[0]),float(p[1]),float(p[2]));}
 }
 class NativeServices::WeaponAdapter final:public step::WeaponRuntimeWorld {
- NativeServices& owner_;
+ NativeServices& owner_;Key source_;std::optional<step::WeaponTarget> target_;
  NativeWeaponWorld& world(){if(!owner_.weapon_world_)throw std::logic_error("Native weapon services are unbound");return *owner_.weapon_world_;}
 public:
  explicit WeaponAdapter(NativeServices& owner):owner_(owner){}
  void bind(Key source,const std::optional<step::WeaponTarget>& target,const stock_native_bot_armor::Shell* shell)override {
+  source_=source;target_=target;
   const ID target_id=target?plannerId({target->target.kind=="human"?offline_simulation::ActorKind::Human:offline_simulation::ActorKind::Bot,target->target.id}):0;
   world().bind(plannerId(source),target_id,target?geomPose(target->pose):geometry::Pose{},shell);
  }
@@ -50,6 +51,7 @@ public:
  bool static_segment_blocked(const Point&a,const Point&b)override{return world().static_segment_blocked(a,b);}
  bool wreck_segment_blocked(const Point&a,const Point&b)override{return world().wreck_segment_blocked(a,b);}
  std::optional<double> nominal_damage(const Point&a,const Point&b)override{return world().nominal_damage(a,b);}
+ std::optional<bool> aim_reachable(const Point&a,const Point&b)override{return owner_.runtime_&&target_?owner_.runtime_->aimPointReachable(source_.id,*target_,a,b):std::nullopt;}
  step::ArcQuery segment(const Point&a,const Point&b,Point&hit)override{return world().segment(a,b,hit);}
 };
 NativeServices::NativeServices(stock_native_world::Registry& registry,stock_native_world::Scene& scene,geometry::Vehicles& vehicles):
@@ -115,6 +117,19 @@ void NativeServices::actorChanged(const Actor& actor,const step::AimPose& pose){
  auto& e=it->second;e.team=actor.team;e.target.target.velocity={std::sin(pose.yaw)*actor.motion.speed,0.,std::cos(pose.yaw)*actor.motion.speed};
  e.target.target.kind="bot";e.target.target.id=actor.motion.id;e.target.descriptor_revision=actor.weapon.descriptor_revision;
  updatePose(e,pose,actor.motion.alive);
+}
+std::vector<stack::Surface> NativeServices::roofs(const stack::Body& upper,const stack::Body& lower,
+    const step::AimPose& pose,const Point& start,const Point& end) {
+ if(!stack::roof_candidate(upper,lower,start[0],start[2]))return {};
+ const Key key{lower.key.human?offline_simulation::ActorKind::Human:offline_simulation::ActorKind::Bot,lower.key.id};
+ const auto* entity=find(key);const auto*vehicle=vehicles_.find(key);
+ if(!entity||!entity->record_ready||!entity->available||!vehicle||!vehicle->ready)return {};
+ std::vector<stack::Surface> result;double best=end[1];
+ try {for(const auto& hit:geometry::intersections(*vehicle,geomPose(pose),start,end)) {
+  if(hit.component==3)continue;stack::Surface surface{lower.key,hit.world_point,hit.world_normal};
+  if(stack::admit_roof(upper,surface,start,end,best)){best=surface.point[1];result.push_back(surface);}
+ }}catch(const std::exception&){return {};}
+ return result;
 }
 void NativeServices::modeChanged(ID id,const Mode&){
  if(!runtime_)throw std::logic_error("Native services are unbound");auto it=entities_.find(id);auto actor=runtime_->actors().find(id);

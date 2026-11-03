@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 
 ORACLE = r'''
 import json,sys,textwrap
@@ -37,8 +37,8 @@ r._fixed_control=True;r._sample_time_us=0;r._next_publication=0.;r._burst_states
 r._equipment_wire_exposed_in_update=set();r.adapter=object();r.finished=False
 r.navigator=Navigator();r._native_simulation=None;r._combat_diagnostics=None
 r.is_authority=lambda:True
-for name in ('_begin_world_receipt_frame','_finish_world_receipt_frame','_begin_visibility_frame','_finish_visibility_frame','_apply_traffic_wait_lease','_scan_moving_destructible_bodies'):
-    setattr(r,name,lambda:None)
+for name in ('_begin_world_receipt_frame','_finish_world_receipt_frame','_begin_visibility_frame','_finish_visibility_frame','_apply_traffic_wait_lease','_scan_moving_destructible_bodies','_drain_navigation_surface_trace'):
+    setattr(r,name,lambda *args,**kwargs:None)
 def step(dt,now,players,neighbours,refresh,publish,evaluation):
     start=r._sample_time_us;r._sample_time_us+=max(1,int(round(dt*1000000.)))
     if r._next_publication<=0.:r._next_publication=now
@@ -58,7 +58,7 @@ for line in sys.stdin:
     print(json.dumps([r.rows,r._accumulator,r._control_refresh_accumulator,r._sample_time_us,r._last_update_control_steps,r._last_update_max_control_step,r._next_publication]))
 '''
 
-@unittest.skipUnless(SOURCE, 'set WOT_FORK_0101_SOURCE to the fixed gameplay checkout')
+@unittest.skipUnless(SOURCE, 'set WOT_FORK_SOURCE to the fixed gameplay checkout')
 class ClockDifferential(unittest.TestCase):
     def test_variable_callbacks_and_burst_deadlines(self):
         rng = random.Random(1513)

@@ -9,9 +9,9 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE=os.environ.get('WOT_FORK_SOURCE')
 
-@unittest.skipUnless(SOURCE,'set WOT_FORK_0101_SOURCE to the pinned gameplay checkout')
+@unittest.skipUnless(SOURCE,'set WOT_FORK_SOURCE to the pinned gameplay checkout')
 class ContactDifferential(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -22,7 +22,7 @@ class ContactDifferential(unittest.TestCase):
         cls.binary=path/'contacts'
         subprocess.run(['c++','-std=c++17','-O2','-ffp-contract=off','-Wall','-Wextra','-Werror',
             '-I',str(native),'-I',str(path),'-I',str(ROOT/'bigworld'),
-            str(ROOT/'bigworld/stock_native_bot_contacts.cpp'),str(ROOT/'bigworld/stock_native_bot_motion.cpp'),
+            str(ROOT/'bigworld/stock_native_bot_contacts.cpp'),str(ROOT/'bigworld/stock_native_client_drive_roster.cpp'),str(ROOT/'bigworld/stock_native_bot_motion.cpp'),
             str(native/'offline_contact_roster.cpp'),str(native/'offline_math_batch_geometry.cpp'),
             str(ROOT/'tests/stock_native_bot_contacts_host.cpp'),'-o',str(cls.binary)],check=True)
         cls.py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()

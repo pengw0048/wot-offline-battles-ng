@@ -120,9 +120,9 @@ print(json.dumps({'ordered_versions':len(held),'invalid_deltas':len(bad),'canoni
 
 class NativeClientTransportTests(unittest.TestCase):
     def test_native_decoder_and_actor_admission_match_fixed_source(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
         with tempfile.TemporaryDirectory(prefix='native-client-transport-') as directory:

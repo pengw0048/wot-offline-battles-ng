@@ -125,7 +125,7 @@ print('equipment original AST %d clocks/edges passed; cold parses=%d; hot traps/
 
 class NativeClientWeaponEquipmentTest(unittest.TestCase):
     def test_original_snapshot_clocks_and_owner_boundaries(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Pinned gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True, env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()

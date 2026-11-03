@@ -25,6 +25,8 @@ public:
     virtual Vec slide(const motion::State&,const motion::Descriptor&,const Vec&,double&)=0;
     virtual Vec passive_move(std::int64_t,step::VerticalState&,double,double,double)=0;
     virtual void vertical_outcome(motion::State&,const step::VerticalOutcome&)=0;
+    virtual std::vector<stock_native_vehicle_stack::Surface> roofs(const motion::State&,const Point&,const Point&){return {};}
+    virtual bool refresh_support_pose(motion::State&){return false;}
 };
 struct Config {
     std::optional<double> travel_forward,travel_reverse;
@@ -42,12 +44,16 @@ class PhysicsWorld final:public motion::World,public step::VerticalWorld {
     Config config_;
     double now_=0.;
     stock_native_world::Resolution last_resolution_;
+    std::vector<stock_native_vehicle_stack::Surface> roof_hits_;
+    stock_native_vehicle_stack::Descent descent_;
+    std::optional<double> support_roof(double,double,double,double,std::optional<double>,std::optional<double> flat={});
     double driveCap(const motion::Descriptor&,double)const;
 public:
     PhysicsWorld(stock_native_world::Pipeline&,Host&,motion::State&,
         const motion::Descriptor&,step::VerticalMemory&,
         const step::SuspensionDescriptor&,int& support_repair_budget,Config,double now);
     const stock_native_world::Resolution& last_resolution()const{return last_resolution_;}
+    const step::SuspensionDescriptor& suspension_descriptor()const{return suspension_;}
     void configure(Config config){config_=std::move(config);}
     stock_motion_rotation::Trace consume_trace(){auto value=last_resolution_.trace;last_resolution_.trace.present=false;return value;}
     double rotation_fraction(const motion::State&,const motion::Descriptor&,const Point&,
@@ -65,6 +71,7 @@ public:
     void motion_finished(const motion::State&,motion::MotionStatus,double,double)override;
     Vec slide(const motion::State&,const motion::Descriptor&,const Vec&,double&)override;
     bool vertical(motion::State&,const motion::Descriptor&,const Point&,double,double)override;
+    bool release_support(motion::State&);
     std::optional<double> initial_ground(double,double,double)override;
     std::optional<double> ground(double,double,double,double,std::optional<double>)override;
     std::optional<double> basic_ground(double,double,double,std::optional<double>)override;

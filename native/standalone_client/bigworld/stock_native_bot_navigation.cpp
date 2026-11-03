@@ -1,4 +1,5 @@
 #include "stock_native_bot_navigation.hpp"
+#include "offline_navigation_map_law.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -19,13 +20,15 @@ std::vector<Cell> line(Cell a,Cell b)
     while(a!=b){const int twice=error*2;if(twice>-dz){error-=dz;a[0]+=sx;}
         if(twice<dx){error+=dx;a[1]+=sz;}result.push_back(a);}return result;
 }
-bool covers(double cx,double cz,double extent,const Hull&h,double length,double width)
+bool crossesHull(const Point&a,const Point&b,const Hull&h)
 {
-    const double dx=h.x-cx,dz=h.z-cz,s=std::sin(h.yaw),c=std::cos(h.yaw);
-    if(std::abs(dx)>extent+std::abs(s)*length+std::abs(c)*width)return false;
-    if(std::abs(dz)>extent+std::abs(c)*length+std::abs(s)*width)return false;
-    const double radius=extent*(std::abs(s)+std::abs(c));
-    return std::abs(dx*s+dz*c)<=length+radius&&std::abs(dx*c-dz*s)<=width+radius;
+    double low=0.,high=1.;const double sine=std::sin(h.yaw),cosine=std::cos(h.yaw);
+    const double dx=a[0]-h.x,dz=a[2]-h.z,sx=b[0]-a[0],sz=b[2]-a[2];
+    for(const auto&axis:std::array<std::array<double,3>,2>{{{dx*sine+dz*cosine,sx*sine+sz*cosine,h.half_length},{dx*cosine-dz*sine,sx*cosine-sz*sine,h.half_width}}}){
+        if(std::abs(axis[1])<1.e-12){if(std::abs(axis[0])>axis[2])return false;continue;}
+        const double first=(-axis[2]-axis[0])/axis[1],last=(axis[2]-axis[0])/axis[1];
+        low=std::max(low,std::min(first,last));high=std::min(high,std::max(first,last));if(low>high)return false;}
+    return true;
 }
 double rounded(double value,int places){const double factor=std::pow(10.,places);return std::round(value*factor)/factor;}
 }
@@ -39,27 +42,18 @@ Grid::Grid(offline_navigation::MapInput value,World& world,double up,double down
         throw std::invalid_argument("invalid navigation scale");
     map.cell_size=std::max(1.,map.cell_size);map.max_grade=std::max(.05,map.max_grade);
     if(map.hazards.empty())map.hazards.resize(map.heights.size());
+    geometry_=std::make_unique<offline_navigation_map_law::Map>(map);
 }
+Grid::~Grid()=default;
 Cell Grid::cellFor(const Point&p)const
 {return {int(std::floor((p[0]-map.origin_x)/map.cell_size+.5)),int(std::floor((p[2]-map.origin_z)/map.cell_size+.5))};}
-Point Grid::pointFor(const Cell&c,double h)const{return {map.origin_x+c[0]*map.cell_size,h,map.origin_z+c[1]*map.cell_size};}
+Point Grid::pointFor(const Cell&c,double h)const{auto p=geometry_->point_for(c);p[1]=h;return p;}
 std::optional<std::size_t> Grid::index(const Cell&c,bool require_height)const
-{
-    if(c[0]<0||c[1]<0||c[0]>=map.width||c[1]>=map.height)return {};
-    const auto n=std::size_t(c[1])*map.width+c[0];
-    if(require_height&&std::isnan(map.heights[n]))return {};return n;
-}
-std::optional<double> Grid::height(const Cell&c)const{auto n=index(c);return n?std::optional<double>(map.heights[*n]):std::nullopt;}
+{if(!geometry_->flat(c)||(require_height&&!geometry_->valid(c)))return {};return std::size_t(geometry_->index(c));}
+std::optional<double> Grid::height(const Cell&c)const
+{auto n=index(c);return n?std::optional<double>(geometry_->heights[*n]):std::nullopt;}
 std::optional<Cell> Grid::nearest(const Cell&c,int maximum)const
-{
-    if(index(c))return c;std::optional<Cell> best;int best_distance=0;
-    for(int radius=1;radius<=std::max(0,maximum);++radius){
-        for(int z=c[1]-radius;z<=c[1]+radius;++z)for(int x=c[0]-radius;x<=c[0]+radius;++x){
-            if(std::max(std::abs(x-c[0]),std::abs(z-c[1]))!=radius||!index({x,z}))continue;
-            const int d=(x-c[0])*(x-c[0])+(z-c[1])*(z-c[1]);
-            if(!best||d<best_distance){best=Cell{x,z};best_distance=d;}}
-        if(best)return best;}return {};
-}
+{Cell found;return geometry_->nearest(c,std::max(0,maximum),found)?std::optional<Cell>(found):std::nullopt;}
 bool Grid::inside(double x,double z)const
 {return !map.has_bounds||(map.bounds[0]<=x&&x<=map.bounds[2]&&map.bounds[1]<=z&&z<=map.bounds[3]);}
 std::optional<std::pair<double,double>> Grid::localCorridor(const Point&p)
@@ -78,65 +72,68 @@ bool Grid::hullPoseClear(const Point&p,double yaw,double half_length,double half
     half_length=std::max(.5,half_length);half_width=std::max(.3,half_width);
     const double s=std::sin(yaw),c=std::cos(yaw);
     for(double along:{-half_length,0.,half_length})for(double across:{-half_width,0.,half_width})
-        if(!index(cellFor({p[0]+s*along+c*across,0.,p[2]+c*along-s*across})))return false;
+        {const Point sample{p[0]+s*along+c*across,0.,p[2]+c*along-s*across};Cell local;
+            if(!index(cellFor(sample))&&(!geometry_->local_cell(sample,local)||!index(local)))return false;}
     return true;
 }
 bool Grid::hazardNear(const Point&p,int radius)const
 {
     const auto c=cellFor(p);radius=std::max(0,radius);
     for(int z=c[1]-radius;z<=c[1]+radius;++z)for(int x=c[0]-radius;x<=c[0]+radius;++x){
-        auto i=index({x,z},false);if(i&&(map.hazards[*i]&3))return true;}
+        auto i=index({x,z},false);if(i&&(geometry_->hazards[*i]&3))return true;}
     return false;
 }
 std::vector<Cell> Grid::cells(const Point&a,const Point&b,bool require_height)const
-{
-    std::optional<Cell> start=require_height?nearest(cellFor(a),2):std::optional<Cell>(cellFor(a));
-    const auto end=cellFor(b);if(!start||!index(*start,require_height)||!index(end,require_height))return {};
-    return line(*start,end);
-}
+{return geometry_->segment_cells(a,b,require_height);}
 std::vector<Edge> Grid::edges(const Point&a,const Point&b)const
 {
     const auto list=line(cellFor(a),cellFor(b));std::vector<Edge> result;
-    for(std::size_t i=1;i<list.size();++i)result.push_back(edge(list[i-1],list[i]));return result;
+    for(std::size_t i=1;i<list.size();++i)result.push_back(edge(list[i-1],list[i]));
+    if(geometry_->touches(a,b)){const auto local=cells(a,b,false);for(std::size_t i=1;i<local.size();++i){const auto key=edge(local[i-1],local[i]);
+        if(std::find(result.begin(),result.end(),key)==result.end())result.push_back(key);}}
+    return result;
 }
 std::optional<double> Grid::edgeHeight(const Cell&a,const Cell&b)const
-{
-    auto i=index(a),j=index(b);if(!i||!j)return {};
-    for(unsigned n=0;n<neighbours.size();++n)if(b[0]-a[0]==neighbours[n][0]&&b[1]-a[1]==neighbours[n][1])
-        return (map.links[*i]&(1u<<n))?std::optional<double>(map.heights[*j]):std::nullopt;
-    return {};
-}
+{return geometry_->linked(a,b)?height(b):std::nullopt;}
 Corridor Grid::bakedCorridor(const Point&a,const Point&b)
 {
-    const auto key=std::make_pair(cellFor(a),cellFor(b));auto found=corridor_cache_.find(key);
+    const bool local=geometry_->touches(a,b);
+    if(local&&geometry_->local_motion_hazard(a,b))return {false,9U};
+    const auto key=std::make_pair(cellFor(a),cellFor(b));auto found=local?corridor_cache_.end():corridor_cache_.find(key);
     if(found!=corridor_cache_.end())return found->second;
-    const auto list=cells(a,b);Corridor out;out.clear=!list.empty();if(out.clear)out.hazards=0;
+    auto list=cells(a,b);
+    if(local){const auto base=geometry_->segment_cells(a,b,true,false);bool clear=!base.empty();
+        for(std::size_t n=1;n<base.size()&&clear;++n)clear=bool(edgeHeight(base[n-1],base[n]));if(clear)list=base;}
+    Corridor out;out.clear=!list.empty();if(out.clear)out.hazards=0;
     for(std::size_t n=1;n<list.size();++n){auto i=index(list[n]);if(!i){out.clear=false;out.hazards.reset();break;}
-        *out.hazards|=map.hazards[*i];if(out.clear&&!edgeHeight(list[n-1],list[n]))out.clear=false;}
+        *out.hazards|=geometry_->hazards[*i];if(out.clear&&!edgeHeight(list[n-1],list[n]))out.clear=false;}
+    if(local)return out;
     if(corridor_cache_.size()>=2048){corridor_cache_.erase(corridor_order_.front());corridor_order_.pop_front();}
     corridor_order_.push_back(key);corridor_cache_[key]=out;return out;
 }
 bool Grid::segmentHazard(const Point&a,const Point&b,unsigned mask)
-{const auto corridor=bakedCorridor(a,b);return !corridor.hazards||(*corridor.hazards&mask);}
+{const auto corridor=bakedCorridor(a,b);
+    if(!corridor.hazards&&mask==4U){const auto list=cells(a,b,false);
+        for(std::size_t n=1;n<list.size();++n){auto i=index(list[n],false);if(i&&(geometry_->hazards[*i]&mask))return true;}return false;}
+    return !corridor.hazards||(*corridor.hazards&mask);}
 bool Grid::motionHazard(const Point&a,const Point&b,unsigned mask)const
-{
-    const auto list=cells(a,b,false);if(list.empty())return true;
-    for(std::size_t n=1;n<list.size();++n){auto i=index(list[n],false);if(!i||(map.hazards[*i]&mask))return true;}return false;
-}
+{Cell local;const auto start=geometry_->local_cell(a,local)?local:cellFor(a);
+    return !geometry_->flat(start)||geometry_->local_motion_hazard(a,b,mask);}
 bool Grid::pointHazard(const Point&p,unsigned mask)const
-{auto i=index(cellFor(p),false);return i&&(map.hazards[*i]&mask);}
+{auto i=index(cellFor(p),false);return i&&(geometry_->hazards[*i]&mask);}
 std::optional<std::vector<Cell>> Grid::hazardCells(const Point&a,const Point&b,unsigned mask)const
 {
     if(!index(cellFor(a)))return {};const auto list=cells(a,b);if(list.empty())return {};
     std::vector<Cell> result;for(std::size_t n=1;n<list.size();++n){auto i=index(list[n]);if(!i)return {};
-        if(map.hazards[*i]&mask)result.push_back(list[n]);}return result;
+        if(geometry_->hazards[*i]&mask)result.push_back(list[n]);}return result;
 }
-int Grid::linkCount(const Cell&c)const
-{auto i=index(c);if(!i)return 0;unsigned mask=map.links[*i]&255,count=0;for(;mask;mask&=mask-1)++count;return int(count);}
-double Grid::clearancePenalty(const Cell&c)const{return std::max(0,8-linkCount(c))*map.cell_size*.2;}
+int Grid::linkCount(const Cell&c)const{return int(geometry_->link_count(c));}
+double Grid::clearancePenalty(const Cell&c)const
+{const double scale=c[0]<0&&std::size_t(-c[0]-1)<map.local_meshes.size()?map.local_meshes[-c[0]-1].cell_size:map.cell_size;
+    return std::max(0,8-linkCount(c))*scale*.2;}
 double Grid::penalty(const Cell&c,const Path& avoid,bool clearance)const
 {
-    double result=clearance?clearancePenalty(c):0.;auto i=index(c);if(i&&(map.hazards[*i]&4))result+=map.cell_size*4.;
+    double result=clearance?clearancePenalty(c):0.;auto i=index(c);if(i&&(geometry_->hazards[*i]&4))result+=map.cell_size*4.;
     const auto p=pointFor(c,0.);for(const auto&point:avoid){const double d=distance(p,point);
         if(d<map.cell_size*1.5)result+=(map.cell_size*1.5-d)*3.;}return result;
 }
@@ -165,13 +162,13 @@ bool Grid::livePreservesClimb(const Point&current,const Path&p,std::size_t first
 {if(last<first)return true;Path live{current};live.insert(live.end(),p.begin()+first,p.begin()+last+1);return preservesClimb(live,0,live.size()-1);}
 bool Grid::setStaticHulls(const std::vector<Hull>& hulls,double clearance)
 {
-    Penalties updated;const double padding=rounded(std::max(0.,clearance),3);
+    Penalties updated;const double padding=rounded(std::max(0.,clearance),3);planning_hulls_.clear();
     for(auto h:hulls){h.x=rounded(h.x,2);h.z=rounded(h.z,2);h.yaw=rounded(h.yaw,3);
-        const double length=std::max(.5,rounded(h.half_length,2))+padding,width=std::max(.3,rounded(h.half_width,2))+padding;
-        const double radius=std::hypot(length,width);const auto first=cellFor({h.x-radius,0.,h.z-radius}),last=cellFor({h.x+radius,0.,h.z+radius});
-        for(int z=first[1];z<=last[1];++z)for(int x=first[0];x<=last[0];++x){const auto p=pointFor({x,z},0.);
-            if(!covers(p[0],p[2],map.cell_size*.5,h,length,width))continue;
-            for(const auto&n:neighbours)updated[edge({x,z},{x+n[0],z+n[1]})]=240.;}}
+        const double length=std::max(.05,rounded(h.half_length,2)-.15)+padding,width=std::max(.05,rounded(h.half_width,2)-.15)+padding;
+        const double radius=std::hypot(length,width)+map.cell_size;const auto first=cellFor({h.x-radius,0.,h.z-radius}),last=cellFor({h.x+radius,0.,h.z+radius});
+        h.half_length=length;h.half_width=width;planning_hulls_.push_back(h);
+        for(int z=first[1];z<=last[1];++z)for(int x=first[0];x<=last[0];++x){const Cell c{x,z};const auto p=pointFor(c,0.);
+            for(const auto&n:neighbours){const Cell next{x+n[0],z+n[1]};if(crossesHull(p,pointFor(next,0.),h))updated[edge(c,next)]=240.;}}}
     if(updated==static_hull_edges)return false;static_hull_edges=std::move(updated);++hull_revision;return true;
 }
 void Grid::pruneFailed(double now)
@@ -187,14 +184,17 @@ double Grid::edgePenalty(const Edge&key,double now)
     auto hull=static_hull_edges.find(key);return hull==static_hull_edges.end()?value:std::max(value,hull->second);
 }
 double Grid::segmentPenalty(const Point&a,const Point&b,double now)
-{double value=0.;for(const auto&key:edges(a,b))value=std::max(value,edgePenalty(key,now));return value;}
+{double value=pathCrossesStaticHull({a,b})?240.:0.;
+    for(const auto&key:edges(a,b)){auto i=failed_edges.find(key);if(i==failed_edges.end())continue;
+        if(now>=i->second.first)failed_edges.erase(i);else value=std::max(value,i->second.second);}return value;}
 bool Grid::pathHasTimedPenalty(const Path&p,double now)
 {
     for(std::size_t n=1;n<p.size();++n)for(const auto&key:edges(p[n-1],p[n])){auto i=failed_edges.find(key);
         if(i!=failed_edges.end()){if(now>=i->second.first)failed_edges.erase(i);else if(i->second.second>0.)return true;}}
     return false;
 }
-bool Grid::pathCrossesStaticHull(const Path&p)const{return pathHasEdgePenalty(p,static_hull_edges);}
+bool Grid::pathCrossesStaticHull(const Path&p)const
+{for(std::size_t n=1;n<p.size();++n)for(const auto&h:planning_hulls_)if(crossesHull(p[n-1],p[n],h))return true;return false;}
 bool Grid::pathHasEdgePenalty(const Path&p,const Penalties&penalties)const
 {for(std::size_t n=1;n<p.size();++n)for(const auto&key:edges(p[n-1],p[n]))if(penalties.count(key))return true;return false;}
 bool Grid::reviewNativeCorridor(const Point&a,const Point&b)
@@ -213,7 +213,8 @@ void Grid::endFrame(){frame_open_=false;pending_.clear();}
 std::array<int,3> Grid::pointKey(const Point&p)
 {return {int(std::floor(p[0]*.5+.5)),int(std::floor(p[2]*.5+.5)),int(std::floor(p[1]/8.+.5))};}
 std::optional<double> Grid::ground(double x,double z,double hint)
-{(void)hint;if(!inside(x,z))return {};return height(cellFor({x,hint,z}));}
+{if(!inside(x,z))return {};const Point p{x,hint,z};auto y=height(cellFor(p));if(y)return y;
+    Cell local;return geometry_->local_cell(p,local)?height(local):std::nullopt;}
 Proof Grid::nativeSegment(const Point&a,const Point&b,std::optional<double> slope)
 {
     if(distance(a,b)>map.cell_size*12.)return Proof::Blocked;
@@ -231,11 +232,11 @@ bool Grid::supportedSlope(const Point&a,const Point&b)
 {
     if(distance(a,b)>map.cell_size*12.||(height(cellFor(b))&&pointHazard(b,2)))return false;
     const auto key=std::make_pair(cellFor(a),cellFor(b));auto cached=slope_cache_.find(key);if(cached!=slope_cache_.end())return cached->second;
-    const auto list=cells(a,b,false);bool clear=!list.empty();for(const auto&c:list){auto n=index(c);if(!n||map.hazards[*n]){clear=false;break;}}
+    const auto list=cells(a,b,false);bool clear=!list.empty();for(const auto&c:list){auto n=index(c);if(!n||geometry_->hazards[*n]){clear=false;break;}}
     for(std::size_t n=1;clear&&n<list.size();++n){const auto&first=list[n-1];const auto&last=list[n];if(edgeHeight(first,last))continue;
         if(first[0]==last[0]||first[1]==last[1]){clear=false;break;}
         const std::array<Cell,2> corners{{{last[0],first[1]},{first[0],last[1]}}};
-        for(const auto&c:corners){auto i=index(c);if(!i||map.hazards[*i]||!edgeHeight(first,c)||!edgeHeight(c,last)||!edgeHeight(last,c)||!edgeHeight(c,first)){clear=false;break;}}
+        for(const auto&c:corners){auto i=index(c);if(!i||geometry_->hazards[*i]||!edgeHeight(first,c)||!edgeHeight(c,last)||!edgeHeight(last,c)||!edgeHeight(c,first)){clear=false;break;}}
         if(!clear)break;const std::array<double,4> h{*height(first),*height(corners[0]),*height(corners[1]),*height(last)};
         for(const auto&ids:std::array<std::array<int,3>,4>{{{0,1,2},{1,0,3},{2,0,3},{3,1,2}}})
             if((std::pow(h[ids[1]]-h[ids[0]],2)+std::pow(h[ids[2]]-h[ids[0]],2))/(map.cell_size*map.cell_size)>max_grade*max_grade){clear=false;break;}}
@@ -263,7 +264,7 @@ Proof Grid::connector(const Point&a,const Point&b)
 bool Grid::segmentClear(const Point&a,const Point&b)
 {
     if(!inside(b[0],b[2]))return false;if(distance(a,b)<.25)return true;
-    if(!height(cellFor(a)))return liveEgress(a,b)==Proof::Clear;
+    if(!ground(a[0],a[2],a[1]))return liveEgress(a,b)==Proof::Clear;
     if(!bakedCorridor(a,b).clear){if(supportedSlope(a,b))return nativeSegment(a,b,max_grade)==Proof::Clear;
         if(!height(cellFor(b))&&distance(a,b)<=24.&&live_joins_.count(b))return liveEgress(a,b)==Proof::Clear;return false;}
     return !needsNativeReview(a,b)||nativeSegment(a,b)==Proof::Clear;

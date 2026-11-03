@@ -25,8 +25,8 @@ def client(compiled=False):
 steps=[0]
 def same(a,b):
     for name in fields:assert getattr(a,name)==getattr(b,name),(name,getattr(a,name),getattr(b,name))
-def observe(a,b,impact,contacts=None):
-    x=a.send_landing_observation(impact,contacts);y=native.landing_send_observation(b,impact,contacts);assert x==y,(impact,contacts,x,y);assert (x is False)==(y is False);same(a,b);steps[0]+=1;return x
+def observe(a,b,impact,contacts=None,vehicle=None):
+    x=a.send_landing_observation(impact,contacts,vehicle);y=native.landing_send_observation(b,impact,contacts,vehicle);assert x==y,(impact,contacts,x,y);assert (x is False)==(y is False);same(a,b);steps[0]+=1;return x
 def pending(a,b,rebind=False):
     x=a._send_pending_landing_observation(rebind);y=native.landing_send_pending(b,rebind=rebind);assert x==y;same(a,b);steps[0]+=1
 
@@ -47,6 +47,11 @@ for contacts in cases:
     a,b=client(),client(True);observe(a,b,17.12345675,contacts)
 for value in (False,True,None,'2',-1.,200.000001,float('nan'),float('inf'),float('-inf')):
     a,b=client(),client(True);observe(a,b,value)
+# Carrier identities survive initial send, queue and acknowledgements.
+for vehicle in (['bot',1], ('player',5), ['bot',0], ['bot',True], ['other',2], ['player'], 'bad'):
+    a,b=client(),client(True);observe(a,b,15.,None,vehicle)
+a,b=client(),client(True);observe(a,b,15.,None,['bot',1]);observe(a,b,16.,None,['player',5]);ack(a,b)
+assert a._attempts[-1]['vehicle_contact']==['player',5]
 # Every gate contains this observation and leaves its ledger unchanged.
 for key,value in (('phase','waiting'),('ready',False),('player_id',None),('player_id',0),('capabilities',[]),('server_capabilities',[])):
     a,b=client(),client(True);setattr(a,key,value);setattr(b,key,value);observe(a,b,20.)
@@ -102,10 +107,10 @@ assert native.landing_start_queued(b)
 print(json.dumps(dict(landing_edges=steps[0],python_business_callbacks=0)))
 '''
 
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'),'Pinned gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'),'Pinned gameplay source is required')
 class NativeLanding(unittest.TestCase):
     def test_exact_python27_landing_queue(self):
-        source=Path(os.environ['WOT_FORK_0101_SOURCE'])
+        source=Path(os.environ['WOT_FORK_SOURCE'])
         py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
         with tempfile.TemporaryDirectory(prefix='native-client-landing-') as directory:

@@ -1,4 +1,4 @@
-"""Current v0.10.1 navigation geometry and oracle differential contracts."""
+"""Current v1.1.1 navigation geometry and oracle differential contracts."""
 import inspect
 import json
 import math
@@ -8,6 +8,7 @@ import random
 import subprocess
 import tempfile
 import unittest
+from stock_gameplay_source import navigation_include
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -60,12 +61,12 @@ def reference(payload):
 class NativeNavigationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-navigation-')
         cls.binary=Path(cls.tmp.name)/'navigation'
         subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-pthread',
-            '-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),
+            '-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),
             str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),str(cls.source/'native/offline_navigation.cpp'),str(cls.source/'native/offline_async_worker.cpp'),
             str(ROOT/'tests/stock_native_bot_navigation_host.cpp'),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
         cls.py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],
@@ -102,6 +103,12 @@ class NativeNavigationTests(unittest.TestCase):
         rows=['15 15 4 -28 -28 -30 -30 30 30']
         for h,l,v in zip(graph['heights_mm'],graph['links'],graph['hazards']):
             rows.append('%d %.17g %d %d'%(h is not None,0 if h is None else h/1000.,l,v))
+        meshes=graph.get('local_meshes', [])
+        rows.append(str(len(meshes)))
+        for mesh in meshes:
+            rows.append('%d %d %.17g %.17g %.17g' % (mesh['width'], mesh['height'], mesh['cell_size'], *mesh['origin']))
+            for h,l,v in zip(mesh['heights_mm'],mesh['links'],mesh['hazards']):
+                rows.append('%d %.17g %d %d' % (h is not None, 0 if h is None else h/1000., l, v))
         for case in cases:
             parts=[case[0]]
             if case[0]=='hulls':
@@ -145,6 +152,15 @@ class NativeNavigationTests(unittest.TestCase):
         self.compare([['local',(rng.uniform(-29,29),0.,rng.uniform(-29,29)),
                        (rng.uniform(-29,29),0.,rng.uniform(-29,29)),(-1,1)[n%2],(0.,.5)[n%2],n%4] for n in range(100)])
 
+    def test_short_wreck_chords_use_exact_inset_footprints(self):
+        hulls=[[1,0.,0.,0.,3.5,1.7]]
+        rng=random.Random(922)
+        cases=[['hulls',hulls,1.7,(3.2,0.,0.),(3.4,0.,0.)],
+               ['hulls',hulls,1.7,(3.3,0.,0.),(3.5,0.,0.)]]
+        cases += [['hulls',hulls,1.7,(rng.uniform(-8.,8.),0.,rng.uniform(-8.,8.)),
+                   (rng.uniform(-8.,8.),0.,rng.uniform(-8.,8.))] for unused in range(120)]
+        self.compare(cases)
+
     def test_static_hulls_and_changed_edge_revision(self):
         hulls=[[1,0.,0.,.4,3.5,1.7],[2,12.,-12.,-.2,4.,1.8]]
         self.compare([['hulls',hulls,1.7,(-20.,0.,0.),(20.,0.,0.)],
@@ -156,5 +172,39 @@ class NativeNavigationTests(unittest.TestCase):
             ['path',[(0.,0.,0.),(0.,2.,4.),(0.,4.,8.)]],
             ['path',[(-20.,0.,-20.),(-20.,0.,0.),(0.,0.,0.)]]])
 
+
+
+class MixedResolutionNavigationTests(NativeNavigationTests):
+    def graph(self):
+        graph=super().graph()
+        width=9;height=9
+        heights=[];links=[];hazards=[]
+        directions=[(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)]
+        for z in range(height):
+            for x in range(width):
+                heights.append(-640+x*20+z*40)
+                links.append(sum(1<<n for n,(dx,dz) in enumerate(directions)
+                    if 0<=x+dx<width and 0<=z+dz<height))
+                hazards.append(8 if (x,z)==(4,4) else 4 if (x,z)==(5,3) else 0)
+        graph['local_meshes']=[dict(origin=(-20.,-20.),cell_size=2.,width=width,height=height,
+                                  heights_mm=heights,links=links,hazards=hazards)]
+        return graph
+
+    def test_grid_corridors_hazards_and_hull_footprints(self):
+        # The stock local-mesh oracle assumes negative x cells identify a
+        # patch. Keep this fixture inside its base rectangle; the base suite
+        # separately covers out-of-grid inputs without local patches.
+        rng=random.Random(219)
+        self.compare([['geometry',(rng.uniform(-27.,27.),0.,rng.uniform(-27.,27.)),
+                       (rng.uniform(-27.,27.),0.,rng.uniform(-27.,27.)),
+                       rng.uniform(-3.,3.),rng.uniform(.1,6.),rng.uniform(.1,3.)]
+                      for unused in range(350)])
+
+    def test_fine_patch_rays_and_coarse_seams_match_release(self):
+        rng=random.Random(1513)
+        self.compare([['geometry',(rng.uniform(-23.,1.),0.,rng.uniform(-23.,1.)),
+                       (rng.uniform(-23.,1.),0.,rng.uniform(-23.,1.)),
+                       rng.uniform(-3.,3.),rng.uniform(.5,4.),rng.uniform(.3,2.)]
+                      for unused in range(250)])
 
 if __name__=='__main__':unittest.main()

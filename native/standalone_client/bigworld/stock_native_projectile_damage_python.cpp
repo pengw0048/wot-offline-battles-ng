@@ -1,4 +1,5 @@
 #include "stock_native_projectile_damage_python.hpp"
+#include "stock_native_bot_combat.hpp"
 #include "stock_native_bot_python.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_resource_lifecycle.hpp"
@@ -142,10 +143,13 @@ bool readProjectileTargetState(PyObject* battle,bool human,std::int64_t network_
  auto entity_id=p::value(entity,"id");const auto engine_id=p::wide(entity_id.get());
  const auto* actor=current?current->vehicleByEngine(engine_id):nullptr;
  if(!actor||actor->id!=network_id||actor->kind!=(human?"player":"bot"))throw p::Error("Projectile target identity is stale");
+ const auto& bot_factors=actor->bot_crew_factors[w::integral(state,"siege_state")==2?1:0];
+ if(!human&&bot_factors){const auto&fitting=bot_factors->rows.front();auto pool=out.config.maxima.find("ammoBayHealth");if(pool!=out.config.maxima.end())pool->second*=fitting.ammo_bay_health;}
  out.critical=native_battle::critical::simulationState(*actor,entity,descriptor.critical.maxima);
  auto native_health=p::Ref(stock_native_bot::readNativeEntityField(battle,entity,"health"));out.config.health=int(p::wide(native_health.get()));
  const auto& equipment=state.get("equipment_states").resolved();if(equipment.kind!=Kind::Null){w::size(equipment);for(const auto& value:equipment.array){const auto& row=value.resolved();if(row.kind!=Kind::Object)continue;const auto& contract=row.get("equipment").resolved();if(contract.kind!=Kind::Object)continue;const auto equipment_kind=w::string(contract.get("kind"));const auto uses=w::integral(row,"usesLeft",-1);if(equipment_kind=="extinguisher")out.config.fire_chance_factor*=std::max(0.,w::numeric(contract,"fireStartingChanceFactor",1.));else if(equipment_kind=="medkit"&&uses!=0)out.config.medkit_bonus+=w::numeric(contract,"bonusValue");if(uses!=0){out.stun_config.resist_duration+=w::numeric(contract,"stunResistanceDuration");out.stun_config.resist_effect+=w::numeric(contract,"stunResistanceEffect");}}}
  out.stun_config.resist_duration=std::max(0.,std::min(1.,out.stun_config.resist_duration));out.stun_config.resist_effect=std::max(0.,std::min(1.,out.stun_config.resist_effect));
+ if(!human&&bot_factors){const auto* fitting=wot::offline_bot_step::crew_factors_row(bot_factors.get(),out.critical.crew_ko,out.critical.fire);if(fitting)out.config.fire_chance_factor*=fitting->engine_fire_factor;}
  const auto& dynamic=state.get("effective_params").resolved().get("crew").resolved().get("dynamic_spotting").resolved();const auto& roster=dynamic.get("crew").resolved();const auto& states=dynamic.get("states").resolved();std::uint64_t mask=0;if(roster.kind!=Kind::Null&&w::size(roster)<=63)for(std::size_t i=0;i<roster.array.size();++i){if(out.critical.crew_ko.count(w::string(roster.array[i])))mask|=std::uint64_t(1)<<i;}
  if(states.kind==Kind::Object){const auto key=std::to_string(mask)+":"+(out.critical.fire?"1":"0");const auto row=states.object.find(key);if(row!=states.object.end()){const auto& factors=row->second.resolved().get("battle_factors");out.config.fire_chance_factor*=w::numeric(factors,"engine_fire_factor",1.);}}
  output=std::move(out);return true;

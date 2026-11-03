@@ -279,6 +279,8 @@ _RETIRED_COMPAT_HELPERS = frozenset('''
 _track_effect_update_with_receipt _show_lan_death_message _DeferredAvatarServer
 _CopiedVehicleSpeedInfo _OfflineVehicleFilterSyncProxy
 _OfflineInitialVehicleVisualProvider _OfflineCameraColliderHandler _OfflineEventSink
+_observe_battle_model_pose _run_model_pose_step sample_pending_battle_models
+_run_model_refresh_callback _report_model_refresh_failure
 '''.split())
 
 

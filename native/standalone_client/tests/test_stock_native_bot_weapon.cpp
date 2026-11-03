@@ -13,7 +13,8 @@ struct Scene : DirectWorld {
     bool debris_segment(const Point&,const Point&) override {return debris;}
 };
 struct SelectionScene : AimSelectionWorld {
-    int rays=0;bool block_first=false;
+    int rays=0;bool block_first=false,reject_lower=false;
+    std::optional<bool> aim_reachable(const Point&,const Point&point)override{return reject_lower?std::optional<bool>(point[0]!=0.):std::nullopt;}
     bool static_segment_blocked(const Point&,const Point&) override {return block_first && rays++==0;}
     bool wreck_segment_blocked(const Point&,const Point&) override {return false;}
     std::optional<double> nominal_damage(const Point&,const Point& end) override {return end[1];}
@@ -24,6 +25,11 @@ int main() {
     AimBox hull=box;hull.mount={1.,2.,3.};AimBox turret;
     turret.lower={-1.,-1.,-1.};turret.upper={1.,1.,1.};turret.mount={1.,3.,3.};turret.turret=true;
     const auto samples=vehicle_aim_samples({hull,turret});assert(samples.size()==8 && samples[1].turret);
+    const auto ordered=ordered_vehicle_aim_samples(samples);
+    assert(ordered.size()==9 && !ordered[0].turret && ordered[0].point[1]==.5);
+    for (std::size_t i=0;i<5;++i) assert(!ordered[i].turret);
+    assert(ordered[5].turret && ordered[5].point[1]==.5 && ordered[8].point[1]==0.);
+    assert(ordered_vehicle_aim_samples(vehicle_aim_samples({turret})).size()==4);
     AimPose pose;pose.position={4.,5.,6.};pose.yaw=.3;pose.pitch=.2;pose.roll=-.1;pose.turret_yaw=.6;
     const auto centre=vehicle_aim_point(samples[1],pose);
     assert(std::abs(centre[0]-6.274966912838334)<1.e-12 && std::abs(centre[1]-7.231659594213008)<1.e-12 && std::abs(centre[2]-8.973923502891063)<1.e-12);
@@ -32,6 +38,11 @@ int main() {
     SelectionScene selection_world;selection_world.block_first=true;GunnerTarget selection_target;selection_target.kind="human";selection_target.id=5;
     assert(select_exposed_aim(selected,{}, {},1.,22,3,selection_target,{},selection_world));
     assert(selected.selected && *selected.selected==1 && selected.cursor==2);
+    selection_world.block_first=false;selection_world.reject_lower=true;selected.selected.reset();selected.cursor=0;
+    assert(select_exposed_aim(selected,{}, {},1.,22,3,selection_target,{},selection_world));
+    assert(selected.selected && *selected.selected==1);
+    selection_world.reject_lower=false;
+
     weapons::Store store;weapons::GunConfig gun;
     gun.fully_aimed_dispersion=.2;gun.aiming_time=1.;gun.reload_full=1.;
     gun.clip_size=gun.shell_count=gun.burst_count=1;
@@ -46,7 +57,8 @@ int main() {
     assert(!missing.origin_available && !missing.aligned);
     GunMount mount;
     const auto aimed=advance_weapon_aim(store,key,frame,target,mount,hydraulic,world);
-    assert(aimed.origin_available && std::abs(frame.pose.gun_pitch+.009999666686665238)<1.e-12);
+    assert(aimed.origin_available && aimed.alignment_error && *aimed.alignment_error>=0. &&
+        std::abs(frame.pose.gun_pitch+.009999666686665238)<1.e-12);
     hydraulic={true,true,true,-.3,.3,1.};frame.siege_enabled=true;
     target.solution_present=true;target.solution_origin_present=true;
     target.solution_pitch=-.7;target.solution_yaw=0.;

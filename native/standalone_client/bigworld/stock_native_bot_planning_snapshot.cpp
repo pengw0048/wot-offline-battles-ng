@@ -53,6 +53,7 @@ double number(const SeedValue&v,double fallback=0.){const auto&r=v.resolved();if
 std::int64_t integer(const SeedValue&v,std::int64_t fallback=0){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;
     if(r.kind==Kind::Integer)return r.integer;if(r.kind==Kind::Boolean)return r.boolean?1:0;throw Invalid("Planning seed integer is invalid");}
 bool boolean(const SeedValue&v,bool fallback=false){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;if(r.kind==Kind::Boolean)return r.boolean;return integer(r)!=0;}
+bool truthy(const SeedValue&v){const auto&r=v.resolved();switch(r.kind){case Kind::Null:return false;case Kind::Boolean:return r.boolean;case Kind::Integer:return r.integer!=0;case Kind::Number:return r.number!=0.;case Kind::Text:return !r.text.empty();case Kind::Array:return !r.array.empty();case Kind::Object:return !r.object.empty();default:return true;}}
 std::string string(const SeedValue&v,const std::string&fallback={}){const auto&r=v.resolved();if(r.kind==Kind::Null)return fallback;if(r.kind!=Kind::Text)throw Invalid("Planning seed string is invalid");return r.text;}
 const std::vector<SeedValue>& rows(const SeedValue&v){static const std::vector<SeedValue> none;const auto&r=v.resolved();if(r.kind==Kind::Null)return none;
     if(r.kind!=Kind::Array)throw Invalid("Planning seed requires a sequence");return r.array;}
@@ -80,16 +81,23 @@ std::string signatureValue(const SeedValue&raw){const auto&p=raw.resolved();
 std::string orderSignature(const SeedValue&p){
     std::map<std::string,std::string> values;const bool target=present(field(p,"target_id"));
     for(const auto&entry:mapping(p).object){const auto&name=entry.first;const auto&v=entry.second.resolved();
+        if(name=="route_attempt"||name=="route_assignment"||name=="tactical_evidence")continue;
         if(target&&(name=="aim_position"||(name=="face_position"&&!boolean(field(p,"stable_hull_face")))||(name=="move_position"&&string(field(p,"combat_mode"))=="advance_contact")))continue;
         if((name=="aim_position"||name=="face_position"||name=="move_position"||name=="route_anchor")&&(v.kind==Kind::Object||v.kind==Kind::Array)){
             std::string value="t3:";for(double coordinate:point(v))value+=signatureNumber(coordinate);values[name]=value;}
         else values[name]=signatureValue(v);}
     std::string out;for(const auto&v:values)out+=std::to_string(v.first.size())+":"+v.first+v.second;return out;
 }
-StrategicOrder order(const SeedValue&raw){const auto&p=mapping(raw);StrategicOrder out;out.signature=orderSignature(p);auto&d=out.drive;auto&n=out.navigation;
+StrategicOrder order(const SeedValue&raw){const auto&p=mapping(raw);StrategicOrder out;out.signature=orderSignature(p);out.empty_ammo=boolean(field(p,"empty_ammo"));out.hull_owned=string(field(p,"combat_mode"))=="spg_route_travel";auto&d=out.drive;auto&n=out.navigation;
     optionalPoint(p,"aim_position",d.aim);optionalPoint(p,"move_position",d.move);optionalPoint(p,"face_position",d.face);
     optionalNumber(p,"throttle_override",d.throttle);optionalNumber(p,"arrival_radius",d.arrival_radius);optionalNumber(p,"parking_heading",d.parking_heading);optionalNumber(p,"hull_angle_degrees",d.hull_angle_degrees);optionalId(p,"target_id",d.target);
     d.target_kind=string(field(p,"target_kind"));d.stable_hull_face=boolean(field(p,"stable_hull_face"));d.mode=string(field(p,"combat_mode"),"route");d.parking_phase=string(field(p,"parking_phase"));d.fire_allowed=boolean(field(p,"fire_allowed"));d.shell_index=int(wireInteger(field(p,"shell_index")));d.fire_range=number(field(p,"fire_range"));
+    const auto&area=field(p,"capture_area");if(present(area)){plan::CaptureArea capture;capture.center=point(field(area,"point"));capture.radius=number(field(area,"radius"));if(capture.radius<0.)throw Invalid("Capture area radius is invalid");d.capture_area.set(capture);}
+    const auto&route_id=field(p,"route_id");const auto&route_index=field(p,"route_index");
+    const std::string route=string(route_id);const std::string index=present(route_index)?std::to_string(integer(route_index)):"none";
+    if(boolean(field(p,"empty_ammo")))d.progress_identity="empty_ammo:"+route+":"+index;
+    else if((d.mode=="route"||d.mode=="advance")&&!route.empty()&&d.parking_phase.empty()&&!truthy(field(p,"team_command"))&&!truthy(field(p,"defense_base_id")))d.progress_identity="route:"+route+":"+index;
+    else if(d.target.present&&d.parking_phase.empty()&&d.mode!="base_defense"&&d.mode!="artillery_deploy"&&d.mode!="artillery_relocate")d.progress_identity="combat:"+d.target_kind+":"+std::to_string(d.target.value);
     n.mode=d.mode;n.parking_phase=d.parking_phase;n.route_id=string(field(p,"route_id"),"direct");n.defense_base=string(field(p,"defense_base_id"),"own_base");n.team_command=string(field(p,"team_command_id"));
     if(d.throttle.present)n.throttle=d.throttle.value;if(d.target.present)n.target=d.target.value;
     n.route_index=optional<int>(p,"route_index",[](const SeedValue&v){return int(wireInteger(v));});n.route_join=optional<bool>(p,"route_join",[](const SeedValue&v){return boolean(v);});n.route_anchor=optional<Point>(p,"route_anchor",[](const SeedValue&v){return point(v);});
@@ -97,13 +105,14 @@ StrategicOrder order(const SeedValue&raw){const auto&p=mapping(raw);StrategicOrd
 }
 Point position(const SeedValue&state){return {number(field(state,"x")),number(field(state,"y")),number(field(state,"z"))};}
 strategy::Agent agent(const SeedValue&p){strategy::Agent a;a.id=integer(field(p,"id"));a.team=int(integer(field(p,"team")));a.seed=std::uint64_t(integer(field(p,"seed")));
-    const auto&profile=field(p,"profile");auto&v=a.profile;v.class_tag=string(field(profile,"class_tag"));v.dominant_role=string(field(profile,"dominant_role"));
+    const auto&profile=field(p,"profile");auto&v=a.profile;v.class_tag=string(field(profile,"class_tag"));v.dominant_role=string(field(profile,"dominant_role"));v.vehicle_name=string(field(profile,"vehicle_name"));v.gun_name=string(field(profile,"gun_name"));
+    v.ammo_manual=present(field(profile,"ammo_ratios"));if(v.ammo_manual)for(const auto&ratio:rows(field(profile,"ammo_ratios")))v.ammo_ratios.push_back(number(ratio));
     v.desired_range=number(field(profile,"desired_range"));v.fire_range=number(field(profile,"fire_range"));v.armor=number(field(profile,"armor"));
     for(const auto&role:field(profile,"roles").resolved().object)v.roles[role.first]=number(role.second);
-    for(const auto&s:rows(field(profile,"shells")))v.shells.push_back({int(integer(field(s,"index"))),string(field(s,"kind")),number(field(s,"penetration")),number(field(s,"damage"))});
+    for(const auto&s:rows(field(profile,"shells")))v.shells.push_back({int(integer(field(s,"index"))),string(field(s,"kind")),number(field(s,"penetration")),number(field(s,"damage")),string(field(s,"name"))});
     const auto&personality=field(p,"personality");a.personality={number(field(personality,"aggression")),number(field(personality,"caution")),number(field(personality,"initiative")),number(field(personality,"teamwork"))};
     const auto&route=field(p,"route");a.has_route=present(route);if(a.has_route){a.route_id=string(field(route,"id"));for(const auto&w:rows(field(route,"waypoints")))a.waypoints.push_back(waypoint(w));}
-    a.route_started=boolean(field(p,"route_started"));a.waypoint_index=int(integer(field(p,"waypoint_index")));a.route_join_index=int(integer(field(p,"route_join_index"),-1));
+    a.route_entry_fixed=boolean(field(p,"route_entry_fixed"));a.route_started=boolean(field(p,"route_started"));a.waypoint_index=int(integer(field(p,"waypoint_index")));a.route_join_index=int(integer(field(p,"route_join_index"),-1));
     if(present(field(p,"position")))a.position=point(field(p,"position"));if(present(field(p,"route_join_anchor")))a.route_join_anchor=point(field(p,"route_join_anchor"));
     if(present(field(p,"target_id")))a.target=integer(field(p,"target_id"));a.health_fraction=number(field(p,"health_fraction"),1.);return a;
 }
@@ -161,6 +170,18 @@ offline_navigation::MapInput mapInput(const stock_native_bot::RoundSeed&seed){
     p::Ref fast_heights(PySequence_Fast(heights,"Planning grid heights")),fast_links(PySequence_Fast(links,"Planning grid links"));
     for(std::size_t i=0;i<count;++i){auto*h=PySequence_Fast_GET_ITEM(fast_heights.get(),Py_ssize_t(i));m.heights.push_back(h==Py_None?std::numeric_limits<double>::quiet_NaN():number(h)/1000.);m.links.push_back(unsigned(integer(PySequence_Fast_GET_ITEM(fast_links.get(),Py_ssize_t(i)))));}
     m.hazards=seed.hazards;
+    auto*meshes=r.get(graph,"local_meshes");
+    for(Py_ssize_t n=0;n<r.size(meshes);++n){auto*raw=r.item(meshes,n);offline_navigation::LocalMeshInput mesh;
+        auto*o=r.get(raw,"origin",true);if(r.size(o)!=2)throw Invalid("Local mesh origin is invalid");
+        mesh.origin_x=number(r.item(o,0));mesh.origin_z=number(r.item(o,1));mesh.cell_size=number(r.get(raw,"cell_size",true));
+        mesh.width=int(integer(r.get(raw,"width",true)));mesh.height=int(integer(r.get(raw,"height",true)));
+        const auto size=std::int64_t(mesh.width)*mesh.height;
+        auto*h=r.get(raw,"heights_mm",true),*l=r.get(raw,"links",true),*v=r.get(raw,"hazards",true);
+        if(mesh.width<=0||mesh.height<=0||size>100000000||mesh.cell_size<=0.||r.size(h)!=size||r.size(l)!=size||r.size(v)!=size)throw Invalid("Local mesh columns are invalid");
+        for(Py_ssize_t i=0;i<size;++i){auto*y=r.item(h,i);mesh.heights.push_back(y==Py_None?std::numeric_limits<double>::quiet_NaN():number(y)/1000.);
+            mesh.links.push_back(unsigned(integer(r.item(l,i))));mesh.hazards.push_back(unsigned(integer(r.item(v,i))));}
+        m.local_meshes.push_back(std::move(mesh));}
+
     auto*bounds=r.get(graph,"bounds");if(r.size(bounds)){if(r.size(bounds)!=4)throw Invalid("Planning grid bounds width is invalid");m.has_bounds=true;for(int i=0;i<4;++i)m.bounds[i]=number(r.item(bounds,i));}
     auto*bake=r.get(graph,"bake");m.max_grade=std::max(.05,PyDict_Check(bake)?number(r.get(bake,"max_grade"),.30):.30);m.heuristic_weight=1.70;return m;
 }
@@ -172,6 +193,8 @@ bool readNavigationMode(const stock_native_client_state::Value&state,PyObject*va
 bool readPerceptionMode(const stock_native_bot::BotSeed&bot,PyObject*descriptor,stock_native_bot_perception::Actor&result){try{Read r;const auto id=integer(field(bot.state,"id"));auto value=perception(r,id,bot.state,descriptor,bot.crew_level);result=std::move(value);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readPlanningOrders(const std::map<std::int64_t,stock_native_client_state::Value>&source,std::map<std::int64_t,StrategicOrder>&result){try{std::map<std::int64_t,StrategicOrder> next;for(const auto&row:source)next[row.first]=order(row.second);result=std::move(next);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readPlanningSnapshot(const stock_native_bot::RoundSeed&seed,const stock_native_bot::ServerOrders&orders,PlanningSnapshot&result){try{Read r;PlanningSnapshot out;out.order_revision=orders.revision;
+    auto*objectives=r.get(seed.graph.get(),"objective_bases"),*radii=r.get(seed.graph.get(),"objective_base_radii");
+    if(r.size(objectives)==2)for(int team=1;team<=2;++team){auto*base=r.item(objectives,team-1);out.objective_bases[team]={{number(r.item(base,0)),0.,number(r.item(base,1))},r.size(radii)==2?number(r.item(radii,team-1)):30.};}
     out.map=mapInput(seed);out.grade_up=out.grade_down=std::tan(25.*3.14159265358979323846/180.);
     auto*bake=r.get(seed.graph.get(),"bake");if(PyDict_Check(bake)){out.bake.present=true;out.bake.vehicle_half_width=number(r.get(bake,"vehicle_half_width"));auto*radii=r.get(bake,"edge_clearance_radii");for(Py_ssize_t i=0;i<r.size(radii);++i)out.bake.maximum_clearance_radius=std::max(out.bake.maximum_clearance_radius,number(r.item(radii,i)));}
     auto*directions=r.get(seed.graph.get(),"directions",true);if(r.size(directions)!=8)throw Invalid("Planning parking directions width is invalid");std::set<nav::Cell> unique;

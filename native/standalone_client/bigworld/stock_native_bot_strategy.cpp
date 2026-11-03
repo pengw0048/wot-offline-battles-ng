@@ -1,4 +1,5 @@
 #include "stock_native_bot_strategy.hpp"
+#include "stock_native_bot_ammo.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -12,24 +13,17 @@ double delta(double a,double b){double d=a-b;while(d>pi)d-=2*pi;while(d<-pi)d+=2
 double role(const Profile&p,const char*name){auto i=p.roles.find(name);return i==p.roles.end()?0.:i->second;}
 Point point(const std::array<double,2>&p,double y){return {p[0],y,p[1]};}
 }
-int selectShell(const Profile&p,const Contact&t,const Personality&personality)
+int selectShell(const Profile&p,const Contact&,const Personality&)
 {
-    if(p.shells.empty())return 0;std::vector<const Shell*> normal,explosive;
-    for(const auto&s:p.shells){std::string kind=s.kind;std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return char(std::tolower(c));});
-        const bool he=kind.find("high_explosive")!=std::string::npos||(kind.find("explosive")!=std::string::npos&&kind.find("armor_piercing")==std::string::npos);
-        (he?explosive:normal).push_back(&s);}
-    const Shell*baseline=nullptr;for(auto*s:normal)if(!baseline||s->index<baseline->index)baseline=s;
-    const double base=baseline?std::max(0.,baseline->penetration):0.;const Shell*standard=nullptr,*premium=nullptr,*he=nullptr;
-    for(auto*s:normal){auto&best=s!=baseline&&base>0.&&std::max(0.,s->penetration)>=base*1.03?premium:standard;
-        if(!best||std::make_tuple(s->penetration,s->damage,-s->index)>std::make_tuple(best->penetration,best->damage,-best->index))best=s;}
-    for(auto*s:explosive)if(!he||std::make_tuple(s->damage,s->penetration,-s->index)>std::make_tuple(he->damage,he->penetration,-he->index))he=s;
-    auto index=[](const Shell*s){return s?std::max(0,s->index):0;};const double armor=std::max(0.,t.armor),health=std::max(0.,t.health);
-    if(armor<=0.)return index(standard?standard:premium?premium:he);
-    if(he){const double pen=std::max(0.,he->penetration),damage=std::max(0.,he->damage);
-        if(armor<=pen*.90||(health>0.&&health<=damage*(.72+personality.aggression*.18)&&armor<=pen*1.10))return index(he);}
-    if(standard)return index(premium&&std::max(0.,standard->penetration)<armor*1.05?premium:standard);
-    return index(premium?premium:he?he:&p.shells.front());
+    stock_native_bot_ammo::Profile input;input.vehicle=p.vehicle_name;input.gun=p.gun_name;
+    input.class_tag=p.class_tag;input.manual=p.ammo_manual;input.ratios=p.ammo_ratios;
+    int count=0;for(const auto& shell:p.shells) {
+        input.shells.push_back({shell.index,shell.kind,shell.name});count=std::max(count,shell.index+1);
+    }
+    const auto allocation=stock_native_bot_ammo::allocate(input,0,count);
+    return allocation.order.empty()?0:allocation.order.front();
 }
+
 void Director::clear(){agents.clear();bases.clear();contacts_.clear();}
 void Director::forget(std::int64_t id){agents.erase(id);}
 void Director::observe(int team,const Contact&value)
@@ -58,17 +52,32 @@ Contact* Director::choose(Agent&a,const Point&p,double yaw,double now)
         if(score>best_score){best_score=score;best=c;}}
     a.target=best?std::optional<std::int64_t>(best->id):std::nullopt;return best;
 }
-Point Director::route(Agent&a,const Point&p,double speed,double yaw)
+Point Director::route(Agent&a,const Point&p,double speed,double yaw,double now)
 {
     if(!a.has_route){auto b=bases.find(a.team==1?2:1);return b==bases.end()?p:point(b->second,p[1]);}if(a.waypoints.empty())return p;
     if(!a.route_started){int nearest=0;double best=distance(p,point(a.waypoints[0],p[1]));
         for(std::size_t n=1;n<a.waypoints.size();++n){const double d=distance(p,point(a.waypoints[n],p[1]));if(d<best){best=d;nearest=int(n);}}
+        if(a.route_entry_fixed&&a.waypoints.size()>1)nearest=1;
         if(nearest==0&&a.waypoints.size()>1)nearest=1;
-        while(nearest+1<int(a.waypoints.size())&&distance(p,point(a.waypoints[nearest],p[1]))<30.)++nearest;
+        while(nearest+1<int(a.waypoints.size())&&distance(p,point(a.waypoints[nearest],p[1]))<=6.)++nearest;
         if(speed>.5)while(nearest+1<int(a.waypoints.size())){const auto&w=a.waypoints[nearest];if(std::abs(delta(std::atan2(w[0]-p[0],w[1]-p[2]),yaw))<=1.75)break;++nearest;}
         a.waypoint_index=nearest;a.route_started=true;a.route_join_anchor=p;a.route_join_index=nearest;}
-    const int i=std::min(a.waypoint_index,int(a.waypoints.size())-1);Point result=point(a.waypoints.at(i),p[1]);
-    if(distance(p,result)<=13.&&i+1<int(a.waypoints.size())){a.waypoint_index=i+1;result=point(a.waypoints[i+1],p[1]);}return result;
+    const bool has_previous=a.route_observation && a.observed_route_id==a.route_id &&
+        now>a.route_observed_at && now-a.route_observed_at<=2.;
+    const auto previous=a.route_observation;a.route_observation=p;a.route_observed_at=now;a.observed_route_id=a.route_id;
+    int i=std::min(a.waypoint_index,int(a.waypoints.size())-1);
+    while(i+1<int(a.waypoints.size())) {
+        const auto target=point(a.waypoints[i],p[1]);bool reached=distance(p,target)<=6.;
+        if(!reached && has_previous) {
+            const double dx=p[0]-(*previous)[0],dz=p[2]-(*previous)[2],length=dx*dx+dz*dz;
+            if(length>.000001) {
+                const double f=std::max(0.,std::min(1.,((target[0]-(*previous)[0])*dx+(target[2]-(*previous)[2])*dz)/length));
+                reached=std::hypot(target[0]-((*previous)[0]+f*dx),target[2]-((*previous)[2]+f*dz))<=6.;
+            }
+        }
+        if(!reached)break;++i;
+    }
+    a.waypoint_index=i;return point(a.waypoints.at(i),p[1]);
 }
 Point Director::fallback(const Agent&a,const Point&p)const
 {if(!a.has_route||a.waypoints.empty())return p;return point(a.waypoints[std::max(0,std::min(a.waypoint_index-1,int(a.waypoints.size())-1))],p[1]);}
@@ -80,7 +89,7 @@ std::optional<double> Director::hullAngle(const Agent&a)const
 const double angle=12.+a.personality.caution*18.;return (a.seed&1)?angle:-angle;}
 Decision Director::order(std::int64_t id,const Point&p,double yaw,double speed,double health,double max_health,double now)
 {
-    auto&a=agents.at(id);a.position=p;a.health_fraction=health/std::max(max_health,1.);auto*contact=choose(a,p,yaw,now);const Point goal=route(a,p,speed,yaw);const auto&profile=a.profile;const auto&personality=a.personality;
+    auto&a=agents.at(id);a.position=p;a.health_fraction=health/std::max(max_health,1.);auto*contact=choose(a,p,yaw,now);const Point goal=route(a,p,speed,yaw,now);const auto&profile=a.profile;const auto&personality=a.personality;
     Decision out;out.aim.set(goal);out.face.set(goal);out.move.set(goal);out.desired_range=profile.desired_range;out.fire_range=profile.fire_range;out.route_id=a.has_route?a.route_id:"direct";
     out.route_index=a.waypoint_index;out.route_anchor=anchor(a,p);out.route_join=a.route_join_index==a.waypoint_index;
     if(contact){const double d=distance(p,contact->position);double allies=1.,enemies=0.;

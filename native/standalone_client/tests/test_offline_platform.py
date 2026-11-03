@@ -14,9 +14,9 @@ LOCAL_NAMES = ('confirm_hidden_worker_window',)
 
 class OfflinePlatformTests(unittest.TestCase):
     def test_fixed_release_protocol_and_platform_only_boundary(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('The fixed v0.10.1 source input is required')
+            self.skipTest('The pinned v1.1.1 source input is required')
         original = (Path(source) / 'native/offline_instance_guard_native.c').read_text()
         adapted = (ROOT / 'bigworld/stock_offline_platform.cpp').read_text()
         # Preserve real argument rejection and integer return boundaries. The

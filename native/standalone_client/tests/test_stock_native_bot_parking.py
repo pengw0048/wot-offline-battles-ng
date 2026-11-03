@@ -21,7 +21,7 @@ def reference(cases):
         p=dict(initial,point=dict(x=20.*i,y=0.,z=0.),zone='b' if i==3 else 'a',cell='A%d'%(i+1))
         candidates.append(p)
     state=dict(id=1,team=1,profile=dict(class_tag='SPG'),_spg_initial=initial)
-    runtime=Runtime();runtime.states={1:state};runtime._decision_cache={};runtime._bot_tactics={};runtime.baked_graph=graph
+    runtime=Runtime();runtime.round_id=1;runtime.states={1:state};runtime._decision_cache={};runtime._bot_tactics={};runtime.baked_graph=graph
     runtime._ordered_states=lambda:[state]
     runtime._physical_parking_occupancy=lambda state:runtime.occupied
     runtime._observer_target_key=lambda target:(target['kind'],target['network_id'])
@@ -30,7 +30,7 @@ def reference(cases):
         return not state['airborne'] and not state['_overturned'] and all(-88.<=p[i]<=88. for i in (0,2)) and index is not None and grid.parking_clear(index,plan['clearance']) and abs(p[1]-grid.point(index)[1])<=1.5
     runtime._spg_displaced_hold=displaced
     cancelled=[0]
-    def cancel(actor):cancelled[0]+=1
+    def cancel(actor,**kwargs):cancelled[0]+=1
     runtime._cancel_artillery_intent=cancel
     def select(name,graph,states,**kw):
         reachable=grid._reference_distances(grid.closest(_position(state))) if grid.closest(_position(state)) is not None else {}
@@ -77,10 +77,14 @@ def reference(cases):
 class NativeParkingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-parking-');cls.binary=Path(cls.tmp.name)/'host'
-        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native')]+[str(ROOT/'bigworld'/('stock_native_bot_'+name+'.cpp')) for name in ('decision','parking','planner','strategy')]+[str(ROOT/'tests/stock_native_bot_parking_host.cpp'),'-o',str(cls.binary)]
+        import sys
+        sys.path.insert(0,str(ROOT/'bigworld'))
+        from prepare_offline_fork import stage_bot_ammo_data
+        stage_bot_ammo_data(cls.source,Path(cls.tmp.name))
+        command=['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),'-I'+cls.tmp.name]+[str(ROOT/'bigworld'/('stock_native_bot_'+name+'.cpp')) for name in ('decision','parking','planner','strategy')]+[str(ROOT/'tests/stock_native_bot_parking_host.cpp'),'-o',str(cls.binary)]
         built=subprocess.run(command,capture_output=True,text=True)
         if built.returncode:raise RuntimeError(built.stderr)
         cls.py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
@@ -93,7 +97,7 @@ class NativeParkingTest(unittest.TestCase):
 sys.path.insert(0,sys.argv[1])
 for name in ('gui','gui.mods'):
     m=types.ModuleType(name);m.__path__=[os.path.join(sys.argv[1],*name.split('.'))];sys.modules[name]=m
-from gui.mods.offline_lan_0922 import spg_positions,bot_tactics,bot_tactics_runtime
+from gui.mods.offline_lan_0922 import spg_positions,bot_tactics,bot_tactics_runtime,spg_modes
 TACTICAL_REFRESH_SECONDS=1.
 '''+functions+'\nclass Runtime(object):\n'+methods+'\n'+inspect.getsource(reference)+'\nprint(json.dumps(reference(json.load(sys.stdin))))\n')
     @classmethod

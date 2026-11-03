@@ -70,8 +70,17 @@ class PreflightTests(unittest.TestCase):
     def test_legacy_json_is_rejected_before_native_reader_start(self):
         with gzip.open(self.path, 'wb') as stream:
             stream.write(b'{"type":"header"}\n')
-        with self.assertRaisesRegex(ValueError, 'requires WOTLANR2'):
+        with self.assertRaisesRegex(ValueError, 'requires WOTLANR3'):
             replay_launch.validate(self.path)
+    def test_previous_binary_wire_schema_is_rejected_without_changing_the_file(self):
+        with gzip.open(self.path, 'rb') as stream:
+            payload = stream.read()
+        with gzip.open(self.path, 'wb') as stream:
+            stream.write(b'WOTLANR2' + payload[len(replay_launch.MAGIC):])
+        before = Path(self.path).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'requires WOTLANR3'):
+            replay_launch.validate(self.path)
+        self.assertEqual(before, Path(self.path).read_bytes())
     def header(self):
         with gzip.open(self.path, 'rb') as stream:
             stream.read(len(replay_launch.MAGIC))

@@ -3,6 +3,7 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_params.hpp"
+#include "stock_native_bot_descriptor.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -458,6 +459,39 @@ std::optional<Factors> attributeFactors(PyObject* descriptor, PyObject* crew, Py
         PyErr_Clear();
         return {};
     }
+}
+
+std::shared_ptr<const wot::offline_bot_step::CrewFactors> botCrewFactors(PyObject* descriptor,std::optional<std::int64_t> season) {
+    namespace step=wot::offline_bot_step;
+    p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
+    auto context=py::call(module.get(),"context",descriptor);if(context.get()==Py_None)throw Invalid("native Bot fitting context is unavailable");
+    auto crew=p::value(context.get(),"crew"),directives=p::value(context.get(),"directives"),skills=p::value(context.get(),"crew_skills");
+    auto result=std::make_shared<step::CrewFactors>();result->roster=stock_native_bot_descriptor::crewRoster(descriptor);
+    if(result->roster.empty()||result->roster.size()>6||PySequence_Size(crew.get())!=Py_ssize_t(result->roster.size()))throw Invalid("native Bot fitting roster is invalid");
+    auto camouflages=p::value(context.get(),"camouflages");PyObject* camouflage=season&&PyDict_Check(camouflages.get())?PyDict_GetItemString(camouflages.get(),std::to_string(*season).c_str()):nullptr;
+    const auto modules=clientModules();if(!modules)throw Invalid("native Bot crew producers are unavailable");
+    const auto calculate=[&](const std::vector<bool>* activity,bool fire){p::Ref flags(PyList_New(0)),mounted(PySequence_List(directives.get()));for(std::size_t i=0;i<result->roster.size();++i)p::append(flags.get(),p::boolean(!activity||(*activity)[i]));
+        auto raw=nativeFactors(*modules,descriptor,crew.get(),mounted.get(),flags.get(),fire);Factors output{readFactors(raw.get())};Value aspects;aspects.kind=Value::Kind::Array;
+        aspects.array.push_back(readFactors(attribute(modules->aspects.get(),"DEFAULT").get()));aspects.array.push_back(readFactors(attribute(modules->aspects.get(),"WHEN_STILL").get()));output.values.object["_aspects"]=std::move(aspects);return output;};
+    const auto baseline=calculate(nullptr,false);
+    const auto scalar=[&](const Factors&f,const char* name,double fallback=1.){return f.number(name,fallback);};
+    const auto first=[&](const Factors&f,const char*name){const auto&v=f.get(name).resolved();if(v.kind!=Value::Kind::Array||v.array.empty())throw Invalid("native Bot factor shape changed");const double out=v.array[0].numeric();if(!std::isfinite(out)||out<=0.)throw Invalid("native Bot factor is invalid");return out;};
+    const std::size_t masks=std::size_t(1)<<result->roster.size();result->rows.reserve(masks*2);
+    for(std::size_t mask=0;mask<masks;++mask){std::vector<bool> active;for(std::size_t i=0;i<result->roster.size();++i)active.push_back(!(mask&(std::size_t(1)<<i)));
+        for(int fire=0;fire<2;++fire){const auto f=mask==0&&fire==0?baseline:calculate(&active,fire!=0);step::CrewFactorRow row;
+            row.ratios[0]=scalar(f,"gun/reloadTime")/scalar(baseline,"gun/reloadTime");row.ratios[1]=first(f,"shotDispersion")/first(baseline,"shotDispersion");
+            row.ratios[2]=scalar(f,"gun/aimingTime")/scalar(baseline,"gun/aimingTime");row.ratios[3]=scalar(f,"turret/rotationSpeed")/scalar(baseline,"turret/rotationSpeed");
+            row.ratios[4]=first(baseline,"chassis/terrainResistance")/first(f,"chassis/terrainResistance");row.ratios[5]=scalar(f,"circularVisionRadius")/scalar(baseline,"circularVisionRadius");row.ratios[6]=scalar(f,"radio/distance")/scalar(baseline,"radio/distance");
+            for(const double ratio:row.ratios)if(!std::isfinite(ratio)||ratio<=0.)throw Invalid("native Bot fitting ratio is invalid");
+            const auto loadout=modifiers(descriptor,directives.get(),nullptr,&f);row.bloom_move=loadout.bloom_move_factor;row.bloom_rotation=loadout.bloom_rotation_factor;row.bloom_turret=loadout.bloom_turret_factor;row.ammo_bay_health=scalar(f,"offline/ammoBayHealth");
+            row.repair=scalar(f,"repairSpeed");row.adrenaline_health_fraction=scalar(f,"offline/adrenaline_health_fraction",0.);row.adrenaline_reload_factor=scalar(f,"offline/adrenaline_reload_factor");row.engine_fire_factor=scalar(f,"offline/engine_fire_factor");row.damaged_gun_factor=scalar(f,"offline/damaged_gun_factor");
+            const auto moving=invisibilityPair(&f,false),still=invisibilityPair(&f,true);row.invisibility_moving={moving.first,moving.second};row.invisibility_still={still.first,still.second};
+            auto compute=attribute(descriptor,"computeBaseInvisibility");if(compute.get()==Py_None||!PyCallable_Check(compute.get()))throw Invalid("native Bot camouflage producer is unavailable");
+            auto base=py::invoke(compute.get(),p::number(scalar(f,"camouflage")).get(),camouflage?camouflage:Py_None);if(PySequence_Size(base.get())<2)throw Invalid("native Bot camouflage shape changed");row.base_moving=p::scalar(p::Ref(PySequence_GetItem(base.get(),0)).get());row.base_still=p::scalar(p::Ref(PySequence_GetItem(base.get(),1)).get());
+            if(PySequence_Size(skills.get())!=Py_ssize_t(result->roster.size()))throw Invalid("native Bot fitting skills roster changed");
+            for(std::size_t i=0;i<active.size();++i)if(active[i]){p::Ref names(PySequence_GetItem(skills.get(),Py_ssize_t(i)));each(names.get(),[&](PyObject*name){const auto key=nameOf(name);if(key=="radioman_retransmitter")row.relay=.1;else if(key=="radioman_lasteffort")row.last_effort=true;else if(key=="gunner_rancorous")row.designated=true;});}
+            result->rows.push_back(std::move(row));}}
+    return result;
 }
 
 std::pair<double, double> invisibilityPair(const Factors* factors, bool still) {

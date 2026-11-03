@@ -2,11 +2,19 @@
 import os
 from pathlib import Path
 import subprocess
-from test_stock_native_client_drive_contacts import ContactDifferential,ROOT,SOURCE
-class PlayerInitialPose(ContactDifferential):
+import tempfile
+import unittest
+ROOT=Path(__file__).resolve().parents[1]
+SOURCE=os.environ.get("WOT_FORK_SOURCE")
+@unittest.skipUnless(SOURCE,"Pinned gameplay source is required")
+class PlayerInitialPose(unittest.TestCase):
+ def setUp(self):
+  self.folder=tempfile.TemporaryDirectory(prefix="native-player-install-");self.addCleanup(self.folder.cleanup)
+  law=(Path(SOURCE)/"native/offline_release_drive_python.inc").read_text().split("PyObject *WOT_CDECL release_drive(")[0]
+  (Path(self.folder.name)/"offline_release_drive_law.hpp").write_text("#pragma once\n#include <algorithm>\n#include <cmath>\n"+law)
  def test_bound_pose_is_the_cold_producer(self):
   folder=Path(self.folder.name);py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip();prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
-  command=['c++','-std=c++17','-bundle','-undefined','dynamic_lookup','-Wall','-Wextra','-Werror','-Wno-register','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(SOURCE)/'native'),str(ROOT/'tests/stock_native_client_drive_install_host.cpp'),'-o',str(folder/'client_drive_install_test.so')]
+  command=['c++','-std=c++17','-bundle','-undefined','dynamic_lookup','-Wall','-Wextra','-Werror','-Wno-register','-DWOT_CLIENT_REPLICA_HOST_BUILD','-isystem',str(Path(prefix)/'include/python2.7'),'-I'+str(folder),'-I'+str(ROOT/'bigworld'),'-I'+str(Path(SOURCE)/'native'),str(ROOT/'tests/stock_native_client_drive_install_host.cpp'),str(ROOT/'bigworld/stock_native_client_state.cpp'),str(ROOT/'bigworld/stock_native_bot_descriptor.cpp'),str(ROOT/'bigworld/stock_native_bot_motion.cpp'),'-o',str(folder/'client_drive_install_test.so')]
   compiled=subprocess.run(command,capture_output=True,text=True);self.assertEqual(compiled.returncode,0,compiled.stderr)
   script=r'''
 import client_drive_install_test as native

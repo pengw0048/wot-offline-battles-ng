@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 FIXTURE = r'''
 import battle_combat_event_test as native
 class O(object):

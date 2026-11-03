@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 try:
-    from . import i18n, vehicle_armor_viewer, vehicle_overlays
+    from . import ui_layout
+except ImportError:
+    import ui_layout
+import math
+import re
+
+try:
+    from . import i18n, vehicle_armor_viewer, vehicle_overlays, nation_choices
 except ImportError:
     import i18n
     import vehicle_armor_viewer
     import vehicle_overlays
+    import nation_choices
 
 
 DEFAULT_MEMBER = "scripts/item_defs/vehicles/ussr/R11_MS-1.xml"
@@ -36,19 +44,25 @@ _CHINESE = {
     "this profile runs in single player or is pinned by a LAN room you host. "
     "Shared guns, engines and other components show every vehicle they "
     "affect. IDs, resource paths, topology and unknown fields remain locked.":
-        "正在编辑方案“%s”。请依次选择系别、车辆、类别和属性。修改保存在 "
+        "正在编辑方案“%s”。请先选择国家、坦克类型、级别和车辆，再选择修改类别和属性。修改保存在 "
         "res_mods 之外，会在单人游戏使用该方案、或您开房时固定该方案时生效。"
         "共用的火炮、发动机等部件会列出所有受影响的车辆。ID、资源路径、"
         "数据结构和未知属性不可修改。",
-    "Nation": "系别",
+    "Nation": "国家",
+    "china": "中国", "ussr": "苏联", "usa": "美国", "germany": "德国",
+    "czech": "捷克", "france": "法国", "uk": "英国", "japan": "日本",
+    "poland": "波兰", "sweden": "瑞典",
+    "Modification category": "修改类别",
     "Only nations found in the original vehicle definitions.":
         "只显示原始车辆数据中存在的系别。",
-    "Type": "类型",
+    "Type": "坦克类型",
     "Tier": "级别",
     "All": "全部",
     "Narrow the vehicle list to one original vehicle class or tier.":
         "按原始数据中的车型或级别筛选车辆列表。",
     "Vehicle": "车辆",
+    "Several vehicles share this name. Select the full vehicle label.":
+        "有多辆同名车辆，请从列表选择带完整括号标识的车辆。",
     "Type to search the vehicles left by these filters, then choose one or "
     "press Enter.": "输入名称搜索筛选后的车辆，然后选中或按回车。",
     "Category": "类别",
@@ -68,7 +82,7 @@ _CHINESE = {
     "Save field to profile": "保存到方案",
     "Clear all edits in this profile...": "清除该方案的全部修改…",
     "Exclude edited vehicles from automatic Bots (exact lineup overrides)":
-        "随机/自动 Bot 不使用受此方案修改影响的车辆（精确阵容除外）",
+        "自动选车时排除本方案修改过的车辆（精确阵容除外）",
     "Bot exclusion option saved.": "已保存 Bot 车辆排除选项。",
     "Choose a vehicle field.": "请选择一项车辆属性。",
     "Choose one listed vehicle field.": "请选择列表中的一项车辆属性。",
@@ -98,7 +112,36 @@ _CHINESE = {
     "Profile clearing was cancelled.": "已取消清除方案。",
     "Close World of Tanks before changing vehicle data.":
         "请先关闭 World of Tanks，再修改车辆数据。",
+    'A whole number from 1 to 64, no greater than magazine capacity.':
+        '必须为 1—64 的整数，且不得超过弹夹容量。',
+    'A positive finite time, at most 10 seconds. Ignored when one round is fired per trigger.':
+        '必须为大于 0 且不超过 10 秒的有效时间；每扳机仅一发时忽略此间隔。',
+    'A positive finite time in seconds.':
+        '必须为大于 0 的有效秒数。',
+    'The trigger fires only the remaining rounds in this magazine; it never borrows from the next magazine. Times are in seconds.':
+        '扳机按当前弹夹实际余弹发射，不借用下一弹夹；时间按秒填写。',
+    'Enter a replacement value.':
+        '请输入新值。',
+    'Enter one numeric scalar.':
+        '请输入一个数值。',
+    'The replacement must be finite.':
+        '新值必须为有限数值，不能是 NaN 或无穷大。',
+    'This field uses the Packed integer type; enter a whole number.':
+        '该属性使用整数存储，请输入整数。',
+    'This field must use the stock Packed integer type.':
+        '该属性必须保持原生整数存储类型。',
+    'Packed integers must fit signed 64-bit storage.':
+        '整数超出有符号 64 位存储范围。',
+    'Trigger count must be 1..64 and trigger interval must be positive and at most 10 seconds':
+        '每扳机发射炮弹数量必须为 1—64 的整数，扳机内装填时间必须大于 0 秒且不超过 10 秒。',
+    'Reload time must be a positive finite number of seconds':
+        '装填时间必须为大于 0 的有效秒数。',
+    'Trigger field must exist exactly once':
+        '扳机属性必须存在，且只能有一项。',
+    "Cleared edits from %d package members in profile '%s'.":
+        '已清除 %d 个数据包成员在方案“%s”中的修改。',
 }
+
 
 _CATEGORY_CHINESE = {
     "Vehicle": "车辆", "Chassis": "悬挂装置", "Turret": "炮塔",
@@ -108,7 +151,7 @@ _CATEGORY_CHINESE = {
 
 _VEHICLE_CLASS_CHINESE = {
     "Light tank": "轻型坦克", "Medium tank": "中型坦克",
-    "Heavy tank": "重型坦克", "Tank destroyer": "反坦克炮",
+    "Heavy tank": "重型坦克", "Tank destroyer": "自行反坦克炮",
     "SPG": "自行火炮",
 }
 
@@ -132,7 +175,10 @@ _FIELD_CHINESE = {
     "Maximum pitch": "最大俯仰角", "Travel mode": "行驶模式",
     "Siege mode": "攻城模式", "Reload time": "装填时间",
     "Magazine firing rate (higher is a shorter reload)":
-        "弹夹短装填射速（越高越短）",
+        "弹夹短装填时间（秒）",
+    "Short reload time (seconds)": "弹夹短装填时间（秒）",
+    "Rounds per trigger": "每扳机发射炮弹（发）",
+    "Within-trigger reload time (seconds)": "每扳机内装填时间（秒）",
     "Magazine": "弹夹", "Rounds per magazine": "弹夹容量（发）",
     "Aiming time": "瞄准时间", "Ammunition capacity": "弹药容量",
     "Base accuracy": "基础精度", "Dispersion factors": "扩圈系数",
@@ -205,7 +251,11 @@ class VehicleEditorWindow(object):
         self._fields = []
         self._field_by_label = {}
         self._field_by_key = {}
+        self._language_widgets = []
+        self._shown_result = None
+        self._status_spec = ("Choose a vehicle field.", (), False)
         self._build(parent)
+        ui_layout.polish(self.root)
         self._load_profile_options()
         self.refresh_catalog()
 
@@ -218,22 +268,21 @@ class VehicleEditorWindow(object):
         frame = tk.Frame(self.root, padx=12, pady=12)
         frame.pack(fill="both", expand=True)
 
-        explanation = self._t(
-            "Editing profile '%s'. Choose a nation and vehicle, then a "
+        explanation = ("Editing profile '%s'. Choose a nation and vehicle, then a "
             "category and field. Changes are saved outside res_mods and are "
             "materialized while this profile runs in single player or is "
             "pinned by a LAN room you host. Shared guns, engines and other "
             "components show every vehicle they affect. IDs, resource paths, "
-            "topology and unknown fields remain locked.") % self._profile_name
-        tk.Label(frame, text=explanation, justify="left", anchor="w",
+            "topology and unknown fields remain locked.")
+        self._widget(tk.Label, frame, text=explanation, text_args=(self._profile_name,), justify="left", anchor="w",
                  wraplength=720).grid(
                      row=0, column=0, columnspan=3, sticky="we",
                      pady=(0, 10))
 
-        self.nation = tk.StringVar(value=DEFAULT_NATION)
+        self.nation = tk.StringVar(value="")
         self.vehicle_class = tk.StringVar(value=self._t(ALL_FILTER))
         self.tier = tk.StringVar(value=self._t(ALL_FILTER))
-        self.vehicle = tk.StringVar(value=DEFAULT_VEHICLE)
+        self.vehicle = tk.StringVar(value="")
         self.category = tk.StringVar(value=self._category_label("Vehicle"))
         self.field = tk.StringVar(value="")
         self.member = tk.StringVar(value=DEFAULT_MEMBER)
@@ -248,38 +297,45 @@ class VehicleEditorWindow(object):
         self.overlay_path = tk.StringVar(value="-")
         self.status = tk.StringVar(value=self._t("Choose a vehicle field."))
 
+        self.restore_button = self._widget(tk.Button,
+            frame, text="Clear all edits in this profile...",
+            command=self.restore_defaults)
+        self.restore_button.grid(row=1, column=0, columnspan=3,
+                                 sticky="ew", pady=(0, 8))
         self.exclude_edited_vehicles_from_bots = tk.BooleanVar(value=False)
-        self.bot_exclusion_button = tk.Checkbutton(
-            frame, text=self._t(
-                "Exclude edited vehicles from automatic Bots "
-                "(exact lineup overrides)"),
+        self.bot_exclusion_button = self._widget(tk.Checkbutton,
+            frame, text="Exclude edited vehicles from automatic Bots "
+                "(exact lineup overrides)",
             variable=self.exclude_edited_vehicles_from_bots,
             command=self.save_profile_options)
         self.bot_exclusion_button.grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+            row=2, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-        row = 2
-        row, self.nation_box = self._selector_row(
-            frame, row, self._t("Nation"), self.nation,
-            self._t("Only nations found in the original vehicle definitions."))
-        row, (self.vehicle_class_box, self.tier_box) = self._filter_row(
-            frame, row,
-            self._t(
-                "Narrow the vehicle list to one original vehicle class or "
-                "tier."),
-            ((self._t("Type"), self.vehicle_class, 18),
-             (self._t("Tier"), self.tier, 8)))
-        row, self.vehicle_box = self._selector_row(
-            frame, row, self._t("Vehicle"), self.vehicle,
-            self._t(
-                "Type to search the vehicles left by these filters, then "
-                "choose one or press Enter."), editable=True)
-        row, self.category_box = self._selector_row(
-            frame, row, self._t("Category"), self.category,
-            self._t("Only categories with an existing safe field are shown."))
-        row, self.field_box = self._selector_row(
-            frame, row, self._t("Field"), self.field,
-            self._t("The exact package member and field path stay internal."))
+        boxes = []
+        entries = (("Nation", self.nation), ("Type", self.vehicle_class),
+                   ("Tier", self.tier), ("Vehicle", self.vehicle),
+                   ("Modification category", self.category), ("Field", self.field))
+        for index, (label, variable) in enumerate(entries):
+            if index == 0:
+                selectors = tk.Frame(frame)
+                selectors.grid(row=3, column=0,
+                    columnspan=3, sticky='we', pady=(0, 4))
+            column = index if index < 4 else (0 if index == 4 else 1)
+            selector_row = 0 if index < 4 else 2
+            self._widget(tk.Label, selectors, text=label, anchor='w').grid(
+                row=selector_row, column=column, sticky='w', padx=(0, 6))
+            box = self._ttk.Combobox(selectors, textvariable=variable,
+                values=(), width=(10, 14, 5, 26, 10, 44)[index],
+                state='normal' if index == 3 else 'readonly')
+            box.grid(row=selector_row + 1, column=column,
+                columnspan=3 if index == 5 else 1,
+                sticky='we', padx=(0, 0 if index in (3, 5) else 8), pady=(0, 4))
+            boxes.append(box)
+            if index < 4:
+                selectors.grid_columnconfigure(column, weight=(1, 1, 0, 3)[index])
+        (self.nation_box, self.vehicle_class_box, self.tier_box,
+         self.vehicle_box, self.category_box, self.field_box) = boxes
+        row = 4
         self.nation_box.bind("<<ComboboxSelected>>", self.refresh_vehicles)
         self.vehicle_class_box.bind(
             "<<ComboboxSelected>>", self.refresh_vehicles)
@@ -293,43 +349,42 @@ class VehicleEditorWindow(object):
         self.field_box.bind("<<ComboboxSelected>>", self.inspect)
 
         for label, variable in (
-                (self._t("Impact"), self.scope),
-                (self._t("Original value"), self.original),
-                (self._t("Current value"), self.current),
-                (self._t("Packed type"), self.packed_type),
-                (self._t("Constraint"), self.constraint),
-                (self._t("Technical source"), self.source),
-                (self._t("Profile file"), self.overlay_path)):
-            tk.Label(frame, text=label, anchor="w").grid(
+                ("Impact", self.scope),
+                ("Original value", self.original),
+                ("Current value", self.current),
+                ("Packed type", self.packed_type),
+                ("Constraint", self.constraint),
+                ("Technical source", self.source),
+                ("Profile file", self.overlay_path)):
+            self._widget(tk.Label, frame, text=label, anchor="w").grid(
                 row=row, column=0, sticky="nw", pady=(2, 0))
-            tk.Label(frame, textvariable=variable, anchor="w",
+            self._widget(tk.Label, frame, textvariable=variable, anchor="w",
                      justify="left", wraplength=570).grid(
                          row=row, column=1, columnspan=2, sticky="we",
                          padx=(8, 0), pady=(2, 0))
             row += 1
 
-        tk.Label(frame, text=self._t("Replacement value"), anchor="w").grid(
+        self._widget(tk.Label, frame, text="Replacement value", anchor="w").grid(
             row=row, column=0, sticky="w", pady=(8, 0))
         self.replacement_entry = tk.Entry(
             frame, textvariable=self.replacement, width=32)
         self.replacement_entry.grid(
             row=row, column=1, sticky="we", padx=(8, 8), pady=(8, 0))
-        self.apply_button = tk.Button(
-            frame, text=self._t("Save field to profile"), command=self.apply)
+        self.apply_button = self._widget(tk.Button,
+            frame, text="Save field to profile", command=self.apply)
         self.apply_button.grid(row=row, column=2, sticky="e", pady=(8, 0))
         row += 1
 
-        self.restore_button = tk.Button(
-            frame, text=self._t("Clear all edits in this profile..."),
-            command=self.restore_defaults)
-        self.restore_button.grid(
-            row=row, column=1, columnspan=2, sticky="w", pady=(10, 0))
-        row += 1
 
-        tk.Label(frame, textvariable=self.status, anchor="w", justify="left",
+        self._widget(tk.Label, frame, textvariable=self.status, anchor="w", justify="left",
                  wraplength=720).grid(
                      row=row, column=0, columnspan=3, sticky="we",
                      pady=(10, 0))
+        # Keep the details compact while the viewer consumes the window height.
+        # Without a spacer, its spanning minimum height is distributed across
+        # every detail row and creates large gaps between labels and values.
+        row += 1
+        frame.grid_rowconfigure(row, weight=1)
 
         viewer_factory = self._armor_viewer_factory
         if viewer_factory is None:
@@ -339,14 +394,76 @@ class VehicleEditorWindow(object):
         self.armor_viewer = viewer_factory(
             frame, tk, self.select_field_from_viewer, self._language,
             self._game_root)
+        if hasattr(self.armor_viewer, 'set_diagnostic_callback'):
+            self.armor_viewer.set_diagnostic_callback(self._log)
         self.armor_viewer.grid(
-            row=1, column=3, rowspan=max(1, row), sticky="nsew",
+            row=0, column=3, rowspan=row + 1, sticky="nsew",
             padx=(14, 0))
 
         frame.grid_columnconfigure(1, weight=1)
         frame.grid_columnconfigure(3, weight=1)
         if hasattr(self.root, "minsize"):
             self.root.minsize(1180, 650)
+
+    def _widget(self, factory, parent, text=None, text_args=(), **options):
+        if factory is self._tk.Label:
+            options.setdefault('padx', 0)
+            options.setdefault('pady', 0)
+            options.setdefault('borderwidth', 0)
+        if text is not None:
+            options['text'] = self._t(text) % text_args if text_args else self._t(text)
+        widget = factory(parent, **options)
+        if text is not None:
+            self._language_widgets.append((widget, text, text_args))
+        return widget
+
+    def _canonical_text(self, text):
+        return next((source for source, target in _CHINESE.items() if target == text), text)
+
+    def _set_status(self, text, *args, error=False):
+        self._status_spec = (self._canonical_text(text), args, error)
+        self._render_status()
+
+    def _render_status(self):
+        text, args, error = self._status_spec
+        text = self._error_text(text)
+        if args:
+            text = text % args
+        self.status.set('%s: %s' % (self._t('Validation error'), text) if error else text)
+
+    def set_language(self, language):
+        """Relabel in place without inspecting, saving or replacing user input."""
+        language = i18n.resolve_language(language)
+        if language == self._language:
+            return
+        tag, level = self._selected_vehicle_class(), self._selected_tier()
+        nation = self._selected_nation()
+        record = self._field_by_label.get(self.field.get().strip())
+        category = next((r['categoryLabel'] for r in self._fields
+                         if self._category_label(r['categoryLabel']) == self.category.get()), None)
+        self._language = language
+        self.root.title(self._t('0.9.22 vehicle profile: %s') % self._profile_name)
+        for widget, text, args in self._language_widgets:
+            widget.config(text=self._t(text) % args if args else self._t(text))
+        self._refresh_filter_options()
+        self._refresh_nation_options(nation)
+        self.vehicle_class.set(next(k for k, v in self._class_by_label.items() if v == tag))
+        self.tier.set(next(k for k, v in self._tier_by_label.items() if v == level))
+        categories = list(dict.fromkeys(self._category_label(r['categoryLabel']) for r in self._fields))
+        self.category_box.config(values=tuple(categories))
+        if category is not None:
+            self.category.set(self._category_label(category))
+        rows = [r for r in self._fields if r['categoryLabel'] == category]
+        self._field_by_label = {self._field_label(r['fieldLabel']): r for r in rows}
+        self.field_box.config(values=tuple(self._field_by_label))
+        if record is not None:
+            self.field.set(self._field_label(record['fieldLabel']))
+            if self.scope.get() != '-':
+                self.scope.set(self._scope_text(record))
+        if self._shown_result is not None:
+            self._show_result(self._shown_result, refresh_only=True)
+        self._render_status()
+        self.armor_viewer.set_language(language)
 
     def _t(self, text):
         if self._language == i18n.LANGUAGE_CHINESE:
@@ -394,7 +511,7 @@ class VehicleEditorWindow(object):
                 component = field_parts[1]
             return "共享%s %s；影响 %s 的 %d 辆车：%s" % (
                 self._category_label(record.get("categoryLabel", "")),
-                component or "-", record.get("nation", self.nation.get()),
+                component or "-", nation_choices.caption(record.get("nation", self._selected_nation()), self._t),
                 len(affected), ", ".join(affected))
         vehicle = record.get(
             "displayVehicle", record.get("vehicle", self.vehicle.get()))
@@ -416,6 +533,12 @@ class VehicleEditorWindow(object):
     def _error_text(self, message):
         if self._language != i18n.LANGUAGE_CHINESE:
             return message
+        match = re.fullmatch(r'(.+) clip/count must be at least burst/count \((.+)\)\.', message)
+        if match:
+            return '弹夹容量不得小于每扳机发射炮弹数量（%s 发）。 [%s]' % (match.group(2), match.group(1))
+        translated_constraint = self._constraint_text(message)
+        if translated_constraint != message:
+            return translated_constraint
         translated = _CHINESE.get(message)
         if translated is not None:
             return translated
@@ -426,7 +549,7 @@ class VehicleEditorWindow(object):
     def _selector_row(self, frame, row, label, variable, hint, button=None,
                       editable=False):
         tk = self._tk
-        tk.Label(frame, text=label, anchor="w").grid(
+        self._widget(tk.Label, frame, text=label, anchor="w").grid(
             row=row, column=0, sticky="w")
         box = self._ttk.Combobox(
             frame, textvariable=variable, values=(), width=76,
@@ -435,10 +558,10 @@ class VehicleEditorWindow(object):
                  sticky="we", padx=(8, 8 if button else 0))
         if button:
             text, command = button
-            tk.Button(frame, text=text, command=command).grid(
+            self._widget(tk.Button, frame, text=text, command=command).grid(
                 row=row, column=2, sticky="e")
         row += 1
-        tk.Label(frame, text=hint, anchor="w").grid(
+        self._widget(tk.Label, frame, text=hint, anchor="w").grid(
             row=row, column=1, columnspan=2, sticky="w", padx=(8, 0),
             pady=(0, 5))
         return row + 1, box
@@ -446,14 +569,14 @@ class VehicleEditorWindow(object):
     def _filter_row(self, frame, row, hint, entries):
         """Place the compact list filters and one shared hint on two rows."""
         tk = self._tk
-        tk.Label(frame, text=entries[0][0], anchor="w").grid(
+        self._widget(tk.Label, frame, text=entries[0][0], anchor="w").grid(
             row=row, column=0, sticky="w")
         holder = tk.Frame(frame)
         holder.grid(row=row, column=1, columnspan=2, sticky="w", padx=(8, 0))
         boxes = []
         for index, (label, variable, width) in enumerate(entries):
             if index:
-                tk.Label(holder, text=label, anchor="w").grid(
+                self._widget(tk.Label, holder, text=label, anchor="w").grid(
                     row=0, column=2 * index, sticky="w", padx=(18, 0))
             box = self._ttk.Combobox(
                 holder, textvariable=variable, values=(), width=width,
@@ -461,7 +584,7 @@ class VehicleEditorWindow(object):
             box.grid(row=0, column=2 * index + 1, sticky="w", padx=(8, 0))
             boxes.append(box)
         row += 1
-        tk.Label(frame, text=hint, anchor="w").grid(
+        self._widget(tk.Label, frame, text=hint, anchor="w").grid(
             row=row, column=1, columnspan=2, sticky="w", padx=(8, 0),
             pady=(0, 5))
         return row + 1, tuple(boxes)
@@ -473,29 +596,46 @@ class VehicleEditorWindow(object):
                 self._t("Choose one listed vehicle field."))
         return (record["member"], record["fieldPath"])
 
-    def _show_result(self, result, success_message=None):
-        self.original.set(result["originalValue"])
-        self.current.set(result["currentValue"])
+    def _display_value(self, value, path=None):
+        path = path or self.field_path.get()
+        if path.endswith(('/clip/rate','/burst/rate')):
+            return format(60.0/float(value),'.9g')
+        return value
+
+    def _show_result(self, result, success_message=None, refresh_only=False):
+        self._shown_result = result
+        self.original.set(self._display_value(result["originalValue"],result.get("fieldPath")))
+        self.current.set(self._display_value(result["currentValue"],result.get("fieldPath")))
         packed_type = result["packedType"]
         if self._language == i18n.LANGUAGE_CHINESE:
             packed_type = _PACKED_TYPE_CHINESE.get(packed_type, packed_type)
         self.packed_type.set(packed_type)
         self.constraint.set(self._constraint_text(result["constraint"]))
         self.overlay_path.set(result["overlayPath"])
+        path = result.get('fieldPath', '')
+        if path.endswith('/burst/count'):
+            self.constraint.set(self._t('A whole number from 1 to 64, no greater than magazine capacity.'))
+        elif path.endswith('/burst/rate'):
+            self.constraint.set(self._t('A positive finite time, at most 10 seconds. Ignored when one round is fired per trigger.'))
+        elif path.endswith('/clip/rate'):
+            self.constraint.set(self._t('A positive finite time in seconds.'))
+        if refresh_only:
+            return
         conflict = result.get("conflict", "")
         self.apply_button.config(
             state="disabled" if conflict.startswith("Conflict:") else "normal")
         if conflict:
-            self.status.set(self._error_text(conflict))
+            self._set_status(conflict)
         else:
-            self.status.set(
-                success_message or self._t("Field is safe to edit."))
+            self._set_status(success_message or 'Field is safe to edit.')
+            if not success_message and '/burst/' in path:
+                self._set_status('The trigger fires only the remaining rounds in this magazine; it never borrows from the next magazine. Times are in seconds.')
 
     def _show_error(self, error, clear_contract=False):
-        message = self._error_text(str(error))
-        self.status.set("%s: %s" % (self._t("Validation error"), message))
+        self._set_status(str(error), error=True)
         self.apply_button.config(state="disabled")
         if clear_contract:
+            self._shown_result = None
             self.original.set("-")
             self.current.set("-")
             self.packed_type.set("-")
@@ -516,14 +656,8 @@ class VehicleEditorWindow(object):
                 clear_contract=True)
         self._vehicle_choices = sorted(
             choices,
-            key=lambda choice: (
-                choice["nation"], self._choice_label(choice).casefold(),
-                choice["vehicle"]))
-        nations = sorted(set(choice["nation"] for choice in choices))
-        self.nation_box.config(values=tuple(nations))
-        if self.nation.get().strip() not in nations:
-            self.nation.set(
-                DEFAULT_NATION if DEFAULT_NATION in nations else nations[0])
+            key=nation_choices.vehicle_key)
+        self._refresh_nation_options(self._selected_nation())
         self._refresh_filter_options()
         return self.refresh_vehicles()
 
@@ -556,6 +690,18 @@ class VehicleEditorWindow(object):
         if self.tier.get().strip() not in self._tier_by_label:
             self.tier.set(all_label)
 
+    def _selected_nation(self):
+        value = self.nation.get().strip()
+        return getattr(self, '_nation_by_label', {}).get(value, value)
+
+    def _refresh_nation_options(self, selected):
+        nations = nation_choices.ordered(choice['nation'] for choice in self._vehicle_choices)
+        self._nation_by_label = {nation_choices.caption(n, self._t): n for n in nations}
+        self.nation_box.config(values=tuple(self._nation_by_label))
+        if selected not in nations:
+            selected = nations[0]
+        self.nation.set(next(label for label, nation in self._nation_by_label.items() if nation == selected))
+
     def _selected_vehicle_class(self):
         return self._class_by_label.get(self.vehicle_class.get().strip())
 
@@ -574,19 +720,23 @@ class VehicleEditorWindow(object):
         return self.refresh_catalog()
 
     def refresh_vehicles(self, unused_event=None):
-        nation = self.nation.get().strip()
+        nation = self._selected_nation()
         choices = self._visible_vehicle_choices(nation)
         self._show_vehicle_choices(choices)
         if not choices:
+            self.vehicle.set('')
+            self._selected_vehicle_choice = None
+            self._fields = []
+            self._field_by_label = {}
+            self.category.set(''); self.field.set('')
+            self.category_box.config(values=()); self.field_box.config(values=())
             return self._show_error(
                 self._no_vehicle_message(), clear_contract=True)
         selected = self.vehicle.get().strip()
         selected_choice = self._resolve_vehicle_choice(
             selected, choices=choices)
         if selected_choice is None:
-            selected_choice = next((
-                choice for choice in choices
-                if choice["vehicle"] == DEFAULT_VEHICLE), choices[0])
+            selected_choice = choices[0]
         self.vehicle.set(self._choice_label(selected_choice))
         return self._load_vehicle_fields(selected_choice)
 
@@ -601,18 +751,19 @@ class VehicleEditorWindow(object):
 
     @classmethod
     def _choice_label(cls, choice):
-        """Show the stock/localized name without repeating its resource ID."""
+        """Keep localized names and a unique nation/resource discriminator."""
         label = str(choice.get("label") or choice["vehicle"])
         display_id = cls._vehicle_display_id(choice.get("vehicle", ""))
         for opening, closing in ((" (", ")"), ("（", "）")):
             suffix = opening + display_id + closing
             if display_id and label.endswith(suffix):
-                return label[:-len(suffix)].rstrip()
-        return label
+                label = label[:-len(suffix)].rstrip()
+                break
+        return '%s (%s:%s)' % (label, choice['nation'], choice['vehicle'])
 
     def _visible_vehicle_choices(self, nation=None):
         """Return the catalog narrowed by nation, class and tier."""
-        nation = self.nation.get().strip() if nation is None else nation
+        nation = self._selected_nation() if nation is None else nation
         vehicle_class = self._selected_vehicle_class()
         level = self._selected_tier()
         return [
@@ -651,9 +802,7 @@ class VehicleEditorWindow(object):
                 self._vehicle_display_id(
                     choice.get("vehicle", "")).casefold())]
         if exact:
-            if self._selected_vehicle_choice in exact:
-                return self._selected_vehicle_choice
-            return exact[0]
+            return exact[0] if len(exact) == 1 else None
         if allow_partial:
             return next((choice for choice in choices
                          if self._vehicle_search_matches(choice, value)), None)
@@ -673,16 +822,15 @@ class VehicleEditorWindow(object):
             self._choice_label(self._selected_vehicle_choice)
             if (self._selected_vehicle_choice is not None and
                 self._selected_vehicle_choice.get("nation") ==
-                self.nation.get().strip()) else None)
+                self._selected_nation()) else None)
         if selected_label == self.vehicle.get().strip():
             return True
         self.apply_button.config(state="disabled")
         if not choices:
-            self.status.set(self._t("No vehicles match this search."))
+            self._set_status("No vehicles match this search.")
             return False
-        self.status.set(self._t(
-            "Choose a matching vehicle or press Enter to load the first "
-            "result."))
+        self._set_status(
+            "Choose a matching vehicle or press Enter to load the first result.")
         return True
 
     def commit_vehicle_search(self, unused_event=None):
@@ -690,6 +838,10 @@ class VehicleEditorWindow(object):
             self.vehicle.get(), allow_partial=True)
         if choice is None:
             self._show_vehicle_choices(self._visible_vehicle_choices())
+            if sum(self._vehicle_search_matches(row, self.vehicle.get())
+                   for row in self._visible_vehicle_choices()) > 1:
+                return self._show_error(self._t(
+                    "Several vehicles share this name. Select the full vehicle label."))
             return self._show_error(
                 self._t("No vehicles match this search."))
         self.vehicle.set(self._choice_label(choice))
@@ -822,7 +974,7 @@ class VehicleEditorWindow(object):
         self.field_path.set(field_path)
         self.scope.set(self._scope_text(record))
         self.source.set("%s :: %s" % (member, field_path))
-        self.replacement.set(result["currentValue"])
+        self.replacement.set(self._display_value(result["currentValue"],field_path))
         self._show_result(result)
         record["currentValue"] = result["currentValue"]
         self.armor_viewer.focus_field(record)
@@ -831,13 +983,20 @@ class VehicleEditorWindow(object):
     def apply(self):
         try:
             member, field_path = self._selection()
+            replacement=self.replacement.get()
+            if field_path.endswith(('/clip/rate','/burst/rate')):
+                try:
+                    seconds=float(replacement)
+                    if not math.isfinite(seconds) or seconds<=0:raise ValueError()
+                    replacement=format(60.0/seconds,'.15g')
+                except (ValueError,ZeroDivisionError):
+                    raise self._service.VehicleOverlayError('Reload time must be a positive finite number of seconds')
             result = self._service.apply_profile_edit(
-                self._game_root, self._profile_name, member, field_path,
-                self.replacement.get())
+                self._game_root, self._profile_name, member, field_path, replacement)
         except self._service.VehicleOverlayError as error:
             return self._show_error(error)
         message = "Profile edit saved and reparsed successfully."
-        self._show_result(result, self._t(message))
+        self._show_result(result, message)
         record = self._field_by_key.get((member, field_path))
         if record is not None:
             record["currentValue"] = result["currentValue"]
@@ -865,7 +1024,7 @@ class VehicleEditorWindow(object):
         except self._service.VehicleOverlayError as error:
             self.exclude_edited_vehicles_from_bots.set(not selected)
             return self._show_error(error)
-        self.status.set(self._t("Bot exclusion option saved."))
+        self._set_status("Bot exclusion option saved.")
         return True
 
     def restore_defaults(self):
@@ -875,7 +1034,7 @@ class VehicleEditorWindow(object):
                     "Remove every saved vehicle edit from profile '%s'? "
                     "The profile itself will remain.") % self._profile_name,
                 parent=self.root, icon="warning"):
-            self.status.set(self._t("Profile clearing was cancelled."))
+            self._set_status("Profile clearing was cancelled.")
             return False
         try:
             count = self._service.clear_vehicle_profile(
@@ -890,12 +1049,7 @@ class VehicleEditorWindow(object):
             record["currentValue"] = record.get("originalValue", "0")
         self.armor_viewer.reset_values()
         if self.inspect():
-            if self._language == i18n.LANGUAGE_CHINESE:
-                self.status.set(
-                    "已清除方案“%s”中 %d 个数据包成员的修改。" %
-                    (self._profile_name, count))
-            else:
-                self.status.set(message)
+            self._set_status("Cleared edits from %d package members in profile '%s'.", count, self._profile_name)
         return True
 
 

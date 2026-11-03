@@ -21,6 +21,9 @@ class _Widget(object):
     def grid_columnconfigure(self, *unused, **unused_options):
         pass
 
+    def grid_rowconfigure(self, *unused, **unused_options):
+        pass
+
     def bind(self, event, callback):
         self.options.setdefault("bindings", {})[event] = callback
 
@@ -94,6 +97,9 @@ class _ArmorViewer(object):
         self.updated = []
         self.reset_count = 0
         self.__class__.instances.append(self)
+
+    def set_language(self, language):
+        self.language = language
 
     def grid(self, *args, **options):
         self.grid_call = (args, options)
@@ -260,6 +266,24 @@ def _texts(widget):
 
 
 class VehicleEditorWindowTest(unittest.TestCase):
+    def test_actual_tk_selector_rows_are_not_clipped_and_category_matches_nation(self):
+        import tkinter as tk
+        from tkinter import ttk, messagebox
+        try:
+            parent = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest('requires a Tk display: %s' % error)
+        self.addCleanup(parent.destroy)
+        parent.withdraw()
+        window = vehicle_editor_ui.VehicleEditorWindow(
+            parent, 'C:/WoT', 'Layout QA', tk, ttk, messagebox,
+            service=_Service())
+        window.root.update_idletasks()
+        for box in (window.nation_box, window.category_box, window.field_box):
+            self.assertLessEqual(box.winfo_y() + box.winfo_height(), box.master.winfo_height())
+        self.assertEqual(window.nation_box.winfo_width(), window.category_box.winfo_width())
+        self.assertEqual(0, window.armor_viewer.frame.grid_info()['row'])
+
     def setUp(self):
         self.parent = _Root()
         self.service = _Service()
@@ -269,6 +293,93 @@ class VehicleEditorWindowTest(unittest.TestCase):
             self.parent, "C:/WoT", "Fast MS-1", _FakeTk, _FakeTtk,
             self.messagebox,
             log=self.log.append, service=self.service)
+
+    def test_live_language_preserves_selection_input_errors_and_service_state(self):
+        member = 'scripts/item_defs/vehicles/ussr/components/guns.xml'
+        path = 'shared/Gun-A/burst/count'
+        self.service.extra_fields = [self.service._field(
+            member, path, 'Gun', 'Gun-A / Magazine / Rounds per trigger',
+            True, ('R11_MS-1',))]
+        self.window.refresh_vehicle_fields()
+        self.window.select_field_from_viewer((member, path))
+        self.window.replacement.set('unfinished.123')
+        self.service.apply_error = 'Trigger count must be 1..64 and trigger interval must be positive and at most 10 seconds'
+        self.assertFalse(self.window.apply())
+        selected = self.window._selection()
+        before = (list(self.service.inspect_calls), list(self.service.apply_calls),
+                  list(self.service.option_calls), list(self.service.catalog_calls),
+                  list(self.window.armor_viewer.loaded))
+        english_error = self.window.status.get()
+        for language in ('zh', 'en', 'zh', 'en'):
+            self.window.set_language(language)
+            self.assertEqual(selected, self.window._selection())
+            self.assertEqual('unfinished.123', self.window.replacement.get())
+            self.assertEqual('disabled', self.window.apply_button.cget('state'))
+            self.assertEqual(before, (self.service.inspect_calls, self.service.apply_calls,
+                self.service.option_calls, self.service.catalog_calls, self.window.armor_viewer.loaded))
+            if self.window._language == vehicle_editor_ui.i18n.LANGUAGE_CHINESE:
+                self.assertIn('必须为 1—64 的整数', self.window.constraint.get())
+                self.assertIn('每扳机发射炮弹数量必须', self.window.status.get())
+                self.assertIn('每扳机发射炮弹', self.window.field.get())
+                self.assertIn('保存到方案', _texts(self.window.root))
+            else:
+                self.assertEqual(english_error, self.window.status.get())
+                self.assertIn('Rounds per trigger', self.window.field.get())
+
+    def test_live_language_keeps_filters_and_uncommitted_vehicle_search(self):
+        self.window.vehicle_class.set('Light tank')
+        self.window.tier.set('1')
+        self.window.refresh_vehicles()
+        self.window.vehicle.set('unfinished vehicle search')
+        self.window.filter_vehicles()
+        self.window.replacement.set('0.123 unfinished')
+        for language in ('zh', 'en'):
+            self.window.set_language(language)
+            self.assertEqual('lightTank', self.window._selected_vehicle_class())
+            self.assertEqual(1, self.window._selected_tier())
+            self.assertEqual('unfinished vehicle search', self.window.vehicle.get())
+            self.assertEqual('0.123 unfinished', self.window.replacement.get())
+            self.assertEqual('disabled', self.window.apply_button.cget('state'))
+
+    def test_trigger_limits_and_numeric_errors_translate_both_directions(self):
+        errors = (
+            'Enter a replacement value.', 'Enter one numeric scalar.',
+            'The replacement must be finite.',
+            'This field uses the Packed integer type; enter a whole number.',
+            'Packed integers must fit signed 64-bit storage.',
+            'Reload time must be a positive finite number of seconds',
+            'magazine capacity must be a positive integer.',
+            'turrets0/Test/guns/Gun clip/count must be at least burst/count (6).',
+        )
+        for error in errors:
+            self.window._show_error(error)
+            self.window.set_language('zh')
+            self.assertIn('验证错误', self.window.status.get())
+            self.assertNotIn('must', self.window.status.get())
+            self.assertNotIn('Enter ', self.window.status.get())
+            self.window.set_language('en')
+            self.assertEqual('Validation error: '+error, self.window.status.get())
+        for suffix, expected in (('/burst/count', '1—64'), ('/burst/rate', '10 秒'),
+                                 ('/clip/rate', '有效秒数')):
+            self.window.set_language('zh')
+            result=self.service._result(member=vehicle_editor_ui.DEFAULT_MEMBER,
+                                        field_path='test'+suffix)
+            self.window._show_result(result)
+            self.assertIn(expected, self.window.constraint.get())
+            self.window.set_language('en')
+            self.assertNotIn(expected, self.window.constraint.get())
+
+    def test_magazine_rates_display_seconds_and_save_inverse_native_rate(self):
+        path='shared/Gun-A/clip/rate';member='scripts/item_defs/vehicles/ussr/components/guns.xml'
+        self.service.extra_fields=[self.service._field(member,path,'Gun','Gun-A / Magazine / Short reload time (seconds)',True,('R11_MS-1',))]
+        self.window.refresh_vehicle_fields()
+        self.assertTrue(self.window.select_field_from_viewer((member,path)))
+        self.assertAlmostEqual(60.0/32.0,float(self.window.current.get()))
+        self.window.replacement.set('0.1');self.assertTrue(self.window.apply())
+        self.assertEqual('600',self.service.apply_calls[-1][-1])
+        self.assertAlmostEqual(0.1,float(self.window.current.get()))
+        for bad in ('0','-1','nan','inf'):
+            self.window.replacement.set(bad);self.assertFalse(self.window.apply())
 
     def test_bot_exclusion_option_saves_and_reloads_this_profile(self):
         self.assertFalse(self.window.exclude_edited_vehicles_from_bots.get())
@@ -303,9 +414,9 @@ class VehicleEditorWindowTest(unittest.TestCase):
         self.assertIn("positive", self.window.constraint.get())
         self.assertIn("vehicle_profiles.json",
                       self.window.overlay_path.get())
-        self.assertEqual(("usa", "ussr"),
+        self.assertEqual(("USSR", "USA"),
                          self.window.nation_box.cget("values"))
-        self.assertEqual(("MS-1", "Test"),
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)', 'Test (ussr:R12_Test)'),
                          self.window.vehicle_box.cget("values"))
         self.assertEqual("normal", self.window.vehicle_box.cget("state"))
         self.assertEqual("readonly", self.window.nation_box.cget("state"))
@@ -373,14 +484,30 @@ class VehicleEditorWindowTest(unittest.TestCase):
         self.assertTrue(window.restore_defaults())
         self.assertEqual(1, armor_viewer.reset_count)
 
+    def test_duplicate_names_require_unique_identity_when_typed(self):
+        service = _Service()
+        service.choices[0]['label'] = '113'
+        service.choices[1]['label'] = '113'
+        window = vehicle_editor_ui.VehicleEditorWindow(
+            self.parent, 'C:/WoT', 'Fast MS-1', _FakeTk, _FakeTtk,
+            self.messagebox, service=service)
+        before = len(service.topology_calls)
+        window.vehicle.set('113')
+        self.assertFalse(window.commit_vehicle_search())
+        self.assertEqual(before, len(service.topology_calls))
+        self.assertEqual('disabled', window.apply_button.cget('state'))
+        window.vehicle.set('113 (ussr:R12_Test)')
+        self.assertTrue(window.commit_vehicle_search())
+        self.assertTrue(service.topology_calls[-1][1].endswith('/R12_Test.xml'))
+
     def test_selecting_a_nation_filters_the_vehicle_list(self):
         self.window.nation.set("usa")
 
         self.assertTrue(self.window.refresh_vehicles())
 
-        self.assertEqual(("T1_Cunningham",),
+        self.assertEqual(('T1_Cunningham (usa:A01_T1_Cunningham)',),
                          self.window.vehicle_box.cget("values"))
-        self.assertEqual("T1_Cunningham", self.window.vehicle.get())
+        self.assertEqual('T1_Cunningham (usa:A01_T1_Cunningham)', self.window.vehicle.get())
 
     def test_type_and_tier_options_come_from_the_original_catalog(self):
         self.assertEqual(
@@ -399,8 +526,8 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.refresh_vehicles())
 
-        self.assertEqual(("Test",), self.window.vehicle_box.cget("values"))
-        self.assertEqual("Test", self.window.vehicle.get())
+        self.assertEqual(('Test (ussr:R12_Test)',), self.window.vehicle_box.cget("values"))
+        self.assertEqual('Test (ussr:R12_Test)', self.window.vehicle.get())
         self.assertEqual(
             ("C:/WoT", "scripts/item_defs/vehicles/ussr/R12_Test.xml"),
             self.service.topology_calls[-1])
@@ -410,8 +537,8 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.refresh_vehicles())
 
-        self.assertEqual(("MS-1",), self.window.vehicle_box.cget("values"))
-        self.assertEqual("MS-1", self.window.vehicle.get())
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)',), self.window.vehicle_box.cget("values"))
+        self.assertEqual('MS-1 (ussr:R11_MS-1)', self.window.vehicle.get())
 
         self.window.vehicle.set("tes")
         self.assertFalse(self.window.filter_vehicles())
@@ -420,7 +547,7 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.window.nation.set("usa")
         self.assertTrue(self.window.refresh_vehicles())
-        self.assertEqual(("T1_Cunningham",),
+        self.assertEqual(('T1_Cunningham (usa:A01_T1_Cunningham)',),
                          self.window.vehicle_box.cget("values"))
 
     def test_an_empty_type_and_tier_combination_names_both_filters(self):
@@ -442,8 +569,8 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.restore_vehicle_selection())
 
-        self.assertEqual("Test", self.window.vehicle.get())
-        self.assertEqual(("Test",), self.window.vehicle_box.cget("values"))
+        self.assertEqual('Test (ussr:R12_Test)', self.window.vehicle.get())
+        self.assertEqual(('Test (ussr:R12_Test)',), self.window.vehicle_box.cget("values"))
 
     def test_dropdown_selection_redisplays_only_the_filtered_vehicles(self):
         self.window.tier.set("5")
@@ -452,7 +579,7 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.select_vehicle_from_dropdown())
 
-        self.assertEqual(("Test",), self.window.vehicle_box.cget("values"))
+        self.assertEqual(('Test (ussr:R12_Test)',), self.window.vehicle_box.cget("values"))
         self.assertEqual(
             ("C:/WoT", "scripts/item_defs/vehicles/ussr/R12_Test.xml"),
             self.service.topology_calls[-1])
@@ -468,13 +595,13 @@ class VehicleEditorWindowTest(unittest.TestCase):
             self.parent, "C:/WoT", "Fast MS-1", _FakeTk, _FakeTtk,
             self.messagebox, service=service)
 
-        self.assertEqual(("MS-1", "Test", "Unclassified"),
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)', 'Test (ussr:R12_Test)', 'Unclassified (ussr:R14_Unclassified)'),
                          window.vehicle_box.cget("values"))
 
         window.vehicle_class.set("Light tank")
         self.assertTrue(window.refresh_vehicles())
 
-        self.assertEqual(("MS-1",), window.vehicle_box.cget("values"))
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)',), window.vehicle_box.cget("values"))
 
     def test_typing_filters_without_loading_until_enter_is_pressed(self):
         topology_count = len(self.service.topology_calls)
@@ -482,18 +609,18 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.filter_vehicles())
 
-        self.assertEqual(("Test",), self.window.vehicle_box.cget("values"))
+        self.assertEqual(('Test (ussr:R12_Test)',), self.window.vehicle_box.cget("values"))
         self.assertEqual(topology_count, len(self.service.topology_calls))
         self.assertEqual("disabled", self.window.apply_button.cget("state"))
 
         self.assertTrue(self.window.commit_vehicle_search())
 
-        self.assertEqual("Test", self.window.vehicle.get())
+        self.assertEqual('Test (ussr:R12_Test)', self.window.vehicle.get())
         self.assertEqual(
             ("C:/WoT",
              "scripts/item_defs/vehicles/ussr/R12_Test.xml"),
             self.service.topology_calls[-1])
-        self.assertEqual(("MS-1", "Test"),
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)', 'Test (ussr:R12_Test)'),
                          self.window.vehicle_box.cget("values"))
 
     def test_no_search_match_can_restore_the_loaded_vehicle(self):
@@ -506,27 +633,27 @@ class VehicleEditorWindowTest(unittest.TestCase):
 
         self.assertTrue(self.window.restore_vehicle_selection())
 
-        self.assertEqual("MS-1", self.window.vehicle.get())
-        self.assertEqual(("MS-1", "Test"),
+        self.assertEqual('MS-1 (ussr:R11_MS-1)', self.window.vehicle.get())
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)', 'Test (ussr:R12_Test)'),
                          self.window.vehicle_box.cget("values"))
         self.assertEqual("normal", self.window.apply_button.cget("state"))
 
-    def test_search_uses_hidden_internal_name_but_does_not_display_it(self):
+    def test_search_uses_internal_name_and_displays_unique_identity(self):
         service = _Service()
         service.choices[1]["label"] = "Experimental tank (Test)"
         window = vehicle_editor_ui.VehicleEditorWindow(
             self.parent, "C:/WoT", "Fast MS-1", _FakeTk, _FakeTtk,
             self.messagebox, service=service)
 
-        self.assertEqual(("Experimental tank", "MS-1"),
+        self.assertEqual(('MS-1 (ussr:R11_MS-1)', 'Experimental tank (ussr:R12_Test)'),
                          window.vehicle_box.cget("values"))
         window.vehicle.set("R12_Test")
 
         self.assertTrue(window.filter_vehicles())
-        self.assertEqual(("Experimental tank",),
+        self.assertEqual(('Experimental tank (ussr:R12_Test)',),
                          window.vehicle_box.cget("values"))
         self.assertTrue(window.commit_vehicle_search())
-        self.assertEqual("Experimental tank", window.vehicle.get())
+        self.assertEqual('Experimental tank (ussr:R12_Test)', window.vehicle.get())
 
     def test_dropdown_selects_the_exact_duplicate_label_by_index(self):
         service = _Service()
@@ -543,7 +670,7 @@ class VehicleEditorWindowTest(unittest.TestCase):
             self.messagebox, service=service)
         window.vehicle.set("dup")
         self.assertTrue(window.filter_vehicles())
-        self.assertEqual(("Duplicate", "Duplicate"),
+        self.assertEqual(('Duplicate (ussr:R12_Test)', 'Duplicate (ussr:R13_Duplicate)'),
                          window.vehicle_box.cget("values"))
 
         window.vehicle_box.current(1)
@@ -563,9 +690,9 @@ class VehicleEditorWindowTest(unittest.TestCase):
             self.messagebox, service=service)
 
         self.assertEqual(
-            ("MS-1", "Test"),
+            ('MS-1 (ussr:R11_MS-1)', 'Test (ussr:R12_Test)'),
             window.vehicle_box.cget("values"))
-        self.assertEqual("MS-1", window.vehicle.get())
+        self.assertEqual('MS-1 (ussr:R11_MS-1)', window.vehicle.get())
         self.assertEqual(
             ("C:/WoT", vehicle_editor_ui.DEFAULT_MEMBER),
             service.topology_calls[-1])
@@ -640,12 +767,11 @@ class VehicleEditorWindowTest(unittest.TestCase):
         explanation = next(
             text for text in _texts(window.root)
             if text.startswith("正在编辑方案"))
-        self.assertIn("请依次选择系别、车辆、类别和属性。", explanation)
+        self.assertIn("请先选择国家、坦克类型、级别和车辆，再选择修改类别和属性。", explanation)
         self.assertIn("或您开房时固定该方案时生效", explanation)
-        self.assertIn("类型", _texts(window.root))
+        self.assertIn("坦克类型", _texts(window.root))
+        self.assertEqual(('苏联', '美国'), window.nation_box.cget('values'))
         self.assertIn("级别", _texts(window.root))
-        self.assertIn("按原始数据中的车型或级别筛选车辆列表。",
-                      _texts(window.root))
         self.assertFalse(hasattr(window, "inspect_button"))
         self.assertEqual(("车辆", "火炮"),
                          window.category_box.cget("values"))
@@ -655,7 +781,7 @@ class VehicleEditorWindowTest(unittest.TestCase):
                          window.tier_box.cget("values"))
         window.vehicle_class.set("中型坦克")
         self.assertTrue(window.refresh_vehicles())
-        self.assertEqual(("Test",), window.vehicle_box.cget("values"))
+        self.assertEqual(('Test (ussr:R12_Test)',), window.vehicle_box.cget("values"))
         window.nation.set("usa")
         self.assertFalse(window.refresh_vehicles())
         self.assertIn("所选系别、类型和级别没有匹配的车辆。", window.status.get())
@@ -681,7 +807,7 @@ class VehicleEditorWindowTest(unittest.TestCase):
             "Shell-A / Damage / Module damage",
             self.window._field_label("Shell-A / Damage / Module damage"))
         self.assertEqual(
-            "弹夹短装填射速（越高越短）",
+            "弹夹短装填时间（秒）",
             window._field_label(
                 "Magazine firing rate (higher is a shorter reload)"))
         self.assertEqual(

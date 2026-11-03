@@ -21,7 +21,11 @@ using Value=cs::Value;
 const std::array<const char*,4>tiers{"rookie","regular","veteran","elite"};
 const std::array<double,4>anchors{0.,.34,.67,1.};
 std::optional<double>tier(const std::string&name){for(unsigned i=0;i<tiers.size();++i)if(name==tiers[i])return anchors[i];return {};}
-int trained(double rating){double level=100.;const double levels[]={75.,90.,100.,100.};for(unsigned i=0;i<3;++i)if(rating<=anchors[i+1]){const double fraction=(rating-anchors[i])/(anchors[i+1]-anchors[i]);level=fraction<=0.?levels[i]:fraction>=1.?levels[i+1]:levels[i]+(levels[i+1]-levels[i])*fraction;break;}int out=75;for(int n:{90,100})if(std::abs(n-level)<std::abs(out-level))out=n;return out;}
+int trained(double rating){
+ if(!std::isfinite(rating))rating=.34;
+ rating=std::clamp(rating,0.,1.);const int levels[]={50,75,100,100};unsigned best=0;double distance=std::abs(rating-anchors[0]);
+ for(unsigned i=1;i<anchors.size();++i){const double candidate=std::abs(rating-anchors[i]);if(candidate<distance-1.e-12){best=i;distance=candidate;}}return levels[best];
+}
 struct Context {
  Value tactics;
  std::map<std::pair<int,int>,std::string>pins;

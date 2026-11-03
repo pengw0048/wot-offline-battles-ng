@@ -24,9 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NativeWorldPipelineTest(unittest.TestCase):
     def test_native_pipeline_and_fixed_kinetic_law(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         compiler = shutil.which('c++')
         if not compiler:
             self.skipTest('C++ compiler unavailable')
@@ -57,7 +57,8 @@ class NativeWorldPipelineTest(unittest.TestCase):
                 _runtime_material_descriptor_1513=lambda *args: environment['descriptor'],
                 _descriptor_value=lambda value, name: value[name],
                 _normalized_filename=lambda value: value,
-                _isolate_destructible_1513=lambda *args, **kwargs: None)
+                _isolate_destructible_1513=lambda *args, **kwargs: None,
+                railway_vehicle_resource=lambda name: False, _railway_identity_1513=lambda identity: False)
             exec(textwrap.dedent(ast.get_source_segment(text, function)), environment)
             oracle = environment['_stock_crushable_1513']
             rng = random.Random(1513)

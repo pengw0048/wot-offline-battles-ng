@@ -91,9 +91,9 @@ class OptionalServiceConsumerTests(unittest.TestCase):
         self.harness('vibration', data)
 
     def pinned_settings(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('The fixed v0.10.1 source input is required')
+            self.skipTest('The pinned v1.1.1 source input is required')
         return Path(source), pinned_server_settings(Path(source))
 
     def test_pinned_offline_payload_never_initialises_voice(self):

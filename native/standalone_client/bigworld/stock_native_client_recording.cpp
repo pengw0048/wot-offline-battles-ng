@@ -172,7 +172,7 @@ PyObject* localState(PyObject*, PyObject* args) {
         auto server = attr(runtime, "_server");
         auto entity = server.get() != Py_None ? method(runtime, "_server_entity", attr(server.get(), "vehicle_id").get()) : none();
         put(result.get(), "health", p::Ref(PyNumber_Int(attrOr(entity.get(), "health", integer(0).get()).get())));
-        put(result.get(), "gun_angles", p::Ref(PyNumber_Int(attrOr(entity.get(), "gunAngles", integer(0).get()).get())));
+        put(result.get(), "gun_angles", p::Ref(PyNumber_Int(attrOr(entity.get(), "gunAnglesPacked", integer(0).get()).get())));
         auto rotator = attrOr(attr(runtime, "_avatar").get(), "gunRotator", Py_None);
         if (rotator.get() != Py_None) {
             put(result.get(), "turret_yaw", p::Ref(PyNumber_Float(attrOr(rotator.get(), "turretYaw", zero.get()).get())));

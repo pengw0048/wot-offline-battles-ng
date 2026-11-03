@@ -53,6 +53,8 @@ double critical_factor(const CriticalState& state,CriticalStat stat) {
     else if (stat==CriticalStat::mobility) {if(roles.count("driver"))value*=speed;if(commander)value*=commander_speed;}
     else if (stat==CriticalStat::vision) {if(commander)value*=speed;if(roles.count("radioman"))value*=speed;}
     else if (stat==CriticalStat::signal) {if(roles.count("radioman"))value*=speed;if(commander)value*=commander_speed;}
+    const auto* native=crew_factors_row(state);if(native)value=native->ratios[std::size_t(stat)];
+    double module=1.;
     const char* name=stat==CriticalStat::reload?"ammoBayHealth":
         (stat==CriticalStat::dispersion || stat==CriticalStat::aim_time)?"gunHealth":
         stat==CriticalStat::turret_speed?"turretRotatorHealth":stat==CriticalStat::mobility?"engineHealth":
@@ -61,12 +63,15 @@ double critical_factor(const CriticalState& state,CriticalStat stat) {
     if (found!=state.devices.end()) {
         const auto& d=found->second;
         if (d.destroyed) {
-            if (stat==CriticalStat::turret_speed || stat==CriticalStat::mobility) value*=0.;
-            else if (stat==CriticalStat::vision || stat==CriticalStat::signal) value*=.25;
+            if (stat==CriticalStat::turret_speed || stat==CriticalStat::mobility) module*=0.;
+            else if (stat==CriticalStat::vision || stat==CriticalStat::signal) module*=.25;
         } else if (d.hp && (d.critical || (*d.hp>0. && d.maximum && *d.hp<=*d.maximum*.5))) {
-            value*=stat==CriticalStat::reload || stat==CriticalStat::dispersion || stat==CriticalStat::aim_time ? 2. : .5;
+            module*=stat==CriticalStat::reload || stat==CriticalStat::dispersion || stat==CriticalStat::aim_time ? 2. : .5;
         }
     }
+    if(native){if(stat==CriticalStat::reload&&state.health>0&&state.health<state.maximum_health*native->adrenaline_health_fraction)value*=native->adrenaline_reload_factor;
+        if(stat==CriticalStat::dispersion&&module>1.)module=std::max(1.,module*native->damaged_gun_factor);}
+    value*=module;
     return value;
 }
 std::vector<CriticalEvent> critical_events(const CriticalState& before,
@@ -114,7 +119,7 @@ bool apply_equipment(CombatState& s,const EquipmentEffect& effect) {
         if (!selected.empty() && (selected.size()<6 || selected.substr(selected.size()-6)!="Health")) selected+="Health";
         for (auto& entry:c.devices) {
             auto& d=entry.second;
-            if ((!effect.all && entry.first!=selected) || !d.maximum || (!d.hp && !d.destroyed)) continue;
+            if ((!effect.all && entry.first!=selected) || effect.excluded_devices.count(entry.first) || !d.maximum || (!d.hp && !d.destroyed)) continue;
             if (d.destroyed || d.hp.value_or(*d.maximum)<*d.maximum) {
                 d.hp=d.maximum;d.destroyed=d.critical=false;changed=true;
             }
@@ -128,28 +133,40 @@ bool apply_equipment(CombatState& s,const EquipmentEffect& effect) {
     return changed;
 }
 std::optional<EquipmentEffect> poll_bot_equipment(EquipmentState& equipment,CombatState& state,
-                                                   double now,bool stunned) {
-    bool eligible=false;
-    EquipmentEffect effect;
+                                                   double now,bool stunned,int skill) {
+    if(skill<0 || skill>3)throw std::invalid_argument("Invalid Bot equipment skill");
+    if(skill==0){equipment.auto_pending_since.reset();equipment.ai_pending_since.reset();return std::nullopt;}
+    bool eligible=false;EquipmentEffect effect;
     if (equipment.kind==EquipmentKind::extinguisher) {
-        if (!equipment.autoactivate) return std::nullopt;
         eligible=state.critical.fire;effect.action=EquipmentAction::extinguish_fire;
     } else if (equipment.kind==EquipmentKind::repairkit) {
         effect.action=EquipmentAction::repair_devices;effect.all=equipment.repair_all;
-        bool damaged=false,worth=false;
-        for (const auto& entry:state.critical.devices) {
-            const auto& d=entry.second;
-            if (d.destroyed) {damaged=worth=true;break;}
-            if (d.critical) {damaged=true;
-                if (entry.first=="ammoBayHealth" || entry.first=="engineHealth" || entry.first=="gunHealth") worth=true;}
+        const std::pair<const char*,bool> priority[]={
+            {"gunHealth",true},{"engineHealth",true},{"turretRotatorHealth",true},
+            {"ammoBayHealth",false},{"gunHealth",false},{"engineHealth",false},
+            {"turretRotatorHealth",false},{"surveyingDeviceHealth",true},{"surveyingDeviceHealth",false},
+            {"fuelTankHealth",false},{"radioHealth",true},{"radioHealth",false},
+            {"leftTrackHealth",true},{"rightTrackHealth",true}};
+        for(const auto& row:priority) {
+            const std::string name=row.first;
+            if(skill==1 && (name=="leftTrackHealth"||name=="rightTrackHealth"))continue;
+            const auto found=state.critical.devices.find(name);if(found==state.critical.devices.end())continue;
+            const auto& device=found->second;
+            if(row.second?device.destroyed:(!device.destroyed && device.critical)){effect.selected=name;eligible=true;break;}
         }
-        eligible=equipment.repair_all && damaged && worth;
+        if(effect.all)for(const auto& entry:state.critical.devices) {
+            if((entry.first=="fuelTankHealth" && entry.second.destroyed) ||
+               ((entry.first=="leftTrackHealth"||entry.first=="rightTrackHealth") && !entry.second.destroyed && entry.second.critical))
+                effect.excluded_devices.insert(entry.first);
+        }
     } else if (equipment.kind==EquipmentKind::medkit) {
         effect.action=EquipmentAction::restore_crew;effect.all=equipment.repair_all;
-        eligible=(stunned || !state.critical.crew_ko.empty()) && (equipment.repair_all || stunned);
+        for(const char* name:{"loader1","loader2","gunner1","gunner2","driver","commander","radioman1","radioman2"})
+            if(state.critical.crew_ko.count(name)){effect.selected=name;break;}
+        eligible=!effect.selected.empty() || (stunned && skill!=1);
         effect.clear_stun=stunned;effect.stun_base_end_server_time_ms=state.stun_end_server_time_ms;
     } else {equipment.ai_pending_since.reset();return std::nullopt;}
-    auto& pending=equipment.kind==EquipmentKind::extinguisher ? equipment.auto_pending_since : equipment.ai_pending_since;
+    auto& pending=equipment.kind==EquipmentKind::extinguisher && equipment.autoactivate ? equipment.auto_pending_since : equipment.ai_pending_since;
     if (!eligible || equipment.uses_left==0 || now<equipment.ready_at) {pending.reset();return std::nullopt;}
     if (!pending) {
         pending=now;
@@ -307,6 +324,7 @@ CriticalTickResult advance_critical(CombatState& s,double dt,double now,
     CriticalTickResult out;
     if (!s.alive || s.health<=0 || dt<=0.) return out;
     auto& c=s.critical;
+    if(const auto* fitting=crew_factors_row(c)){const double base=c.fitting->rows.front().repair;if(base>0.)repair_factor*=fitting->repair/base;}
     const auto before_repair=c;
     for (auto& entry:c.devices) {
         auto& d=entry.second;
@@ -348,7 +366,7 @@ CriticalTickResult advance_critical(CombatState& s,double dt,double now,
         }
         if (terminal) {out.fire_damage=std::max(out.fire_damage,s.health);break;}
     }
-    if (now>=end) extinguish(c);
+    if (now>=end || out.fire_damage>=s.health) extinguish(c);
     if (c.fire) {c.fire_elapsed=std::min(10.,elapsed+dt);c.fire_timer=std::max(0.,std::min(.999999,c.fire_timer));}
     else c.fire_elapsed=c.fire_timer=0.;
     const auto fire_events=critical_events(before_fire,c,"fire");
@@ -356,7 +374,8 @@ CriticalTickResult advance_critical(CombatState& s,double dt,double now,
     if (out.fire_damage>0) {
         s.health=std::max(0,s.health-out.fire_damage);s.display_health=s.health;s.alive=s.health>0;
         if (!s.alive) {const auto before_terminal=c;terminal_critical(s);
-            out.events=critical_events(before_terminal,c,"fire");c.fire_elapsed=c.fire_timer=0.;s.has_reposition=false;
+            const auto terminal_events=critical_events(before_terminal,c,"fire");
+            out.events.insert(out.events.end(),terminal_events.begin(),terminal_events.end());c.fire_elapsed=c.fire_timer=0.;s.has_reposition=false;
             s.death_reason=1;s.speed=0.;s.movement_direction=s.rotation_direction=0;s.has_target=false;}
     }
     out.changed=out.changed || out.fire_damage>0;

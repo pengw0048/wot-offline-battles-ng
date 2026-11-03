@@ -50,6 +50,7 @@ struct Human {
     Body body;
     std::optional<std::array<double,8>> hydraulic_body;
     Profile profile;
+    std::optional<stock_native_vehicle_stack::Identity> stack_carrier;
     bool checkpoint_field_present=false,checkpoints_valid=true;
     std::vector<Checkpoint> checkpoints;
     std::vector<Receipt> receipts;
@@ -102,7 +103,7 @@ public:
     void acknowledge(ID player,ID sequence);
     void consume(std::map<ID,Actor>&,const std::vector<Human>&,World&,double now);
     void translations(std::map<ID,Actor>&,const std::vector<Human>&,
-        const std::map<ID,Point>& starts,ID sample_us,const std::vector<ID>& owner_order={});
+        const std::map<ID,Point>& starts,ID sample_us,const std::vector<ID>& owner_order={},double elapsed=0.);
     // dictionary_order is the fixed Python integer-key body traversal order.
     std::vector<Report> settle(std::map<ID,Actor>&,const std::vector<Human>&,
         const std::vector<ID>& dictionary_order,double dt,double now,World&,const std::vector<ID>& owner_order={});

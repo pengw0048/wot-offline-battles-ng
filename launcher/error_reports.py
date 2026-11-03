@@ -29,6 +29,11 @@ try:
 except ImportError:
     import report_environment
 
+try:
+    from . import sound_report
+except ImportError:
+    import sound_report
+
 
 SESSION_SCHEMA = 1
 SESSION_STATE_FILENAME = "latest-error-report-session.json"
@@ -202,15 +207,23 @@ def _safe_dump_directory(directory, create=False):
                 not stat.S_ISDIR(value.st_mode)):
             raise core.LauncherError(
                 "The diagnostic dump folder is not a regular directory.")
-    try:
-        contained = os.path.commonpath(
-            (os.path.realpath(base), os.path.realpath(directory))) == (
-                os.path.realpath(base))
-    except ValueError:
-        contained = False
+    contained = _same_directory_parent(base, directory)
     if not contained:
         raise core.LauncherError("The diagnostic dump folder is unsafe.")
     return True
+
+
+def _same_directory_parent(base, directory):
+    """Check the actual parent identity, including Windows package redirection.
+
+    MSIX may resolve an existing child into LocalCache while realpath(base)
+    retains the virtual spelling. Both names still identify the same directory.
+    Reparse points are rejected by the caller before this identity check.
+    """
+    try:
+        return os.path.samefile(base, os.path.dirname(os.path.realpath(directory)))
+    except (OSError, ValueError):
+        return False
 
 
 def _prepare_session_dump_directory(session_id):
@@ -322,14 +335,14 @@ def _prepare_session_server_directory(session_id):
     for candidate in (base, directory):
         if os.path.lexists(candidate):
             value = os.lstat(candidate)
-            if stat.S_ISLNK(value.st_mode) or not stat.S_ISDIR(value.st_mode):
+            if (_is_reparse_point(value) or stat.S_ISLNK(value.st_mode) or
+                    not stat.S_ISDIR(value.st_mode)):
                 raise core.LauncherError(
                     "The diagnostic server log folder is not a regular "
                     "directory.")
         else:
             os.makedirs(candidate)
-    if os.path.commonpath((os.path.realpath(base), os.path.realpath(directory))
-                          ) != os.path.realpath(base):
+    if not _same_directory_parent(base, directory):
         raise core.LauncherError(
             "The diagnostic server log folder is unsafe.")
     return directory
@@ -428,6 +441,9 @@ def begin_session(game_root, needs_worker=False, local_server=False,
                   session_id=None, started_at=None):
     """Replace the report boundary before any process for a game starts."""
     previous = _read_state()
+    # Invalidate the old boundary before any fallible preparation. An export
+    # after failed startup must never silently collect the previous game.
+    _write_state({"schema": SESSION_SCHEMA, "initializing": True})
     if isinstance(previous, dict):
         try:
             if _recorded_dump_layout(previous, required=False) is not None:
@@ -1054,6 +1070,7 @@ def create_report(now=None):
     included_roles = []
     included_files = []
     collected = []
+    sound_scanners = {}
     try:
         with zipfile.ZipFile(
                 temporary, "w", compression=zipfile.ZIP_DEFLATED,
@@ -1068,7 +1085,9 @@ def create_report(now=None):
                 stream, length = opened
                 try:
                     archive_name = _ARCHIVE_FILENAMES[role]
-                    _write_slice(archive, archive_name, stream, length)
+                    scanner = sound_report.SoundScanner() if role in ('visible-client', 'hidden-worker') else None
+                    _write_slice(archive, archive_name, stream, length, observer=scanner)
+                    if scanner is not None:sound_scanners[role] = scanner
                 finally:
                     stream.close()
                 included_roles.append(role)
@@ -1111,6 +1130,13 @@ def create_report(now=None):
             # Generated last so that a failure inside them cannot cost the
             # logs and dumps that are already in the archive.
             if collected:
+                try:
+                    sound_text = sound_report.describe(sound_scanners, session.get('gameRoot'))
+                except Exception as error:
+                    sound_text = json.dumps(dict(error=str(error), stage='sound_report_collection'))
+                if sound_text:
+                    written = _write_text(archive, 'sound-analysis.json', sound_text)
+                    if written:included_files.append(written)
                 for archive_name, text in _describe_environment(
                         session, session.get("gameRoot")):
                     written = _write_text(archive, archive_name, text)

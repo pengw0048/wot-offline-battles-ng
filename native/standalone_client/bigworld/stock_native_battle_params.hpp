@@ -1,4 +1,5 @@
 #pragma once
+#include "stock_native_bot_combat.hpp"
 // The vehicle parameter law: loadout, equipment and effective parameters (loadout.py, equipment_mechanics.py, effective_params.py).
 // Stock #1513 descriptors, crews and artefacts are Python handles; every result here is C++ data.
 #include "stock_native_battle.hpp"
@@ -85,6 +86,9 @@ SpottingProfile spottingProfile(PyObject* descriptor, PyObject* crew, double lev
 // Whether a stationary-only device finished its activation delay.
 inline bool stillDeviceActive(double still_seconds, double delay_seconds) { return still_seconds >= std::max(0.0, delay_seconds); }
 
+// All native crew/fire factor states for one immutable Bot fitting, frozen at creation.
+std::shared_ptr<const wot::offline_bot_step::CrewFactors> botCrewFactors(PyObject* descriptor,std::optional<std::int64_t> season={});
+
 // ---- equipment_mechanics.py ---------------------------------------------------------------------------------
 extern const std::set<std::string> ACTIVATION_DEVICE_NAMES, ACTIVATION_CREW_NAMES;
 // One exact consumable projected from its descriptor (the immutable wire contract).
@@ -104,7 +108,7 @@ struct EquipmentContract {
 std::string equipmentKind(PyObject* descriptor);
 EquipmentContract projectEquipment(PyObject* descriptor, double reaction_seconds = 0.);
 // The three Bot defaults from this client's equipment cache (vehicles.g_cache).
-std::vector<EquipmentContract> defaultBotConsumables(PyObject* cache);
+std::vector<EquipmentContract> defaultBotConsumables(PyObject* cache, int skill = 3);
 // The strict runtime projection of one wire contract (equipment_mechanics._validate_contract).
 EquipmentContract validateContract(const Value& contract);
 // The fixed Bot consumable ledger: from manifest `botConsumables` rows, else recovered from wire snapshots.

@@ -19,7 +19,7 @@ from prepare_offline_fork import (
     ACCOUNT_ATTEMPT, ADAPTERS, BOOTSTRAP_PATH, COMPAT_PATH, ENTRY_PATH, ENTRY_SOURCE,
     INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT, PINNED_RESOURCES,
     NATIVE_MODULE_ROOT, RETIRED, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
-    prepare)
+    prepare, adapt_bot_fittings)
 
 PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
 ROOT_COMPAT = ROOT.parents[1] / 'src/res/scripts/client/gui/mods/offline_lan_0922/compat.py'
@@ -73,9 +73,9 @@ class OfflineForkCommandTests(unittest.TestCase):
 
 class OfflineForkPreparationTests(unittest.TestCase):
     def setUp(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('The fixed v0.10.1 source input is required')
+            self.skipTest('The pinned v1.1.1 source input is required')
         self.original = Path(source)
         self.temporary = tempfile.TemporaryDirectory(prefix='wot-fork-prepare-')
         self.addCleanup(self.temporary.cleanup)
@@ -102,6 +102,23 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.assertEqual(outputs, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in outputs})
         self.assertEqual(inputs, {p.relative_to(self.source): p.read_bytes()
                                  for p in self.source.rglob('*') if p.is_file()})
+
+    def test_bot_ammunition_header_preserves_upstream_tables(self):
+        prepare(self.source, self.output)
+        source = self.source / NATIVE_MATH_PATH.with_name('default_loadouts.py')
+        tree = ast.parse(source.read_text())
+        assignments = {n.targets[0].id: n.value for n in tree.body
+                       if isinstance(n, ast.Assign) and len(n.targets) == 1
+                       and isinstance(n.targets[0], ast.Name)}
+        gold = ast.literal_eval(assignments['GOLD_SHELLS'].args[0])
+        guns = ast.literal_eval(assignments['GUN_AMMUNITION'])
+        header = (self.output / 'native/offline_bot_ammo_data.hpp').read_text()
+        for shell in gold:
+            self.assertIn('    ' + json.dumps(shell) + ',', header)
+        for gun, shells in guns.items():
+            row = '    {' + json.dumps(gun) + ', {' + ', '.join(map(json.dumps, shells)) + '}},'
+            self.assertIn(row, header)
+        self.assertEqual(header.count('    '), len(gold) + len(guns))
 
     def test_pinned_catalogs_are_staged_at_the_runtime_config_root(self):
         prepare(self.source, self.output)
@@ -174,7 +191,10 @@ class OfflineForkPreparationTests(unittest.TestCase):
         for relative in pinned - retired:
             original = (resources / relative).read_bytes()
             output = (runtime / relative).read_bytes()
-            if relative in adapted:
+            if relative == NATIVE_MATH_PATH.with_name('bot_fittings.py').relative_to(PINNED_RESOURCES):
+                battle = (self.source / NATIVE_MATH_PATH.with_name('bot_runtime.py')).read_text()
+                self.assertEqual(output.decode('utf-8'), adapt_bot_fittings(original.decode('utf-8'), battle))
+            elif relative in adapted:
                 adapt = ADAPTERS[PINNED_RESOURCES / relative]
                 self.assertEqual(output, adapt(original.decode('utf-8')).encode('utf-8'))
                 self.assertNotEqual(output, original)
@@ -185,7 +205,8 @@ class OfflineForkPreparationTests(unittest.TestCase):
         manifest = json.loads((self.output / 'offline-res.json').read_text())
         self.assertEqual(manifest['revision'], PINNED_COMMIT)
         self.assertEqual(manifest['files'], len(shipped))
-        self.assertEqual(manifest['adapted'], sorted(p.as_posix() for p in ADAPTERS))
+        self.assertEqual(manifest['adapted'], sorted([p.as_posix() for p in ADAPTERS] +
+            [NATIVE_MATH_PATH.with_name('bot_fittings.py').as_posix()]))
 
     def test_staged_customization_style_zero_is_a_terminal_uninstall(self):
         # The NG root gameplay tree is older than this pinned runtime. Exercise

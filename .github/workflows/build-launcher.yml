@@ -25,7 +25,7 @@ jobs:
       - name: Install pinned Windows packager
         run: >-
           python -m pip install
-          -r server/requirements-windows-build.txt Pillow==12.3.0
+          -r launcher/requirements-build.txt
       - name: Take the selected NG client package
         shell: pwsh
         env:
@@ -94,6 +94,7 @@ jobs:
           retired_paths = stage_payload.NG_CLIENT_EXCLUDED_RELATIVE_PATHS
           retired_sidecars = frozenset((
               'org.colorfulmeans.offline_lan_0922_0.10.1.wotmod',
+              'org.colorfulmeans.offline_lan_0922_1.1.1.wotmod',
               'recorder-runtime.zip',
           ))
 

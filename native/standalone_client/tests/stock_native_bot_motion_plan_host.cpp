@@ -12,7 +12,11 @@ struct Queries:MotionQueryWorld {
     }
 };
 int main(){std::cout<<std::setprecision(17);Queries world;MotionPlan plan(world);std::string op;
-while(std::cin>>op){if(op=="begin"){std::set<std::int64_t> live;int n;std::cin>>n;for(int i=0;i<n;++i){std::int64_t id;std::cin>>id;live.insert(id);}plan.beginFrame(live);continue;}
+while(std::cin>>op){if(op=="endpoint"){
+    MotionPlanInput in;double origin_x,origin_z,heading,length;std::cin>>in.position[0]>>in.position[2]>>origin_x>>origin_z>>heading>>length;
+    in.id=1;in.recovery="short_forward_escape";in.throttle=1.;world.sample.clear=true;in.recovery_probe_origin=Point{{origin_x,0.,origin_z}};in.recovery_probe_yaw=heading;in.recovery_probe_length=length;
+    const auto r=plan.prepare(in);std::cout<<'['<<r.maximum_distance.value_or(-1.)<<','<<r.throttle<<','<<r.escape_complete<<"]\n";continue;
+}if(op=="begin"){std::set<std::int64_t> live;int n;std::cin>>n;for(int i=0;i<n;++i){std::int64_t id;std::cin>>id;live.insert(id);}plan.beginFrame(live);continue;}
 if(op=="end"){plan.endFrame();std::cout<<"[";bool first=true;for(const auto&v:plan.waiting()){if(!first)std::cout<<",";first=false;std::cout<<"["<<v.first<<","<<v.second<<"]";}std::cout<<"]\n";continue;}
 MotionPlanInput in;int has_move,has_probe,has_clearance;double probe,clearance;Point move;
 std::cin>>in.id>>in.position[0]>>in.position[1]>>in.position[2]>>in.yaw>>in.speed>>in.turn_speed>>in.throttle>>in.turn>>in.step>>in.now>>in.half_length>>in.terrain_pitch>>in.grounded>>in.airborne>>in.decision_due>>in.refresh_control>>in.exact_resolver>>in.baked>>in.movement_intent>>in.cell_size>>in.recovery>>has_move>>move[0]>>move[1]>>move[2]>>has_probe>>probe>>has_clearance>>clearance;

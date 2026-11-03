@@ -10,8 +10,8 @@ constexpr double pi=3.14159265358979323846;
 const std::array<std::string,9> devices{{"ammoBayHealth","engineHealth","fuelTankHealth","gunHealth",
     "leftTrackHealth","radioHealth","rightTrackHealth","surveyingDeviceHealth","turretRotatorHealth"}};
 const std::array<std::string,8> crew{{"commander","driver","gunner1","gunner2","loader1","loader2","radioman1","radioman2"}};
-constexpr std::array<double,37> scales{{0.,0.,10000.,10000.,10000.,100000.,100000.,100000.,100000.,100000.,
-    10000.,0.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,0.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,100000.,100000.}};
+constexpr std::array<double,38> scales{{0.,0.,10000.,10000.,10000.,100000.,100000.,100000.,100000.,100000.,
+    10000.,0.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,0.,0.,0.,0.,0.,1000000.,1000000.,0.,0.,100000.,100000.,100000.}};
 double wrapped(double value)
 {const double shifted=value+pi;double result=std::fmod(shifted,2.*pi);if(result<0.)result+=2.*pi;return result-pi;}
 ID integral(double value)
@@ -49,7 +49,7 @@ std::vector<std::optional<double>> edge(const Input& in,double now)
         out.push_back(group&&!(in.flags&group)?std::nullopt:std::optional<double>(in.scalars[index]));
     };
     const auto bit=[&](std::uint32_t flag){out.push_back(bool(in.flags&flag));};
-    scalar(0);scalar(11);scalar(12);scalar(13,Ammo);bit(AmmoReloadPending);scalar(17);scalar(14,Clip);scalar(15,Clip);
+    scalar(0);scalar(11);scalar(12);scalar(13,Ammo);bit(AmmoReloadPending);bit(AmmoMagazineStarted);scalar(17);scalar(14,Clip);scalar(15,Clip);
     bit(BurstActive);for(int i:{18,19,20,22,21})scalar(i,Burst);
     scalar(24,Siege);scalar(26,Siege);scalar(27);bit(Alive);scalar(29);scalar(30);scalar(33);scalar(28);bit(WorldPose);bit(RouteWreckBlocked);
     out.push_back(in.flags&RamMotion?std::optional<double>(double(in.motions.size())):std::nullopt);
@@ -58,7 +58,9 @@ std::vector<std::optional<double>> edge(const Input& in,double now)
         for(double v:motion_values(m))out.push_back(v);
         out.push_back(bool(m.player_hydraulic_body));if(m.player_hydraulic_body)for(double v:*m.player_hydraulic_body)out.push_back(v);
     }
-    scalar(34);
+    scalar(34);bit(LocalCombatManoeuvre);
+    if(in.flags&AimFeedback) {out.push_back(in.aim_feedback_kind);out.push_back(double(in.aim_feedback_id));out.push_back(bool(in.flags&AimFeedbackAligned));}
+    else {out.push_back(std::nullopt);out.push_back(std::nullopt);out.push_back(std::nullopt);}
     out.push_back(double(in.ammunition.size()));for(int v:in.ammunition)out.push_back(v);
     out.push_back(double(in.equipment.size()));
     for(const auto& e:in.equipment) {
@@ -84,7 +86,7 @@ std::vector<ID> encode(const Input& in,double now)
         double value=in.scalars[index];
         if(!std::isfinite(value))throw std::invalid_argument("Nonfinite native bot scalar");
         if((index==35||index==36)&&!(in.flags&ShotAngles)){row.push_back(0);continue;}
-        if(index==6||index==7||index==35)value=wrapped(value);
+        if(index==6||index==7||index==35||index==37)value=wrapped(value);
         if(index==2||index==4)value=clamp(value,-2000.,2000.);
         else if(index==3)value=clamp(value,-1000.,1000.);
         else if(index==9||index==36)value=clamp(value,-1.2,1.2);
@@ -149,6 +151,13 @@ std::vector<ID> encode(const Input& in,double now)
             if(bodies){row.push_back(m.player_hydraulic_body?1:0);if(m.player_hydraulic_body)for(unsigned i=0;i<8;++i)row.push_back(fixed((*m.player_hydraulic_body)[i],i<3?10000.:100000.));}
         }
     }
+    if(in.flags&AimFeedback) {
+        if(in.aim_feedback_kind<0||in.aim_feedback_kind>2||in.aim_feedback_id<0||
+           bool(in.aim_feedback_kind)!=bool(in.aim_feedback_id)||!std::isfinite(in.aim_feedback_error)||
+           in.aim_feedback_error<0.||in.aim_feedback_error>pi)
+            throw std::invalid_argument("Invalid native aim feedback");
+        row.insert(row.end(),{in.aim_feedback_kind,in.aim_feedback_id,fixed(in.aim_feedback_error,100000.)});
+    } else if(in.flags&AimFeedbackAligned) throw std::invalid_argument("Aim alignment without feedback");
     return row;
 }
 bool Signature::operator==(const Signature& other)const

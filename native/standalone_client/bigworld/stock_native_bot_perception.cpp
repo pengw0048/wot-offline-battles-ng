@@ -40,9 +40,9 @@ void Perception::begin(const offline_simulation::TickToken& token,const std::vec
     double now,int budget,bool include_humans,std::uint64_t phase)
 {
     for(auto it=sampled_poses_.begin();it!=sampled_poses_.end();)
-        if(it->first.second+12.<now)it=sampled_poses_.erase(it);else ++it;
+        if(it->first.second+14.<now)it=sampled_poses_.erase(it);else ++it;
     for(auto it=ambiguous_samples_.begin();it!=ambiguous_samples_.end();)
-        if(it->second+12.<now)it=ambiguous_samples_.erase(it);else ++it;
+        if(it->second+14.<now)it=ambiguous_samples_.erase(it);else ++it;
     std::vector<c::ActorConfig> configs;std::vector<c::ActorSample> samples;
     std::vector<Key> order;std::vector<v::FrontierActor> frontiers;
     std::map<Key,Actor> actors;
@@ -118,7 +118,7 @@ void Perception::events(bool aggregate)
             ambiguous_samples_.insert(identity);
         sampled_poses_[identity]=frozen;
         auto& memory=remembered_[k];memory.pose=frozen;
-        memory.until=std::max(memory.until,event.sampled_at+std::min(12.,std::max(0.,event.duration)));
+        memory.until=std::max(memory.until,event.sampled_at+std::min(14.,std::max(0.,event.duration)));
         if(aggregate) {
             auto& observation=observations_[k];observation.visible=true;observation.pose=frozen;
             (event.observer.kind==offline_simulation::ActorKind::Human?observation.human_observers:

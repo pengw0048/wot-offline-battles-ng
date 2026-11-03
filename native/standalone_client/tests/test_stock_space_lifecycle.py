@@ -681,9 +681,9 @@ class SpaceLifecycleTests(unittest.TestCase):
     FORK_TREES = ('native', 'src', 'destructibles', 'foliage', 'navgraphs')
 
     def generated_compat(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
-            self.skipTest('WOT_FORK_0101_SOURCE required for the pinned compat')
+            self.skipTest('WOT_FORK_SOURCE required for the pinned compat')
         cls = type(self)
         # Only a completed prepare() counts; a partial tree is regenerated.
         if getattr(cls, 'generated', None) is None:
@@ -692,7 +692,7 @@ class SpaceLifecycleTests(unittest.TestCase):
             if not (fork / 'fork-source.json').is_file():
                 missing.append('fork-source.json')
             if missing:
-                self.fail('WOT_FORK_0101_SOURCE lacks pinned inputs: ' + ', '.join(missing))
+                self.fail('WOT_FORK_SOURCE lacks pinned inputs: ' + ', '.join(missing))
             spec = importlib.util.spec_from_file_location('prepare_offline_fork', ROOT / 'bigworld/prepare_offline_fork.py')
             module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
             source, generated = self.directory / 'fork', self.directory / 'generated'

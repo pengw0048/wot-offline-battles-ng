@@ -13,6 +13,7 @@ struct StrategicOrder {
     stock_native_bot_planner::Order drive;
     stock_native_bot_navigation::Strategy navigation;
     std::string signature;
+    bool empty_ammo=false,hull_owned=false;
 };
 struct PlanningSnapshot {
     offline_navigation::MapInput map;
@@ -24,6 +25,7 @@ struct PlanningSnapshot {
     std::uint64_t hull_revision=0,proof_revision=0;
     std::int64_t order_revision=-1;
     stock_native_bot_strategy::Director director;
+    std::map<int,std::pair<stock_native_bot_navigation::Point,double>> objective_bases;
     std::map<std::int64_t,stock_native_bot_planner::ActorMemory> planner;
     stock_native_bot_planner::TrafficSnapshot traffic;
     std::map<std::int64_t,stock_native_bot_navigation::NavigationActor> actors;

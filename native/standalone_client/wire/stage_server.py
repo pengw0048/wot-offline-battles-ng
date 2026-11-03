@@ -73,7 +73,8 @@ EDITS = (
     # Carry the visible native body's applied pose with the accepted input.
     ('            player.vehicle = vehicle\n',
      '            player.vehicle = vehicle\n            player.hydraulic_body = None\n', 1),
-    ('    "up_cosine",\n))\n', '    "up_cosine", "hydraulic_body",\n))\n', 1),
+    ('    "up_cosine", "wreck_pose",\n))\n',
+     '    "up_cosine", "wreck_pose", "hydraulic_body",\n))\n', 1),
     ('    up_cosine: float = 1.0\n',
      '    up_cosine: float = 1.0\n    hydraulic_body: Optional[tuple] = None\n', 1),
     ('            player.roll = 0.0\n',
@@ -91,9 +92,11 @@ EDITS = (
      '                return ("hydraulic_body_shape", "hydraulic_body"), parsed\n'
      '        reason, field = self._modern_input_envelope_failure(\n'
      '            player, message, validate_contacts=inactive_modern)\n', 1),
-    ('                    player.client_position = True\n',
+    ('                    player.client_position = True\n'
+     '                    self._record_vehicle_travel(\n',
      '                    player.hydraulic_body = parsed["hydraulic_body"]\n'
-     '                    player.client_position = True\n', 1),
+     '                    player.client_position = True\n'
+     '                    self._record_vehicle_travel(\n', 1),
     ('        player.pose_history.append(sample)\n',
      '        if player.hydraulic_body is not None:\n'
      '            sample["hydraulic_body"] = player.hydraulic_body\n'
@@ -208,7 +211,7 @@ def ram_motion_source(source):
 def bot_state_codec_source(source):
     source = _receipt_replace(source, 'from gui.mods.offline_lan_0922 import tank_contact_ledger, ram_motion',
         'from gui.mods.offline_lan_0922 import tank_contact_ledger\nimport battle_wire_ram_motion as ram_motion', 1)
-    source = _receipt_replace(source, 'F_HAS_RAM_MOTION = 1 << 21', 'F_HAS_RAM_MOTION = 1 << 21\nF_HAS_RAM_BODIES = 1 << 22', 1)
+    source = _receipt_replace(source, 'F_HAS_RAM_MOTION = 1 << 21', 'F_HAS_RAM_MOTION = 1 << 21\nF_HAS_RAM_BODIES = 1 << 26', 1)
     source = _receipt_replace(source, '    row = []\n    for name, scale in SCALARS:',
         '    if any(len(m) == 22 and m[21].get("hydraulic_body") is not None for m in state.get("ram_motion", ())):\n'
         '        flags |= F_HAS_RAM_BODIES\n    row = []\n    for name, scale in SCALARS:', 1)

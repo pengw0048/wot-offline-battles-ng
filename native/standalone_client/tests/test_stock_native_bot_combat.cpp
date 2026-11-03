@@ -41,6 +41,11 @@ int main() {
         *burning.critical.devices["ammoBayHealth"].hp==90. &&
         *burning.critical.devices["engineHealth"].hp==40. &&
         burning.critical.devices["fuelTankHealth"].destroyed);
+    CombatState fatal;fatal.health=5;fatal.maximum_health=100;fatal.critical.fire=true;
+    const auto fatal_tick=advance_critical(fatal,1.,1.,.57,1.);
+    assert(!fatal.alive && !fatal.critical.fire && fatal_tick.fire_after && !fatal_tick.fire_after->fire);
+    assert(fatal_tick.fire_before && fatal_tick.fire_before->fire);
+    assert(!fatal_tick.events.empty());
     EquipmentEffect extinguish;extinguish.action=EquipmentAction::extinguish_fire;
     assert(apply_equipment(burning,extinguish));
     assert(!burning.critical.fire && *burning.critical.devices["fuelTankHealth"].hp==50.);
@@ -50,6 +55,28 @@ int main() {
     assert(!poll_bot_equipment(kit,burning,1.,false));
     assert(poll_bot_equipment(kit,burning,1.1,false) && kit.uses_left==0);
     assert(*burning.critical.devices["engineHealth"].hp==100.);
+    CombatState regular;regular.health=regular.maximum_health=100;
+    regular.critical.devices["leftTrackHealth"]={0.,100.,50.,true,false,100.};
+    EquipmentState small;small.kind=EquipmentKind::repairkit;small.uses_left=1;
+    assert(!poll_bot_equipment(small,regular,0.,false,1));
+    assert(!poll_bot_equipment(small,regular,1.,false,1));
+    regular.critical.devices["gunHealth"]={0.,100.,50.,true,false,100.};
+    assert(!poll_bot_equipment(small,regular,2.,false,1));
+    auto small_effect=poll_bot_equipment(small,regular,3.,false,1);
+    assert(small_effect && small_effect->selected=="gunHealth" && regular.critical.devices["leftTrackHealth"].destroyed);
+    CombatState large;large.health=large.maximum_health=100;
+    large.critical.devices["gunHealth"]={0.,100.,50.,true,false,100.};
+    large.critical.devices["fuelTankHealth"]={0.,100.,50.,true,false,100.};
+    large.critical.devices["leftTrackHealth"]={30.,100.,50.,false,true,100.};
+    EquipmentState large_kit;large_kit.kind=EquipmentKind::repairkit;large_kit.uses_left=1;large_kit.repair_all=true;
+    assert(!poll_bot_equipment(large_kit,large,0.,false,3));
+    auto large_effect=poll_bot_equipment(large_kit,large,1.,false,3);
+    assert(large_effect && !large.critical.devices["gunHealth"].destroyed && large.critical.devices["fuelTankHealth"].destroyed &&
+        *large.critical.devices["leftTrackHealth"].hp==30.);
+    CombatState hand;hand.health=hand.maximum_health=100;hand.critical.fire=true;
+    EquipmentState manual;manual.kind=EquipmentKind::extinguisher;manual.uses_left=1;manual.reaction_seconds=5.;
+    assert(!poll_bot_equipment(manual,hand,0.,false,2));assert(!poll_bot_equipment(manual,hand,4.,false,2));
+    assert(poll_bot_equipment(manual,hand,5.,false,2) && !hand.critical.fire);
     for (bool all : {false,true}) for (const char* selected : {"leftTrackHealth","rightTrackHealth"}) {
         CombatState repaired;repaired.health=repaired.maximum_health=100;
         for (const char* name : {"leftTrackHealth","rightTrackHealth"})

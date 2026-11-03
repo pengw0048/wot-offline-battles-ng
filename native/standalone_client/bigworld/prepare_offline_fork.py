@@ -4,6 +4,7 @@ The input tree is never modified. The offline package is staged complete under
 offline-res with only the reviewed independent-client seams adapted.
 """
 import argparse
+import ast
 import re
 import importlib.util
 import json
@@ -19,6 +20,14 @@ _bindings = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bindings)
 METHODS, PINNED_COMMIT, SOURCES = _bindings.METHODS, _bindings.PINNED_COMMIT, _bindings.SOURCES
 patch = _bindings.patch
+_spec = importlib.util.spec_from_file_location(
+    'stage_navigation_map_law', Path(__file__).with_name('stage_navigation_map_law.py'))
+navigation_map_law = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(navigation_map_law)
+_spec = importlib.util.spec_from_file_location(
+    'patch_offline_radio', Path(__file__).with_name('patch_offline_radio.py'))
+radio_patch = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(radio_patch)
 _spec = importlib.util.spec_from_file_location(
     'stock_catalog_identity', Path(__file__).with_name('stock_catalog_identity.py'))
 stock_catalog_identity = importlib.util.module_from_spec(_spec)
@@ -253,6 +262,22 @@ ADAPTERS = {
     # The independent EXE never shows its worker; see patch_stock_worker_runtime.py.
     WORKER_PRESENTATION_PATH: worker_runtime.adapt_worker_presentation,
 }
+def adapt_bot_fittings(source, runtime_source):
+    # Fitting setup is a lobby/descriptor operation. Preserve its exact roster
+    # reader without importing the retired Python battle authority.
+    tree = ast.parse(runtime_source)
+    matches = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+               and node.name == '_descriptor_crew_roster']
+    if len(matches) != 1:
+        raise ValueError('The pinned Bot descriptor roster reader changed')
+    node = matches[0]
+    helper = ''.join(runtime_source.splitlines(True)[node.lineno - 1:node.end_lineno])
+    before = '    from gui.mods.offline_lan_0922.bot_runtime import _descriptor_crew_roster\n'
+    if source.count(before) != 1:
+        raise ValueError('The pinned Bot fitting roster seam changed')
+    return source.replace(before, '', 1) + '\n\n' + helper
+
+
 ADAPTERS[NATIVE_MATH_PATH.with_name('battle_runtime.py')] = battle_shell.battle
 ADAPTERS[NATIVE_MATH_PATH.with_name('authority_worker.py')] = battle_shell.worker
 ADAPTERS[NATIVE_MATH_PATH.with_name('engine_audio.py')] = battle_shell.engine_audio
@@ -271,7 +296,7 @@ ADAPTERS[NATIVE_MATH_PATH.with_name('replay_transport.py')] = wire_bindings.repl
 # recorder and reader modules.
 RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
     'destructibles_sensor.py', 'destructibles_authority.py', 'destructibles_compat.py',
-    'prebaked_destructibles.py', 'native_destructibles.py', 'destructible_layout.py',
+    'prebaked_destructibles.py', 'native_destructibles.py',
     'entities/detached_turret.py', 'entities/turret_obstacles.py', 'rigid_turret.py',
     'entities/native_remote_vehicle.py',
     'world_collision.py', 'native_world.py', 'native_engine_query.py', 'native_motion_core.py',
@@ -282,7 +307,8 @@ RETIRED = frozenset(NATIVE_MATH_PATH.parent / name for name in (
     'ballistics.py', 'battle_visibility.py', 'collision_flags.py', 'critical_statistics.py',
     'environment_push.py', 'gun_pitch_limits.py', 'hull_aiming.py', 'radio.py', 'artillery_controller.py',
     'native_navigation_core.py', 'replay_process.py', 'replay_reader.py',
-    'projectile_manager.py', 'projectile_runtime.py'))
+    'projectile_manager.py', 'projectile_runtime.py',
+    'spg_route_recovery.py', 'spg_route_travel.py', 'artillery_diagnostics.py'))
 
 
 def retired_imports(path, source):
@@ -311,14 +337,19 @@ def stage_runtime(source, staged):
             continue
         output = runtime / path.relative_to(resources)
         output.parent.mkdir(parents=True, exist_ok=True)
-        if relative in ADAPTERS:
+        if relative == NATIVE_MATH_PATH.with_name('bot_fittings.py'):
+            output.write_bytes(adapt_bot_fittings(path.read_bytes().decode('utf-8'),
+                (source / NATIVE_MATH_PATH.with_name('bot_runtime.py')).read_bytes().decode('utf-8')).encode('utf-8'))
+            adapted.append(relative.as_posix())
+        elif relative in ADAPTERS:
             # Bytes, so a Windows build keeps the archive's LF line endings.
             output.write_bytes(ADAPTERS[relative](
                 path.read_bytes().decode('utf-8')).encode('utf-8'))
             adapted.append(relative.as_posix())
         else:
             shutil.copyfile(path, output)
-    if sorted(adapted) != sorted(path.as_posix() for path in ADAPTERS):
+    if sorted(adapted) != sorted([path.as_posix() for path in ADAPTERS] +
+                                  [NATIVE_MATH_PATH.with_name('bot_fittings.py').as_posix()]):
         raise ValueError('The pinned payload is missing an adapted consumer')
     check = subprocess.run([
         sys.executable, str(Path(__file__).parent.parent / 'wire/gen_cpp.py'),
@@ -365,11 +396,52 @@ def stage_native_drive_law(native):
         '#pragma once\n#include <algorithm>\n#include <cmath>\n' + law)
 
 
+def stage_bot_ammo_data(source, native):
+    """Copy fixed upstream ammunition identities without executing source code."""
+    path = source / NATIVE_MATH_PATH.with_name('default_loadouts.py')
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    values = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        name = node.targets[0].id
+        if name not in ('GOLD_SHELLS', 'GUN_AMMUNITION'):
+            continue
+        if name in values:
+            raise ValueError('Duplicate pinned Bot ammunition data: ' + name)
+        value = node.value
+        if name == 'GOLD_SHELLS':
+            if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                    and value.func.id == 'frozenset' and len(value.args) == 1 and not value.keywords):
+                raise ValueError('Pinned gold shell data changed')
+            value = value.args[0]
+        values[name] = ast.literal_eval(value)
+    gold, guns = values.get('GOLD_SHELLS'), values.get('GUN_AMMUNITION')
+    if (not isinstance(gold, tuple) or not gold or len(set(gold)) != len(gold)
+            or not all(isinstance(x, str) and x for x in gold)
+            or not isinstance(guns, dict) or not guns
+            or not all(isinstance(k, str) and k and isinstance(v, tuple) and v
+                       and all(isinstance(x, str) and x for x in v)
+                       for k, v in guns.items())):
+        raise ValueError('Pinned Bot ammunition data has an invalid shape')
+    quote = lambda value: json.dumps(value, ensure_ascii=True)
+    lines = ['#pragma once', '#include <map>', '#include <set>', '#include <string>',
+             '#include <vector>', 'namespace offline_bot_ammo_data {',
+             'static const std::set<std::string> gold_shells = {']
+    lines.extend('    ' + quote(value) + ',' for value in sorted(gold))
+    lines.append('};')
+    lines.append('static const std::map<std::string, std::vector<std::string>> gun_ammunition = {')
+    lines.extend('    {' + quote(key) + ', {' + ', '.join(map(quote, guns[key])) + '}},'
+                 for key in sorted(guns))
+    lines.extend(('};', '}'))
+    (native / 'offline_bot_ammo_data.hpp').write_text('\n'.join(lines) + '\n')
+
+
 def prepare(source, destination):
     source, destination = Path(source), Path(destination)
     identity = json.loads((source / 'fork-source.json').read_text(encoding='utf-8-sig'))
     if identity.get('revision') != PINNED_COMMIT:
-        raise ValueError('The gameplay source must be the pinned v0.10.1 release')
+        raise ValueError('The gameplay source must be the pinned v1.1.1 release')
     with tempfile.TemporaryDirectory(prefix='wot-offline-fork-') as temporary:
         staged = Path(temporary)
         native = staged / 'native'
@@ -380,14 +452,20 @@ def prepare(source, destination):
         for name in SOURCES:
             if not (native / name).is_file():
                 raise ValueError('Missing pinned numerical source: ' + name)
+        for filename, adapt in (('offline_simulation_control.cpp', radio_patch.patch),
+                                ('offline_simulation_control.h', radio_patch.patch_header)):
+            path = native / filename
+            path.write_bytes(adapt(path.read_bytes().decode('utf-8')).encode('utf-8'))
         patch(staged, rotation_query=True)
         stage_native_drive_law(native)
+        navigation_map_law.stage(native)
+        stage_bot_ammo_data(source, native)
         stage_runtime(source, staged)
         # Pinned catalogs with #1513 raw WGDE row identities, at mod_dir().
         stock_catalog_identity.stage(source, staged)
         names = '\n'.join('    "' + name + '",' for name in METHODS)
         (staged / 'offline_fork_methods.hpp').write_text(
-            '// Generated from the validated v0.10.1 method table.\n'
+            '// Generated from the validated v1.1.1 method table.\n'
             'static const char * const OFFLINE_FORK_METHODS[] = {\n' + names + '\n};\n')
         (staged / 'offline_fork_sources.cmake').write_text(
             'set(WOT_OFFLINE_MATH_SOURCES\n' + ''.join(

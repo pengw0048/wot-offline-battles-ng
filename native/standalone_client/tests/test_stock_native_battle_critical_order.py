@@ -8,7 +8,7 @@ import unittest
 from test_stock_native_battle_combat_event import FIXTURE as COMBAT_FIXTURE
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 
 
 def method(source, signature):

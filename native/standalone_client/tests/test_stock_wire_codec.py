@@ -96,6 +96,12 @@ def samples():
         {'type': 'set_team_size', 'team': 2, 'size': 15},
         {'type': 'set_bot_tier_mode', 'mode': 'random'},
         {'type': 'set_bot_skill_mode', 'mode': 'mixed'},
+        {'type': 'set_team_class', 'team': 1, 'class_tag': 'SPG', 'allowed': True},
+        {'type': 'landing_observation', 'round_id': 1, 'authority_epoch': 2,
+         'observation_seq': 4, 'input_seq': 8, 'impact_speed': 9.,
+         'module_contacts': [], 'vehicle_contact': ['bot', 11]},
+        {'type': 'input', 'round_id': 1, 'input_seq': 9, 'wreck_pose': True,
+         'x': 1., 'y': 2., 'z': 3., 'yaw': .2},
     ])
     import replica_split
     tick = next((m for m in messages if m.get('type') == 'snapshot' and 'client_build' not in m
@@ -239,7 +245,7 @@ print('native transport ok %d' % len(received))
 
 class StagedClientTransport(unittest.TestCase):
     def test_native_transport_frames_hello_leave_and_failure(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
         py27 = python27_audit_runtime()
@@ -340,7 +346,7 @@ print('native replay ok %d' % len(rows))
 
 class NativeReplay(unittest.TestCase):
     def test_python27_native_replay_round_trip(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
         py27 = python27_audit_runtime()

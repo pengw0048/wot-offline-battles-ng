@@ -96,7 +96,7 @@ Output Owner::advance(const Input& input,Ground& world) {
         c.spring=spring;
         if (spring && inverted) { c.ground.reset(); continue; }
         const auto local=offset(c,state.pitch,state.roll);
-        const auto point=world_xz(local);
+        auto point=world_xz(local);
         const double ph=probe_height+local[1];
         double low=ph-(spring?c.rest_length:descriptor.rest_length)-.1-sweep;
         double high=0.; std::optional<double> flat_high;
@@ -146,7 +146,7 @@ Output Owner::advance(const Input& input,Ground& world) {
                         const double lo=*expected-.12+delta,hi=std::min(ceiling+delta,ph+o[1]+rise);
                         if (hi<lo) continue;
                         const auto hit=column(px,pz,lo,hi,hi);
-                        if (hit && *hit>=lo-.01 && *hit<=hi+.01) { c.ground=*hit-delta; found=true; break; }
+                        if (hit && *hit>=lo-.01 && *hit<=hi+.01) { c.ground=*hit; c.x+=side; c.z+=forward; point={px,pz}; found=true; break; }
                     }
                     if (found) break;
                 }
@@ -208,25 +208,36 @@ Output Owner::advance(const Input& input,Ground& world) {
         std::abs(p[2]-state.pitch)>1.2||std::abs(p[4]-state.roll)>1.2;
     const bool raised=armed_before&&solved.contacts&&!solved.rigid&&p[0]-state.position[1]>.62;
     bool continuous=false;
-    if(raised&&old_plane&&plane&&motion){const auto checks=support_checkpoints(*old_plane,*plane,*motion,state.position,p[0]);
+    auto recovery_state=state;recovery_state.terrain_pitch=state.pitch;
+    const bool recovery=raised&&support_contact_recovery(recovery_state,contacts,old_plane,motion,
+        state.position[1]+input.height_delta,p[0]);
+    if(raised&&!recovery&&old_plane&&plane&&motion){const auto checks=support_checkpoints(*old_plane,*plane,*motion,state.position,p[0]);
         if(checks){std::vector<std::optional<double>> heights;for(const auto& check:*checks){heights.push_back(column(check.x,check.z,
             check.expected_height-.35,check.expected_height+.35,check.expected_height+.35));}continuous=support_checkpoints_proved(*checks,heights);}}
-    if(invalid||(raised&&!continuous)){out.state.position=input.tick_position;
+    if(invalid||(raised&&!recovery&&!continuous)){out.state.position=input.tick_position;
         out.state.vertical_speed=out.state.pitch_speed=out.state.roll_speed=out.state.support_vertical_speed=0.;
         out.state.support_gradient.reset();out.state.airborne=false;out.outcome.blocked=true;memory_={};return out;}
     auto& s=out.state;s.position[1]=p[0];s.vertical_speed=p[1];s.pitch=s.terrain_pitch=p[2];s.pitch_speed=p[3];s.roll=p[4];s.roll_speed=p[5];
+    out.outcome.raw_impact=solved.impact_speed;
     s.airborne=solved.contacts==0;s.left_flying=!solved.left;s.right_flying=!solved.right;
     s.support_vertical_speed=support;s.support_gradient=support_gradient;
     if(solved.contacts)s.grounded_once=true;
     if(s.airborne){s.support_vertical_speed=0.;s.support_gradient.reset();memory_={};}
     s.ground_plane=solved.contacts&&!s.airborne?plane:std::nullopt;
-    if(before.airborne&&!s.airborne&&vertical_before<0.){const double vy=solved.impact_speed.value_or(vertical_before);double impact=std::max(0.,-vy);
+    const bool rebound=solved.impact_speed && *solved.impact_speed < -descriptor.fall_safe_speed && (before.airborne || s.airborne);
+    if(rebound||(before.airborne&&!s.airborne&&vertical_before<0.)){const double vy=solved.impact_speed.value_or(vertical_before);double impact=std::max(0.,-vy);
         if(motion&&elapsed>0.&&plane){const auto&n=plane->normal;const double scale=std::max({std::abs(n[0]),std::abs(n[1]),std::abs(n[2])});
             if(std::isfinite(scale)&&scale>0.&&n[1]>0.){const double nx=n[0]/scale,ny=n[1]/scale,nz=n[2]/scale;
                 const double length=std::sqrt(nx*nx+ny*ny+nz*nz),vx=(before.position[0]-(*motion)[0])/elapsed,vz=(before.position[2]-(*motion)[2])/elapsed;
                 const double closing=-(vx*nx+vy*ny+vz*nz)/length;if(std::isfinite(closing))impact=std::max(0.,closing);}}
         out.outcome.landing_impact=impact;out.outcome.normal_impact=true;if(plane)out.outcome.landing_normal=plane->normal;witnesses(out,contacts);
     }else if(!before.airborne&&s.airborne){s.turn_speed=0.;s.rotation_direction=0;}
+    for(const auto&c:contacts)if(c.ground) {
+        const auto final=offset(c,s.pitch,s.roll);const double gap=*c.ground-s.position[1]-final[1];
+        if(c.spring?c.compression+gap<=0.:gap< -descriptor.tuning[1])continue;
+        const auto sampled=offset(c,before.pitch,before.roll);const auto xz=world_xz(sampled);
+        out.outcome.support_contacts.push_back({xz[0],*c.ground,xz[1]});
+    }
     return out;
 }
 }

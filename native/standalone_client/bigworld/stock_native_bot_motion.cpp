@@ -225,9 +225,9 @@ void contact(State& s,const Descriptor& d,const ContactResponse& r,double dt,dou
     if(distance>.0001) {
         const double step=std::max(dt,1./120.),heading=std::atan2(move[0],move[1]);
         const Point position=s.position,candidate{{position[0]+move[0],position[1],position[2]+move[1]}};
-        const bool blocked=world.motion(s,d,position,heading,distance/step,step,now,true,false)!=MotionStatus::Clear;
-        if(blocked||!world.pose_progress(s,position,yaw,candidate,yaw)||
-           !world.turret_clear(s,position,yaw,candidate,yaw)) {
+        const bool geometry_clear=world.pose_progress(s,position,yaw,candidate,yaw)&&world.turret_clear(s,position,yaw,candidate,yaw);
+        const bool blocked=geometry_clear?!pass(world.motion(s,d,position,heading,distance/step,step,now,true,true)):true;
+        if(blocked) {
             move={{0.,0.}};push={{0.,0.}};
             if(options.advance_forward) {
                 s.speed=speed;s.contact_forward=retained_contact_speed(speed,s.contact_forward-applied);
@@ -239,6 +239,20 @@ void contact(State& s,const Descriptor& d,const ContactResponse& r,double dt,dou
         s.drive_sweep->movement[0]+=move[0];s.drive_sweep->movement[1]+=move[1];
     }
     s.push_x=push[0];s.push_z=push[1];
+}
+void settle_drive_sweep(State&s) {
+    if(!s.translation_receipt||s.translation_receipt->outcome!=TranslationOutcome::Pending)return;
+    auto&r=*s.translation_receipt;r.outcome=TranslationOutcome::Unrestricted;
+    if(r.fraction>=1.)return;
+    if(r.remote_player_contact){r.outcome=TranslationOutcome::RemotePlayer;return;}
+    if(std::abs(s.speed-r.speed_before)>1.e-9){r.outcome=TranslationOutcome::ContactSolver;return;}
+    if(r.elapsed<=0.){r.outcome=TranslationOutcome::MissingStep;return;}
+    const double sn=std::sin(s.yaw),cs=std::cos(s.yaw);
+    if((r.requested[0]*sn+r.requested[1]*cs)*s.speed<=0.){r.outcome=TranslationOutcome::NotForwardMotor;return;}
+    const double realised=((s.position[0]-r.start[0])*sn+(s.position[2]-r.start[2])*cs)/r.elapsed;
+    const double forced=retained_contact_speed(s.speed,s.contact_forward),motor=s.speed-forced;
+    const double allowed=std::max(0.,std::min(std::abs(motor),(realised-forced)*(motor>=0.?1.:-1.)));
+    s.speed=forced+std::copysign(allowed,motor);r.outcome=TranslationOutcome::MotorSettled;
 }
 void wreck_contact(State& s,const Descriptor& d,const ContactResponse& r,double dt,double now,World& world)
 {
@@ -283,9 +297,9 @@ void wreck_contact(State& s,const Descriptor& d,const ContactResponse& r,double 
             const double end_yaw=old_yaw+omega*dt*fraction;
             if(world.pose_progress(s,before,old_yaw,end,end_yaw)&&
                world.turret_clear(s,before,old_yaw,end,end_yaw)&&
-               world.motion(s,d,before,std::atan2(move[0],move[1]),std::hypot(move[0],move[1])/dt,
-                   dt,now,true,false)==MotionStatus::Clear&&
-               world.rotation(s,d,before,old_yaw,end_yaw,dt,now,0.,move)) {
+               world.rotation(s,d,before,old_yaw,end_yaw,dt,now,0.,move)&&
+               pass(world.motion(s,d,before,std::atan2(move[0],move[1]),std::hypot(move[0],move[1])/dt,
+                   dt,now,true,true))) {
                 s.position[0]=end[0];s.position[2]=end[2];
                 s.yaw=std::atan2(std::sin(end_yaw),std::cos(end_yaw));
                 if(fraction<1.)s.push_yaw=0.;

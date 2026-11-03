@@ -86,15 +86,15 @@ def client(source):
             speed, shell_index, next_shell_index, shell_change_pending,
             pose_time_us, ram_contacts, tank_pushes, turret_pushes,
             destructible_contacts, siege_enabled, pitch, roll,
-            gun_checkpoint, up_cosine)
+            gun_checkpoint, up_cosine, wreck_pose)
 """)
     for name, arguments, call in (
             ('_send_pending_landing_observation', 'self, rebind=False',
              '_native_transport.landing_send_pending(self, rebind)'),
             ('_start_queued_landing_observation', 'self',
              '_native_transport.landing_start_queued(self)'),
-            ('send_landing_observation', 'self, impact_speed, module_contacts=None',
-             '_native_transport.landing_send_observation(self, impact_speed, module_contacts)')):
+            ('send_landing_observation', 'self, impact_speed, module_contacts=None, vehicle_contact=None',
+             '_native_transport.landing_send_observation(self, impact_speed, module_contacts, vehicle_contact)')):
         needle = '    def %s(%s):\n' % (name, arguments)
         if source.count(needle) != 1:
             raise ValueError('The pinned landing entry changed: ' + name)

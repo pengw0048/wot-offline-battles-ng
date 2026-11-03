@@ -365,6 +365,18 @@ bool prepare_vertical_spawn(VerticalState& state, std::optional<double> ground) 
     return true;
 }
 
+bool support_contact_recovery(const VerticalState& state,const std::vector<SuspensionContact>& contacts,
+    const std::optional<SupportPlane>& plane,const std::optional<Point>& motion,double before_height,double solved_height){
+    if(!plane||!motion||std::hypot(state.position[0]-(*motion)[0],state.position[2]-(*motion)[2])>.02||solved_height<=before_height)return false;
+    const double expected=plane->center_y+plane->gradient_x*(state.position[0]-plane->center_x)+plane->gradient_z*(state.position[2]-plane->center_z);
+    double allowance=0.;
+    for(const auto& contact:contacts)if(contact.ground&&std::abs(*contact.ground-expected)<=.2){
+        const auto local=rx(rz({contact.x,contact.y,contact.z},state.roll),state.terrain_pitch);
+        allowance=std::max(allowance,*contact.ground-(before_height+local[1]));
+    }
+    return allowance>.62&&solved_height-before_height<=allowance+.02;
+}
+
 VerticalTrial vertical_trial(const VerticalState& state, Point tick,
     std::optional<Point> motion, std::optional<SupportPlane> plane,
     const std::vector<SuspensionContact>& contacts, const std::array<double,5>& params,
@@ -443,7 +455,9 @@ VerticalOutcome commit_vertical(VerticalState& state, const VerticalTrial& trial
         out.clear_contact_memory=true;
     }
     state.ground_plane=trial.solved.contacts && !state.airborne ? trial.current_plane : std::nullopt;
-    if (before.airborne && !state.airborne && before.vertical_speed<0.) {
+    const auto raw_impact=trial.solved.impact_speed;
+    const bool rebound=raw_impact && *raw_impact < -trial.fall_safe_speed && (before.airborne || state.airborne);
+    if (rebound || (before.airborne && !state.airborne && before.vertical_speed<0.)) {
         const double vy=trial.solved.impact_speed.value_or(before.vertical_speed);
         double impact=std::max(0.,-vy);
         if (trial.motion_position && trial.elapsed>0. && trial.current_plane) {
@@ -542,7 +556,7 @@ static VerticalOutcome advance_detailed_vertical(VerticalState& state, VerticalM
         c.spring=spring;
         if (spring && inverted) { c.ground.reset(); continue; }
         const auto local=offset(c,state.terrain_pitch,state.roll);
-        const auto point=world_xz(local);
+        auto point=world_xz(local);
         const double ph=probe_height+local[1];
         double low=ph-(spring?c.rest_length:descriptor.rest_length)-.1-sweep;
         double high=0.; std::optional<double> flat_high;
@@ -591,7 +605,7 @@ static VerticalOutcome advance_detailed_vertical(VerticalState& state, VerticalM
                         const double lo=*expected-.12+delta,hi=std::min(ceiling+delta,ph+o[1]+rise);
                         if (hi<lo) continue;
                         const auto hit=world.ground(px,pz,lo,hi,hi);
-                        if (hit && *hit>=lo-.01 && *hit<=hi+.01) { c.ground=*hit-delta; found=true; break; }
+                        if (hit && *hit>=lo-.01 && *hit<=hi+.01) { c.ground=*hit; c.x+=side; c.z+=forward; point={px,pz}; found=true; break; }
                     }
                     if (found) break;
                 }
@@ -631,8 +645,10 @@ static VerticalOutcome advance_detailed_vertical(VerticalState& state, VerticalM
     }
     auto trial=vertical_trial(state,tick,motion,plane,contacts,descriptor.parameters,
                               descriptor.tuning,descriptor.maximum_steps,elapsed);
+    trial.fall_safe_speed=descriptor.fall_safe_speed;
     bool continuous=false;
-    if (trial.raised && old_plane && plane && motion) {
+    if(trial.raised)continuous=support_contact_recovery(state,contacts,old_plane,motion,state.position[1],trial.solved.state[0]);
+    if (trial.raised && !continuous && old_plane && plane && motion) {
         const auto checks=support_checkpoints(*old_plane,*plane,*motion,state.position,trial.solved.state[0]);
         if (checks) {
             std::vector<std::optional<double>> heights;
@@ -642,6 +658,7 @@ static VerticalOutcome advance_detailed_vertical(VerticalState& state, VerticalM
         }
     }
     auto result=commit_vertical(state,trial,continuous);
+    result.raw_impact=trial.solved.impact_speed;
     if (result.blocked) {
         const auto restored_plane=before.ground_plane;
         state=before; state.position=tick; state.speed=state.turn_speed=state.push_x=state.push_z=state.vertical_speed=0.;
@@ -680,6 +697,15 @@ static VerticalOutcome advance_detailed_vertical(VerticalState& state, VerticalM
             }
         }
     }
+    if(!result.blocked)for(const auto& c:contacts)if(c.ground) {
+        const auto final=offset(c,state.terrain_pitch,state.roll);
+        const double gap=*c.ground-state.position[1]-final[1];
+        if(c.spring?c.compression+gap<=0.:gap< -descriptor.tuning[1])continue;
+        // Match the original sample's X/Z to its exact roof witness. The
+        // admitted solver may have changed pitch/roll since that cast.
+        const auto sampled=offset(c,trial.original.terrain_pitch,trial.original.roll);
+        const auto xz=world_xz(sampled);result.support_contacts.push_back({xz[0],*c.ground,xz[1]});
+    }
     if (result.clear_contact_memory) memory={};
     return result;
 }
@@ -715,6 +741,71 @@ VerticalOutcome advance_vertical(VerticalState& state, VerticalMemory& memory,
     }
     if (result.blocked) {result.invalidate_motion=true;result.invalidated_yaw=yaw;}
     return result;
+}
+
+std::array<BasicSupportPoint,5> basic_support_status(const VerticalState& state,
+    const SuspensionDescriptor& descriptor, VerticalWorld& world) {
+    const double length=std::max(1.5,descriptor.half_length),width=std::max(1.,descriptor.half_width);
+    const std::array<Point,5> offsets{{{0.,0.,0.},{0.,0.,length},{0.,0.,-length},{width,0.,0.},{-width,0.,0.}}};
+    std::array<BasicSupportPoint,5> rows{};
+    for(unsigned i=0;i<rows.size();++i) {
+        const auto offset=ry(rx(rz(offsets[i],state.roll),state.terrain_pitch),state.yaw);
+        auto& row=rows[i];row.position=add(state.position,offset);
+        const auto& p=row.position;row.ground=world.basic_ground(p[0],p[2],p[1],p[1]+.6);
+        if(!row.ground&&i&&rows[0].ground) {
+            const auto upper=world.basic_ground(p[0],p[2],p[1],{});
+            const double dx=p[0]-state.position[0],dz=p[2]-state.position[2],distance=std::hypot(dx,dz);
+            if(upper&&*upper>p[1]+.6&&distance>=.001) {
+                const int count=std::max(2,int(std::ceil(distance/.5)));
+                const double reach=distance/count*std::sqrt(3.)+.02;
+                double previous=*rows[0].ground;bool continuous=true;
+                for(int k=1;k<=count;++k) {
+                    const double fraction=double(k)/count;
+                    const auto observed=world.basic_ground(state.position[0]+dx*fraction,
+                        state.position[2]+dz*fraction,previous,previous+reach);
+                    if(!observed||std::abs(*observed-previous)>reach){continuous=false;break;}
+                    previous=*observed;
+                }
+                if(continuous&&std::abs(previous-*upper)<=.03){row.ground=upper;row.continuous_rise=true;}
+            }
+        }
+        if(row.ground){const double gap=p[1]-*row.ground;row.valid=row.continuous_rise||(-.6<=gap&&gap<=.8);}
+    }
+    return rows;
+}
+bool select_detailed_support(VerticalState& state,const SuspensionDescriptor& descriptor,VerticalWorld& world) {
+    if(state.edge_support_active)return true;
+    if(!state.grounded_once||state.suspension_disabled||descriptor.springs.empty())return false;
+    const auto rows=basic_support_status(state,descriptor,world);
+    return select_detailed_support(state,rows);
+}
+bool select_detailed_support(VerticalState&state,const std::array<BasicSupportPoint,5>&rows) {
+    if(std::all_of(rows.begin(),rows.end(),[](const auto& row){return row.valid;}))return false;
+    state.basic_support_datum.reset();state.edge_support_active=true;return true;
+}
+bool basic_support_continuous(const VerticalState& state,const std::array<BasicSupportPoint,5>&rows,VerticalWorld&world) {
+    if(state.airborne||!rows[0].valid)return false;
+    for(unsigned i=1;i<rows.size();++i){const auto&row=rows[i];if(!row.ground)return false;
+        const double dx=row.position[0]-state.position[0],dz=row.position[2]-state.position[2],distance=std::hypot(dx,dz);
+        if(distance<.001||std::abs(*row.ground-*rows[0].ground)>distance*std::sqrt(3.)+.02)return false;
+        const int count=std::max(2,int(std::ceil(distance/.5)));const double reach=distance/count*std::sqrt(3.)+.02;
+        double previous=*rows[0].ground;
+        for(int k=1;k<=count;++k){const double fraction=double(k)/count;const auto height=world.basic_ground(
+            state.position[0]+dx*fraction,state.position[2]+dz*fraction,previous,previous+reach);
+            if(!height||std::abs(*height-previous)>reach)return false;previous=*height;}
+        if(std::abs(previous-*row.ground)>.03)return false;
+    }
+    return true;
+}
+bool release_detailed_support(VerticalState& state,VerticalMemory& memory,
+    const SuspensionDescriptor& descriptor,VerticalWorld& world) {
+    if(!state.edge_support_active||state.airborne)return false;
+    const auto rows=basic_support_status(state,descriptor,world);
+    if(!std::all_of(rows.begin(),rows.end(),[](const auto& row){return row.valid;}))return false;
+    state.basic_support_datum=state.position[1]-*rows[0].ground;
+    state.edge_support_active=false;memory={};state.ground_plane.reset();state.support_gradient.reset();
+    state.slope_target=std::array<double,2>{state.terrain_pitch,state.roll};state.slope_basis_yaw=state.yaw;
+    state.straddle_reference.reset();return true;
 }
 
 VerticalOutcome advance_basic_vertical(VerticalState& state, const SuspensionDescriptor& descriptor,
@@ -802,8 +893,30 @@ VerticalOutcome advance_basic_vertical(VerticalState& state, const SuspensionDes
         if (front && rear) highest=std::max(*front,*rear); else highest=front ? front : rear;
     } else highest=straddled(.8);
     state.basic_continuous_support=continuous;
-    const auto ground=centre ? centre : highest;
+    auto ground=centre ? centre : highest;
     if (ground) {
+        // A detailed-to-basic handoff preserves the admitted root. Only retire
+        // its offset after the raw basic footprint itself proves all five points.
+        if(state.basic_support_datum) {
+            if(step>0.) {
+                const auto rows=basic_support_status(state,descriptor,world);
+                const double shift=*ground-state.position[1];
+                const bool supported=std::all_of(rows.begin(),rows.end(),[&](const auto& row){
+                    if(!row.ground)return false;const double gap=row.position[1]-*row.ground+shift;
+                    return -.6<=gap&&gap<=.8;
+                });
+                if(supported) {
+                    const double drop=state.position[1]-*ground;
+                    state.basic_support_datum.reset();
+                    if(drop>=0.&&drop<=.8)state.position[1]=*ground;
+                }
+            }
+            if(state.basic_support_datum) {
+                if(centre)*centre+=*state.basic_support_datum;
+                if(highest)*highest+=*state.basic_support_datum;
+                ground=centre?centre:highest;
+            }
+        }
         double max_climb=std::max(.6,std::abs(state.speed)*step*2.5);
         const bool crossed=was_airborne && previous_fall && state.vertical_speed<=0. &&
             state.position[1]<=*ground && *ground<=*previous_fall+.1;

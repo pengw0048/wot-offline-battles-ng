@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from stock_gameplay_source import navigation_include
 from native_test_compile_flags import native_test_compile_flags
 ROOT = Path(__file__).resolve().parents[1]
 LAW_NAMES = '''GRAVITY GRAVITY_FACTOR COHESION COH_DECAY_Y COH_DECAY_FACTOR
@@ -16,7 +17,7 @@ SLIDE_HOLD_TAN SLIDE_KINETIC SLIP_THRESHOLD_TAN SLIP_DRAG COAST_BRAKE_SHARE
 OVERSPEED_MAX_FACTOR ANG_ACCELERATION_TIME SPEED_AFFECT_ROT_DECREASE'''.split()
 class RuntimeTest(unittest.TestCase):
     def test_complete_native_step(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Fixed gameplay source is required')
         fork = Path(source); big = ROOT/'bigworld'; native = fork/'native'
@@ -37,12 +38,16 @@ class RuntimeTest(unittest.TestCase):
                     pass
         with tempfile.TemporaryDirectory(prefix='native-runtime-') as directory:
             folder = Path(directory); binary = folder/'runtime'
+            import sys
+            sys.path.insert(0,str(big))
+            from prepare_offline_fork import stage_bot_ammo_data
+            stage_bot_ammo_data(fork,folder)
             law = (native/'offline_release_drive_python.inc').read_text().split('PyObject *WOT_CDECL release_drive(')[0]
             (folder/'offline_release_drive_law.hpp').write_text('#pragma once\n#include <cmath>\n#include <algorithm>\n'+law)
             command = ['c++','-std=c++17','-O0','-ffp-contract=off','-Wall','-Wextra','-Werror',
-                       *native_test_compile_flags('c++'),'-I'+str(folder),'-I'+str(big),'-I'+str(native)]
+                       *native_test_compile_flags('c++'),'-I'+navigation_include(source),'-I'+str(folder),'-I'+str(big),'-I'+str(native)]
             command += [str(big/('stock_native_bot_'+name+'.cpp')) for name in names]
-            command += [str(big/(name+'.cpp')) for name in ('stock_native_world_pipeline','stock_motion_rotation_batch','stock_offline_query_skin')]
+            command += [str(big/(name+'.cpp')) for name in ('stock_native_client_drive_roster','stock_native_world_pipeline','stock_motion_rotation_batch','stock_offline_query_skin')]
             command += [str(native/(name+'.cpp')) for name in release]
             command += [str(ROOT/'tests/test_stock_native_bot_runtime.cpp'),'-o',str(binary)]
             built = subprocess.run(command, capture_output=True, text=True)

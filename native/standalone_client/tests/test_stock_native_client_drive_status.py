@@ -156,7 +156,7 @@ print('native accepted critical/stun laws and canonical equipment repair superse
 '''
 class NativeClientDriveStatusTest(unittest.TestCase):
  def test_original_laws(self):
-  source=os.environ.get('WOT_FORK_0101_SOURCE')
+  source=os.environ.get('WOT_FORK_SOURCE')
   if not source:self.skipTest('fixed source required')
   py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
   prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()

@@ -21,7 +21,6 @@ double number(PyObject*p) {
     if(!p||p==Py_None||PyBool_Check(p))throw std::invalid_argument("Native physics number is unavailable");
     const double out=PyFloat_AsDouble(p);if(PyErr_Occurred()||!std::isfinite(out))throw std::invalid_argument("Native physics number is nonfinite");return out;
 }
-double scalar(PyObject*object,const char* key,double fallback) {Ref p(value(object,key));return p.p==Py_None?fallback:number(p.p);}
 std::int64_t integer(PyObject*p) {
     const double d=number(p);if(d<0.||d>2147483647.||d!=std::floor(d))throw std::invalid_argument("Native physics identity is invalid");return std::int64_t(d);
 }

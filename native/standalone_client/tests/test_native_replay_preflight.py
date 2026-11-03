@@ -45,7 +45,7 @@ if sys.argv[4] == 'write':
         player_motion=[], bot_motion=[], player_states=[], bot_states=[],
         removed_players=[], removed_bots=[])
     stale = copy.deepcopy(replica)
-    stale['player_motion'] = [dict(id=99, **dict((name, 0.) for name in
+    stale['player_motion'] = [dict(id=99, hydraulic_body=None, **dict((name, 0.) for name in
         ('x','y','z','yaw','pitch','roll','up_cosine','aim_yaw','gun_pitch','forward','turn','speed')))]
     full = dict(replica, full=True)
     # A delta before a full frame, then a stale actor motion invalidates the
@@ -79,7 +79,7 @@ def load(name, path):
 
 class NativeReplayPreflightTests(unittest.TestCase):
     def test_native_writer_launcher_and_native_reader(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('Pinned gameplay source is required')
         pyenv = shutil.which('pyenv')

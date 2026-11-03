@@ -1,4 +1,5 @@
 #include "stock_native_world_pipeline.hpp"
+#include "stock_native_scenery_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -192,11 +193,14 @@ QueryStatus Pipeline::horizontal(const Point & a,const Point & b,Hit & out,const
 }
 QueryStatus Pipeline::navigation(const Point & a,const Point & b,Hit & out,bool descriptor_present) {
     if(!descriptor_present)return ray(a,b,out,{},false);
-    return ray(a,b,out,[](const Surface & s){return s.material<71||s.material>=86;},true);
+    return ray(a,b,out,[&](const Surface & s){
+        const auto found=registry_.instances.find(Key{s.chunk,s.item});
+        return s.material<71||s.material>=86||(found!=registry_.instances.end()&&stock_native_scenery_policy::railwayVehicle(found->second.filename));},true);
 }
 bool Pipeline::crushable(const MaterialKey & id,double speed) const {
     const auto found=registry_.instances.find(key(id));if(found==registry_.instances.end()||registry_.isolated(key(id)))return false;
     const auto & value=found->second;
+    if(stock_native_scenery_policy::railwayVehicle(value.filename))return false;
     if(value.admission!=Admission::Admitted||!value.descriptor_valid||!(value.item_scale>0.)||!(actor_.mass>0.))return false;
     if(value.kind!=Kind::Fragile&&value.kind!=Kind::Structure&&value.kind!=Kind::Falling)return false;
     const auto health=value.scaled_health.find(value.kind==Kind::Structure?material(id):-1);
@@ -242,6 +246,8 @@ bool Pipeline::commit(const MaterialKey & id,const Point & point,double speed,do
 bool Pipeline::commitOne(const MaterialKey & id,const Point & point,double speed,double yaw) {
     const auto found=registry_.instances.find(key(id));if(found==registry_.instances.end()||registry_.isolated(key(id))||registry_.destroyed(id))return false;
     const auto value=found->second;
+    if(stock_native_scenery_policy::railwayVehicle(value.filename)||
+       (value.kind==Kind::Tree&&stock_native_scenery_policy::softVegetation(value.filename,value.tree_health)))return false;
     if(value.admission!=Admission::Admitted||!value.descriptor_valid)return false;
     if(value.kind==Kind::Tree&&(!(value.tree_health>0.&&value.tree_health<=1000.)||!value.native_name_exact))return false;
     Destruction order;order.kind=value.kind;order.key=key(id);order.material=value.kind==Kind::Structure?material(id):-1;
@@ -441,11 +447,17 @@ ContactResult Pipeline::trees(const Point & start,double start_yaw,const Point &
     }
     std::vector<std::pair<MaterialKey,Point>> commits;
     for(const auto & k:contacts) {
-        const auto id=identity(k,-1);out.contacts.insert(id);if(registry_.destroyed(id))continue;
+        const auto id=identity(k,-1);
+        const auto known=registry_.instances.find(k);
+        if(known!=registry_.instances.end()&&known->second.kind==Kind::Tree&&
+           stock_native_scenery_policy::softVegetation(known->second.filename,known->second.tree_health))continue;
+        out.contacts.insert(id);if(registry_.destroyed(id))continue;
         if(registry_.isolated(k)){hard=true;continue;}
         auto row=registry_.instances.find(k);if(row==registry_.instances.end()||row->second.admission!=Admission::Admitted){scene_.refresh(k,registry_);row=registry_.instances.find(k);}
         if(row==registry_.instances.end()||row->second.admission!=Admission::Admitted){candidate_pending=true;continue;}
-        const auto & tree=row->second;if(tree.kind!=Kind::Tree||!(tree.tree_health>0.&&tree.tree_health<=1000.)){hard=true;continue;}
+        const auto & tree=row->second;
+        if(tree.kind==Kind::Tree&&stock_native_scenery_policy::softVegetation(tree.filename,tree.tree_health)){out.contacts.erase(id);continue;}
+        if(tree.kind!=Kind::Tree||!(tree.tree_health>0.&&tree.tree_health<=1000.)){hard=true;continue;}
         commits.push_back({id,tree.origin});
     }
     if(hard){out.status=ContactStatus::Hard;return out;}

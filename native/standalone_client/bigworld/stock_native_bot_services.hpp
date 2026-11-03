@@ -56,6 +56,8 @@ public:
     stock_native_bot_turret::Obstacles& turrets()override{return turrets_;}
     step::ImpactWorld& impactWorld(ID)override;
     std::optional<contacts::Armor> armor(const contacts::Body&,const contacts::Body&,const std::array<double,3>&)override;
+    std::vector<stack::Surface> roofs(const stack::Body&,const stack::Body&,
+        const step::AimPose&,const Point&,const Point&)override;
     void actorChanged(const Actor&,const step::AimPose&)override;
     void modeChanged(ID,const Mode&)override;
     void beginCallback(double now,double server_time_ms)override;

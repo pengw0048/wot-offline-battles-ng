@@ -17,7 +17,7 @@ $D3dxVersion = "9.29.952.8"
 $ScaleformRevision = "7d92be560bf1b2e4ecae9ac69e340d4cae9a557e"
 $ScaleformVersion = "4.2.22"
 $GlooxVersion = "1.0.28"
-$OfflineForkRevision = "144619f6eb2925f8da4b13637bf65b8550fc898f"
+$OfflineForkRevision = "abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0"
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $StandaloneRoot = Join-Path $RepositoryRoot "native\standalone_client\bigworld"
 $StandaloneCmake = Join-Path $StandaloneRoot "CMakeLists.txt"
@@ -578,7 +578,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
         gloox_version = $GlooxVersion
         gloox_tls = "Windows SChannel"
         offline_fork_upstream = "https://github.com/colorfulmeans/wot-0.9.22-offline-battles"
-        offline_fork_release = "v0.10.1"
+        offline_fork_release = "v1.1.1"
         offline_fork_revision = $OfflineForkRevision
         scaleform_audio = "GFx abstract SoundRenderer; optional FMOD backend disabled"
         generator = "Visual Studio 17 2022"

@@ -132,7 +132,7 @@ BOT_ROW_FIELDS = (
     F('siege_state', I8), F('siege_time_left_ms', I64), F('siege_transition_total_ms', I64),
     F('fire_seq', I64), F('shell_index', I32), F('next_shell_index', I32),
     F('ammo_remaining', List(I64, 5)), F('ammo_reload_pending', BOOL), F('clip', I32),
-    F('clip_size', I32), F('health', I64), F('max_health', I64), F('alive', BOOL),
+    O('ammo_magazine_started', BOOL), O('ammo_policy_shell_index', I32), F('clip_size', I32), F('health', I64), F('max_health', I64), F('alive', BOOL),
     O('frags', I64), O('team_killer', BOOL), O('death_attacker_kind', ATTACKER_KIND),
     O('death_attacker_id', I64), O('combat_revision', I64), O('combat_base_revision', I64),
     O('combat_ack_seq', I64), O('combat_fire_elapsed', F64), O('combat_fire_timer', F64),
@@ -143,7 +143,10 @@ BOT_ROW_FIELDS = (
     O('burst_next_index', I32), O('burst_interval', F64), O('burst_time_left', F64),
     O('burst_shell_index', I32), O('reload_time', F64), O('reload_duration', F64),
     F('critical', CRITICAL), O('shot_yaw', F64), O('shot_pitch', F64), F('death_reason', I32),
-    F('display_health', I64))
+    F('display_health', I64), O('turret_yaw', F64),
+    O('local_combat_manoeuvre', BOOL), O('aim_feedback_kind', Enum('', 'human', 'bot')),
+    O('aim_feedback_id', I64), O('aim_feedback_error', F64), O('aim_feedback_aligned', BOOL),
+    O('fitting', Any()))
 BOT_ROW = record('BotRow', *(BOT_ROW_FIELDS + (F('equipment_states', List(EQUIPMENT_STATE_INDEXED, 3)),)))
 BOT_ROW_FULL = record('BotRowFull', *(BOT_ROW_FIELDS + (F('equipment_states', List(EQUIPMENT_STATE, 3)),)))
 BOT_ROSTER_ROW = record('BotRosterRow', F('id', I32), F('team', I32), F('slot', I32), F('name', STR))
@@ -222,7 +225,7 @@ MANIFEST_ROW = record('ManifestRow',
     F('id', I32), F('team', I32), F('slot', I32), F('name', STR), F('vehicle', STR),
     F('max_health', I64), F('health', I64), F('profile', Any()), F('route', Any()),
     O('spg_initial', Any()), F('equipment_contracts', List(EQUIPMENT_CONTRACT, 3)),
-    O('skill', STR), O('skill_rating', F64))
+    O('skill', STR), O('skill_rating', F64), O('vehicle_tier', I32), O('fitting', Any()))
 
 SNAPSHOT = record('Snapshot',
     F('protocol', I32), F('server_tick', I64), F('round_id', I64), F('state_revision', I64),
@@ -368,7 +371,7 @@ INPUT = record('Input',
     O('tank_pushes', List(TANK_PUSH, 30)), O('turret_pushes', List(TURRET_PUSH, 30)),
     O('ram_contacts', List(INPUT_RAM_CONTACT, 32)),
     O('destructible_contacts', List(INPUT_DESTRUCTIBLE_CONTACT, 16)),
-    O('hydraulic_body', HYDRAULIC_BODY))
+    O('hydraulic_body', HYDRAULIC_BODY), O('wreck_pose', BOOL))
 TRACK = record('TrackRepairRow', F('name', STR), F('hp', F64), F('max_hp', F64), F('state', STR))
 TRACK_REPAIR = record('TrackRepair', F('round_id', I64), F('critical_base_revision', I64),
                       F('repair_seq', I64), F('tracks', List(TRACK, 2)))
@@ -377,7 +380,8 @@ EQUIPMENT_INTENT = record('EquipmentIntent', F('round_id', I64), F('intent_seq',
     N('requested_active', BOOL))
 LANDING = record('LandingObservation', F('round_id', I64), F('authority_epoch', I64),
     F('observation_seq', I64), F('input_seq', I64), F('impact_speed', F64),
-    O('module_contacts', List(Any(), 16)))
+    O('module_contacts', List(Any(), 16)),
+    O('vehicle_contact', Tuple(Enum('bot', 'player'), I64)))
 RECEIPT = record('DestructibleReceipt', *(f for f in DESTRUCTIBLE_FIELDS
                                          if f.name not in ('revision', 'reported_by')))
 LAUNCH_PROOF = Any()
@@ -442,7 +446,7 @@ for _name in ('battle_live', 'battle_start', 'roster', 'welcome', 'pong', 'worke
               'player_environment', 'destructible', 'rules_state', 'battle_result',
               'descriptor_catalog', 'start_battle',
               'select_vehicle', 'select_team', 'set_team_size',
-              'set_bot_tier_mode', 'set_bot_skill_mode'):
+              'set_bot_tier_mode', 'set_bot_skill_mode', 'set_team_class', 'team_class_denied'):
     MESSAGES[_name] = None
 
 SCHEMA = Schema(R, MESSAGES)

@@ -237,9 +237,9 @@ class Oracle:
 
 class RotationBatchTest(unittest.TestCase):
     def test_fixed_rotation_laws_and_world_order(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            self.skipTest('Fixed v0.10.1 source input is required')
+            self.skipTest('Pinned v1.1.1 source input is required')
         fork = Path(source)
         oracle = Oracle(fork)
         cases = []

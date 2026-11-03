@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-FORK = os.environ.get('WOT_FORK_0101_SOURCE')
+FORK = os.environ.get('WOT_FORK_SOURCE')
 
 
 def function(source, signature):

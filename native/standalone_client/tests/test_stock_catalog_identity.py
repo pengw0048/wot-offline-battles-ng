@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 sys.path.insert(0, str(ROOT / 'tests'))
 sys.path.insert(0, str(REPOSITORY / 'tools'))
 CXX = os.environ.get('CXX', 'clang++')
-PINNED = '144619f6eb2925f8da4b13637bf65b8550fc898f'
+from patch_offline_math_bindings import PINNED_COMMIT as PINNED
 PYTHON27 = Path(os.environ.get('WOT_PYTHON27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
 
 import stock_catalog_identity as identity  # noqa: E402
@@ -169,7 +169,7 @@ class StockCatalogIdentityTest(unittest.TestCase):
             path = Path(directory)
             pinned = pinned_tree(path / 'pinned')
             if pinned is None:
-                self.skipTest('The pinned v0.10.1 commit is not in this repository')
+                self.skipTest('The pinned v1.1.1 commit is not in this repository')
             identity.stage(pinned, path / 'package')
             staged = path / 'package' / identity.CONFIG_ROOT
             baker.bake_all(client, str(path / 'baked'))

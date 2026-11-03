@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from stock_gameplay_source import navigation_include
 import test_stock_native_bot_navigation as grid_test
 ROOT=grid_test.ROOT
 
@@ -59,11 +60,11 @@ class NativeRuntimeNavigationTests(unittest.TestCase):
     graph=grid_test.NativeNavigationTests.graph
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-nav-runtime-');cls.binary=Path(cls.tmp.name)/'runtime'
         compiled=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-pthread',
-            '-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),
+            '-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),
             str(ROOT/'bigworld/stock_native_bot_navigator.cpp'),str(ROOT/'bigworld/stock_native_bot_navigation_runtime.cpp'),
             str(cls.source/'native/offline_navigation.cpp'),str(cls.source/'native/offline_async_worker.cpp'),
             str(ROOT/'tests/stock_native_bot_navigation_runtime_host.cpp'),'-o',str(cls.binary)],capture_output=True,text=True)
@@ -73,7 +74,7 @@ class NativeRuntimeNavigationTests(unittest.TestCase):
         names=['_number','_position','_value','_distance','_point','_route_lane_layout','_route_row_layout','_route_lane_fallbacks','_route_row_fallbacks']
         functions='\n\n'.join(ast.get_source_segment(source_text,n) for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names)
         methods=['_route_lane_cohort','_route_waypoint_xz','_route_lane_forward','_route_lane_binding','_route_lane_leg_forward','_safe_route_lane_goal',
-            '_navigation_bot_state','_route_lane_goal','_route_lane_target','_radio_ground_goal','_occupied_route_target','_navigation_target','_baked_boundary_overflow','_physical_parking_occupancy']
+            '_navigation_bot_state','_route_lane_goal','_route_lane_target','_radio_ground_goal','_occupied_route_target','_navigation_target','_baked_boundary_overflow','_physical_parking_occupancy','_navigation_target_impl']
         body=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BotRuntime')
         method_text=[]
         for node in body.body:
@@ -85,6 +86,7 @@ class NativeRuntimeNavigationTests(unittest.TestCase):
 sys.path.insert(0,sys.argv[1])
 for name in ('gui','gui.mods'):
     p=types.ModuleType(name);p.__path__=[os.path.join(sys.argv[1],*name.split('.'))];sys.modules[name]=p
+__package__='gui.mods.offline_lan_0922'
 from gui.mods.offline_lan_0922.ai import driver as ai_driver
 BAKED_FATAL_HAZARDS=3
 BAKED_SHALLOW_WATER=4
@@ -93,7 +95,7 @@ ROUTE_LANE_ORDER=(-10.,-5.,0.,5.,10.)
 ROUTE_JOIN_ROW_LIMIT=4.
 ROUTE_JOIN_ARRIVAL_RADIUS=13.
 TACTICAL_REFRESH_SECONDS=1.
-'''+functions+'\nclass Runtime(object):\n'+'\n\n'.join(method_text)+'\n'+inspect.getsource(reference)+'\nprint(json.dumps(reference(json.load(sys.stdin))))\n')
+'''+functions+'\nclass Runtime(object):\n    def _record_navigation_handoff(self,*args,**kwargs):pass\n'+'\n\n'.join(method_text)+'\n'+inspect.getsource(reference)+'\nprint(json.dumps(reference(json.load(sys.stdin))))\n')
     @classmethod
     def tearDownClass(cls):
         if hasattr(cls,'tmp'):cls.tmp.cleanup()

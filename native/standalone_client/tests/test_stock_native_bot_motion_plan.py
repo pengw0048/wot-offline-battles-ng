@@ -9,21 +9,22 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from stock_gameplay_source import navigation_include
 ROOT=Path(__file__).resolve().parents[1]
 
 
 def reference(cases):
     class Box(object):pass
     runtime=BotRuntime();runtime._motion_probe_cache={};runtime._world_receipt_waiting=[];runtime._world_receipt_frame=None
-    runtime._turn_speeds={};runtime.states={};runtime._probe_totals=[0]*5
+    runtime._turn_speeds={};runtime.states={};runtime._decision_cache={};runtime._probe_totals=[0]*5
     runtime._probe_started=lambda:None;runtime._probe_finished=lambda *args:None
     runtime.adapter=Box();runtime.adapter.driver=Box();runtime.navigator=Box();runtime.navigator.grid=Box()
     runtime.navigator.report_blocked_step=lambda *args:None
     runtime.navigator.report_blocked_corridor=lambda *args:None
-    runtime.adapter.driver.remember_failure=lambda *args:None
+    runtime.adapter.driver.remember_failure=lambda *args, **kwargs:None
     runtime._traffic_coordinator=Box();runtime._traffic_coordinator.clearance_distance=lambda *args:runtime.remaining
     directions=[0];receipts=[0]
-    def direction(*args):directions[0]+=1;return None if runtime.kind<0 else dict(runtime.sample)
+    def direction(*args, **kwargs):directions[0]+=1;return None if runtime.kind<0 else dict(runtime.sample)
     def receipt(p,yaw,speed,descriptor,maximum):
         receipts[0]+=1
         if runtime.receipt_kind==0:return None
@@ -44,7 +45,7 @@ def reference(cases):
         runtime.kind=kind;runtime.receipt_kind=receipt_kind;runtime.sample=dict(clear=clear,collision=collision,water=water,slope=slope,slope_valid=slope_valid,probe_failed=failed,deferred=deferred)
         runtime._turn_speeds[actor]=turn_speed;runtime.navigator.grid.prebaked=baked;runtime.navigator.grid.cell_size=cell
         runtime.remaining=remaining if has_remaining else None;runtime.baked_graph={};runtime.motion_resolver=(lambda:None) if exact else None
-        state=dict(id=actor,x=x,y=y,z=z,yaw=yaw,speed=speed,half_length=half_length,terrain_pitch=terrain_pitch,grounded_once=grounded,airborne=airborne)
+        state=dict(id=actor,x=x,y=y,z=z,yaw=yaw,speed=speed,half_length=half_length,terrain_pitch=terrain_pitch,grounded_once=grounded,airborne=airborne,_motion_control_gates=[])
         command=dict(recovery_mode=recovery,movement_intent=intent)
         if has_move:command['move_position']=(mx,my,mz)
         if has_probe:command['recovery_probe_distance']=probe
@@ -59,18 +60,18 @@ def reference(cases):
 class NativeMotionPlanTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:raise unittest.SkipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:raise unittest.SkipTest('Pinned v1.1.1 source input is required')
         cls.source=Path(source);cls.tmp=tempfile.TemporaryDirectory(prefix='native-motion-plan-');cls.binary=Path(cls.tmp.name)/'host'
-        result=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),
+        result=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(cls.source/'native'),
             str(ROOT/'bigworld/stock_native_bot_motion_plan.cpp'),str(ROOT/'bigworld/stock_native_bot_candidate.cpp'),str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),str(ROOT/'bigworld/stock_native_bot_navigator.cpp'),str(cls.source/'native/offline_navigation.cpp'),str(cls.source/'native/offline_async_worker.cpp'),str(ROOT/'tests/stock_native_bot_motion_plan_host.cpp'),'-o',str(cls.binary)],capture_output=True,text=True)
         if result.returncode:raise RuntimeError(result.stderr)
         cls.py27=os.environ.get('WOT_PYTHON27') or subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
         text=(cls.source/'src/res/scripts/client/gui/mods/offline_lan_0922/bot_runtime.py').read_text();tree=ast.parse(text)
-        names=['_number','_point','_distance','_angle_delta','_motion_probe_deadline','_motion_drive_pitch']
+        names=['_number','_point','_position','_distance','_angle_delta','_motion_probe_deadline','_motion_drive_pitch']
         functions='\n\n'.join(ast.get_source_segment(text,n) for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names)
         methods=['_begin_world_receipt_frame','_finish_world_receipt_frame','_probe_world_receipt','_call_world_receipt_probe','_probe_is_clear',
-                 '_world_receipt_contains','_world_receipt_refresh_due','_contained_cached_world_receipt','_motion_probe_reusable','_motion_probe_covers_distance']
+                 '_terrain_pitch','_same_probe_support_plane','_short_escape_commit_distance','_world_receipt_contains','_world_receipt_refresh_due','_contained_cached_world_receipt','_motion_probe_reusable','_motion_probe_covers_distance']
         body=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='BotRuntime');chunks=[]
         for node in body.body:
             if isinstance(node,ast.FunctionDef) and node.name in methods:
@@ -87,6 +88,7 @@ sys.path.insert(0,sys.argv[1])
 for name in ('gui','gui.mods'):
     m=types.ModuleType(name);m.__path__=[os.path.join(sys.argv[1],*name.split('.'))];sys.modules[name]=m
 from gui.mods.offline_lan_0922.ai import driver as ai_driver
+from gui.mods.offline_lan_0922 import tank_collision
 combat_count=lambda *args:None
 current_combat=lambda:None
 MAX_WORLD_RECEIPTS_PER_FRAME=13
@@ -118,6 +120,20 @@ BAKED_MOTION_LOOKAHEAD_SECONDS=1.5
             elif isinstance(b,(float,int,bool)):self.assertAlmostEqual(a,b,places=9,msg=path)
             else:self.assertEqual(a,b,path)
         for i,(a,b) in enumerate(zip(rows,wanted)):equal(a,b,str(i))
+    def test_support_plane_change_forces_reprobe(self):
+        self.compare([['begin',1], self.row(speed=1.,terrain_pitch=.1,now=0.),
+                      self.row(speed=1.,terrain_pitch=.2,now=.02,due=0), ['end']])
+
+    def test_short_escape_stops_at_frozen_endpoint(self):
+        commands=['endpoint 0 0 0 0 0 2', 'endpoint 0 1.8 0 0 0 2',
+                  'endpoint 0 1.97 0 0 0 2', 'endpoint 2 0 0 0 1.5707963267948966 2']
+        run=subprocess.run([str(self.binary)],input='\n'.join(commands)+'\n',text=True,capture_output=True)
+        self.assertEqual(run.returncode,0,run.stderr)
+        rows=[json.loads(line) for line in run.stdout.splitlines()]
+        for row, distance, throttle, finished in zip(rows,[2.,.2,.03,0.],[1.,1.,0.,0.],[0,0,1,1]):
+            self.assertAlmostEqual(row[0],distance,places=8)
+            self.assertEqual(row[1:], [throttle,finished])
+
     def test_fair_queue_29_bots_and_deferred_recasts(self):
         cases=[]
         for frame in range(8):

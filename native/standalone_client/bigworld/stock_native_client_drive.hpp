@@ -52,6 +52,7 @@ public:
     Output advance(const Input&,Ground&);
     std::array<Point,2> region(const Input&)const;
     const step::VerticalMemory& memory()const{return memory_;}
+    const step::SuspensionDescriptor& descriptor()const{return descriptor_;}
     void memory(step::VerticalMemory value){memory_=std::move(value);}
     const Statistics& statistics()const{return statistics_;}
 };

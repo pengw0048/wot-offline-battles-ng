@@ -138,7 +138,7 @@ SkinResult componentSkin(const SkinView & view, const Point & point,
         const Key key = surface.key();
         const auto found = view.instances.find(key);
         if (found == view.instances.end() || found->second.kind != SkinKind::Structure ||
-            isolated(view, key) || view.layout_repairs.count(key.first)) continue;
+            isolated(view, key)) continue;
         const auto & instance = found->second;
         if (!hasMaterial(instance, surface.material)) continue;
         std::vector<const Box *> containing;
@@ -204,16 +204,13 @@ SkinResult motionSkin(const SkinView & view, const Point & point,
     Witness witness(point, start, end, normal, tuning.point_padding);
     SkinResult result = componentSkin(view, point, start, end, surfaces, tuning, math, witness);
     if (result.found) return result;
-    std::set<Surface> aliases, remapped;
+    std::set<Surface> aliases;
     for (const auto & surface : surfaces)
     {
         if (anonymousOriginal(view, surface)) aliases.insert(surface);
-        const auto generation = view.layout_generations.find(surface.chunk);
-        if (71 <= surface.material && surface.material <= 86 && surface.flags == 0 &&
-            generation != view.layout_generations.end() && generation->second > 0 &&
-            !view.layout_repairs.count(surface.chunk)) remapped.insert(surface);
+
     }
-    if (aliases.empty() && remapped.empty()) return SkinResult();
+    if (aliases.empty()) return SkinResult();
     std::set<Key> members;
     appendCell(view.contact_bins, cell(point, tuning.bin_metres), members);
     std::vector<Owner> owners;
@@ -229,31 +226,6 @@ SkinResult motionSkin(const SkinView & view, const Point & point,
         const auto & row = witness.at(*envelope);
         if (row.probe.inside && row.probe.segment.valid)
             owners.push_back(Owner{key, &instance, row.probe.segment});
-    }
-    for (const auto & surface : remapped)
-    {
-        const Key wire = surface.key();
-        bool actualOwner = false;
-        for (const auto & owner : owners) actualOwner = actualOwner || owner.key == wire;
-        if (actualOwner || view.tree_instances.count(wire)) continue;
-        auto registered = view.instances.find(wire);
-        const SkinInstance * instance = registered == view.instances.end() ? nullptr : &registered->second;
-        if (!instance)
-        {
-            const auto baked = view.baked_instances.find(wire);
-            if (baked != view.baked_instances.end()) instance = &baked->second;
-        }
-        if (instance)
-        {
-            const auto * envelope = witness.envelope(*instance);
-            if (envelope && witness.at(*envelope).probe.inside) continue;
-        }
-        bool inside = false;
-        for (const auto & owner : owners)
-            if (owner.key.first == wire.first)
-                for (const auto & box : owner.instance->boxes)
-                    inside = inside || witness.at(box).probe.inside;
-        if (inside) aliases.insert(surface);
     }
     if (aliases.empty()) return SkinResult();
     bool needsProjection = false;

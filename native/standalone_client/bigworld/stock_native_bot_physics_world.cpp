@@ -83,29 +83,40 @@ void PhysicsWorld::report_contact(const motion::State & state,const Point & befo
 void PhysicsWorld::motion_finished(const motion::State & state,motion::MotionStatus status,double before,double after){host_.motion_finished(state,status,before,after);}
 Vec PhysicsWorld::slide(const motion::State & state,const motion::Descriptor & descriptor,const Vec & move,double & fraction){return host_.slide(state,descriptor,move,fraction);}
 std::optional<double> PhysicsWorld::basic_ground(double x,double z,double hint,std::optional<double> maximum) {
-    double start=hint+2.;
+    double start=hint+2.;std::optional<double> result;
     for(unsigned layer=0;layer<4;++layer) {
         world::Hit hit;const auto status=pipeline_.ground({{x,start,z}},{{x,-1000.,z}},hit);
-        if(status!=world::QueryStatus::Found)return {};
-        const double height=hit.point[1];if((!maximum||height<=*maximum)&&hit.normal[1]>.5)return height;
-        const double next=height-.05;if(next<=-1000.+.01)return {};start=next;
+        if(status!=world::QueryStatus::Found)break;
+        const double height=hit.point[1];if((!maximum||height<=*maximum)&&hit.normal[1]>.5){result=height;break;}
+        const double next=height-.05;if(next<=-1000.+.01)break;start=next;
     }
-    return {};
+    return support_roof(x,z,-1000.,std::min(hint+2.,maximum.value_or(hint+2.)),result);
 }
 std::optional<double> PhysicsWorld::initial_ground(double x,double z,double hint){return basic_ground(x,z,hint,{});}
+std::optional<double> PhysicsWorld::support_roof(double x,double z,double low,double high,std::optional<double> ground,std::optional<double> flat) {
+    const auto hits=host_.roofs(actor_,{x,high,z},{x,low,z});
+    for(const auto& hit:hits) {
+        const double length=std::hypot(std::hypot(hit.normal[0],hit.normal[1]),hit.normal[2]);
+        const double up=length>0.?hit.normal[1]/length:0.,height=hit.point[1];
+        if(up<=.5||height<low-.01||height>high+.01||(flat&&height>*flat+.01&&up>=.995)||
+            (ground&&height<=*ground))continue;
+        ground=height;roof_hits_.push_back(hit);
+    }
+    return ground;
+}
 std::optional<double> PhysicsWorld::ground(double x,double z,double low,double high,std::optional<double> flat) {
-    if(high<low)std::swap(high,low);double start=high;
+    if(high<low)std::swap(high,low);double start=high;std::optional<double> result;
     for(unsigned layer=0;layer<3;++layer) {
         world::Hit hit;const auto status=pipeline_.ground({{x,start,z}},{{x,low,z}},hit);
         if(status==world::QueryStatus::Failed)throw std::runtime_error("Native suspension ground query failed");
-        if(status==world::QueryStatus::Miss)return {};
+        if(status==world::QueryStatus::Miss)break;
         const double height=hit.point[1],norm=std::sqrt(hit.normal[0]*hit.normal[0]+hit.normal[1]*hit.normal[1]+hit.normal[2]*hit.normal[2]);
         if(!std::isfinite(height)||!std::isfinite(norm)||norm<=.000001)throw std::runtime_error("Native suspension ground hit is malformed");
         const double up=hit.normal[1]/norm;
-        if(low-.01<=height&&height<=high+.01&&up>.5&&(!flat||height<=*flat+.01||up<.995))return height;
+        if(low-.01<=height&&height<=high+.01&&up>.5&&(!flat||height<=*flat+.01||up<.995)){result=height;break;}
         const double next=height-.02;if(next<=low+.01||next>=start)break;start=next;
     }
-    return {};
+    return support_roof(x,z,low,high,result,flat);
 }
 bool PhysicsWorld::turret_clear(const step::VerticalState & before,const step::VerticalState & after) {
     auto a=actor_,b=actor_;static_cast<step::VerticalState &>(a)=before;static_cast<step::VerticalState &>(b)=after;
@@ -113,9 +124,42 @@ bool PhysicsWorld::turret_clear(const step::VerticalState & before,const step::V
 }
 Vec PhysicsWorld::passive_move(step::VerticalState & state,double x,double z,double dt){return host_.passive_move(actor_.id,state,x,z,dt);}
 bool PhysicsWorld::vertical(motion::State & state,const motion::Descriptor &,const Point & previous,double previous_yaw,double dt) {
-    step::VerticalOutcome outcome;
-    if(config_.detailed_suspension&&!state.suspension_disabled)outcome=step::advance_vertical(state,vertical_memory_,suspension_,*this,state.yaw,config_.turret_yaw,previous,config_.suspension_motion_position,dt);
-    else outcome=step::advance_basic_vertical(state,suspension_,*this,previous,dt,support_repair_budget_);
+    step::VerticalOutcome outcome;roof_hits_.clear();state.stack_carrier.reset();const auto before=state;
+    const bool detailed=config_.detailed_suspension&&!state.suspension_disabled;
+    if(detailed&&state.edge_support_active)
+        outcome=step::advance_vertical(state,vertical_memory_,suspension_,*this,state.yaw,config_.turret_yaw,previous,config_.suspension_motion_position,dt);
+    else {
+        const bool was_grounded=state.grounded_once;
+        outcome=step::advance_basic_vertical(state,suspension_,*this,previous,dt,support_repair_budget_);
+        // Admission observes the accepted basic root; using the pre-settle
+        // height would manufacture missing support on every downhill step.
+        if(detailed&&!outcome.blocked&&was_grounded&&!suspension_.springs.empty()) {
+            auto rows=step::basic_support_status(state,suspension_,*this);
+            if(std::any_of(rows.begin(),rows.end(),[](const auto&row){return !row.valid;})&&step::basic_support_continuous(state,rows,*this))
+                if(host_.refresh_support_pose(state))rows=step::basic_support_status(state,suspension_,*this);
+            step::select_detailed_support(state,rows);
+        }
+    }
+    if(!outcome.blocked) {
+        if(outcome.support_contacts.empty()&&!state.airborne) {
+            const auto rows=step::basic_support_status(state,suspension_,*this);
+            for(const auto& row:rows)if(row.valid&&row.ground)outcome.support_contacts.push_back({row.position[0],*row.ground,row.position[2]});
+        }
+        const auto carrier=stock_native_vehicle_stack::settled_carrier(outcome.support_contacts,roof_hits_);
+        if(carrier)state.stack_carrier=carrier->carrier;
+        descent_.observe(before.airborne,before.vertical_speed,state.airborne,outcome.raw_impact,dt);
+        const auto impact=stock_native_vehicle_stack::impact_surface(outcome.support_contacts,roof_hits_,outcome.raw_impact.value_or(before.vertical_speed));
+        if(impact) {
+            const double speed=stock_native_vehicle_stack::vertical_closing(*impact,outcome.raw_impact.value_or(before.vertical_speed));
+            if(descent_.admit(impact->carrier,speed,outcome.landing_impact.has_value(),dt)) {
+                outcome.landing_surface=impact;outcome.landing_impact=speed;outcome.normal_impact=true;outcome.landing_normal=impact->normal;
+                descent_.commit(impact->carrier);
+            } else outcome.landing_impact.reset();
+        }
+    }
     host_.vertical_outcome(state,outcome);(void)previous_yaw;return outcome.blocked;
+}
+bool PhysicsWorld::release_support(motion::State& state) {
+    return step::release_detailed_support(state,vertical_memory_,suspension_,*this);
 }
 }

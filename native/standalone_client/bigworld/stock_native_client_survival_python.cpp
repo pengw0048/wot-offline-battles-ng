@@ -36,7 +36,6 @@ void put(PyObject*o,const char*n,const p::Ref&v){
 }
 using native_battle::Battle;
 double number(PyObject*o,const char*n,double fallback=0.){auto v=field(o,n);return v.get()==Py_None?fallback:p::scalar(v.get());}
-std::optional<double> optional(PyObject*o,const char*n){auto v=field(o,n);return v.get()==Py_None?std::nullopt:std::optional<double>(p::scalar(v.get()));}
 water::Point xyz(PyObject*o){water::Point out{};for(unsigned i=0;i<3;++i)out[i]=p::scalar(p::item(o,i).get());return out;}
 Config configuration(const Battle&b){
     auto condition=field(b.engine.constants.get(),"OVERTURN_CONDITION");

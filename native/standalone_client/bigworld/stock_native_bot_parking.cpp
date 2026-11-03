@@ -42,10 +42,10 @@ bool Parking::displaced(std::int64_t id,const Plan&plan,const Point&p,bool airbo
     else if(!(p[0]>=a.bounds[0]+plan.radius&&p[0]<=a.bounds[2]-plan.radius&&p[2]>=a.bounds[1]+plan.radius&&p[2]<=a.bounds[3]-plan.radius))return false;
     auto index=closest(p);return index&&clear(*index,plan.clearance)&&std::abs(p[1]-point(*index)[1])<=1.5;
 }
-std::optional<Plan> Parking::select(std::int64_t id,int team,const Point&origin,const std::vector<Point>&excluded,const std::vector<Occupied>&occupied,const std::optional<std::string>&preferred)const
+std::optional<Plan> Parking::select(std::int64_t id,int team,const Point&origin,const std::vector<Point>&excluded,const std::vector<Occupied>&occupied,const std::optional<std::string>&preferred,const std::set<std::string>&excluded_zones)const
 {
     auto found=catalogs.find(id);if(found==catalogs.end())return {};const auto&catalog=found->second;const auto reachable=distances(origin);const Candidate*best=nullptr;
-    auto eligible=[&](const Candidate&c){return c.index>=0&&std::size_t(c.index)<reachable.size()&&std::isfinite(reachable[c.index])&&available(c.plan.point,c.plan.clearance,team,excluded,occupied);};
+    auto eligible=[&](const Candidate&c){return !excluded_zones.count(c.plan.zone)&&c.index>=0&&std::size_t(c.index)<reachable.size()&&std::isfinite(reachable[c.index])&&available(c.plan.point,c.plan.clearance,team,excluded,occupied);};
     auto order=[&](const Candidate&c){return std::make_tuple(!preferred||c.plan.zone==*preferred?0:1,catalog.manual?-c.priority:c.priority,catalog.manual?c.centre_distance:0.,reachable[c.index],c.plan.zone,catalog.manual?std::string():c.plan.cell,catalog.manual?c.plan.point:Point{},catalog.manual?0:c.index);};
     for(const auto&candidate:catalog.candidates)if(eligible(candidate)&&(!best||order(candidate)<order(*best)))best=&candidate;
     return best?std::optional<Plan>(best->plan):std::nullopt;

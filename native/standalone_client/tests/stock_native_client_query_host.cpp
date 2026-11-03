@@ -4,13 +4,18 @@ namespace stock_native_bot_geometry {
 struct Vehicle {std::array<double,3> minimum{},maximum{};bool broken=false;};
 }
 #include "../bigworld/stock_native_client_query.cpp"
-namespace stock_native_client_state {
-Actor* State::find(const std::string&key){const auto at=actors.find(key);return at==actors.end()?nullptr:at->second.get();}
-const Actor* State::find(const std::string&key)const{const auto at=actors.find(key);return at==actors.end()?nullptr:at->second.get();}
-namespace {using Handle=std::shared_ptr<State>;constexpr const char*state_name="query.test.state";
-void freeState(PyObject*c){delete static_cast<Handle*>(PyCapsule_GetPointer(c,state_name));}}
-std::shared_ptr<State> fromBattle(PyObject*b){auto c=stock_native_bot_python::value(b,"_native_client_state");auto*h=static_cast<Handle*>(PyCapsule_GetPointer(c.get(),state_name));if(!h)throw stock_native_bot_python::Error("test state missing");return *h;}
-}
+#include "../bigworld/stock_native_battle_remote.hpp"
+namespace native_battle {
+Battle* current() { return nullptr; }
+p::Ref Battle::entity(std::int64_t) const { return p::retain(Py_None); }
+namespace remote {
+p::Ref get(const Battle&, std::int64_t) { return p::retain(Py_None); }
+Overlay* overlay(PyObject*, bool) { return nullptr; }
+} }
+namespace native_battle { namespace visibility {
+// This fixture owns query capsules directly and has no installed Battle.
+PyObject* queryOwner(const Battle&) { return nullptr; }
+} }
 namespace stock_native_client_query {namespace {
 std::unique_ptr<geo::Vehicle> readGeometry(PyObject*d,PyObject*,bool,std::uint64_t){
     if(p::truth(d,"unloaded"))throw p::Error("test native BSP unavailable");
@@ -38,7 +43,7 @@ void update(s::Actor&a,PyObject*row){
     auto pose=p::value(row,"pose");if(pose.get()!=Py_None)a.current=p::numbers<8>(pose.get());
 }
 PyObject* state(PyObject*,PyObject*args){PyObject*b,*rows;if(!PyArg_ParseTuple(args,"OO",&b,&rows))return nullptr;try{
-    std::shared_ptr<s::State> value;auto c=p::value(b,"_native_client_state");if(c.get()==Py_None){value=std::make_shared<s::State>();auto*h=new std::shared_ptr<s::State>(value);p::Ref cap(PyCapsule_New(h,"query.test.state",s::freeState));if(PyObject_SetAttrString(b,"_native_client_state",cap.get())<0)throw p::Error("test state installation failed");}else value=s::fromBattle(b);
+    std::shared_ptr<s::State> value;auto c=p::value(b,"_native_client_state");if(c.get()==Py_None){value=std::make_shared<s::State>();p::Ref cap(s::capsule(value));if(PyObject_SetAttrString(b,"_native_client_state",cap.get())<0)throw p::Error("test state installation failed");}else value=s::fromBattle(b);
     std::set<std::string> seen;for(Py_ssize_t i=0;i<p::size(rows);++i){auto row=p::item(rows,i);const auto key=p::string(p::value(row.get(),"key").get());seen.insert(key);auto&a=value->actors[key];if(!a)a=std::make_shared<s::Actor>();update(*a,row.get());}
     for(auto i=value->actors.begin();i!=value->actors.end();)if(!seen.count(i->first))i=value->actors.erase(i);else ++i;return p::retain(Py_None).release();
 }catch(const std::exception&e){return q::fail(e);}}

@@ -12,14 +12,14 @@ class PlayerImpact final:public step::ImpactWorld {
     stock_native_bot_geometry::Pose pose_;
     PublicationLedger&publication_;ImpactConfig config_;
     double last_world_impact_=-1.e30;
-    int observe(double,const std::vector<Point>&,const Point&);
+    int observe(double,const std::vector<Point>&,const Point&,std::optional<stock_native_vehicle_stack::Identity> carrier={});
 public:
     PlayerImpact(PublicationLedger&,ImpactConfig,step::InternalLayout);
     void geometry(const stock_native_bot_geometry::Vehicle&,stock_native_bot_geometry::Pose);
     double safeSpeed()const{return config_.safe_speed;}
     void metadata(ImpactConfig config,step::InternalLayout interior){config_=std::move(config);interior_=std::move(interior);}
     int landing(PlayerState&,double,bool normal_impact,const std::vector<Point>&,
-        const Point&normal,std::optional<Point>landing_position={});
+        const Point&normal,std::optional<Point>landing_position={},std::optional<stock_native_vehicle_stack::Identity> carrier={});
     double world(const PlayerState&,const ContactTrace&,double speed,double yaw,double now);
     std::vector<Point>ground_witnesses()override{return {};}
     std::vector<step::ImpactHit>material_segment(const Point&,const Point&)override;

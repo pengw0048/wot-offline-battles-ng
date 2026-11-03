@@ -1,6 +1,7 @@
 #include "stock_native_bot_human_snapshot.hpp"
 #include "stock_native_bot_combat_snapshot.hpp"
 #include "stock_native_bot_descriptor.hpp"
+#include "stock_native_battle_local.hpp"
 #include <Python.h>
 #ifdef hypot
 #undef hypot
@@ -109,10 +110,19 @@ bool readHumanProjections(const Value&raw,const Value&snapshot,PyObject*descript
   const auto&profile=vneed(vfield(snapshot,"spotting"),"human spotting profile missing"),&camouflage=vneed(vfield(snapshot,"camouflage"),"human camouflage missing"),&loadout=vneed(vfield(snapshot,"loadout"),"human loadout missing");
   const auto crew_vision=boundedNumber(profile,"vision_factor",0.,100.),binocular_factor=boundedNumber(profile,"binocular_factor",0.,100.),binocular_delay=boundedNumber(profile,"binocular_delay",0.,100.),net_delay=boundedNumber(profile,"camouflage_net_delay",0.,100.),shot=boundedNumber(camouflage,"shot_factor",0.,1.),radio_factor=boundedNumber(loadout,"radio_factor",0.,100.);
   const bool binoculars=requiredFlag(profile,"has_binoculars"),net=requiredFlag(profile,"has_camouflage_net");auto turret=value(descriptor,"turret"),misc=value(descriptor,"miscAttrs"),radio=value(descriptor,"radio");const auto vision_base=descriptorNumber(turret.get(),"circularVisionRadius",330.),vision_misc=descriptorNumber(misc.get(),"circularVisionRadiusFactor",1.),radio_base=descriptorNumber(radio.get(),"distance",0.);
+  double designated_duration=12.,designated_sector=3.14159265358979323846/36.,last_effort_duration=2.;
+  const auto*booster=vfield(snapshot,"battle_booster");
+  if(present(booster)) {
+   const auto&overrides=vneed(vfield(*booster,"skill_overrides"),"human booster skill overrides missing");
+   if(overrides.kind!=Kind::Object)throw Error("human booster skill overrides invalid");
+   designated_duration=10.+std::clamp(num(overrides,"designated_target_duration",2.),0.,4.);
+   designated_sector=std::clamp(num(overrides,"designated_target_sector",designated_sector),0.,designated_sector);
+   last_effort_duration=std::clamp(num(overrides,"last_effort_duration",2.),2.,5.);
+  }
   std::vector<HumanProjection> rows;rows.reserve(masks*6);const ID id=output.id>0?output.id:idfield(raw,"network_id",idfield(raw,"id"));if(id<=0)throw Error("human projection actor identity is invalid");
   for(std::size_t mask=0;mask<masks;++mask){double relay=0.;bool last_effort=false,designated=false;for(const auto&skill:skills){if(mask&(std::size_t(1)<<skill.carrier))continue;if(skill.name=="radioman_retransmitter")relay=std::max(relay,skill.level);if(skill.level>=100.){last_effort=last_effort||skill.name=="radioman_lasteffort";designated=designated||skill.name=="gunner_rancorous";}}
    for(int fire=0;fire<2;++fire){const auto key=std::to_string(mask)+":"+std::to_string(fire);const auto found=states.object.find(key);if(found==states.object.end())throw Error("human dynamic spotting row missing");const auto&state=found->second.resolved();const auto vision=boundedNumber(state,"vision",0.,10.),signal=boundedNumber(state,"signal",0.,10.),moving=boundedNumber(state,"base_moving",0.,100.),still=boundedNumber(state,"base_still",0.,100.);const auto&invis_moving=vrows(&vneed(vfield(state,"invisibility_moving"),"human moving invisibility missing")),&invis_still=vrows(&vneed(vfield(state,"invisibility_still"),"human still invisibility missing"));if(invis_moving.size()!=2||invis_still.size()!=2)throw Error("human invisibility shape is invalid");const auto moving_add=vnumber(&invis_moving[0].resolved()),moving_multiplier=vnumber(&invis_moving[1].resolved()),still_add=vnumber(&invis_still[0].resolved()),still_multiplier=vnumber(&invis_still[1].resolved());if(std::abs(moving_add)>100.||std::abs(still_add)>100.||moving_multiplier<0.||moving_multiplier>100.||still_multiplier<0.||still_multiplier>100.)throw Error("human invisibility values are outside range");
-    for(int damage=0;damage<3;++damage){const auto module=damage==2?.25:damage==1?.5:1.;const auto factor=std::clamp(vision*module,.5,1.);HumanProjection row;auto&c=row.config;c.key={offline_simulation::ActorKind::Human,id};c.team=int(idfield(raw,"team"));c.slot=int(idfield(raw,"slot"));c.half_length=3.5;c.half_width=1.7;double view=std::max(50.,vision_base);view*=std::max(0.,vision_misc*factor);view*=std::max(0.,crew_vision);c.view_moving=std::max(50.,view);c.view_still=std::max(50.,binoculars?view*std::max(1.,binocular_factor):view);c.view_delay=binoculars?binocular_delay:-1.;c.camo_still=still;c.camo_moving=moving;c.camo_add=moving_add;c.camo_net_add=still_add-moving_add;c.camo_multiplier=moving_multiplier;c.camo_net_multiplier=still_multiplier;c.camo_shot=shot;c.camo_net_delay=net?net_delay:-1.;c.radio=std::max(0.,radio_base*(radio_factor*signal));c.relay=relay*.001;row.last_effort=last_effort;row.designated=designated;rows.push_back(std::move(row));}
+    for(int damage=0;damage<3;++damage){const auto module=damage==2?.25:damage==1?.5:1.;const auto factor=std::clamp(vision*module,.5,1.);HumanProjection row;auto&c=row.config;c.key={offline_simulation::ActorKind::Human,id};c.team=int(idfield(raw,"team"));c.slot=int(idfield(raw,"slot"));c.half_length=3.5;c.half_width=1.7;double view=std::max(50.,vision_base);view*=std::max(0.,vision_misc*factor);view*=std::max(0.,crew_vision);c.view_moving=std::max(50.,view);c.view_still=std::max(50.,binoculars?view*std::max(1.,binocular_factor):view);c.view_delay=binoculars?binocular_delay:-1.;c.camo_still=still;c.camo_moving=moving;c.camo_add=moving_add;c.camo_net_add=still_add-moving_add;c.camo_multiplier=moving_multiplier;c.camo_net_multiplier=still_multiplier;c.camo_shot=shot;c.camo_net_delay=net?net_delay:-1.;c.radio=std::max(0.,radio_base*(radio_factor*signal));c.relay=relay*.001;c.designated_duration=designated_duration;c.designated_sector=designated_sector;c.last_effort_duration=last_effort_duration;row.last_effort=last_effort;row.designated=designated;rows.push_back(std::move(row));}
    }
   }
   output.crew=std::move(names);output.projections=std::move(rows);return true;
@@ -132,6 +142,8 @@ bool readHumanDescriptor(const Value& source,PyObject* descriptor,HumanDescripto
   if(requires_body<0)throw Error("human hydraulic descriptor flag is unavailable");out.requires_hydraulic_body=requires_body!=0;
   auto descriptor_physics=value(descriptor,"physics"),descriptor_weight=value(descriptor_physics.get(),"weight");out.contact_mass=number(descriptor_weight.get());if(out.contact_mass<=0.)throw Error("human contact mass unavailable");
   const auto body=stock_native_bot_descriptor::bodyBounds(descriptor);out.body_minimum=body.minimum;out.body_maximum=body.maximum;out.shape=stock_native_bot_descriptor::chassisShape(descriptor);pivotGeometry(descriptor,out);tacticalMetadata(descriptor,out);
+  out.hydraulic_support=native_battle::local::suspensionTrialExcluded(descriptor);
+  if(!out.hydraulic_support)try{out.suspension=native_battle::local::deriveSuspension(descriptor);}catch(const std::exception&){PyErr_Clear();}
   out.id=idfield(raw,"network_id",idfield(raw,"id"));if(out.id<=0)throw Error("human identity invalid");out.vehicle=vtext(vfield(raw,"vehicle"));if(out.vehicle.empty()){out.class_tag="unknown";out.armor=0.;}
   const auto&snapshot=vneed(vfield(raw,"effective_params"),"human effective parameters missing"),&physics=vneed(vfield(snapshot,"physics"),"human effective physics missing");
   if(idfield(snapshot,"version")!=1)throw Error("human effective schema version is invalid");out.mass=boundedNumber(physics,"mass",1.,1000000.);const auto&ramming=vneed(vfield(snapshot,"ramming"),"human ramming profile missing");if(ramming.kind!=Kind::Object||ramming.object.size()!=2)throw Error("human ramming profile shape is invalid");out.ram.spall=boundedNumber(ramming,"spall_coefficient",1.,100.);out.ram.bonus=boundedNumber(ramming,"ramming_bonus",0.,.15);out.contact_rotation_speed=std::abs(boundedNumber(physics,"rotSpd",0.,100.));driveCaps(descriptor,physics,out);
@@ -170,6 +182,7 @@ bool readHumanInput(const Value& source,const HumanDescriptor& descriptor,HumanI
   const auto index=(mask*2+std::size_t(fire))*3+std::size_t(vision);if(index>=descriptor.projections.size())throw Error("human projection missing");
   const auto& projection=descriptor.projections[index];HumanIngress out;
   out.human.contact_mass=descriptor.contact_mass;
+  out.human.suspension=descriptor.suspension;out.human.hydraulic_support=descriptor.hydraulic_support;
   out.human.body_minimum=descriptor.body_minimum;out.human.body_maximum=descriptor.body_maximum;
   out.human.spawn_anchor=descriptor.spawn_anchor;out.human.spawn_drive_cap=descriptor.spawn_drive_cap;
   out.human.contact_drive_forward=descriptor.contact_drive_forward;out.human.contact_drive_reverse=descriptor.contact_drive_reverse;

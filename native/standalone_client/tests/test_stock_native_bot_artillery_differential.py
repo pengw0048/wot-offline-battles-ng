@@ -25,6 +25,15 @@ int main(){ArcQueue q(1,2.5,.25,60.,false);World w;ArcKey a;a.actor=1;ArcKey b;b
 '''
 @unittest.skipUnless(SOURCE,'set WOT_GAMEPLAY_SOURCE to the fixed gameplay source')
 class ArtilleryDifferential(unittest.TestCase):
+    def test_native_reproof_and_candidate_regressions(self):
+        with tempfile.TemporaryDirectory(prefix='native-artillery-regressions-') as folder:
+            for target in ('artillery','weapon'):
+                command=['c++','-std=c++17','-Wall','-Wextra','-Werror','-I'+str(ROOT/'bigworld'),'-I'+str(Path(SOURCE)/'native')]
+                command += [str(ROOT/'bigworld'/name) for name in ('stock_native_bot_step_state.cpp','stock_native_bot_weapon.cpp','stock_native_bot_artillery.cpp')]
+                command += [str(Path(SOURCE)/'native/offline_simulation_weapons.cpp'),str(ROOT/'tests'/('test_stock_native_bot_'+target+'.cpp')),'-o',str(Path(folder)/target)]
+                built=subprocess.run(command,capture_output=True,text=True);self.assertEqual(built.returncode,0,built.stderr)
+                ran=subprocess.run([str(Path(folder)/target)],capture_output=True,text=True);self.assertEqual(ran.returncode,0,ran.stderr)
+
     def test_fairness_and_remote_impact(self):
         path=Path(SOURCE)/'src/res/scripts/client/gui/mods/offline_lan_0922/artillery_arc_queue.py'
         spec=importlib.util.spec_from_file_location('fixed_artillery_arc_queue',path)

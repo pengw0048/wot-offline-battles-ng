@@ -18,9 +18,10 @@
 
 namespace stock_wire_replay {
 namespace {
-const char magic[8] = {'W', 'O', 'T', 'L', 'A', 'N', 'R', '2'};
+const char magic[8] = {'W', 'O', 'T', 'L', 'A', 'N', 'R', '3'};
 const std::size_t record_header = 13;
 const std::size_t max_record = 16u * 1024u * 1024u;
+const unsigned long long max_total = 8ULL * 1024ULL * 1024ULL * 1024ULL;
 const int wire_kind = 1, frame_kind = 4, raw_kind = 5;
 const char* writer_name = "offline_client_wire_native.ReplayWriter";
 const char* reader_name = "offline_client_wire_native.ReplayReader";
@@ -32,7 +33,7 @@ public:
     explicit Writer(std::FILE* file) : file_(file) {
         std::memset(&zs_, 0, sizeof(zs_));
         if (deflateInit2(&zs_, 3, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY) != Z_OK) { failed_ = true; error_ = "deflate init failed"; }
-        else { initialized_ = true; queued_.push_back(std::string(magic, sizeof(magic))); }
+        else { initialized_ = true; bytes_ = sizeof(magic); queued_.push_back(std::string(magic, sizeof(magic))); }
         thread_ = std::thread([this] { run(); });
     }
     ~Writer() { finish(); }
@@ -41,6 +42,14 @@ public:
     bool push(std::string record) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closing_ || failed_) return false;
+        // The receive thread also writes records: enforce the cumulative
+        // decompressed bound before admitting them, independently of Python.
+        if (record.size() > max_total - bytes_) {
+            failed_ = true;
+            error_ = "replay exceeds decompressed size bound";
+            ready_.notify_one();
+            return false;
+        }
         double t; std::memcpy(&t, &record[1], 8);
         t = std::max(t, last_t_); last_t_ = t;
         std::memcpy(&record[1], &t, 8);
@@ -148,8 +157,13 @@ public:
         while (out.size() < n) {
             if (pending_.size() > consumed_) {
                 std::size_t take = std::min(n - out.size(), pending_.size() - consumed_);
+                if (take > max_total - bytes_) {
+                    error = "replay exceeds decompressed size bound";
+                    return false;
+                }
                 out.append(pending_, consumed_, take);
                 consumed_ += take;
+                bytes_ += take;
                 continue;
             }
             pending_.clear(); consumed_ = 0;
@@ -190,6 +204,7 @@ private:
     unsigned char input_[65536];
     std::string pending_;
     std::size_t consumed_ = 0;
+    unsigned long long bytes_ = 0;
 public:
     // Replica deltas recorded from the wire merge here exactly as on the live receive thread.
     stock_wire::ReplicaStore replicas;
@@ -269,7 +284,7 @@ PyObject* openReader(PyObject*, PyObject* args) {
     std::string head; bool end;
     if (!reader->read(head, sizeof(magic), end) || std::memcmp(head.data(), magic, sizeof(magic)) != 0) {
         delete reader;
-        PyErr_SetString(PyExc_ValueError, "not an offline replay of this version");
+        PyErr_SetString(PyExc_ValueError, "unsupported offline replay format; this client requires WOTLANR3");
         return nullptr;
     }
     return PyCapsule_New(reader, reader_name, destroyReader);

@@ -38,6 +38,7 @@ class Stub(object):
 
 def reference(value):
     state = copy.deepcopy(value['state'])
+    state['_motion_control_gates'] = []
     params = value['params']
     config = value['input']
     policy = value['policy']
@@ -47,9 +48,11 @@ def reference(value):
     def record(index, *args):
         calls.append([index] + list(args))
     class Owner(object):
+        def _boundary_rotation_clear(self, state, position, yaw, candidate):
+            return self._baked_pose_progress_clear(state,position,yaw,position,candidate)
         def _physics_params_for(self, unused):
             return params
-        def _rotation_fraction_for(self, unused, p, a, b, peers):
+        def _rotation_fraction_for(self, unused, p, a, b, peers, **kwargs):
             record(0, *(list(p)+[a,b,0.,0.]))
             return policy['fraction']
         def _baked_pose_progress_clear(self, unused, p, a, q, b):
@@ -63,7 +66,7 @@ def reference(value):
             return policy['rotate']
         _wreck_rotation_probe = rotation_resolver
         def _planner_corridor_clear(self, p, yaw, speed, wet_escape=False,
-                allow_shallow=False, hazard_only=False, maximum_distance=None):
+                allow_shallow=False, hazard_only=False, maximum_distance=None, evidence=None):
             record(4, yaw, int(wet_escape), int(allow_shallow), -1. if maximum_distance is None else maximum_distance)
             return policy['clear']
         def motion_resolver(self, unused, p, yaw, speed, descriptor, dt, now):
@@ -77,7 +80,7 @@ def reference(value):
             record(6,speed,now)
             if policy['kill']:
                 state['alive'] = False
-        def _invalidate_realised_motion(self, unused, yaw):
+        def _invalidate_realised_motion(self, unused, yaw, reason=None):
             record(7,yaw,1)
         def motion_report(self, unused, status, initial, final):
             record(9,status_names.index(status),initial,final)
@@ -102,8 +105,8 @@ def reference(value):
     self.navigator.report_blocked_step = lambda *unused: None
     self.navigator.report_hard_contact = lambda actor,p,target,yaw,now: record(8,*(list(p)+list(target)+[yaw,now]))
     collision = Stub()
-    collision.translation_fraction = lambda *unused: policy['fraction']
-    def slide(unused, movement, peers, first_fraction):
+    collision.translation_fraction = lambda *unused,**kwargs: policy['fraction']
+    def slide(unused, movement, peers, first_fraction, **kwargs):
         record(10,*movement)
         return tuple(v*policy['fraction'] for v in movement)
     collision.slide_translation = slide
@@ -112,19 +115,19 @@ def reference(value):
         return policy['fraction']
     collision.rotation_fraction = fraction
     collision.wreck_yaw_inertia = lambda state: 1. if not state['alive'] else None
-    module = dict(math=math, vehicle_physics=physics, tank_collision=collision,
+    module = dict(math=math, detailed_enabled=lambda:False, vehicle_physics=physics, tank_collision=collision,
         _position=position, _angle_delta=delta, _number=lambda v,default=0.: default if v is None else float(v),
         sys=Stub())
     module['sys'].stdout = Stub()
     module['sys'].stdout.write = lambda unused: None
     names = ('_hard_contact_response','_apply_tank_contact_response','_bleed_contact_push',
-        '_try_wreck_swept_pose','_advance_wreck_yaw','_apply_wreck_contact_response')
+        '_try_wreck_swept_pose','_advance_wreck_yaw','_apply_wreck_contact_response','_set_wreck_yaw')
     for name in names:
         start = source.index('    def '+name+'(')
         match = re.search(r'\n    (?:def |@)', source[start+1:])
         finish = start+1+match.start()+1 if match else len(source)
         exec(compile(textwrap.dedent(source[start:finish]),name,'exec'),module)
-        setattr(Owner,name,module[name])
+        setattr(Owner,name,staticmethod(module[name]) if name=='_set_wreck_yaw' else module[name])
     Owner._retained_contact_speed = staticmethod(lambda speed,forced:
         max(0.,min(speed,forced)) if speed>=0. else min(0.,max(speed,forced)))
     state['_contact_motion_log_time'] = float('inf')
@@ -137,7 +140,7 @@ def reference(value):
         siege.enabled_speed_limit = lambda unused: value.get('siege_limit')
         command = dict(brake=config['brake'],move_position=config.get('move_target'))
         scope = dict(module, self=self, state=state, step=config['dt'], now=config['now'],
-            position=position(state), descriptor={}, neighbours=(), throttle=config['throttle'],
+            position=position(state), descriptor={}, neighbours=(), rotation_roster=(), throttle=config['throttle'],
             turn=config['turn'], travel_sign=config['travel_sign'], steer_dir=state['rotation_dir'],
             path_clear=config['path_clear'],pose_frozen=config['pose_frozen'],
             motion_probe={'collision':config['probe_collision']}, exact_motion_owns_collision=config['exact_collision'],

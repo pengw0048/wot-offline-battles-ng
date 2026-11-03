@@ -27,6 +27,9 @@ PAYLOAD_FILES = {
         "server/offline_rewards.py",
         "server/retired_vehicles.py",
         "server/server_bot_ai.py",
+        "server/server_route_recovery.py",
+        "server/server_route_tasks.py",
+        "server/server_empty_ammo.py",
         "server/vehicle_overlay_store.py",
         "server/windows_server.py",
     ),
@@ -189,6 +192,21 @@ def stage_ng_client(target_root, ng_client, source_root=None, identity=None):
     for relative in NG_CLIENT_REQUIRED:
         if not os.path.isfile(os.path.join(ng_client, *relative.split("/"))):
             raise ValueError("NG client package is incomplete: %s" % relative)
+    source_root = source_root or repository_root()
+    try:
+        with open(os.path.join(source_root, "ng-launcher-source.json"),
+                  encoding="utf-8") as stream:
+            expected = json.load(stream)["fork_revision"]
+        with open(os.path.join(ng_client, "offline-res.json"),
+                  encoding="utf-8") as stream:
+            actual = json.load(stream)["revision"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("NG client gameplay revision cannot be verified: %s" % error)
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{40}", expected) is None:
+        raise ValueError("Composed launcher gameplay revision is invalid")
+    if actual != expected:
+        raise ValueError("NG client gameplay revision %r does not match the launcher/server %s" %
+                         (actual, expected))
     # Python 2.7 bytecode can be part of the client runtime. Debug symbols
     # are archived beside each build instead of shipping to every player.
     written = _copy_tree(ng_client, target_root, keep_bytecode=True,

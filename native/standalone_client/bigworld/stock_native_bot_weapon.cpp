@@ -88,6 +88,19 @@ std::vector<AimSample> vehicle_aim_samples(const std::vector<AimBox>& boxes) {
     }
     centres.insert(centres.end(),edges.begin(),edges.end());return centres;
 }
+std::vector<AimSample> ordered_vehicle_aim_samples(const std::vector<AimSample>& samples) {
+    std::vector<AimSample> hull,turret,result;
+    for (const auto& sample:samples) (sample.turret?turret:hull).push_back(sample);
+    if (hull.size()>=4) {
+        auto lower=hull[0];lower.point[1]=2.*hull[0].point[1]-hull[3].point[1];
+        result.push_back(lower);
+    }
+    result.insert(result.end(),hull.begin(),hull.end());
+    if (turret.size()==4) {
+        for (const auto i:{3,1,2,0}) result.push_back(turret[i]);
+    } else result.insert(result.end(),turret.begin(),turret.end());
+    return result;
+}
 Point vehicle_aim_point(const AimSample& sample,const AimPose& pose) {
     if(pose.hydraulic_body) {
         const auto& body=*pose.hydraulic_body;auto applied=pose;
@@ -126,6 +139,7 @@ bool select_exposed_aim(AimSelection& selection,const AimPose& pose,const Point&
     std::optional<std::size_t> exposed,best;std::optional<double> best_score;
     try { for (auto index:attempts) {
         const auto point=vehicle_aim_point(selection.samples[index],pose);
+        const auto reachable=world.aim_reachable(origin,point);if(reachable&&!*reachable)continue;
         if (world.static_segment_blocked(origin,point) || world.wreck_segment_blocked(origin,point))continue;
         const auto score=world.nominal_damage(origin,point);if (!exposed)exposed=index;
         if (score && *score==0.)continue;
@@ -384,6 +398,7 @@ WeaponAimResult advance_weapon_aim(offline_simulation::weapons::Store& store,
     const double yaw_error=std::atan2(std::sin(local.raw_yaw-actor.aim.turret_yaw),std::cos(local.raw_yaw-actor.aim.turret_yaw));
     actor.aim.aligned=actor.aim.aligned && !frame.planning_pending && std::abs(yaw_error)<=1.e-6 &&
         std::abs(local.raw_pitch-actor.aim.gun_pitch)<=1.e-6;
+    out.alignment_error=std::min(3.14159265358979323846,std::max(std::abs(yaw_error),std::abs(local.raw_pitch-actor.aim.gun_pitch)));
     out.aligned=actor.aim.aligned;return out;
 }
 FireResult advance_weapon_fire(offline_simulation::weapons::Store& store,

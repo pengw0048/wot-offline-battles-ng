@@ -20,9 +20,9 @@ def module(path, name):
 class OfflineMappingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
-            raise unittest.SkipTest('The fixed v0.10.1 source input is required')
+            raise unittest.SkipTest('The pinned v1.1.1 source input is required')
         cls.scope = module(Path(source) / 'src/res/scripts/client/gui/mods/offline_lan_0922/native_mapping_mask.py', 'fixed_mapping_mask')
         cls.temporary = tempfile.TemporaryDirectory(prefix='offline-mapping-policy-')
         cls.addClassCleanup(cls.temporary.cleanup)

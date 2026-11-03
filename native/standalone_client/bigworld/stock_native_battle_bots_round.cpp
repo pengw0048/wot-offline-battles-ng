@@ -276,6 +276,15 @@ Value vehicleProfile(PyObject* descriptor) {
     profile.object["armor"] = number(armor);
     Value shells = array();
     auto gun = attribute(descriptor, "gun");
+    auto gun_name=attribute(gun.get(), "name");
+    profile.object["gun_name"]=text(gun_name.get()==Py_None?std::string():p::string(gun_name.get()));
+    for(const auto& pair: {std::pair<const char*,const char*>{"burst","burst_size"},{"clip","clip_size"}}) {
+        auto raw=attribute(gun.get(),pair.first);int count=1;
+        if(raw.get()!=Py_None && PySequence_Check(raw.get()) && PySequence_Size(raw.get())>0) {
+            p::Ref first(PySequence_GetItem(raw.get(),0));if(first.get())count=int(plannerNumber(first.get(),1.));else PyErr_Clear();
+        }
+        profile.object[pair.second]=integer(count);
+    }
     auto shots = attribute(gun.get(), "shots");
     if (shots.get() != Py_None) {
         PyObject* iterator = PyObject_GetIter(shots.get());
@@ -290,6 +299,8 @@ Value vehicleProfile(PyObject* descriptor) {
                 Value row = object();
                 row.object["index"] = integer(index++);
                 row.object["kind"] = text(p::flag(kind.get()) ? p::string(p::Ref(PyObject_Str(kind.get())).get()) : std::string());
+                auto shell_name=attribute(shell.get(),"name");
+                row.object["name"]=text(shell_name.get()==Py_None?std::string():p::string(shell_name.get()));
                 auto piercing = attribute(shell.get(), "piercingPower"), damage = attribute(shell.get(), "damage");
                 row.object["penetration"] = number(middleValue(piercing.get() == Py_None ? nullptr : piercing.get()));
                 row.object["damage"] = number(middleValue(damage.get() == Py_None ? nullptr : damage.get()));
@@ -960,7 +971,7 @@ Value manifestEntry(const BotSeed& bot) {
     for (const char* key : {"id", "team", "slot", "name", "vehicle", "health", "max_health", "x", "y", "z", "yaw", "fire_seq",
                             "shell_index", "next_shell_index", "ammo_remaining", "ammo_reload_pending", "reload_time", "reload_duration",
                             "clip", "clip_size", "siege_state", "siege_time_left_ms", "siege_transition_total_ms", "equipment_states",
-                            "stun_end_server_time_ms"}) {
+                            "stun_end_server_time_ms", "fitting"}) {
         if (!has(state, key)) throw p::Error(std::string("Bot manifest state lacks ") + key);
         result.object[key] = at(state, key);
     }
@@ -1055,15 +1066,15 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
     bot.siege = std::move(pair.second);
     bot.rating = rating;
     bot.crew_level = stock_native_bot_descriptor::crewLevelForRating(rating);
+    bot.travel_factors = params::botCrewFactors(bot.travel.get(), startup::outfitSeason(b));
+    if(bot.siege)bot.siege_factors = params::botCrewFactors(bot.siege.get(), startup::outfitSeason(b));
+
     const std::int64_t team = pyInt(at(raw, "team")).value_or(1), slot = pyInt(at(raw, "slot")).value_or(0);
     const Value name = has(raw, "name") ? at(raw, "name") : text("Bot");
     // BattleDirector.register / register_profile.
-    Value profile;
-    if (at(raw, "profile").resolved().kind == Kind::Object) {
-        profile = at(raw, "profile").resolved();
-        profile.object["roles"] = at(profile, "roles").resolved().kind == Kind::Object ? at(profile, "roles") : object();
-        profile.object["shells"] = at(profile, "shells").resolved().kind == Kind::Array ? at(profile, "shells") : array();
-    } else profile = labeled("vehicle profile", [&] { return vehicleProfile(descriptor); });
+    // The installed fitting owns gun/module data; a roster profile predating
+    // that fitting must never replace its shell or tactical descriptor inputs.
+    Value profile = labeled("vehicle profile", [&] { return vehicleProfile(descriptor); });
     const auto agent_seed = stableSeed(std::to_string(battle_seed) + "|" + std::to_string(bot_id) + "|" + pyStr(name) + "|" + pyStr(at(profile, "vehicle_name")));
     Value agent = object();
     agent.object["id"] = integer(bot_id);
@@ -1096,6 +1107,12 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
     o["slot"] = integer(slot);
     o["name"] = name;
     o["vehicle"] = text(vehicle_name);
+    p::Ref fittings(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
+    p::Ref fitting_args(PyTuple_Pack(1, descriptor));
+    auto fitting_context = p::call(fittings.get(), "context", fitting_args.get());
+    if (fitting_context.get() == Py_None) throw p::Error("native Bot fitting context is unavailable");
+    o["fitting"] = cs::read(p::value(fitting_context.get(), "wire").get());
+
     o["x"] = number(pyNumber(at(raw, "x"), spawn.first[0]));
     o["y"] = number(pyNumber(at(raw, "y"), spawn.first[1]));
     o["z"] = number(pyNumber(at(raw, "z"), spawn.first[2]));
@@ -1153,7 +1170,9 @@ BotSeed installBot(Battle& b, RoundSeed& seed, const Value& raw, std::int64_t bo
     // _install_bot_equipments: one independent exact consumable ledger, published as trusted snapshots.
     if (has(raw, "equipment_states")) throw p::Error("authority manifest Bot equipment belongs to an authority restore");
     Value contracts = array();
-    for (const auto& contract : params::defaultBotConsumables(py::attr(b.engine.vehicles.get(), "g_cache").get())) contracts.array.push_back(contract.toValue());
+    const auto tier=skillForRating(rating);
+    const int consumable_skill=tier=="rookie"?0:tier=="regular"?1:tier=="veteran"?2:3;
+    for (const auto& contract : params::defaultBotConsumables(py::attr(b.engine.vehicles.get(), "g_cache").get(),consumable_skill)) contracts.array.push_back(contract.toValue());
     Value wire_states = array();
     for (const auto& contract : params::botConsumableContracts(&contracts)) {
         const params::EquipmentState equipment(contract, 0.);
@@ -1209,6 +1228,7 @@ void clearPending(BotAuthority& a) {
 // _server_order_signature: a live target's aim/face and the moving advance goal are not strategy.
 Value orderSignature(const Value* order) {
     Value result = order && order->resolved().kind == Kind::Object ? order->resolved() : object();
+    for(const char* key:{"route_attempt","route_assignment","tactical_evidence"})result.object.erase(key);
     if (at(result, "target_id").resolved().kind != Kind::Null) {
         result.object.erase("aim_position");
         if (!at(result, "stable_hull_face").truth()) result.object.erase("face_position");
@@ -1316,13 +1336,6 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
             auto found = assigned.find({pyInt(at(raw, "team")).value_or(1), pyInt(at(raw, "slot")).value_or(0)});
             vehicle_name = found != assigned.end() ? found->second : b.config.resolved().get("vehicle").resolved().text;
         }
-        std::pair<Object, Object> pair;
-        try {
-            auto resolved = startup::descriptorFor(b, vehicle_name);
-            pair = descriptorPair(resolved.get());
-        } catch (const std::exception& e) {
-            throw p::Error("bot " + std::to_string(bot_id) + " vehicle " + vehicle_name + " descriptor is unavailable: " + describe(e));
-        }
         // _resolve_bot_rating: the published rating, the published tier, the host's pin, then the room preset.
         double rating;
         if (has(raw, "skill_rating")) rating = normalizeRating(at(raw, "skill_rating"));
@@ -1332,6 +1345,18 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
             if (!team || !slot) throw p::Error("authority manifest Bot slot identity is invalid");
             auto pin = pins.find({*team, *slot});
             rating = pin != pins.end() ? ratingForSkill(pin->second) : resolveRating(mode, round_id, *team, *slot);
+        }
+        std::pair<Object, Object> pair;
+        try {
+            // Fitting installation is cold descriptor work. Keep the reviewed stock
+            // install guards, modules, devices, directive and seasonal style together.
+            p::Ref fittings(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
+            p::Ref args(PyTuple_Pack(5, b.engine.vehicles.get(), p::text(vehicle_name).get(),
+                p::text(skillForRating(rating)).get(), p::integer(stock_native_bot_descriptor::crewLevelForRating(rating)).get(), Py_None));
+            auto resolved = p::call(fittings.get(), "build", args.get());
+            pair = descriptorPair(resolved.get());
+        } catch (const std::exception& e) {
+            throw p::Error("bot " + std::to_string(bot_id) + " vehicle " + vehicle_name + " descriptor is unavailable: " + describe(e));
         }
         seed->bots[bot_id] = stage("Bot " + std::to_string(bot_id) + " " + vehicle_name, [&] {
             return installBot(b, *seed, raw, bot_id, vehicle_name, std::move(pair), rating, battle_seed, server_time_ms);

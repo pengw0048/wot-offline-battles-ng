@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 FIXTURE = r'''
 import ast,math,random,struct,sys,types
 import client_self_test as native
@@ -171,7 +171,7 @@ native.reset()
 print('1200 complete player presentation frames matched, with hot callback traps and retired native links')
 '''
 
-@unittest.skipUnless(SOURCE, 'Set WOT_FORK_0101_SOURCE to the pinned gameplay source')
+@unittest.skipUnless(SOURCE, 'Set WOT_FORK_SOURCE to the pinned gameplay source')
 class SelfPresentationTests(unittest.TestCase):
     def test_full_native_producer(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], env=dict(os.environ, PYENV_VERSION='2.7.18'), text=True).strip()

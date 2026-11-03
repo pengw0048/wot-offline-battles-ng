@@ -1,4 +1,4 @@
-// Fixed v0.10.1 contact kernel, preserving the local-player anchor contract.
+// Fixed v1.1.1 contact kernel, preserving the local-player anchor contract.
 #include "offline_simulation_diagnostics.h"
 #include "stock_native_client_drive_roster.hpp"
 #include <algorithm>
@@ -23,6 +23,8 @@ struct Hit {double x,z,depth;bool valid;};
 struct Response {double v[8]={};};
 using Angular=std::array<std::array<double,3>,2>;
 struct Polygon {std::array<Vec,64> v;size_t count=0;};
+using Excluded=std::set<std::pair<int64_t,int64_t>>;
+bool excluded(const Body&a,const Body&b,const Excluded&pairs){return pairs.count({std::min(a.id,b.id),std::max(a.id,b.id)})!=0;}
 double square(double x) { return std::pow(x,2.0); }
 std::array<Vec,2> axes(double yaw) {
     const double sine=std::sin(yaw), cosine=std::cos(yaw);
@@ -77,6 +79,73 @@ Hit contact(const Body &a,const Body &b,const Projection &p) {
         if(a.id>b.id) {best.x=-best.x;best.z=-best.z;}
     }
     return best;
+}
+// Exact counterpart of tank_collision.planar_body_contact. Ram candidates
+// below deliberately keep the frozen legacy first-impact geometry.
+Hit physical_contact(const Body &a,const Body &b,const Projection &p) {
+    if (!a.has(HasY) || !b.has(HasY) ||
+        (a.y==b.y && a.pitch==0. && a.roll==0. && b.pitch==0. && b.roll==0.))
+        return contact(a,b,p);
+    using V=std::array<double,3>;
+    auto dot=[](const V &x,const V &y) {double v=0.;for(size_t i=0;i<3;++i)v+=x[i]*y[i];return v;};
+    auto basis=[](const Body &body) {
+        const double sy=std::sin(body.yaw),cy=std::cos(body.yaw);
+        const double sp=std::sin(body.pitch),cp=std::cos(body.pitch);
+        const double sr=std::sin(body.roll),cr=std::cos(body.roll);
+        auto rotate=[&](double x,double y,double z) {
+            const double yy=cp*y-sp*z,zz=sp*y+cp*z;
+            return V{{cy*x+sy*zz,yy,-sy*x+cy*zz}};
+        };
+        return std::array<V,3>{{rotate(cr,sr,0.),rotate(-sr,cr,0.),rotate(0.,0.,1.)}};
+    };
+    const auto aa=basis(a),ab=basis(b);
+    const double ay=(a.shape[2]+a.shape[3])*.5,by=(b.shape[2]+b.shape[3])*.5;
+    const V ca{{a.x+aa[1][0]*ay,a.y+aa[1][1]*ay,a.z+aa[1][2]*ay}};
+    const V cb{{b.x+ab[1][0]*by,b.y+ab[1][1]*by,b.z+ab[1][2]*by}};
+    const V delta{{ca[0]-cb[0],ca[1]-cb[1],ca[2]-cb[2]}};
+    const V ea{{a.shape[0],(a.shape[3]-a.shape[2])*.5,a.shape[1]}};
+    const V eb{{b.shape[0],(b.shape[3]-b.shape[2])*.5,b.shape[1]}};
+    std::array<V,15> candidates;size_t count=0;
+    for(const V &v:aa)candidates[count++]=v;
+    for(const V &v:ab)candidates[count++]=v;
+    for(const V &x:aa)for(const V &y:ab) {
+        V cross{{x[1]*y[2]-x[2]*y[1],x[2]*y[0]-x[0]*y[2],x[0]*y[1]-x[1]*y[0]}};
+        const double length=std::sqrt(dot(cross,cross));
+        if(length>1.e-8) {for(double &v:cross)v/=length;candidates[count++]=cross;}
+    }
+    double minimum=0.,horizontal_minimum=0.;V normal{},horizontal_normal{};
+    bool first=true,first_horizontal=true;
+    for(size_t j=0;j<count;++j) {
+        const V &axis=candidates[j];double ra=0.,rb=0.;
+        for(size_t i=0;i<3;++i)ra+=ea[i]*std::abs(dot(axis,aa[i]));
+        for(size_t i=0;i<3;++i)rb+=eb[i]*std::abs(dot(axis,ab[i]));
+        const double depth=(ra+rb)-std::abs(dot(delta,axis));
+        if(depth<=0.)return Hit{0.,0.,0.,false};
+        if(first || depth<minimum) {minimum=depth;normal=axis;first=false;}
+        if(axis[1]*axis[1]<axis[0]*axis[0]+axis[2]*axis[2] &&
+           (first_horizontal || depth<horizontal_minimum)) {
+            horizontal_minimum=depth;horizontal_normal=axis;first_horizontal=false;
+        }
+    }
+    // Match the Python same-layer slab test; do not delegate a deeply
+    // intersecting side pair to a suspension owner which cannot separate it.
+    const bool same_layer=std::abs(dot(delta,aa[1]))<ea[1] &&
+                          std::abs(dot(delta,ab[1]))<eb[1];
+    if(same_layer && !first_horizontal &&
+       normal[1]*normal[1]>=normal[0]*normal[0]+normal[2]*normal[2]) {
+        minimum=horizontal_minimum;normal=horizontal_normal;
+    }
+    if(dot(delta,normal)<0.)for(double &v:normal)v=-v;
+    if(normal[1]*normal[1]>=normal[0]*normal[0]+normal[2]*normal[2])
+        return Hit{0.,0.,0.,false};
+    const double length=std::hypot(normal[0],normal[2]);
+    Hit out{normal[0]/length,normal[2]/length,minimum/length,true};
+    const double orient=(a.x-b.x)*out.x+(a.z-b.z)*out.z;
+    if(std::abs(orient)<=1.e-9) {
+        if(out.x<-1.e-9 || (std::abs(out.x)<=1.e-9 && out.z<0.)) {out.x=-out.x;out.z=-out.z;}
+        if(a.id>b.id) {out.x=-out.x;out.z=-out.z;}
+    }
+    return out;
 }
 std::array<double,2> grounded(const Hit &hit,const Body &a,const Body &b,
                               double ia,double ib,double dt) {
@@ -202,7 +271,7 @@ Angular angular_response(const Body &a,const Body &b,const Hit &hit,double ia,do
 }
 // Four sequential passes update private poses and velocities. Position-fixed
 // hulls still move in this private solver; only their published correction is held.
-std::vector<Result> solve(std::vector<Body> bodies,double dt,std::int64_t anchor) {
+std::vector<Result> solve(std::vector<Body> bodies,double dt,std::int64_t anchor,const Excluded& omitted) {
     NATIVE_PROFILE_STAGE(contact_solve);
     std::stable_sort(bodies.begin(),bodies.end(),[](const Body &a,const Body &b){return a.id<b.id;});
     std::vector<Result> results; results.reserve(bodies.size());
@@ -215,9 +284,8 @@ std::vector<Result> solve(std::vector<Body> bodies,double dt,std::int64_t anchor
         const Body &a=bodies[i];
         for(uint32_t j=i+1;j<bodies.size();++j) {
             const Body &b=bodies[j];
-            if(a.id!=anchor&&b.id!=anchor)continue;
+            if((anchor&&a.id!=anchor&&b.id!=anchor)||excluded(a,b,omitted))continue;
             if(a.has(Player) && b.has(Player)) continue;
-            if(!(a.has(Alive)||b.has(Alive)||a.vx||a.vz||b.vx||b.vz||a.push_yaw||b.push_yaw)) continue;
             const double reach=radii[i]+radii[j]+PADDING;
             if(square(a.x-b.x)+square(a.z-b.z)<=reach*reach && vertical_overlap(a,b))
                 pairs.push_back(Pair{i,j,projection(a,b)});
@@ -266,7 +334,8 @@ std::vector<Result> solve(std::vector<Body> bodies,double dt,std::int64_t anchor
     for(unsigned pass=0;pass<4;++pass) {
         for(const Pair &p:pairs) {
             Body &a=bodies[p.a], &b=bodies[p.b];
-            const Hit hit=contact(a,b,p.projection);
+            if(!(a.has(Alive)||b.has(Alive)||a.vx||a.vz||b.vx||b.vz||a.push_yaw||b.push_yaw)) continue;
+            const Hit hit=physical_contact(a,b,p.projection);
             if(!hit.valid) continue;
             const double ia=a.has(Immovable)?0.:1./std::max(a.mass,1.),ib=b.has(Immovable)?0.:1./std::max(b.mass,1.);
             const auto mobility=grounded(hit,a,b,ia,ib,dt);
@@ -324,7 +393,7 @@ bool traverse_point(const Body &a,const Body &b,const Hit &hit,double omega,Vec 
 }
 // Traverse uses original geometry with the normal solver's velocity/angular
 // deltas, matching post_contact_velocity_bodies without publishing corrected poses.
-void traverse(const std::vector<Body> &original,double dt,std::vector<Result> &physical,std::int64_t anchor) {
+void traverse(const std::vector<Body> &original,double dt,std::vector<Result> &physical,std::int64_t anchor,const Excluded& omitted={}) {
     if (dt<=0.) return;
     auto bodies=original;
     std::stable_sort(bodies.begin(),bodies.end(),[](const Body &a,const Body &b){return a.id<b.id;});
@@ -344,10 +413,11 @@ void traverse(const std::vector<Body> &original,double dt,std::vector<Result> &p
         if (!omega || budget<=0. || !a.has(Alive)) continue;
         for (size_t bi=0;bi<bodies.size();++bi) {
             const auto &b=bodies[bi];
-            if(a.id!=anchor&&b.id!=anchor)continue;
+            if((anchor&&a.id!=anchor&&b.id!=anchor)||excluded(a,b,omitted))continue;
             if (ai==bi || !a.has(Impulse) || !b.has(Impulse) || budget<=0.) continue;
             const double reach=radii[ai]+radii[bi]+SLOP;
             if (square(a.x-b.x)+square(a.z-b.z)>reach*reach || !vertical_overlap(a,b)) continue;
+            if (!physical_contact(a,b,projection(a,b)).valid) continue;
             const Hit hit=signed_overlap(a,b);
             if (hit.depth<-SLOP) continue;
             Vec point;
@@ -417,9 +487,9 @@ std::optional<std::array<double,2>>overlapPoint(const Body&a,const Body&b){const
 std::optional<HeldFace>heldFace(const Body&a,const Body&b,double omega){if(!vertical_overlap(a,b))return {};const auto hit=signed_overlap(a,b);if(hit.depth<-SLOP)return {};Vec point;if(!traverse_point(a,b,hit,omega,point))return {};return HeldFace{{hit.x,hit.z},{point.x,point.z},hit.depth};}
 std::vector<Row>traverseOnly(const std::vector<Body>&bodies,double dt,std::int64_t anchor){std::vector<Result>physical;for(const auto&body:bodies)physical.push_back({body.id,{}});traverse(bodies,dt,physical,anchor);std::vector<Row>out;for(const auto&result:physical){Row row;row.id=result.id;row.delta_velocity={result.value[2],result.value[3]};row.delta_yaw=result.value[4];out.push_back(row);}return out;}
 std::vector<Row> resolve(const std::vector<Body> &bodies,const std::vector<int64_t> &owners,
-                         double dt,const std::vector<std::pair<int64_t,int64_t>> &previous,std::int64_t anchor) {
-    auto physical=solve(bodies,dt,anchor);
-    traverse(bodies,dt,physical,anchor);
+                         double dt,const std::vector<std::pair<int64_t,int64_t>> &previous,std::int64_t anchor,const Excluded& omitted) {
+    auto physical=solve(bodies,dt,anchor,omitted);
+    traverse(bodies,dt,physical,anchor,omitted);
     std::unordered_map<int64_t,size_t> input_index,physical_index;
     double maximum_radius=4.;
     std::vector<double> radii;radii.reserve(bodies.size());
@@ -453,6 +523,7 @@ std::vector<Row> resolve(const std::vector<Body> &bodies,const std::vector<int64
             for (size_t bi:nearby->second) {
                 if (ai==bi) continue;
                 const auto &other=bodies[bi];
+                if(excluded(a,other,omitted))continue;
                 const double dx=a.x-other.x,dz=a.z-other.z,reach=radii[ai]+radii[bi]+PADDING;
                 if (dx*dx+dz*dz>reach*reach) continue;
                 row.has_peers=true;

@@ -20,7 +20,7 @@ struct Controls {
     std::optional<Point> aim_point;
 };
 struct Conditions {
-    bool ready=true,alive=true,crew_active=true,battle_over=false,has_alive_method=true;
+    bool ready=true,alive=true,dead=false,crew_active=true,battle_over=false,has_alive_method=true;
     bool tracked=false,engine_dead=false,overturned=false,siege_locked=false;
     double mobility=1.,traverse=1.,power=1.,speed=1.;
 };
@@ -45,7 +45,7 @@ struct PlayerState:step::VerticalState {
     bool support_blocked=false,suspension_failed=false,suspension_slide_applied=false;
     // Receipt from the applied native body and component providers, never an aim estimate.
     std::optional<std::array<double,8>> hydraulic_body;
-    bool has_presentation=false;
+    bool has_presentation=false,wreck_active=false,wreck_started=false;
 };
 struct SliceTrace {
     Point initial_position{};

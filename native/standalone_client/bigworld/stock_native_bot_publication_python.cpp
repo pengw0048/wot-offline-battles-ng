@@ -40,7 +40,7 @@ Value packObservation(const observation::Observation&o){
     for(const auto&c:o.contacts){auto row=v::object();auto&r=row.object;
         r["observing_team"]=v::integer(c.observing_team);r["target_kind"]=v::text(kind(c.target));r["target_id"]=v::integer(c.target.id);r["target_team"]=v::integer(c.target_team);
         r["visible"]=v::boolean(c.visible);r["fresh"]=v::boolean(c.fresh);r["time_left"]=v::number(c.time_left);auto recipients=v::array();
-        for(const auto&a:c.radio_recipients){auto x=identity(a.actor);x.object["time_left"]=v::number(a.time_left);recipients.array.push_back(std::move(x));}r["radio_recipients"]=std::move(recipients);
+        for(const auto&a:c.radio_recipients){auto x=identity(a.actor);x.object["time_left"]=v::number(a.time_left);auto sources=v::array();for(const auto& source:a.sources){auto y=identity(source.actor);y.object["time_left"]=v::number(source.time_left);sources.array.push_back(std::move(y));}x.object["sources"]=std::move(sources);recipients.array.push_back(std::move(x));}r["radio_recipients"]=std::move(recipients);
         r["visible_by_player_ids"]=v::integers(c.visible_by_player_ids);r["visible_by_bot_ids"]=v::integers(c.visible_by_bot_ids);
         r["shootable_by_bot_ids"]=v::integers(c.shootable_by_bot_ids);r["threatened_bot_ids"]=v::integers(c.threatened_bot_ids);
         r["x"]=v::number(c.position[0]);r["y"]=v::number(c.position[1]);r["z"]=v::number(c.position[2]);
@@ -62,7 +62,9 @@ Value packNativeOutputs(const std::vector<Output>&values,std::int64_t horizon){
         auto push=v::object(),contacts=v::array();for(const auto&c:o.pushes){auto x=v::object();x.object["seq"]=v::integer(c.sequence);x.object["attacker_kind"]=v::text(kind(c.attacker_human));x.object["attacker_id"]=v::integer(c.attacker);x.object["target_kind"]=v::text(kind(c.target_human));x.object["target_id"]=v::integer(c.target);contacts.array.push_back(std::move(x));}
         push.object["contacts"]=std::move(contacts);push.object["hazards"]=v::integers(o.hazards);push.object["environment_fires"]=v::integers(o.environment_fires);
         auto falls=v::array();for(const auto&f:o.falls)falls.array.push_back(v::integers(f));push.object["falls"]=std::move(falls);auto critical=v::array();
-        for(const auto&c:o.critical){auto x=v::array();x.array.push_back(v::integer(c.actor));x.array.push_back(v::text(c.cause));x.array.push_back(v::integer(c.mask));x.array.push_back(v::integer(c.count));critical.array.push_back(std::move(x));}push.object["critical_totals"]=std::move(critical);d["push_contacts"]=std::move(push);
+        for(const auto&c:o.critical){auto x=v::array();x.array.push_back(v::integer(c.actor));x.array.push_back(v::text(c.cause));x.array.push_back(v::integer(c.mask));x.array.push_back(v::integer(c.count));critical.array.push_back(std::move(x));}push.object["critical_totals"]=std::move(critical);
+        auto stacks=v::array();for(const auto&s:o.stacks){auto x=v::object();const auto identity=[](const stack::Identity&key){auto a=v::array();a.array.push_back(v::text(key.human?"player":"bot"));a.array.push_back(v::integer(key.id));return a;};
+            x.object["upper"]=identity(s.upper);x.object["lower"]=identity(s.lower);x.object["upper_total"]=v::integer(ID(s.upper_total));x.object["lower_total"]=v::integer(ID(s.lower_total));x.object["lower_environment_total"]=v::integer(ID(s.lower_environment_total));x.object["upper_impact_total"]=v::integer(s.upper_impact_total);x.object["contact_seconds"]=v::number(s.contact_seconds);stacks.array.push_back(std::move(x));}push.object["stacks"]=std::move(stacks);d["push_contacts"]=std::move(push);
         if(!s.launches.empty()){auto launches=v::array();for(const auto&l:s.launches)launches.array.push_back(launch(l));d["launches"]=std::move(launches);}out.array.push_back(std::move(row));
         for(const auto&r:s.reports)out.array.push_back(ram(r));if(o.observation)out.array.push_back(packObservation(*o.observation));
     }return out;

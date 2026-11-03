@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 START_FIXTURE = r'''
 import copy,os,sys,types
 import replay_boundary_test as native

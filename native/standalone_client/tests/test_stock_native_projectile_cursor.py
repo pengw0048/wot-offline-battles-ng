@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SOURCE_ROOT=os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE_ROOT=os.environ.get('WOT_FORK_SOURCE')
 SOURCE=Path(SOURCE_ROOT)/'src/res/scripts/client/gui/mods/offline_lan_0922' if SOURCE_ROOT else None
 
 def load(name):

@@ -1,12 +1,19 @@
 #include "stock_native_bot_physics_snapshot.hpp"
 #include <Python.h>
+#include "stock_native_client_state.hpp"
 using namespace stock_native_bot_physics;
 static PyObject* inspect(PyObject*,PyObject*args){
     PyObject*battle,*state,*descriptor;int detailed;
     if(!PyArg_ParseTuple(args,"OOOi",&battle,&state,&descriptor,&detailed))return nullptr;
     stock_native_bot_turret::MovingDescriptor geometry;
     geometry.chassis.bounds={{{-1.,0.,-2.}},{{1.,1.,2.}}};geometry.hull.bounds=geometry.chassis.bounds;
-    PhysicsSnapshot out;if(!readPhysicsSnapshot(battle,state,descriptor,geometry,detailed,out))return nullptr;
+    PyObject* travel=nullptr;
+    auto bots=PyObject_GetAttrString(battle,"_bots"),pairs=PyObject_GetAttrString(bots,"_descriptor_pairs");
+    auto key=PyLong_FromLong(7),pair=PyDict_GetItem(pairs,key);if(pair)travel=PyTuple_GetItem(pair,0);
+    if(travel==Py_None)travel=nullptr;
+    PhysicsSnapshot out;auto row=stock_native_client_state::read(state);
+    const bool ok=readPhysicsSnapshot(row,descriptor,travel,geometry,detailed,out);
+    Py_DECREF(key);Py_DECREF(pairs);Py_DECREF(bots);if(!ok)return nullptr;
     return Py_BuildValue("(iiiddddidd)",int(out.geometry.pitch_hull_aiming),int(out.geometry.turret.pivot_available),int(out.geometry.turret.rotation_around_center),
         out.geometry.turret.track_center,out.config.travel_forward.value_or(-1.),out.config.travel_reverse.value_or(-1.),out.memory.last_world_impact_time,
         int(out.memory.pose_sample.has_value()),out.memory.pose_sample?(*out.memory.pose_sample)[2]:-1.,out.config.turret_yaw);

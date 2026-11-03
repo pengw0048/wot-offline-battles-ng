@@ -9,7 +9,7 @@ from native_test_compile_flags import native_test_compile_flags
 from test_stock_vehicle_physics_owner import block
 
 ROOT = Path(__file__).resolve().parents[1]
-FORK = os.environ.get('WOT_FORK_0101_SOURCE')
+FORK = os.environ.get('WOT_FORK_SOURCE')
 
 REPLICA = r'''
 #include <algorithm>

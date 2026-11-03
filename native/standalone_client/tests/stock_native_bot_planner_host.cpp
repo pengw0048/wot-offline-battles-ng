@@ -14,7 +14,7 @@ void body(std::istream&s,Body&b) {
     s>>b.half_length>>b.half_width>>b.lower_y>>b.upper_y>>b.pitch>>b.roll;
 }
 struct TestWorld:World {
-    int policy=0;
+    int policy=0;bool override_target=false;
     Navigation navigation;
     struct Probe {int kind;double yaw,distance,sign,implicit;};
     std::vector<Probe> probes;
@@ -33,7 +33,7 @@ struct TestWorld:World {
         if(policy==6)return std::abs(yaw)<.2;
         return true;
     }
-    Navigation navigate(const Input&,const Order&,const Point&)override {return navigation;}
+    Navigation navigate(const Input&,const Order&,const Point&destination)override {auto result=navigation;if(!override_target)result.target=destination;return result;}
 };
 void print_point(const Point&p) {std::cout<<'['<<p[0]<<','<<p[1]<<','<<p[2]<<']';}
 template<class T> void print_optional(const Optional<T>&v) {if(v.present)std::cout<<v.value;else std::cout<<"null";}
@@ -50,8 +50,8 @@ int main() {
         input>>in.rotation_refused>>in.navigation_recovery_allowed;
         optional_point(input,order.move);optional_point(input,order.aim);optional_point(input,order.face);
         optional(input,order.throttle);optional(input,order.arrival_radius);optional(input,order.target);
-        input>>order.fire_range>>std::quoted(order.mode)>>std::quoted(order.parking_phase);optional(input,order.parking_heading);
-        point(input,world.navigation.target);input>>std::quoted(world.navigation.status);
+        input>>order.fire_range>>std::quoted(order.mode)>>std::quoted(order.parking_phase);optional(input,order.parking_heading);bool has_area;CaptureArea area;input>>has_area;point(input,area.center);input>>area.radius;if(has_area)order.capture_area.set(area);input>>std::quoted(order.progress_identity);
+        input>>world.override_target;point(input,world.navigation.target);input>>std::quoted(world.navigation.status);
         optional(input,world.navigation.stop_at_target);optional_point(input,world.navigation.progress_target);
         input>>world.policy>>traffic_stage;std::size_t count;input>>count;std::vector<Body> peers(count);for(auto&peer:peers)body(input,peer);
         if(!input) {std::cerr<<"Malformed test input\n";return 2;}
@@ -69,6 +69,9 @@ int main() {
             std::cout<<",\"forward_blocked_by\":";print_optional(command.forward_blocker);
             std::cout<<",\"reverse_blocked_by\":";print_optional(command.reverse_blocker);
             std::cout<<",\"recovery_probe_distance\":";print_optional(command.probe_distance);
+            std::cout<<",\"recovery_probe_origin\":";if(command.probe_origin.present)print_point(command.probe_origin.value);else std::cout<<"null";
+            std::cout<<",\"recovery_probe_yaw\":";print_optional(command.probe_yaw);
+            std::cout<<",\"recovery_probe_length\":";print_optional(command.probe_length);
             const auto&s=planner.actor(in).driver;
             std::cout<<",\"driver\":["<<s.clock<<','<<s.stuck_time<<','<<s.recovery_time<<','<<s.recovery_count<<','<<s.recovery_side<<']';
             std::cout<<",\"probes\":[";bool first=true;for(const auto&p:world.probes) {

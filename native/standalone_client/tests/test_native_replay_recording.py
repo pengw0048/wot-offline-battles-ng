@@ -254,7 +254,7 @@ def staged_source(fork):
 
 class ReplayRecordingDifferential(unittest.TestCase):
     def test_native_ports_match_staged_functions(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

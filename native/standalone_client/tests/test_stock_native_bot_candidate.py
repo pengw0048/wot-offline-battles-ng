@@ -8,18 +8,19 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from stock_gameplay_source import navigation_include
 
 ROOT=Path(__file__).resolve().parents[1]
 
 class NativeCandidateTests(unittest.TestCase):
     def test_direction_probe_against_python27(self):
-        source=os.environ.get('WOT_FORK_0101_SOURCE')
-        if not source:self.skipTest('Fixed v0.10.1 source input is required')
+        source=os.environ.get('WOT_FORK_SOURCE')
+        if not source:self.skipTest('Pinned v1.1.1 source input is required')
         source=Path(source)
         with tempfile.TemporaryDirectory(prefix='native-candidate-') as temporary:
             binary=Path(temporary)/'candidate'
             built=subprocess.run(['c++','-std=c++17','-O1','-ffp-contract=off','-Wall','-Wextra','-Werror','-pthread',
-                '-I'+str(ROOT/'bigworld'),'-I'+str(source/'native'),str(ROOT/'bigworld/stock_native_bot_candidate.cpp'),
+                '-I'+navigation_include(source),'-I'+str(ROOT/'bigworld'),'-I'+str(source/'native'),str(ROOT/'bigworld/stock_native_bot_candidate.cpp'),
                 str(ROOT/'bigworld/stock_native_bot_navigation.cpp'),str(ROOT/'bigworld/stock_native_bot_navigator.cpp'),
                 str(source/'native/offline_navigation.cpp'),str(source/'native/offline_async_worker.cpp'),
                 str(ROOT/'tests/stock_native_bot_candidate_host.cpp'),'-o',str(binary)],capture_output=True,text=True)
@@ -28,7 +29,7 @@ class NativeCandidateTests(unittest.TestCase):
             method=next(n for n in ast.walk(ast.parse(text)) if isinstance(n,ast.FunctionDef) and n.name=='_direction_probe')
             oracle=Path(temporary)/'oracle.py'
             oracle.write_text('''import json,math,sys
-BOT_WATER_AVOID_DEPTH=.90
+BOT_WATER_AVOID_DEPTH=1.20
 BOT_WATER_ESCAPE_DEEPEN_EPSILON=.10
 NAVIGATION_MAX_GRADE=math.tan(math.radians(25.))
 VEHICLE_SKIP_FLAGS=0

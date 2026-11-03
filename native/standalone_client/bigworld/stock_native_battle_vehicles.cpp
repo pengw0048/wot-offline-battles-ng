@@ -5,6 +5,8 @@
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_native_battle_vehicles_internal.hpp"
 #include "stock_native_battle_pending.hpp"
+#include "stock_native_battle_params.hpp"
+#include "stock_native_battle_bots.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -128,6 +130,30 @@ std::int64_t marksOnGun(Battle& b, const Value& raw) {
     return std::max<std::int64_t>(0, std::min<std::int64_t>(marks, 3));
 }
 
+// Reconstruct the same immutable fitting used by the worker, including native
+// geometry and the season-specific public outfit. This is a create edge only.
+p::Ref botDescriptor(Battle& b, const Value& state) {
+    if(b.worker&&b.bots&&b.bots->seed){const auto found=b.bots->seed->bots.find(integer(field(state,"id")));if(found!=b.bots->seed->bots.end())return p::retain(found->second.travel.get());}
+    const auto& fitting = field(state, "fitting");
+    if (fitting.resolved().kind != Value::Kind::Object) throw p::Error("Bot fitting is unavailable");
+    p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
+    p::Ref restored(cs::write(fitting));
+    p::Ref args(PyTuple_Pack(5, b.engine.vehicles.get(), p::text(field(fitting, "vehicle").resolved().text).get(),
+        p::text(field(fitting, "tier").resolved().text).get(), p::integer(integer(field(fitting, "crew_level"))).get(), restored.get()));
+    return p::call(module.get(), "build", args.get());
+}
+p::Ref botOutfit(Battle& b, PyObject* descriptor) {
+    const auto season = outfitSeason(b);
+    if (!season) return p::text("");
+    p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
+    p::Ref args(PyTuple_Pack(1, descriptor));
+    auto context = p::call(module.get(), "context", args.get());
+    auto outfits = p::value(context.get(), "outfits"), encoded = p::value(outfits.get(), std::to_string(*season).c_str());
+    if (encoded.get() == Py_None) return p::text("");
+    p::Ref base64(PyImport_ImportModule("base64")), decode_args(PyTuple_Pack(1, encoded.get()));
+    return p::call(base64.get(), "b64decode", decode_args.get());
+}
+
 // ---- creation and readiness --------------------------------------------------------------------------------
 
 // BattleRuntime._create_remote(event): one remote vehicle entity for a replica create event.
@@ -139,9 +165,13 @@ void create(Battle& b, Actor& v, const Value& event) {
     if (!has(state, "team") || !has(state, "slot")) return;
     const bool bot = v.kind == "bot", player = v.kind == "player";
     if (bot && (!has(state, "x") || !has(state, "z"))) return;
-    auto descriptor = player && (b.worker || field(state, "vehicle_compact_descr").truth())
+    auto descriptor = bot ? botDescriptor(b, state) : player && (b.worker || field(state, "vehicle_compact_descr").truth())
         ? playerDescriptor(b, state)
         : descriptorFor(b, has(state, "vehicle") ? field(state, "vehicle").resolved().text : field(b.config, "vehicle").resolved().text);
+    if(bot){
+        if(b.worker&&b.bots&&b.bots->seed){const auto found=b.bots->seed->bots.find(integer(field(state,"id")));if(found!=b.bots->seed->bots.end())v.bot_crew_factors={found->second.travel_factors,found->second.siege_factors};}
+        if(!v.bot_crew_factors[0]){v.bot_crew_factors[0]=params::botCrewFactors(descriptor.get(),outfitSeason(b));auto siege=py::optional(descriptor.get(),"siegeVehicleDescr");if(siege.get()!=Py_None)v.bot_crew_factors[1]=params::botCrewFactors(siege.get(),outfitSeason(b));}
+    }
     const std::int64_t team = integer(field(state, "team"), 1);
     const std::string name = has(state, "name") ? field(state, "name").resolved().text : "Vehicle";
     auto compact = py::call(descriptor.get(), "makeCompactDescr");
@@ -150,7 +180,7 @@ void create(Battle& b, Actor& v, const Value& event) {
     auto put = [&](PyObject* into, const char* key, p::Ref value) {
         if (PyObject_SetItem(into, p::text(key).get(), value.get()) < 0) throw p::Error("publicInfo write failed");
     };
-    put(info.get(), "outfit", remoteOutfit(b, state, player));
+    put(info.get(), "outfit", bot ? botOutfit(b, descriptor.get()) : remoteOutfit(b, state, player));
     put(info.get(), "prebattleID", p::integer(prebattleId(b, state, player)));
     put(info.get(), "marksOnGun", p::integer(player ? marksOnGun(b, field(state, "marks_on_gun")) : 0));
     const std::int64_t cap = p::wide(py::attr(descriptor.get(), "maxHealth").get());

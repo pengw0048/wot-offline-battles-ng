@@ -25,6 +25,13 @@ int main()
     for(int n=0;n<input.width*input.height;++n){int present;double height;unsigned links,hazard;
         std::cin>>present>>height>>links>>hazard;input.heights.push_back(present?height:std::numeric_limits<double>::quiet_NaN());
         input.links.push_back(links);input.hazards.push_back(hazard);}
+    unsigned mesh_count=0;std::cin>>mesh_count;
+    for(unsigned m=0;m<mesh_count;++m){offline_navigation::LocalMeshInput mesh;
+        std::cin>>mesh.width>>mesh.height>>mesh.cell_size>>mesh.origin_x>>mesh.origin_z;
+        for(int n=0;n<mesh.width*mesh.height;++n){int present;double height;unsigned links,hazard;
+            std::cin>>present>>height>>links>>hazard;mesh.heights.push_back(present?height:std::numeric_limits<double>::quiet_NaN());
+            mesh.links.push_back(links);mesh.hazards.push_back(hazard);}
+        input.local_meshes.push_back(std::move(mesh));}
     const double grade=std::tan(25.*3.14159265358979323846/180.);Grid grid(input,scene,grade,grade);
     std::string operation;
     while(std::cin>>operation){

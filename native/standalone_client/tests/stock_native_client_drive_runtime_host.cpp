@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "stock_native_client_drive_runtime.hpp"
 using namespace stock_native_client_drive;
 namespace {
@@ -43,3 +44,13 @@ extern "C" int player_driver_fixture(const double*constants,const double*initial
     n=0;const double dt=policy[n++];world.slope=policy[n++];world.fraction=policy[n++];world.arena=policy[n++]!=0.;world.sweep=policy[n++]!=0.;world.complete=policy[n++]!=0.;world.detailed=policy[n++]!=0.;world.blocked=policy[n++]!=0.;world.guard=policy[n++]!=0.;world.air=int(policy[n++]);world.dy=policy[n++];world.impulse=policy[n++];world.correction={policy[n],policy[n+1],policy[n+2]};n+=3;world.held=policy[n++]!=0.;world.recover=policy[n++]!=0.;const bool normal=policy[n++]!=0.;Point hitnormal{policy[n],policy[n+1],policy[n+2]};n+=3;if(normal)world.normal=hitnormal;const unsigned count=unsigned(policy[n++]);for(unsigned i=0;i<count;++i)world.statuses.push_back(int(policy[n++]));
     driver.advance(world,dt);const auto&s=driver.state();n=0;for(double v:s.position)out[n++]=v;for(double v:{s.yaw,s.pitch,s.roll,s.speed,s.turn_speed,s.vertical_speed,s.pitch_speed,s.roll_speed,s.direction_command,double(s.service_brake),double(s.grind),s.air_lateral_x,s.air_lateral_z,s.slide_speed,s.drive_throttle,s.drive_turn,s.reaction_rate,double(s.airborne),double(s.support_blocked),double(world.presentations)})out[n++]=v;return int(n);
 }catch(...){return -1;}}
+extern "C" int player_wreck_fixture(int airborne,int battle_over,double*out){try{
+    PlayerDescriptor d;d.network_seconds=.1;d.motion.collision_shape={1.5,3.,-.5,2.};
+    d.motion.constraint_iterations=10;d.motion.side_min_y=.2;d.motion.side_full_y=.9;d.motion.side_min=.5;d.motion.side_full=1.;
+    d.motion.half_length=3.;d.motion.half_width=1.5;d.motion.drive.mass=10000.;d.motion.drive.t[0]=9.81;d.motion.drive.t[11]=1.;d.motion.drive.t[14]=1.;d.motion.drive.t[18]=.5;d.motion.drive.t[24]=1.;for(auto&v:d.motion.drive.terrain)v=1.;
+    PlayerState s;s.position={1.,2.,3.};s.yaw=.2;s.speed=3.;s.turn_speed=.2;s.push_x=.4;s.airborne=airborne!=0;
+    PlayerDriver driver(d,s);driver.controls().forward=1.;World world;world.flags.alive=false;world.flags.dead=true;world.flags.battle_over=battle_over!=0;world.dy=-2.;world.correction={.1,0.,.2};
+    const auto published=driver.advance(world,.1);const auto&v=driver.state();
+    out[0]=v.wreck_active;out[1]=published.stopped;out[2]=published.input;out[3]=v.position[0];out[4]=v.position[1];out[5]=v.position[2];out[6]=v.speed;out[7]=v.push_x;out[8]=v.push_z;out[9]=v.turn_speed;out[10]=driver.controls().forward;
+    return 11;
+}catch(const std::exception&e){fprintf(stderr,"%s\n",e.what());return -1;}}

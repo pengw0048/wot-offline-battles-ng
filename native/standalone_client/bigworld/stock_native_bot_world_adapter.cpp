@@ -112,7 +112,7 @@ QueryStatus NativeScene::materialFiltered(const Point& start,const Point& end,co
 QueryStatus NativeScene::water(const Point& start,const Point& end,double& distance)
 {
     if(!current()||!finite(start)||!finite(end))return QueryStatus::Failed;
-    distance=BW::collideStockWater(native(start),native(end),false);
+    distance=BW::collideStockPhysicalWater(native(start),native(end));
     return distance<0.?QueryStatus::Miss:QueryStatus::Found;
 }
 Admission NativeScene::refresh(const Key& key,Registry& registry)

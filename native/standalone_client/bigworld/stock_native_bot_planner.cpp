@@ -57,40 +57,70 @@ std::array<double,3> overlap(const Body &a,const Body &b) {
     }
     return hit;
 }
-bool vertical(const Body &a,const Body &b) {
-    return std::min(a.position[1]+a.upper_y,b.position[1]+b.upper_y) >
-        std::max(a.position[1]+a.lower_y,b.position[1]+b.lower_y)+.02;
+std::array<Point,3> pose_axes(const Body& body) {
+    const double sy=std::sin(body.yaw),cy=std::cos(body.yaw),sp=std::sin(body.pitch),cp=std::cos(body.pitch),sr=std::sin(body.roll),cr=std::cos(body.roll);
+    const auto rotate=[&](double x,double y,double z){const double py=cp*y-sp*z,pz=sp*y+cp*z;return Point{{cy*x+sy*pz,py,-sy*x+cy*pz}};};
+    return {{rotate(cr,sr,0.),rotate(-sr,cr,0.),rotate(0.,0.,1.)}};
 }
-// LocalDriver's exact longitudinal swept rectangle. Existing contact is
-// ignored only when travel separates both the first contact face and centres.
+double dot3(const Point&a,const Point&b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+std::pair<double,double> vertical_interval(const Body& body) {
+    const double cp=std::cos(body.pitch),sp=std::sin(body.pitch),cr=std::cos(body.roll),sr=std::sin(body.roll),up=cp*cr;
+    const double center=body.position[1]+(body.lower_y+body.upper_y)*.5*up;
+    const double extent=std::abs(cp*sr)*body.half_width+std::abs(sp)*body.half_length+std::abs(up)*(body.upper_y-body.lower_y)*.5;
+    return {center-extent,center+extent};
+}
+bool vertical(const Body&a,const Body&b) {
+    const auto x=vertical_interval(a),y=vertical_interval(b);
+    return std::min(x.second,y.second)-std::max(x.first,y.first)>.02;
+}
+// Certify separation of the frozen pitched/rolled boxes along the full sweep.
+bool swept_separated(const Body&a,const Body&b,const Point&movement) {
+    const auto aa=pose_axes(a),ab=pose_axes(b);
+    Point ca=a.position,cb=b.position;for(int i=0;i<3;++i){ca[i]+=aa[1][i]*(a.lower_y+a.upper_y)*.5;cb[i]+=ab[1][i]*(b.lower_y+b.upper_y)*.5;}
+    const Point d{{ca[0]-cb[0],ca[1]-cb[1],ca[2]-cb[2]}};
+    const std::array<double,3> ea{{a.half_width,(a.upper_y-a.lower_y)*.5,a.half_length}},eb{{b.half_width,(b.upper_y-b.lower_y)*.5,b.half_length}};
+    std::vector<Point> axes;for(auto x:aa)axes.push_back(x);for(auto x:ab)axes.push_back(x);
+    for(const auto&x:aa)for(const auto&y:ab){Point z{{x[1]*y[2]-x[2]*y[1],x[2]*y[0]-x[0]*y[2],x[0]*y[1]-x[1]*y[0]}};const double n=std::sqrt(dot3(z,z));if(n>1.e-8){for(auto&v:z)v/=n;axes.push_back(z);}}
+    for(const auto&axis:axes){double r=0.;for(int i=0;i<3;++i)r+=ea[i]*std::abs(dot3(axis,aa[i]))+eb[i]*std::abs(dot3(axis,ab[i]));const double start=dot3(d,axis),end=start+dot3(movement,axis);if(std::min(start,end)>r+1.e-9||std::max(start,end)<-r-1.e-9)return true;}
+    return false;
+}
+// The retained collision law admits a non-deepening initial contact, but
+// rejects a new overlap anywhere along the full fixed-pose translation.
+bool translation_clear(const Body&a,const Body&b,V2 movement) {
+    if(a.id==b.id||!vertical(a,b))return true;
+    auto hit=overlap(a,b);const V2 d{{a.position[0]-b.position[0],a.position[2]-b.position[2]}};
+    if(std::abs(dot(d,{{hit[0],hit[1]}}))<=1.e-9){if(hit[0]<-1.e-9||(std::abs(hit[0])<=1.e-9&&hit[1]<0.)){hit[0]=-hit[0];hit[1]=-hit[1];}if(a.id>b.id){hit[0]=-hit[0];hit[1]=-hit[1];}}
+    if(hit[2]>=.01-1.e-9)return dot(movement,{{hit[0],hit[1]}})>=-1.e-9;
+    double entry=0.,leave=1.;
+    for(const auto axis:{side(a.yaw),forward(a.yaw),side(b.yaw),forward(b.yaw)}) {
+        const double r=radius(a,axis)+radius(b,axis)-.01,offset=dot(d,axis),travel=dot(movement,axis);
+        if(std::abs(travel)<=1.e-12){if(std::abs(offset)>=r)return true;continue;}
+        double first=(-r-offset)/travel,last=(r-offset)/travel;if(first>last)std::swap(first,last);
+        entry=std::max(entry,first);leave=std::min(leave,last);if(entry>leave)return true;
+    }
+    return !(entry<=leave&&leave>=0.&&std::max(0.,entry)<1.);
+}
 Optional<std::int64_t> reverse_blocker(const Body &body,double yaw,
     const std::vector<Body> &peers,double length=-1.) {
     const double reach=length<0.?std::max(0.,body.half_length)*1.6:std::max(0.,length);
-    Body own=body;own.yaw=yaw;
-    Body sweep=own;
-    const V2 back{{-std::sin(yaw),-std::cos(yaw)}};
-    sweep.position[0]+=back[0]*reach*.5;sweep.position[2]+=back[1]*reach*.5;
-    sweep.half_length+=reach*.5;
+    Body own=body;own.yaw=yaw;Body sweep=own;
+    const V2 back{{-std::sin(yaw),-std::cos(yaw)}};const Point movement{{back[0]*reach,0.,back[1]*reach}};
+    sweep.position[0]+=back[0]*reach*.5;sweep.position[2]+=back[1]*reach*.5;sweep.half_length+=reach*.5;
+    const bool refine=std::abs(std::sin(yaw-body.yaw))<1.e-9;
     for(const auto &peer:peers) {
+        if(refine&&(swept_separated(body,peer,movement)||translation_clear(body,peer,{{movement[0],movement[2]}})))continue;
         if(std::abs(peer.position[1]-body.position[1])>5.)continue;
         const auto hit=overlap(own,peer);
-        const V2 away{{body.position[0]-peer.position[0],body.position[2]-peer.position[2]}};
-        if(hit[2]>=-1.e-9 && dot(back,{{hit[0],hit[1]}})>=-1.e-9 && dot(back,away)>=-1.e-9)continue;
-        if(overlap(sweep,peer)[2]>=0.) { Optional<std::int64_t> out;out.set(peer.id);return out; }
+        if(hit[2]>=-1.e-9&&dot(back,{{hit[0],hit[1]}})>=-1.e-9)continue;
+        if(overlap(sweep,peer)[2]>=0.){Optional<std::int64_t> out;out.set(peer.id);return out;}
     }
     return {};
 }
 bool static_ahead(const Body &body,double yaw,const std::vector<Body>&peers) {
-    Body sweep=body;sweep.yaw=yaw;
-    const double reach=body.half_length*1.6;
-    sweep.position[0]+=std::sin(yaw)*reach*.5;sweep.position[2]+=std::cos(yaw)*reach*.5;
-    sweep.half_length+=reach*.5;
-    for(const auto &peer:peers) {
-        if(peer.alive&&(!peer.velocity_known||std::hypot(peer.velocity[0],peer.velocity[2])>.65))continue;
-        if(std::abs(peer.position[1]-body.position[1])>5.)continue;
-        if(overlap(sweep,peer)[2]>=0.)return true;
-    }
-    return false;
+    if(std::abs(std::sin(yaw-body.yaw))<1.e-9){std::vector<Body> stationary;for(const auto&peer:peers)if(!peer.alive||(peer.velocity_known&&std::hypot(peer.velocity[0],peer.velocity[2])<=.65))stationary.push_back(peer);return reverse_blocker(body,yaw+pi,stationary).present;}
+    Body sweep=body;sweep.yaw=yaw;const double reach=body.half_length*1.6;
+    sweep.position[0]+=std::sin(yaw)*reach*.5;sweep.position[2]+=std::cos(yaw)*reach*.5;sweep.half_length+=reach*.5;
+    for(const auto &peer:peers){if(peer.alive&&(!peer.velocity_known||std::hypot(peer.velocity[0],peer.velocity[2])>.65))continue;if(std::abs(peer.position[1]-body.position[1])>5.)continue;if(overlap(sweep,peer)[2]>=0.)return true;}return false;
 }
 int occupancy(const Body &body,double sign,const std::vector<Body>&peers) {
     int count=0;
@@ -123,9 +153,12 @@ void prune(DriverState&s) {
     for(auto i=s.failed_yaws.begin();i!=s.failed_yaws.end();)
         if(i->second<=s.clock)i=s.failed_yaws.erase(i);else ++i;
 }
-bool real_failure(const DriverState&s,double yaw) {
-    const auto i=s.real_failed_yaws.find(yaw_key(yaw));
-    return i!=s.real_failed_yaws.end()&&i->second>s.clock;
+bool real_failure(const DriverState&s,const Point&position,double yaw,double reach) {
+    const int key=yaw_key(yaw);const auto i=s.real_failed_yaws.find(key);
+    if(i==s.real_failed_yaws.end()||i->second<=s.clock)return false;
+    const auto proof=s.failure_evidence.find(key);if(proof==s.failure_evidence.end())return true;
+    const auto&e=proof->second;if(e.scoped){double squared=0.;for(int n=0;n<3;++n)squared+=(position[n]-e.origin[n])*(position[n]-e.origin[n]);if(squared>.25*.25)return false;}
+    return !e.forecast||e.distance<=reach;
 }
 bool clear(World&w,const Input&in,double yaw,double maximum=-1.,double sign=1.) {
     Optional<double> reach;if(maximum>=0.)reach.set(maximum);
@@ -150,26 +183,27 @@ bool retained_escape(DriverState&s,const Input&in,const std::vector<Body>&peers,
         (in.body.position[0]-e.start[0])*std::sin(heading)+(in.body.position[2]-e.start[2])*std::cos(heading):
         distance(in.body.position,e.start);
     const double remaining=std::max(0.,e.distance-travelled);
-    const bool failed=short_move?real_failure(s,heading):penalty(s,in.body.yaw)>0.;
+    const bool failed=short_move?real_failure(s,in.body.position,heading,remaining):penalty(s,in.body.yaw)>0.;
     if(failed||remaining<=.05||s.clock>=e.until||std::abs(delta(in.body.yaw,e.yaw))>.30||
-        !clear(w,in,short_move?heading:in.body.yaw,remaining)||
+        !clear(w,in,short_move?heading:in.body.yaw,short_move?remaining:std::max(.5,remaining))||
         reverse_blocker(in.body,e.sign<0.?in.body.yaw:in.body.yaw+pi,peers,remaining).present) {
+        if(remaining<=.05){if(s.recovery_time>0.)++s.recovery_count;s.recovery_time=s.recovery_side=s.stuck_time=0.;s.progress_yaw.clear();}
         optional.clear();return false;
     }
     out=local(in,short_move?(e.sign<0.?"short_reverse_escape":"short_forward_escape"):"forward_escape",e.sign);
-    out.target_yaw=e.yaw;out.probe_distance.set(remaining);return true;
+    out.target_yaw=e.yaw;out.probe_distance.set(remaining);if(short_move){out.probe_origin.set(e.start);out.probe_yaw.set(heading);out.probe_length.set(e.distance);}return true;
 }
 bool short_escape(DriverState&s,const Input&in,const std::vector<Body>&peers,World&w,Command&out) {
     const double minimum=std::max(.5,(in.stopping_distance.present?in.stopping_distance.value:0.)+
         std::abs(in.speed)*std::max(std::max(0.,in.dt),in.decision_horizon));
     for(double reach:{std::max(2.,minimum),std::max(1.,minimum),minimum})for(double sign:{-1.,1.}) {
         const double heading=in.body.yaw+(sign<0.?pi:0.);
-        if(real_failure(s,heading)||!clear(w,in,heading,reach)||
+        if(real_failure(s,in.body.position,heading,reach)||!clear(w,in,heading,reach)||
             reverse_blocker(in.body,sign<0.?in.body.yaw:in.body.yaw+pi,peers,reach).present)continue;
         Escape e;e.start=in.body.position;e.yaw=in.body.yaw;e.sign=sign;e.distance=reach;e.until=s.clock+4.;
         s.short_escape.set(e);
         out=local(in,sign<0.?"short_reverse_escape":"short_forward_escape",sign);
-        out.probe_distance.set(reach);return true;
+        out.probe_distance.set(reach);out.probe_origin.set(e.start);out.probe_yaw.set(heading);out.probe_length.set(e.distance);return true;
     }
     return false;
 }
@@ -220,8 +254,8 @@ Optional<Contact> hull_contact(ActorMemory&m,const Input&in,const std::vector<Bo
         if(!vertical(in.body,peer))continue;
         const auto hit=overlap(in.body,peer);
         const double margin=!peer.alive||(m.contact_peer.present&&m.contact_peer.value==peer.id)?.25:.01;
-        if(hit[2]>=-margin) {
-            Contact c;c.peer=peer.id;c.team=peer.team;c.alive=peer.alive;c.position=peer.position;c.normal={{hit[0],hit[1]}};
+        if(hit[2]>=-margin&&!swept_separated(in.body,peer,{{0.,0.,0.}})) {
+            Contact c;c.peer=peer.id;c.team=peer.team;c.alive=peer.alive;c.position=peer.position;c.normal={{hit[0],hit[1]}};c.depth=hit[2];
             m.contact_peer.set(peer.id);Optional<Contact> result;result.set(c);return result;
         }
     }
@@ -230,13 +264,15 @@ Optional<Contact> hull_contact(ActorMemory&m,const Input&in,const std::vector<Bo
 ContactMemory& contact_memory(ActorMemory&m,const Input&in,const Contact&contact) {
     if(!m.contact_attempt.present||m.contact_attempt.value.contact.peer!=contact.peer||
         m.contact_attempt.value.contact.alive!=contact.alive||
-        std::abs(delta(in.body.yaw,m.contact_attempt.value.yaw))>.30||
+        (contact.alive&&std::abs(delta(in.body.yaw,m.contact_attempt.value.yaw))>.30)||
         distance(in.body.position,m.contact_attempt.value.position)>=2.*in.body.half_length+1.5||
         distance(contact.position,m.contact_attempt.value.contact.position)>=1.) {
         ContactMemory memory;memory.contact=contact;memory.position=in.body.position;memory.yaw=in.body.yaw;
         m.contact_attempt.set(memory);
     }
-    return m.contact_attempt.value;
+    auto&memory=m.contact_attempt.value;
+    if(!contact.alive){memory.failed_reverse=memory.failed_forward=false;for(double heading:memory.failed_headings){if(std::abs(delta(in.body.yaw+pi,heading))<=.30)memory.failed_reverse=true;if(std::abs(delta(in.body.yaw,heading))<=.30)memory.failed_forward=true;}}
+    return memory;
 }
 bool retain_contact(ActorMemory&m,const Input&in,const std::vector<Body>&peers,World&w,Command&out) {
     if(!m.contact_escape.present)return false;
@@ -257,8 +293,9 @@ bool retain_contact(ActorMemory&m,const Input&in,const std::vector<Body>&peers,W
             reverse_blocker(in.body,current+pi,peers).present;
     }
     if(completed||peer_changed||turned||failed) {
-        if(!completed&&!peer_changed&&!turned&&m.contact_attempt.present&&m.contact_attempt.value.contact.peer==e.contact.peer) {
-            if(e.sign<0.)m.contact_attempt.value.failed_reverse=true;else m.contact_attempt.value.failed_forward=true;
+        if(!completed&&!peer_changed&&(!turned||!e.contact.alive)&&m.contact_attempt.present&&m.contact_attempt.value.contact.peer==e.contact.peer) {
+            auto&memory=m.contact_attempt.value;if(e.sign<0.)memory.failed_reverse=true;else memory.failed_forward=true;
+            memory.failed_headings.push_back(heading);if(memory.failed_headings.size()>32)memory.failed_headings.erase(memory.failed_headings.begin());
         }
         m.contact_escape.clear();return false;
     }
@@ -318,6 +355,7 @@ bool wreck_plan(ActorMemory&m,const Input&in,const Order&order,const Point&goal,
         static_ahead(in.body,desired,std::vector<Body>{*i}))) {wreck=i;break;}
     if(wreck==peers.end()) {m.active_wreck.clear();return false;}
     auto found=m.wreck_history.find(wreck->id);
+    const bool resumed=found!=m.wreck_history.end()&&distance(wreck->position,found->second.position)<1.;
     if(found==m.wreck_history.end()||distance(wreck->position,found->second.position)>=1.) {
         WreckAttempt fresh;fresh.key=wreck->id;fresh.position=wreck->position;
         fresh.heading=side_wreck?yaw_to(in.body.position,wreck->position):desired;
@@ -331,13 +369,14 @@ bool wreck_plan(ActorMemory&m,const Input&in,const Order&order,const Point&goal,
     m.active_wreck.set(wreck->id);auto&a=m.wreck_history.at(wreck->id);
     const double progress=(in.body.position[0]-a.origin[0])*std::sin(a.heading)+(in.body.position[2]-a.origin[2])*std::cos(a.heading);
     const double own_progress=(in.body.position[0]-a.own_origin[0])*std::sin(a.own_heading)+(in.body.position[2]-a.own_origin[2])*std::cos(a.own_heading);
-    if(a.exhausted)return false;
+    if(a.exhausted||in.motor_hold)return false;
     if(progress>=a.best_progress+.5) {a.best_progress=progress;a.elapsed=0.;}
     if(own_progress>=a.own_best_progress+.5) {a.own_best_progress=own_progress;a.own_elapsed=0.;}
     a.elapsed+=std::max(0.,in.dt);a.own_elapsed+=std::max(0.,in.dt);
     if(a.elapsed>=14.||a.own_elapsed>=14.) {a.exhausted=true;a.exhausted_position=in.body.position;a.elapsed=std::max(14.,a.elapsed);return false;}
+    if(resumed&&(m.driver.recovery_time>0.||(m.driver.navigation_wait.present&&m.driver.navigation_wait.value.active&&!m.driver.navigation_wait.value.completed)))return false;
     const double reach=2.*length+1.5;
-    if(!clear(w,in,in.body.yaw,reach))return false;
+    if(!clear(w,in,in.body.yaw,reach)){if(!w.direction_uncertain()){a.exhausted=true;a.exhausted_position=in.body.position;}return false;}
     std::vector<Body> living;for(const auto&peer:peers)if(peer.alive)living.push_back(peer);
     if(reverse_blocker(in.body,in.body.yaw+pi,living).present)return false;
     double turn=clamp(delta(a.heading,in.body.yaw),-.8,.8);
@@ -383,7 +422,19 @@ bool reverse_withdraw(ActorMemory&m,const Input&in,const Order&order,const Point
 }
 }
 
-Command Planner::decide(const Input&in,const Order&order,const std::vector<Body>&all_peers,World&w) {
+Order constrain_capture(const Order&requested,const Point&position) {
+    Order order=requested;
+    if(order.capture_area.present){
+        const auto&area=order.capture_area.value;const auto inside=[&](const Point&p){return distance(p,area.center)<=area.radius;};bool changed=false;
+        if(!inside(position)){order.mode="base_capture";order.move.set(area.center);order.throttle.clear();order.parking_phase.clear();changed=true;}
+        else {const Point target=order.move.present?order.move.value:position;const bool holding=order.throttle.present&&order.throttle.value==0.&&inside(target);
+            if((mode_in(order.mode,{"route","advance","base_capture"})||!inside(target))&&!holding){order.mode=order.target.present?"engage":"base_capture";order.move.set(position);order.throttle.set(0.);order.parking_phase.clear();changed=true;}}
+        if(changed)order.progress_identity=order.target.present?"combat:"+order.target_kind+":"+std::to_string(order.target.value):"";
+    }
+    return order;
+}
+Command Planner::decide(const Input&in,const Order&requested,const std::vector<Body>&all_peers,World&w) {
+    const Order order=constrain_capture(requested,in.body.position);
     auto&m=actor(in);std::vector<Body> peers;
     for(const auto&peer:all_peers)if(!peer.alive||!in.body.team_known||!peer.team_known||peer.team==in.body.team)peers.push_back(peer);
     Optional<Point> aim=order.aim,move=order.move,face=order.face;
@@ -397,22 +448,25 @@ Command Planner::decide(const Input&in,const Order&order,const std::vector<Body>
     const Navigation nav=w.navigate(in,order,move.value);Point target=nav.target;
     const auto contact=hull_contact(m,in,peers);
     if(parked)m.contact_escape.clear();
-    Command c;bool contact_plan=!parked&&retain_contact(m,in,peers,w,c);
-    if(!parked&&!contact_plan)contact_plan=wreck_plan(m,in,order,move.value,contact,peers,w,c);
-    const bool side_contact=contact.present&&std::abs(dot(forward(in.body.yaw),contact.value.normal))<.35;
+    Command c;const bool is_combat_hold=order.throttle.present&&order.throttle.value==0.&&((order.target.present&&mode_in(order.mode,{"engage","support_hold","cover_hold"}))||order.capture_area.present);
+    if(is_combat_hold)m.contact_escape.clear();
+    bool contact_plan=!parked&&!is_combat_hold&&retain_contact(m,in,peers,w,c);
+    if(!parked&&!is_combat_hold&&!contact_plan)contact_plan=wreck_plan(m,in,order,move.value,contact,peers,w,c);
+    const bool side_contact=contact.present&&std::abs(dot(forward(in.body.yaw),contact.value.normal))<.35&&
+        (contact.value.depth>1.e-9||(target[0]-in.body.position[0])*contact.value.normal[0]+(target[2]-in.body.position[2])*contact.value.normal[1]<-.01);
     const auto wreck=contact.present?m.wreck_history.find(contact.value.peer):m.wreck_history.end();
     const bool exhausted=contact.present&&!contact.value.alive&&wreck!=m.wreck_history.end()&&wreck->second.exhausted;
-    if(!parked&&!exhausted&&!contact_plan&&contact.present&&
+    if(!parked&&!is_combat_hold&&!exhausted&&!contact_plan&&contact.present&&
         (side_contact||(order.throttle.present&&(!contact.value.alive||contact.value.team!=in.body.team))))
         contact_plan=choose_contact(m,in,contact.value,peers,w,c);
-    if(contact_plan)target=c.move;
+    if(contact_plan){target=c.move;m.driver.traffic_waiting=false;}
     bool stop=nav.stop_at_target.present?nav.stop_at_target.value:!mode_in(order.mode,{"route","advance"});
     Optional<double> throttle=order.throttle;if(contact_plan) {throttle.clear();stop=false;}
     const bool movement=!(throttle.present&&throttle.value<=0.);
     if(!mode_in(order.mode,{"withdraw","low_health_retreat","under_fire_withdraw","crossfire_withdraw"}))m.withdrawal.clear();
     const bool navigation_wait=movement&&distance(move.value,in.body.position)>15.&&distance(target,in.body.position)<=1.5&&
         mode_in(nav.status,{"pending","blocked"});
-    Input planning=in;planning.implicit_probe_distance.clear();
+    Input planning=in;planning.progress_identity=order.progress_identity;planning.implicit_probe_distance.clear();
     if(movement)planning.implicit_probe_distance.set(std::max(distance(target,in.body.position),
         in.body.half_length+std::max(.5,std::abs(in.speed)*std::max(0.,in.decision_horizon))));
     if(!navigation_wait)m.driver.navigation_wait.clear();
@@ -433,7 +487,7 @@ Command Planner::decide(const Input&in,const Order&order,const std::vector<Body>
     c.movement_intent=movement;c.parking_phase=order.parking_phase;c.hull_angle_degrees=order.hull_angle_degrees;
     c.driver_progress_target=nav.progress_target;
     c.navigation_probe_distance=planning.implicit_probe_distance;
-    if(throttle.present&&mode_in(c.recovery,{"drive","arrived"})&&std::abs(delta(c.target_yaw,in.body.yaw))<.65)c.throttle=clamp(throttle.value,-1.,1.);
+    if(throttle.present&&!c.brake&&c.recovery=="drive"&&std::abs(delta(c.target_yaw,in.body.yaw))<.65)c.throttle=clamp(throttle.value,-1.,1.);
     if(throttle.present&&throttle.value==0.) {c.throttle=0.;c.brake=true;}
     return c;
 }
@@ -452,9 +506,25 @@ void Planner::remember_failure(std::int64_t id,double yaw,double ttl) {
     const auto found=actors_.find(id);if(found==actors_.end())return;
     auto&s=found->second.driver;ttl=std::max(.1,ttl);
     s.failed_yaws[yaw_key(yaw)]=s.real_failed_yaws[yaw_key(yaw)]=s.clock+ttl;
+    s.failure_evidence[yaw_key(yaw)]=FailureEvidence{};
     const double offset=s.desired_yaw.present?delta(yaw,s.desired_yaw.value):0.;
     s.escape_side=std::abs(offset)>=.10?(offset>0.?1.:-1.):fallback(s);
     s.escape_until=s.clock+std::min(2.,std::max(.8,ttl));s.steering_yaw.clear();s.plan_age=999.;
+}
+void Planner::remember_contact(std::int64_t id,double yaw,const Point&origin,double ttl) {
+    const auto found=actors_.find(id);if(found==actors_.end())return;
+    remember_failure(id,yaw,ttl);auto&s=found->second.driver;
+    s.failure_evidence[yaw_key(yaw)]=FailureEvidence{origin,0.,s.clock+std::max(.1,ttl),true,false};
+}
+void Planner::remember_forecast(std::int64_t id,double yaw,const Point&origin,double reach,double ttl) {
+    const auto found=actors_.find(id);if(found==actors_.end())return;auto&s=found->second.driver;
+    const int key=yaw_key(yaw);const auto previous=s.failure_evidence.find(key);
+    const bool keep=previous!=s.failure_evidence.end()&&!previous->second.forecast&&previous->second.expires>s.clock&&previous->second.scoped&&
+        std::hypot(std::hypot(previous->second.origin[0]-origin[0],previous->second.origin[1]-origin[1]),previous->second.origin[2]-origin[2])<=.25;
+    const auto old=keep?previous->second:FailureEvidence{};
+    remember_failure(id,yaw,ttl);
+    if(keep){s.failure_evidence[key]=old;s.real_failed_yaws[key]=old.expires;}
+    else{s.failure_evidence[key]=FailureEvidence{origin,reach,s.clock+std::max(.1,ttl),true,true};}
 }
 bool Planner::wait_for_traffic(std::int64_t id,double elapsed) {
     const auto i=actors_.find(id);if(i==actors_.end())return false;
@@ -466,22 +536,26 @@ Command Planner::drive(const Input&in,const Navigation&nav,const Point&destinati
     bool movement,bool stop,const Optional<double>&arrival_field,const std::vector<Body>&peers,World&w) {
     auto&s=actor(in).driver;
     const double arrival=arrival_field.present?std::max(.1,arrival_field.value):1.5;
-    if(!movement||in.speed<-.05||!in.turn_speed_limit.present||
-        (s.alignment_target.present&&distance(s.alignment_target.value,nav.target)>2.))s.alignment_target.clear();
+    if(!movement||in.speed<-.05||!in.turn_speed_limit.present||distance(in.body.position,nav.target)<=arrival||
+        (s.alignment_target.present&&(distance(in.body.position,s.alignment_target.value)<=arrival||distance(s.alignment_target.value,nav.target)>2.)))s.alignment_target.clear();
+    const Point target=s.alignment_target.present?s.alignment_target.value:nav.target;
     const double step=std::max(0.,in.dt);
+    if(s.progress_identity!=in.progress_identity){s.objective.clear();s.pocket.clear();s.replan.clear();s.progress_identity=in.progress_identity;}
     if(!s.traffic_waiting)s.traffic_wait_time=0.;s.traffic_waiting=false;
     s.last_step=step;s.clock+=step;prune(s);s.steering_age+=step;s.plan_age+=step;
-    const double desired=yaw_to(in.body.position,nav.target),heading=std::abs(delta(desired,in.body.yaw));
-    const double target_distance=distance(in.body.position,nav.target);s.desired_yaw.set(desired);
+    const double desired=yaw_to(in.body.position,target),heading=std::abs(delta(desired,in.body.yaw));
+    const double target_distance=distance(in.body.position,target);s.desired_yaw.set(desired);
     if(!movement) {
         s.native_translation_stalled=false;s.short_escape.clear();s.translation_escape.clear();
-        s.translation_progress_at.set(s.clock);s.objective.clear();s.replan.clear();s.pocket.clear();
-        s.stuck_time=s.recovery_time=s.recovery_side=0.;s.steering_yaw.clear();s.progress_yaw.clear();s.braking_target.clear();
+        const bool preserve=!in.progress_identity.empty()&&s.objective.present;
+        if(preserve){s.objective.value.at+=step;if(s.translation_progress_at.present)s.translation_progress_at.value+=step;}
+        else{s.translation_progress_at.set(s.clock);s.objective.clear();s.replan.clear();s.pocket.clear();s.stuck_time=s.recovery_time=s.recovery_side=0.;}
+        s.steering_yaw.clear();s.progress_yaw.clear();s.braking_target.clear();
         return local(in,"arrived");
     }
     const double length=std::max(.5,in.body.half_length);
     if(s.pocket.present&&(distance(in.body.position,s.pocket.value.origin)>=2.*length+arrival||
-        distance(s.pocket.value.goal,destination)>2.))s.pocket.clear();
+        (in.progress_identity.empty()&&distance(s.pocket.value.goal,destination)>2.)))s.pocket.clear();
     const bool pocket_stalled=s.pocket.present&&s.clock-s.pocket.value.at>=8.&&s.recovery_count>=2;
     const double displacement=distance(in.body.position,s.last_position);
     if(displacement>=.08||!s.translation_progress_at.present)s.translation_progress_at.set(s.clock);
@@ -490,13 +564,30 @@ Command Planner::drive(const Input&in,const Navigation&nav,const Point&destinati
     bool objective_stalled=false,objective_advanced=false;
     const Point &objective_target=nav.progress_target.present?nav.progress_target.value:destination;
     const double objective_distance=distance(in.body.position,objective_target);
-    if(!s.objective.present||distance(s.objective.value.goal,objective_target)>2.||objective_distance<=arrival) {
-        Objective p;p.goal=objective_target;p.best=objective_distance;p.at=s.clock;s.objective.set(p);
-    } else if(objective_distance+.08<=s.objective.value.best) {
-        objective_advanced=true;s.objective.value.best=objective_distance;s.objective.value.at=s.clock;
-        s.objective.value.alignment_yaw.clear();s.objective.value.alignment_best.clear();
-    } else if(objective_distance+.002<s.objective.value.best)objective_advanced=true;
+    if(!s.objective.present||(in.progress_identity.empty()&&(distance(s.objective.value.order_goal,destination)>2.||distance(in.body.position,destination)<=arrival))) {
+        Objective p;p.goal=objective_target;p.order_goal=destination;p.travel_origin=in.body.position;p.order_best=distance(in.body.position,destination);p.best=objective_distance;p.at=s.clock;s.objective.set(p);
+    } else if(distance(s.objective.value.goal,objective_target)>2.) {
+        auto&p=s.objective.value;ProgressPoint previous{p.goal,p.best};
+        auto found=std::find_if(p.connectors.begin(),p.connectors.end(),[&](const ProgressPoint&v){return distance(v.goal,objective_target)<=2.;});
+        ProgressPoint next{objective_target,objective_distance};if(found!=p.connectors.end()){next=*found;p.connectors.erase(found);}
+        p.connectors.push_back(previous);if(p.connectors.size()>16)p.connectors.erase(p.connectors.begin());p.goal=next.goal;p.best=next.best;
+    }
     auto&objective=s.objective.value;
+    double travel=distance(in.body.position,objective.travel_origin);
+    const bool local_admitted=!in.progress_identity.empty()||distance(objective_target,destination)>2.;
+    const bool departed=local_admitted&&travel>=2.*length+arrival;
+    if(departed){objective.travel_origin=in.body.position;objective.travel_best=0.;objective.alignment_yaw.clear();objective.alignment_best.clear();travel=0.;}
+    const double order_distance=distance(in.body.position,objective.order_goal);
+    const bool new_travel=local_admitted&&travel>=objective.travel_best+.08,new_order=order_distance+.08<=objective.order_best;
+    if(new_travel||new_order||departed){objective.travel_best=std::max(objective.travel_best,travel);objective.order_best=std::min(objective.order_best,order_distance);objective.at=s.clock;objective_advanced=true;}
+    if(local_admitted) {
+        auto found=std::find_if(objective.action_points.begin(),objective.action_points.end(),[&](const ProgressPoint&v){return distance(v.goal,target)<=2.;});
+        if(found==objective.action_points.end()){objective.action_points.push_back({target,target_distance});if(objective.action_points.size()>16)objective.action_points.erase(objective.action_points.begin());}
+        else {const double d=distance(in.body.position,found->goal);if(displacement>=.08&&std::abs(in.speed)>.05&&d+.08<=found->best){found->best=d;objective.at=s.clock;objective_advanced=true;}}
+    }
+    const double measured=distance(in.body.position,objective.goal);
+    if(measured+.08<=objective.best){objective_advanced=true;objective.best=measured;if(local_admitted&&displacement>=.08&&std::abs(in.speed)>.05&&!(new_travel||new_order||departed))objective.at=s.clock;}
+    else if(measured+.002<objective.best)objective_advanced=true;
     if(s.alignment_target.present&&s.recovery_time<=0.) {
         if(!objective.alignment_yaw.present) {
             objective.alignment_yaw.set(yaw_to(in.body.position,s.alignment_target.value));
@@ -507,7 +598,7 @@ Command Planner::drive(const Input&in,const Navigation&nav,const Point&destinati
         }
     }
     objective_stalled=s.clock-objective.at>=8.;
-    if(target_distance<=arrival&&!objective_stalled&&!s.native_translation_stalled) {
+    if(target_distance<=arrival&&!objective_stalled&&!s.native_translation_stalled&&!(s.recovery_time>0.&&distance(in.body.position,destination)>arrival)) {
         s.short_escape.clear();s.stuck_time=s.recovery_time=s.recovery_side=0.;s.steering_yaw.clear();
         s.progress_yaw.clear();s.last_position=in.body.position;s.braking_target.clear();return local(in,"arrived");
     }
@@ -535,6 +626,7 @@ Command Planner::drive(const Input&in,const Navigation&nav,const Point&destinati
         s.recovery_time=.85+phase(s)*.28;s.recovery_side=recovery_side(s,in.body,peers);
     }
     if(s.recovery_time>0.) {
+        s.alignment_target.clear();
         double sign=s.recovery_side;
         if(sign!=-1.&&sign!=1.)s.recovery_side=sign=recovery_side(s,in.body,peers);
         double target=in.body.yaw+sign*.85;
@@ -598,17 +690,17 @@ Command Planner::drive(const Input&in,const Navigation&nav,const Point&destinati
     if(s.avoiding)s.alignment_target.clear();
     else if(in.turn_speed_limit.present&&in.turn_speed_limit.value>0.&&in.speed>=-.05) {
         const double turning_radius=std::max(1.,std::abs(in.speed))/in.turn_speed_limit.value;
-        if(target_distance<=std::max(8.,2.*turning_radius)&&std::abs(difference)>.30)s.alignment_target.set(nav.target);
+        if(target_distance<=std::max(8.,2.*turning_radius)&&std::abs(difference)>.30)s.alignment_target.set(target);
         if(s.alignment_target.present) {
             if(std::abs(difference)>.12) {out.throttle=0.;out.brake=true;}else s.alignment_target.clear();
         }
     }
     if(target_distance<=std::max(8.,length*2.)&&std::abs(difference)>.45) {out.throttle=0.;out.brake=true;}
-    const double grade=(nav.target[1]-in.body.position[1])/std::max(.1,target_distance);
+    const double grade=(target[1]-in.body.position[1])/std::max(.1,target_distance);
     if((std::abs(grade)>std::tan(pi/8.)&&std::abs(difference)>pi/4.)||
         std::abs(difference)>pi*.5||(!s.avoiding&&heading>pi*.5)) {out.throttle=0.;out.brake=true;}
     if(stop&&!s.avoiding&&in.stopping_distance.present) {
-        Point key{{round_two_decimals(nav.target[0]),0.,round_two_decimals(nav.target[2])}};
+        Point key{{round_two_decimals(target[0]),0.,round_two_decimals(target[2])}};
         if(s.braking_target.present&&s.braking_target.value!=key)s.braking_target.clear();
         if(target_distance<=arrival+std::max(0.,in.stopping_distance.value)+std::abs(in.speed)*std::max(0.,in.decision_horizon))s.braking_target.set(key);
         if(s.braking_target.present&&s.braking_target.value==key) {
@@ -849,9 +941,9 @@ Command Traffic::safe_controls(const Input&in,const Command&command,const std::v
         out.throttle=0.;out.brake=true;out.traffic_mode="vehicle_brake";
         (sign>0.?out.forward_blocker:out.reverse_blocker)=blocker;
     }
-    if(std::abs(turn)>.01&&!peers.empty()&&
-        !rotation_clear(in.body,in.body.yaw+turn*(out.throttle<0.?-1.:1.)*std::max(in.dt,.1),peers)) {
-        out.turn=0.;out.traffic_mode="vehicle_brake";
+    out.rotation_safety_queried=std::abs(turn)>.01&&!peers.empty();out.rotation_safety_blocked=false;
+    if(out.rotation_safety_queried){out.rotation_safety_blocked=!rotation_clear(in.body,in.body.yaw+turn*(out.throttle<0.?-1.:1.)*std::max(in.dt,.1),peers);
+        if(out.rotation_safety_blocked){out.turn=0.;out.traffic_mode="vehicle_brake";}
     }
     const auto observed=orders_.find(in.body.id);
     if(observed!=orders_.end()) {

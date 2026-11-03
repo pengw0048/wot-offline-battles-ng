@@ -218,7 +218,7 @@ def staged_source(fork):
 
 class LanPollDifferential(unittest.TestCase):
     def test_native_poll_chain_matches_staged_methods(self):
-        fork = os.environ.get('WOT_FORK_0101_SOURCE')
+        fork = os.environ.get('WOT_FORK_SOURCE')
         if not fork:
             self.skipTest('Pinned gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,

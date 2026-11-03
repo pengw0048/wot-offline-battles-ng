@@ -55,7 +55,7 @@ print('Native replica static ownership passed')
 
 class SnapshotStaticTests(unittest.TestCase):
     def test_pinned_snapshot_ownership_in_python2_and_python3(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         spec = importlib.util.spec_from_file_location('snapshot_prepare',

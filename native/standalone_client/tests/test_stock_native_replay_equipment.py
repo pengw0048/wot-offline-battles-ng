@@ -8,7 +8,7 @@ import unittest
 from test_stock_native_equipment_readiness import method
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = os.environ.get('WOT_FORK_0101_SOURCE')
+SOURCE = os.environ.get('WOT_FORK_SOURCE')
 HOST = r'''
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_native_client_weapon.hpp"

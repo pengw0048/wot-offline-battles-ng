@@ -141,7 +141,7 @@ print('native full local gun clock/HUD/conditional crew differential passed: %d 
 
 class NativeClientWeaponRuntimeTests(unittest.TestCase):
     def test_pinned_factory_and_hot_seams(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         spec = importlib.util.spec_from_file_location('weapon_runtime_bindings', ROOT / 'bigworld/stock_native_client_weapon_runtime_bindings.py')
@@ -209,7 +209,7 @@ class NativeClientWeaponRuntimeTests(unittest.TestCase):
             [dict(id='targeting', kind='targeting', signature=(1.,) * 7)]), [])
 
     def test_full_original_clock_and_hud(self):
-        source = os.environ.get('WOT_FORK_0101_SOURCE')
+        source = os.environ.get('WOT_FORK_SOURCE')
         if not source:
             self.skipTest('fixed gameplay source is required')
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True, env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()

@@ -163,8 +163,8 @@ print(json.dumps(dict(random_episodes=360,sustained_frames=50,retry_scenarios=12
 '''
 class NativePlayerRamTests(unittest.TestCase):
  def test_original_player_episodes_plate_search_and_receipts(self):
-  source=os.environ.get('WOT_FORK_0101_SOURCE')
-  if not source:self.skipTest('Fixed v0.10.1 source input is required')
+  source=os.environ.get('WOT_FORK_SOURCE')
+  if not source:self.skipTest('Pinned v1.1.1 source input is required')
   py27=subprocess.check_output(['pyenv','which','python2.7'],env=dict(os.environ,PYENV_VERSION='2.7.18'),text=True).strip()
   prefix=subprocess.check_output([py27,'-c','import sys;print(sys.prefix)'],text=True).strip()
   with tempfile.TemporaryDirectory(prefix='native-player-ram-') as directory:

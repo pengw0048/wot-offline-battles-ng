@@ -7,10 +7,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-@unittest.skipUnless(os.environ.get('WOT_FORK_0101_SOURCE'), 'Pinned gameplay source is required')
+@unittest.skipUnless(os.environ.get('WOT_FORK_SOURCE'), 'Pinned gameplay source is required')
 class NativeClientProjectile(unittest.TestCase):
     def test_physical_barrel_and_admitted_shot_bookkeeping(self):
-        fork = Path(os.environ['WOT_FORK_0101_SOURCE'])
+        fork = Path(os.environ['WOT_FORK_SOURCE'])
         names = ['stock_native_client_projectile', 'stock_native_client_weapon',
                  'stock_native_projectile_owner', 'stock_native_projectile_cursor',
                  'stock_native_projectile_history', 'stock_native_projectile_chord',

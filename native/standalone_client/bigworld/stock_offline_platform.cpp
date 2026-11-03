@@ -1,5 +1,5 @@
-// Platform-only port of colorfulmeans/wot-0.9.22-offline-battles v0.10.1,
-// commit 144619f6eb2925f8da4b13637bf65b8550fc898f. Numerical/gameplay owners
+// Platform-only port of colorfulmeans/wot-0.9.22-offline-battles v1.1.1,
+// commit abd03c4a91366f52ff6cb81d6b8b56539ea3c5c0. Numerical/gameplay owners
 // and the original executable-address patches are not part of this module.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

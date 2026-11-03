@@ -90,12 +90,14 @@ step::AimPose Runtime::aimPose(const Actor&a)const
 }
 void Runtime::updateCombatPose(Actor&a)
 {
+    a.combat.critical.health=a.combat.health;a.combat.critical.maximum_health=a.combat.maximum_health;
     a.combat.position=a.motion.position;a.combat.pitch=a.motion.pitch;a.combat.roll=a.motion.roll;
     a.combat.speed=a.motion.speed;a.combat.turn_speed=a.motion.turn_speed;
     a.combat.movement_direction=a.motion.movement_direction;a.combat.rotation_direction=a.motion.rotation_direction;a.combat.alive=a.motion.alive;
 }
 void Runtime::applyCombatPose(Actor&a)
 {
+    a.combat.critical.health=a.combat.health;a.combat.critical.maximum_health=a.combat.maximum_health;
     a.motion.alive=a.combat.alive;a.motion.speed=a.combat.speed;a.motion.turn_speed=a.combat.turn_speed;
     a.motion.movement_direction=a.combat.movement_direction;a.motion.rotation_direction=a.combat.rotation_direction;
     if(!a.combat.alive)a.selected_target.reset();
@@ -105,12 +107,14 @@ step::CombatActorRefs Runtime::combatRefs(Actor&a)
 step::CombatDescriptor Runtime::combatDescriptor(const Actor&a)const
 {
     const auto&mode=a.modes[a.mode].combat;
-    return {mode.water_sensor,a.siege_config,mode.base_repair_factor,mode.repair_speed_factor};
+    const double anchors[]={0.,.34,.67,1.};int skill=0;double distance=std::abs(a.weapon.rating-anchors[0]);
+    for(int i=1;i<4;++i){const double candidate=std::abs(a.weapon.rating-anchors[i]);if(candidate<distance-1.e-12){skill=i;distance=candidate;}}
+    return {mode.water_sensor,a.siege_config,mode.base_repair_factor,mode.repair_speed_factor,skill};
 }
 void Runtime::adoptMode(Actor&a)
 {
     const int mode=(a.siege.mode==2||a.siege.mode==3)?1:0;if(mode==a.mode)return;
-    a.mode=mode;const auto&m=a.modes[mode];a.descriptor=m.motion.descriptor;a.suspension=m.motion.suspension;
+    a.mode=mode;const auto&m=a.modes[mode];a.combat.critical.fitting=m.combat.crew_factors;a.descriptor=m.motion.descriptor;a.suspension=m.motion.suspension;
     a.motion.pitch_speed=a.motion.roll_speed=a.motion.support_vertical_speed=0.;a.motion.support_gradient.reset();a.motion.ground_plane.reset();
     a.motion.suspension_disabled=false;vertical_memory_[a.motion.id]={};
     contact_actors_.at(a.motion.id).profile=m.motion.ram;geometry_[a.motion.id]=m.physics.geometry;
@@ -141,15 +145,52 @@ int Runtime::detail(const Actor&a)const
     if(!camera_)return 0;const double d=std::pow(a.motion.position[0]-(*camera_)[0],2)+std::pow(a.motion.position[2]-(*camera_)[2],2);
     return d<=150.*150.?0:d<=350.*350.?1:2;
 }
+std::optional<bool> Runtime::aimPointReachable(ID id,const step::WeaponTarget&target,const Point&origin,const Point&point)const
+{
+    const auto found=actors_.find(id);if(found==actors_.end())return {};const auto&a=found->second;const auto&mode=a.modes[a.mode].combat;
+    const auto&weapon=weapons_.at(key(id));const int index=weapon.ammo.loaded;if(index<0||std::size_t(index)>=mode.shells.size()||!mode.shells[index])return {};
+    const auto&shell=*mode.shells[index];const double pi=std::acos(-1.);const auto solution=offline_simulation::weapons::ballistic_intercept(origin,point,target.target.velocity,shell.speed,shell.gravity,-pi*.5,pi*.5,false,20.);
+    if(!solution.valid||solution.time>20.||shell.speed*solution.time>shell.maximum_distance+1.e-6)return false;
+    const double yaw=std::atan2(solution.aim[0]-origin[0],solution.aim[2]-origin[2]);step::WeaponFrame frame;frame.pose=aimPose(a);frame.valid_pitch=mode.valid_pitch;frame.siege_enabled=a.siege.mode==2;frame.hydraulic_pitch=a.motion.hydraulic_pitch;frame.terrain_pitch=a.motion.terrain_pitch;frame.pitch_locked=mode.aim_config.has_static_pitch&&(destroyed(a.combat.critical,"engineHealth")||a.combat.overturned||a.siege.mode==1||a.siege.mode==3);frame.static_pitch=mode.aim_config.static_pitch;
+    return step::world_solution_reachable(frame,mode.hydraulic,mode.aim_config,yaw,solution.pitch);
+}
+std::optional<double> Runtime::mechanicalTargetFraction(ID id,const decision::Target&t,double yaw,double length)
+{
+    const auto source=actors_.find(id);if(source==actors_.end())return {};
+    const auto& a=source->second;const auto& m=a.motion;
+    const offline_math::Body owner{id,true,m.position[0],m.position[1],m.position[2],m.yaw,m.pitch,m.roll,a.descriptor.collision_shape};
+    std::optional<offline_math::Body> peer;
+    if(t.identity.kind=="bot"){const auto found=actors_.find(t.identity.id);if(found!=actors_.end()){const auto& other=found->second;const auto& p=other.motion;peer=offline_math::Body{p.id,true,p.position[0],p.position[1],p.position[2],p.yaw,p.pitch,p.roll,other.descriptor.collision_shape};}}
+    else if(t.identity.kind=="human")for(const auto& h:physics_context_.humans)if(h.body.id==1000000+t.identity.id){peer=contacts::geometry(h.body);break;}
+    if(!peer)return {};return offline_math::translation(owner,{std::sin(yaw)*length,std::cos(yaw)*length},{*peer});
+}
 decision::Input Runtime::decisionInput(const Actor&a,const Slice&s)const
 {
     decision::Input out;auto&in=out.planning;in.body=body(a);in.slot=a.slot;in.speed=a.motion.speed;in.dt=s.elapsed;in.now=s.now;
+    const auto& translation=a.motion.translation_receipt;
+    if(translation&&translation->outcome==motion::TranslationOutcome::RemotePlayer&&translation->fraction<1.&&translation->elapsed>0.){
+        out.mechanical_speed=((a.motion.position[0]-translation->start[0])*std::sin(a.motion.yaw)+(a.motion.position[2]-translation->start[2])*std::cos(a.motion.yaw))/translation->elapsed;
+        out.blocked_player_contact=std::abs(*out.mechanical_speed)<=1.;
+    }
+    in.motor_hold=a.combat.overturned;
+    for(const char* device:{"engineHealth","leftTrackHealth","rightTrackHealth"}){const auto found=a.combat.critical.devices.find(device);if(found!=a.combat.critical.devices.end()&&found->second.destroyed)in.motor_hold=true;}
     in.rotation_refused=a.motion.rotation_refused_until>s.now;out.health=a.combat.health;out.maximum_health=a.combat.maximum_health;
     out.step=s.elapsed;out.fire_sequence=weapons_.at(key(a.motion.id)).fire_seq;out.shell_index=weapons_.at(key(a.motion.id)).ammo.loaded;
+    const auto& inventory=weapons_.at(key(a.motion.id)).ammo.remaining;
+    out.empty_ammo=!inventory.empty()&&std::all_of(inventory.begin(),inventory.end(),[](int count){return count==0;});
+    const auto& loaded_weapon=weapons_.at(key(a.motion.id));out.clip_size=loaded_weapon.gun.config.clip_size;out.clip_remaining=loaded_weapon.gun.clip;
+    out.loaded_ammo=loaded_weapon.ammo.loaded>=0&&std::size_t(loaded_weapon.ammo.loaded)<inventory.size()?inventory[loaded_weapon.ammo.loaded]:0;
+    const auto actor_decision=planning_.decisions().actors.find(a.motion.id);
+    if(actor_decision!=planning_.decisions().actors.end()&&actor_decision->second.magazine){const auto&identity=actor_decision->second.magazine->identity;const auto lane=weapons_runtime_.shared().lanes.find({a.motion.id,identity.kind,identity.id});out.magazine_lane_blocked=lane!=weapons_runtime_.shared().lanes.end()&&!lane->second.clear&&s.now-lane->second.at>=0.&&s.now-lane->second.at<=1.+clock_.period+1.e-9;}
     out.reload_time=weapons_.at(key(a.motion.id)).gun.remaining(step::critical_factor(a.combat.critical,step::CriticalStat::reload));
     out.detail_tier=detail(a);out.refresh_control=s.refresh;out.fixed_control=true;out.airborne=a.motion.airborne;out.overturned=a.combat.overturned;
-    out.evaluation_time=s.evaluation_time;in.turn_speed_limit.set(a.descriptor.drive.rotation);
+    out.evaluation_time=s.evaluation_time;in.turn_speed_limit.set(a.descriptor.drive.rotation);out.gun_yaw_limits=std::array<double,2>{a.modes[a.mode].combat.minimum_yaw,a.modes[a.mode].combat.maximum_yaw};
     const auto order=planning_.decisions().orders.find(a.motion.id);const auto cache=planning_.decisions().cache.find(a.motion.id);
+    std::optional<decision::Identity> requested_target;
+    if(order!=planning_.decisions().orders.end()&&order->second.drive.target.present){const auto& drive=order->second.drive;requested_target=decision::Identity{drive.target_kind.empty()?"bot":drive.target_kind,drive.target.value};}
+    else if(cache!=planning_.decisions().cache.end()&&cache->second.command.target.present){const auto found=cache->second.targets.find(cache->second.command.target.value);if(found!=cache->second.targets.end())requested_target=found->second.identity;}
+    if(requested_target){const auto lane=weapons_runtime_.shared().lanes.find({a.motion.id,requested_target->kind,requested_target->id});if(lane!=weapons_runtime_.shared().lanes.end()&&!lane->second.clear&&s.now-lane->second.at>=0.&&s.now-lane->second.at<=1.+clock_.period+1.e-9)out.blocked_lane_target=requested_target;}
+
     if(std::abs(a.motion.speed)>.35&&(order==planning_.decisions().orders.end()||(order->second.drive.mode!="route"&&order->second.drive.mode!="advance")))
         in.stopping_distance.set(motion::stopping_distance(a.descriptor,a.motion.speed,a.motion.last_drive_pitch,
             cache!=planning_.decisions().cache.end()&&std::abs(cache->second.command.turn)>.01,.02,1./30.));
@@ -167,6 +208,10 @@ perception::Actor Runtime::perceptionActor(const Actor&a,const Slice&s)
     auto row=a.modes[a.mode].perception;const auto p=aimPose(a);const auto&w=weapons_.at(key(a.motion.id));
     const double vision=std::max(.5,std::min(1.,step::critical_factor(a.combat.critical,step::CriticalStat::vision)));
     row.config.view_moving*=vision;row.config.view_still*=vision;row.config.radio*=step::critical_factor(a.combat.critical,step::CriticalStat::signal);
+    if(const auto* fitting=step::crew_factors_row(a.combat.critical)){row.config.camo_moving=fitting->base_moving;row.config.camo_still=fitting->base_still;
+        row.config.camo_add=fitting->invisibility_moving[0];row.config.camo_net_add=fitting->invisibility_still[0]-fitting->invisibility_moving[0];
+        row.config.camo_multiplier=fitting->invisibility_moving[1];row.config.camo_net_multiplier=fitting->invisibility_still[1];row.config.relay=fitting->relay;
+        row.sample.last_effort=fitting->last_effort;row.sample.designated=fitting->designated;}
     row.sample.pose.position=p.position;row.sample.pose.values={{p.position[0],p.position[1],p.position[2],p.yaw,p.pitch,p.roll,p.aim_yaw,p.turret_yaw,p.gun_pitch,a.motion.speed,
         std::sin(p.yaw)*a.motion.speed,0.,std::cos(p.yaw)*a.motion.speed}};row.sample.pose.mask=(1u<<13)-1;
     row.sample.alive=a.motion.alive;row.sample.fire_sequence=w.fire_seq;row.sample.decision_due=planning_.decisions().due(decisionInput(a,s));
@@ -180,6 +225,8 @@ perception::Actor Runtime::perceptionActor(const Actor&a,const Slice&s)
 observation::Actor Runtime::observationActor(const Actor&a)const
 {
     observation::Actor row;row.key=key(a.motion.id);row.pose=aimPose(a);row.speed=a.motion.speed;row.target=a.metadata;
+    const auto& remaining=weapons_.at(row.key).ammo.remaining;
+    row.empty_ammo=!remaining.empty() && std::all_of(remaining.begin(),remaining.end(),[](int value){return value==0;});
     row.target.id=a.motion.id;row.target.identity={"bot",a.motion.id};row.target.team=a.team;row.target.alive=a.motion.alive;
     row.target.health=a.combat.health;row.target.max_health=a.combat.maximum_health;row.target.position=a.motion.position;row.target.speed=a.motion.speed;
     const auto&c=a.modes[a.mode].combat;row.pitch_locked=c.aim_config.has_static_pitch;row.static_pitch=c.aim_config.static_pitch;return row;
@@ -215,7 +262,7 @@ void Runtime::humans(std::vector<Human> rows)
     std::set<ID> ids;for(const auto&h:rows)if(h.contacts.network_id<=0||!ids.insert(h.contacts.network_id).second)
         throw std::invalid_argument("Invalid native human roster identity");
     humans_=std::move(rows);contact_humans_.clear();std::vector<nav::NavigationHuman> navigation;
-    for(const auto&h:humans_){contact_humans_.push_back(h.contacts);navigation.push_back(h.navigation);}
+    for(auto&h:humans_){const auto carrier=stack_carriers_.find({true,h.contacts.network_id});h.contacts.stack_carrier=carrier==stack_carriers_.end()?std::nullopt:std::optional<stack::Identity>(carrier->second);contact_humans_.push_back(h.contacts);navigation.push_back(h.navigation);}
     planning_.humans(std::move(navigation));
 }
 void Runtime::orders(std::map<ID,planning::StrategicOrder> orders,std::map<ID,std::uint64_t> tokens)
@@ -296,12 +343,82 @@ void Runtime::cancelArtillery(ID id)
 int Runtime::fall_damage(motion::State&state,double speed,const std::vector<Point>&witnesses,const Point&normal,bool ground)
 {
     auto&a=actors_.at(state.id);updateCombatPose(a);
+    const int before_health=a.combat.health;
     const auto result=step::apply_environment_fall_damage(state.id,a.combat,state,speed,ground,witnesses,normal,services_.impactWorld(state.id),environment_);
-    applyCombatPose(a);return result.damage;
+    applyCombatPose(a);return std::min(before_health,result.damage);
 }
 motion::World& Runtime::motion_world(ID id){return *worlds_.at(id);}
 std::optional<contacts::Armor> Runtime::armor(const contacts::Body&a,const contacts::Body&b,const std::array<double,3>&n)
 {return services_.armor(a,b,n);}
+stack::Body Runtime::stackBody(const Actor&a)const {
+    const auto&m=a.motion;return {{false,m.id},m.position,a.descriptor.collision_shape,m.yaw,m.pitch,m.roll,a.descriptor.drive.mass,m.alive};
+}
+stack::Body Runtime::stackBody(const Human&h)const {
+    const auto&b=h.contacts.body;return {{true,h.contacts.network_id},{b.x,b.y,b.z},b.shape,b.yaw,b.pitch,b.roll,h.contact_mass,b.has(offline_contact::Alive)};
+}
+std::vector<stack::Surface> Runtime::stackRoofs(const stack::Body&upper,const Point&start,const Point&end) {
+    std::vector<stack::Surface> hits;
+    const auto append=[&](const stack::Body&lower,step::AimPose pose) {
+        if(!stack::roof_candidate(upper,lower,start[0],start[2]))return;
+        auto found=services_.roofs(upper,lower,pose,start,end);hits.insert(hits.end(),found.begin(),found.end());
+    };
+    for(ID id:publication_order_) {
+        const auto&a=actors_.at(id);auto pose=aimPose(a);
+        // The chassis stays in the terrain frame; the mounted body uses the
+        // accepted hydraulic pitch, with no sampled presentation writer.
+        if(a.motion.hydraulic_pitch!=0.) {
+            pose.hydraulic_body=std::array<double,8>{pose.position[0],pose.position[1],pose.position[2],pose.yaw,pose.pitch,pose.roll,pose.turret_yaw,pose.gun_pitch};
+            pose.pitch=a.motion.terrain_pitch;
+        }
+        append(stackBody(a),pose);
+    }
+    for(const auto&h:humans_)append(stackBody(h),h.observation.pose);
+    return hits;
+}
+std::vector<stack::Surface> Runtime::roofs(const motion::State& state,const Point& start,const Point&end) {
+    auto upper=stackBody(actors_.at(state.id));upper.position=state.position;upper.yaw=state.yaw;upper.pitch=state.pitch;upper.roll=state.roll;
+    return stackRoofs(upper,start,end);
+}
+void Runtime::stack_impact(motion::State&state,const stack::Surface&surface,double speed,int upper_damage) {
+    const auto upper=stackBody(actors_.at(state.id));double lower_mass=0.;int health=0;
+    if(surface.carrier.human) {
+        for(const auto& h:humans_)if(h.contacts.network_id==surface.carrier.id){lower_mass=h.contact_mass;health=int(h.observation.target.max_health);break;}
+    } else {const auto lower=actors_.find(surface.carrier.id);if(lower!=actors_.end()){lower_mass=lower->second.descriptor.drive.mass;health=lower->second.combat.maximum_health;}}
+    if(lower_mass<=0.||health<=0)return;
+    stacks_.strike(upper.key,surface.carrier,stack::impact_damage(health,speed,upper.mass,lower_mass),upper_damage);
+}
+void Runtime::advanceStacks(double dt) {
+    std::map<stack::Identity,stack::Body> bodies;
+    for(const auto&entry:actors_){const auto b=stackBody(entry.second);bodies[b.key]=b;}
+    for(const auto&h:humans_){const auto b=stackBody(h);bodies[b.key]=b;}
+    const auto observe=[&](const stack::Body&upper,const step::SuspensionDescriptor&descriptor,bool hydraulic,double turret_yaw) {
+        std::vector<stack::Surface> hits;std::vector<Point> contacts;
+        const auto sample=[&](Point local,double depth,bool spring,double compression) {
+            const auto offset=stack::offset(local,upper.pitch,upper.roll);const double sn=std::sin(upper.yaw),cs=std::cos(upper.yaw);
+            const double x=upper.position[0]+cs*offset[0]+sn*offset[2],z=upper.position[2]-sn*offset[0]+cs*offset[2],y=upper.position[1]+offset[1];
+            const auto found=stackRoofs(upper,{x,y+.15,z},{x,y-depth,z});std::optional<stack::Surface> best;
+            for(const auto&hit:found)if(!best||hit.point[1]>best->point[1])best=hit;
+            hits.insert(hits.end(),found.begin(),found.end());if(!best)return;
+            const double gap=best->point[1]-y;
+            if(hydraulic||(spring?compression+gap>0.:gap>=-descriptor.tuning[1]))contacts.push_back({x,best->point[1],z});
+        };
+        if(hydraulic) {
+            for(const Point point:std::array<Point,5>{{{0.,0.,0.},{-upper.shape[0],0.,0.},{upper.shape[0],0.,0.},{0.,0.,-upper.shape[1]},{0.,0.,upper.shape[1]}}})sample(point,.15,false,0.);
+        } else {
+            if(descriptor.springs.empty())return;
+            for(const auto&c:descriptor.springs)sample({c.x,c.y,c.z},c.compression,true,c.compression);
+            const auto posed=step::suspension_pose_contacts(descriptor.pseudo,descriptor.rigid,descriptor.turret_origin,descriptor.turret_contacts,upper.pitch,upper.roll,0.,0.,0.,turret_yaw);
+            for(const auto&c:posed.contacts)sample({c.x,c.y,c.z},descriptor.tuning[1],false,0.);
+        }
+        const auto selected=stack::settled_carrier(contacts,hits);
+        if(selected)stack_carriers_[upper.key]=selected->carrier;else stack_carriers_.erase(upper.key);
+        if(!upper.key.human)actors_.at(upper.key.id).motion.stack_carrier=selected?std::optional<stack::Identity>(selected->carrier):std::nullopt;
+        if(!selected)return;const auto lower=bodies.find(selected->carrier);if(lower==bodies.end())return;
+        stacks_.advance(upper.key,lower->first,dt,upper.alive,lower->second.alive,upper.mass,lower->second.mass);
+    };
+    for(ID id:publication_order_){const auto&a=actors_.at(id);observe(bodies.at({false,id}),a.suspension,a.modes[a.mode].physics.geometry.pitch_hull_aiming,weapons_.at(key(id)).aim.turret_yaw);}
+    for(const auto&h:humans_)observe(bodies.at({true,h.contacts.network_id}),h.suspension,h.hydraulic_support,h.observation.pose.turret_yaw);
+}
 double Runtime::water_depth(const Point&p)
 {
     const Point start{{p[0],p[1]+20.,p[2]}},end{{p[0],p[1]-5.,p[2]}};double hit=-1.;
@@ -320,16 +437,26 @@ publication::Input Runtime::publicationActor(const Actor&a)const
         double(publication::fixed(a.siege.remaining,1000.)),double(publication::fixed(a.siege.total,1000.)),
         double(c.health),double(c.display_health),double(a.ledger.base_revision),double(a.ledger.next_sequence),
         c.critical.fire_elapsed,c.critical.fire_timer,double(c.death_reason),double(c.stun_end_server_time_ms),
-        a.shot_angles?(*a.shot_angles)[0]:0.,a.shot_angles?(*a.shot_angles)[1]:0.}};
+        a.shot_angles?(*a.shot_angles)[0]:0.,a.shot_angles?(*a.shot_angles)[1]:0.,w.aim.turret_yaw}};
     const auto flag=[&](bool value,publication::Flag f){if(value)out.flags|=f;};
     flag(m.alive,publication::Alive);flag(a.world_pose,publication::WorldPose);
-    flag(w.ammo.reload_pending,publication::AmmoReloadPending);flag(b.active,publication::BurstActive);
+    flag(w.ammo.reload_pending,publication::AmmoReloadPending);flag(w.gun.intra,publication::AmmoMagazineStarted);flag(b.active,publication::BurstActive);
     flag(c.critical.fire,publication::Fire);flag(c.critical.ammo_rack_death,publication::AmmoRackDeath);
     flag(bool(a.shot_angles),publication::ShotAngles);flag(true,publication::Critical);
     flag(true,publication::Equipment);flag(true,publication::Ammo);flag(true,publication::Burst);flag(true,publication::Clip);
     flag(true,publication::Siege);flag(m.movement_direction>0,publication::Forward);flag(m.movement_direction<0,publication::Backward);
     flag(m.rotation_direction>0,publication::Left);flag(m.rotation_direction<0,publication::Right);
     flag(m.airborne,publication::Airborne);flag(m.service_brake,publication::ServiceBrake);flag(a.route_wreck_blocked,publication::RouteWreckBlocked);
+    const auto decision=planning_.decisions().actors.find(m.id);
+    const bool manoeuvre=a.weapon.hull_aiming || (decision!=planning_.decisions().actors.end() &&
+        (decision->second.reposition || decision->second.gun_adjustment));
+    flag(manoeuvre,publication::LocalCombatManoeuvre);
+    flag(true,publication::AimFeedback);
+    if(a.weapon.feedback && m.alive) {
+        const auto& f=*a.weapon.feedback;out.aim_feedback_kind=f.kind=="human"?1:f.kind=="bot"?2:0;
+        out.aim_feedback_id=out.aim_feedback_kind?f.id:0;out.aim_feedback_error=f.error;
+        flag(out.aim_feedback_kind && f.aligned,publication::AimFeedbackAligned);
+    }
     const auto&contact=contact_actors_.at(m.id);flag(true,publication::ContactMomentum);flag(true,publication::RamMotion);
     out.ammunition=w.ammo.remaining;out.critical=c.critical;out.crew_roster_present=!c.critical.crew_roster.empty();
     for(auto i=out.critical.devices.begin();i!=out.critical.devices.end();) {
@@ -438,7 +565,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
     timing.finish(Stage::prepare);
     for(ID id:dictionary_order_) {
         auto&a=actors_.at(id);auto&m=a.motion;
-        if(!m.alive){a.selected_target.reset();weapons_.cancel(key(id));publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;timing.finish(Stage::combat);continue;}
+        if(!m.alive){a.selected_target.reset();weapons_.cancel(key(id));makeWorld(a);publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;timing.finish(Stage::combat);continue;}
         ++statistics_.actors;control_.note_source_stillness(key(id),s.now,m.speed);updateCombatPose(a);
         step::CombatSlice combat{s.elapsed,s.now,equipment_time_,a.combat.stun_until_equipment_time>equipment_time_+1.e-9};
         const auto prep=step::prepare_combat_actor(combatRefs(a),combatDescriptor(a),combat,*this);applyCombatPose(a);
@@ -476,7 +603,12 @@ std::optional<Output> Runtime::advance(const Slice&s)
         command.fire_allowed=siege.fire_allowed;command.movement_intent=siege.movement_intent;
         weapons_runtime_.preMotion(a.weapon,combatRefs(a),a.modes[a.mode].combat,m,command,chosen,combat,planning_.decisions());
         const double stopping=motion::stopping_distance(a.descriptor,m.speed,m.last_drive_pitch,std::abs(command.turn)>.01,.02,1./30.);
-        auto safe=planning_.safeControls(id,command,neighbours(id),stopping);command.throttle=safe.throttle;command.turn=safe.turn;
+        auto safe=planning_.safeControls(id,command,neighbours(id),stopping);
+        auto& mechanical=planning_.decisions().actors.at(id);std::optional<decision::Identity> denied_pivot;
+        if(selected&&a.weapon.hull_aiming&&a.weapon.class_tag!="SPG"&&command.parking_phase.empty()&&command.mode!="base_defense"&&command.mode!="artillery_deploy"&&command.mode!="artillery_relocate"&&safe.rotation_safety_blocked)denied_pivot=selected->identity;
+        if(denied_pivot){mechanical.pivot_refusal=denied_pivot;if(mechanical.traffic_pivot!=denied_pivot)planning_.invalidate(id);}
+        else if(mechanical.traffic_pivot&&!mechanical.gun_adjustment&&mechanical.pivot_refusal==mechanical.traffic_pivot)mechanical.pivot_refusal.reset();
+        mechanical.traffic_pivot=denied_pivot;command.throttle=safe.throttle;command.turn=safe.turn;
         const bool siege_locked=prep.siege_motion_locked||change.locked;
         if(siege_locked) {
             command.fire_allowed=false;command.throttle=command.turn=0.;command.movement_intent=false;
@@ -488,14 +620,16 @@ std::optional<Output> Runtime::advance(const Slice&s)
         timing.finish(Stage::weapon_prepare);
         nav::MotionPlanInput input;input.id=id;input.position=m.position;input.yaw=m.yaw;input.speed=m.speed;input.turn_speed=m.turn_speed;
         input.throttle=command.throttle;input.turn=command.turn;input.step=s.elapsed;input.now=s.now;input.half_length=a.descriptor.half_length;
-        input.terrain_pitch=m.terrain_pitch;input.grounded=m.grounded_once;input.airborne=m.airborne;input.decision_due=decision.due;
+        input.terrain_pitch=m.terrain_pitch;input.roll=m.roll;input.grounded=m.grounded_once;input.airborne=m.airborne;input.decision_due=decision.due;
         input.refresh_control=s.refresh;input.movement_intent=command.movement_intent;input.recovery=command.recovery;
         input.move_position=command.move;input.recovery_probe_distance=optional(command.probe_distance);
+        input.recovery_probe_origin=optional(command.probe_origin);input.recovery_probe_yaw=optional(command.probe_yaw);input.recovery_probe_length=optional(command.probe_length);
         const auto probe=planning_.selectedMotion(input);
+        if(probe.escape_complete)planning_.invalidate(id);
         motion::Input drive;drive.dt=s.elapsed;drive.now=s.now;drive.throttle=probe.throttle;drive.turn=probe.turn;
         drive.slope_pitch=probe.slope_pitch;drive.travel_sign=probe.travel_sign;drive.path_clear=probe.path_clear;drive.pose_frozen=probe.pose_frozen;
         drive.probe_collision=probe.generic_collision;drive.exact_collision=probe.exact_collision;drive.brake=command.brake;drive.siege_locked=siege_locked;
-        drive.wet_escape=planning_.grid().pointHazard(m.position,4)||a.combat.water_depth>.90;
+        drive.wet_escape=planning_.grid().pointHazard(m.position,4)||a.combat.water_depth>stock_native_bot_navigation::navigable_water_depth;
         drive.shallow_admitted=planning_.navigator().controlledShallowStep(id,m.position,probe.travel_yaw)||planning_.navigator().controlledShallowCommitted(id,m.position,probe.travel_yaw);
         drive.maximum_probe_distance=probe.maximum_distance;drive.move_target=command.move;
         timing.finish(Stage::motion_plan);
@@ -504,8 +638,10 @@ std::optional<Output> Runtime::advance(const Slice&s)
         for(ID invalid:physics_context_.invalidated_decisions)planning_.invalidate(invalid);
         physics_context_.invalidated_decisions.clear();
         timing.finish(Stage::motion);
+        const auto fire_before=weapons_.at(key(id)).fire_seq;
         updateCombatPose(a);weapons_runtime_.postMotion(a.weapon,combatRefs(a),a.modes[a.mode].combat,m,decisionInput(a,s),command,chosen,
             combat,s.publish,s.refresh,s.start_us,s.end_us,planning_.decisions(),services_.weaponWorld());
+        if(weapons_.at(key(id)).fire_seq!=fire_before)planning_.decisions().noteCommittedFire(decisionInput(a,s),command,selected);
         for(auto launch=weapons_.pending().rbegin();launch!=weapons_.pending().rend();++launch)if(launch->actor==key(id)&&launch->edge.shot_seq==weapons_.at(key(id)).fire_seq){a.shot_angles=std::array<double,2>{{launch->yaw,launch->pitch}};break;}
         timing.finish(Stage::weapon_finish);
         observations_.update(observationActor(a));observations_.queueCover(id,selected,command);publishPose(a,s,true);metadata[key(id)]=observationActor(a).target;ticks[id]=tick;
@@ -524,7 +660,7 @@ std::optional<Output> Runtime::advance(const Slice&s)
         t.settled=m.position;slope.push_back(id);
     }
     timing.finish(Stage::suspension);
-    contacts_.translations(contact_actors_,contact_humans_,starts,s.end_us,publication_order_);
+    contacts_.translations(contact_actors_,contact_humans_,starts,s.end_us,publication_order_,s.elapsed);
     for(ID id:dictionary_order_)if(ticks.count(id)&&ticks.at(id).passive!=0.&&!locked.count(id)) {
         auto&a=actors_.at(id);if(!a.motion.alive)continue;motion::ContactResponse response;
         response.delta_velocity={{std::sin(a.motion.yaw)*ticks.at(id).passive,std::cos(a.motion.yaw)*ticks.at(id).passive}};
@@ -546,6 +682,8 @@ std::optional<Output> Runtime::advance(const Slice&s)
             const bool blocked=worlds_.at(id)->vertical(m,a.descriptor,rollback,t.yaw,0.);t.blocked=t.blocked||blocked;
         }
         if(!t.blocked&&!t.ballistic&&!m.airborne)t.rollback=physics_.guard_realised_pose(m,t.settled,false,t.yaw,{},false)||t.rollback;
+        motion::settle_drive_sweep(m);
+        if(worlds_.at(id)->release_support(m))host_memory_.at(id).pose_sample=std::array<double,3>{{m.position[0],m.position[2],m.yaw}};
         if(t.blocked&&t.goal){planning_.navigator().reportHardContact(id,t.start,*t.goal,t.yaw,s.now);physics_.invalidate(id,t.yaw,true);}
         else if(!t.rollback&&!t.ballistic&&distance(t.start,t.settled)>1.e-6)planning_.navigator().clearBlockedContact(id);
     }
@@ -561,12 +699,14 @@ std::optional<Output> Runtime::advance(const Slice&s)
         slope_cursor_=(start+std::max<std::size_t>(1,visited))%slope.size();
     }
     for(ID id:physics_context_.invalidated_decisions)planning_.invalidate(id);
-    for(auto&entry:actors_)publishPose(entry.second,s,false);
+    advanceStacks(s.elapsed);
+    for(auto&entry:actors_){auto&a=entry.second;if(!a.motion.alive){const double world=a.motion.yaw+weapons_.at(key(entry.first)).aim.turret_yaw;a.weapon.aim_yaw=std::atan2(std::sin(world),std::cos(world));}publishPose(a,s,false);}
     timing.finish(Stage::slope);
     if(!publish){timing.finish(Stage::publication);return {};}
     std::vector<publication::Input> rows;for(ID id:publication_order_){auto&a=actors_.at(id);a.ledger.mark_publication(a.combat);rows.push_back(publicationActor(a));}
     result.state=publisher_.publish(rows,equipment_time_,s.end_us,weapons_.pending(),reports_);
     for(const auto&p:contacts_.push_proofs())result.pushes.push_back(p.second);
+    result.stacks=stacks_.publication();
     for(const auto&p:environment_.fall_damage)result.falls.push_back({{p.first,p.second}});
     for(const auto&p:environment_.critical)result.critical.push_back({std::get<0>(p.first),std::get<1>(p.first),std::get<2>(p.first),p.second});
     for(ID id:publication_order_){const auto&a=actors_.at(id);if(a.motion.airborne||a.combat.drowning)result.hazards.push_back(id);

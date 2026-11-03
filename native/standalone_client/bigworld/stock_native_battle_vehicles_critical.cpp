@@ -126,6 +126,13 @@ bool reconcileCriticalAuthority(Battle& b, Actor& v, const Value& source, Value*
 bool applyCritical(Battle& b, Actor& v, const Value& payload, const Value* authority) {
     auto canonical = canonicalOf(payload);
     if (!canonical) return false;
+    // Death is terminal even if a delayed authority checkpoint still burns.
+    if (integer(field(v.presented.state, "health"), 1) <= 0) {
+        auto& fire = writable(*canonical).object["fire"];
+        fire = Value();
+        fire.kind = Value::Kind::Boolean;
+        fire.boolean = false;
+    }
     auto& d = v.presented;
     if (authority && !reconcileCriticalAuthority(b, v, *authority, &*canonical)) {
         if (v.local && d.critical.truth()) writable(d.state).object["critical"] = d.critical;
@@ -200,6 +207,8 @@ bool presentCritical(Battle& b, Actor& v, const Value& events, std::int64_t atta
             else if (cause == "fire") code = "TANKMAN_HIT";
             else code = "TANKMAN_HIT_AT_SHOT";
         } else if (kind == "fire") {
+            auto health = py::optional(entity.get(), "health");
+            if (health.get() != Py_None && p::wide(health.get()) <= 0) continue;
             const bool burning = field(row, "state").truth();
             code = burning ? (cause == "ramming" ? "DEVICE_STARTED_FIRE_AT_RAMMING" : "DEVICE_STARTED_FIRE_AT_SHOT") : "FIRE_STOPPED";
         } else continue;

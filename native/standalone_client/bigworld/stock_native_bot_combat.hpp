@@ -2,6 +2,8 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <memory>
+#include <stdexcept>
 #include <map>
 #include <deque>
 #include <set>
@@ -16,13 +18,28 @@ struct Device {
     bool destroyed=false, critical=false;
     std::optional<double> wire_maximum;
 };
+struct CrewFactorRow {
+    std::array<double,7> ratios{{1.,1.,1.,1.,1.,1.,1.}};
+    double repair=1.,base_moving=0.,base_still=0.;
+    double bloom_move=1.,bloom_rotation=1.,bloom_turret=1.,ammo_bay_health=1.;
+    std::array<double,2> invisibility_moving{{0.,1.}},invisibility_still{{0.,1.}};
+    double adrenaline_health_fraction=0.,adrenaline_reload_factor=1.,engine_fire_factor=1.,damaged_gun_factor=1.;
+    double relay=0.;bool last_effort=false,designated=false;
+};
+struct CrewFactors {std::vector<std::string> roster;std::vector<CrewFactorRow> rows;};
+inline const CrewFactorRow* crew_factors_row(const CrewFactors* factors,const std::set<std::string>& knocked,bool fire) {
+    if(!factors)return nullptr;std::size_t mask=0;for(std::size_t i=0;i<factors->roster.size();++i)if(knocked.count(factors->roster[i]))mask|=std::size_t(1)<<i;
+    const auto index=mask*2+std::size_t(fire);if(index>=factors->rows.size())throw std::invalid_argument("Native Bot crew projection is unavailable");return &factors->rows[index];
+}
 struct CriticalState {
     std::map<std::string,Device> devices;
     std::set<std::string> crew_roster, crew_ko;
     bool fire=false, ammo_rack_death=false;
     double fire_elapsed=0, fire_timer=0;
+    std::shared_ptr<const CrewFactors> fitting;int health=0,maximum_health=1;
 };
 enum class CriticalStat { reload, dispersion, aim_time, turret_speed, mobility, vision, signal };
+inline const CrewFactorRow* crew_factors_row(const CriticalState& state){return crew_factors_row(state.fitting.get(),state.crew_ko,state.fire);}
 double critical_factor(const CriticalState&,CriticalStat);
 enum class CriticalEventKind { device, crew, fire, ammo_rack };
 enum class CriticalStatus { normal, critical, destroyed, fire_on, fire_off };
@@ -79,6 +96,7 @@ struct EquipmentEffect {
     bool clear_stun=false;
     std::int64_t stun_base_end_server_time_ms=0;
     std::vector<CriticalEvent> events;
+    std::set<std::string> excluded_devices;
 };
 bool apply_equipment(CombatState&, const EquipmentEffect&);
 enum class EquipmentKind { extinguisher, repairkit, medkit, fuel, rpm_limiter, stimulator, other };
@@ -98,7 +116,7 @@ struct EquipmentPassives {
 };
 EquipmentPassives equipment_passives(const std::vector<EquipmentState>&);
 std::optional<EquipmentEffect> poll_bot_equipment(EquipmentState&, CombatState&,
-                                                   double now, bool stunned);
+                                                   double now, bool stunned, int skill=3);
 struct CombatRecord {
     int health=0;
     bool alive=false;
