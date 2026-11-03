@@ -121,7 +121,7 @@ namespace BW {
 using uint32=std::uint32_t;using uint16=std::uint16_t;using uint=unsigned;
 template<class T>using vector=std::vector<T>;
 template<class T>class SmartPointer:public std::shared_ptr<T>{
-public:using std::shared_ptr<T>::shared_ptr;SmartPointer(){}SmartPointer(T* value):std::shared_ptr<T>(value){}
+public:SmartPointer(){}SmartPointer(T* value):std::shared_ptr<T>(value){}
   T* getObject()const{return this->get();}
 };
 struct Vector3 {

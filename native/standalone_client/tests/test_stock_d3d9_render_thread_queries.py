@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -228,9 +229,12 @@ class RenderThreadQueryTest(unittest.TestCase):
             )
             for name, code, cases, success in variants:
                 path = root/(name+'.cpp');binary = root/name;path.write_text(code)
-                result = subprocess.run([compiler, '-std=c++17', '-O1', '-UNDEBUG',
-                                         '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                                         str(path), '-o', str(binary)], text=True, capture_output=True)
+                command = [compiler, '-std=c++17', '-O1', '-UNDEBUG']
+                # MinGW CI has no ASan runtime; still execute every scenario.
+                if sys.platform != 'win32':
+                    command += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
+                result = subprocess.run(command + [str(path), '-o', str(binary)],
+                                        text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
                 for case in cases:
                     with self.subTest(variant=name, scenario=case):

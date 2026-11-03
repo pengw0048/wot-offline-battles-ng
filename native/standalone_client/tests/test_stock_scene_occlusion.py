@@ -175,7 +175,8 @@ void run(const std::string& requested){
   }else if(scenario=="shared-retire"){
     Scene scene;StockSceneOcclusionMapping a(4000),b(1);
     auto first=view(1);first.scene=&scene;a.beginFrame(first);b.beginFrame(first);
-    for(unsigned i=0;i<4000;++i)assert(a.visible(i,distant));a.issue();
+    for(unsigned i=0;i<4000;++i){assert(a.visible(i,distant));}
+    a.issue();
     auto* abandoned=fixtureQueries.front().get();bool admitted=true;
     assert(b.visible(0,distant,true,&admitted)&&!admitted);
     a.retire();assert(abandoned->refs==0);
