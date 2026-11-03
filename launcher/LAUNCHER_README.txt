@@ -67,6 +67,8 @@ See LICENSE, THIRD_PARTY_NOTICES.md and licenses for license terms. The optional
 crash recorder downloads Microsoft ProcDump only with the launcher's consent
 setting. The launcher and LAN server share CPython 3.11.9 from python.org.
 Native replay recording and playback do not require a separate Python runtime.
+The viewer bundles NumPy, ModernGL and glcontext; their wheel license files
+are included with their distribution metadata under _internal.
 
 CPython 3.11.9 license
 ======================

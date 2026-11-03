@@ -67,6 +67,7 @@ python -m PyInstaller `
     --hidden-import bot_tactics_ui `
     --hidden-import bot_tactics_smoke `
     --exclude-module gui `
+    --copy-metadata numpy `
     --collect-all moderngl `
     --collect-all glcontext `
     --hidden-import PIL.ImageTk `
