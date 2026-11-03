@@ -24,8 +24,9 @@ jobs:
       - name: Fetch the exact gameplay source used by the client build
         shell: python
         run: |
-          import json, os
+          import json, os, sys
           from pathlib import Path
+          sys.path.insert(0, os.getcwd())
           from tools.stage_ng_launcher_source import _copy_fork, pinned_revision
           source = Path(os.environ['RUNNER_TEMP']) / 'gameplay-source'
           source.mkdir()
