@@ -4478,6 +4478,19 @@ do not establish the AV's precise cause.
 
 ### Deferred work with no active consumer
 
+The HDR exposure history targets must be initialized independently of disabled
+bloom. Exact #1513 instructions at `a725d8..a726b8` allocate two 1x1 targets
+and submit zero-colour operations for both before exposure consumes them. The
+public HDR resource creator left those floating-point histories undefined,
+including after device or resolution resets. Clear both histories to zero
+after successful allocation and reject the HDR resources if either clear
+fails; retain the original luminance reduction and adaptation formulas.
+An executable-instruction oracle checks the original zero submissions, and
+host lifecycle tests exercise the production clear and generated resource
+creator with undefined initial values and allocation/push/clear failures.
+These tests do not establish whether this defect caused a reported Windows
+colour anomaly or validate the resulting GPU image.
+
 The restored tone mapper disables bloom, but the public HDR resolve still
 called its bloom pyramid. The pinned Steppes and Mannerheim sky settings enable
 that producer; its successful 4K path contains 27 draws. Omit that unused chain

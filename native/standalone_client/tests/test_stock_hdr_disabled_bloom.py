@@ -367,7 +367,12 @@ class DisabledBloomTests(unittest.TestCase):
                                  patch.function(cached[support], signature))
             self.assertIn('m_bloomMaps[0].first.get()', patch.function(fresh[support], 'void HDRSupport::calcAvgLum('))
             self.assertEqual(fresh['lib/romp/hdr_support.hpp'].count('m_stockDisabledBloom;'), 1)
-            self.assertEqual(patch.function(fresh[support], 'void HDRSupport::createUnmanagedObjects('),
+            # Exposure histories are now explicitly initialized. The other
+            # target allocations, including the downsample chain, stay intact.
+            creation = patch.function(fresh[support], 'void HDRSupport::createUnmanagedObjects(')
+            start = creation.index('\n    // #1513 a72669..a726b3')
+            end = creation.index('\n    MF_ASSERT(success', start)
+            self.assertEqual(creation[:start] + creation[end:],
                              patch.function(original[support], 'void HDRSupport::createUnmanagedObjects('))
             # patch_stock_antialiasing inserts its resolve immediately after this anchor.
             self.assertEqual(patch.function(fresh[support], 'void HDRSupport::resolve(').count(

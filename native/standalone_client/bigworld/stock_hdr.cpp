@@ -94,6 +94,15 @@ Moo::BaseTexturePtr loadStockDisabledBloom()
     return texture;
 }
 
+bool clearStockHdrLuminanceHistory(Moo::RenderTarget* target)
+{
+    if (!target || !target->push()) return false;
+    const HRESULT result = Moo::rc().device()->Clear(
+        0, NULL, D3DCLEAR_TARGET, 0, 1.f, 0);
+    target->pop();
+    return SUCCEEDED(result);
+}
+
 bool drawStockToneMapping(const Moo::EffectMaterialPtr& material, const HDRSettings& settings,
     Moo::RenderTarget* averageLuminance, Moo::RenderTarget* hdr,
     const Moo::BaseTexturePtr& disabledBloom, const Moo::BaseTexturePtr& colorCorrection)

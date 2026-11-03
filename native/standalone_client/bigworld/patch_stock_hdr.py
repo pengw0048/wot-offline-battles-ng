@@ -162,6 +162,18 @@ def patch_support(root, pending):
         '    g_cfg = cfg ? *cfg : HDRSettings();\n'
         '    m_stockColorCorrection = loadStockColorCorrection(g_cfg.m_colorCorrectionMap);\n',
         'HDR colour correction load')
+    text = replace_once(text, '    success &= m_inmemTexture.hasComObject();\n',
+        '    success &= m_inmemTexture.hasComObject();\n'
+        '\n'
+        '    // #1513 a72669..a726b3 initializes both linear exposure histories.\n'
+        '    // Undefined R32F contents can poison adaptation, including after reset.\n'
+        '    if (success)\n'
+        '    {\n'
+        '        const bool first = clearStockHdrLuminanceHistory(m_avgLumRT.get());\n'
+        '        const bool second = clearStockHdrLuminanceHistory(m_finalAvgLumRT.get());\n'
+        '        success = first && second;\n'
+        '    }\n',
+        'HDR exposure history initialization')
     # average_luminance.fx and tonemapping.fx resolve to the original FXOs,
     # whose techniques are named as a70500/a70a20 select them.
     for old, new in (
