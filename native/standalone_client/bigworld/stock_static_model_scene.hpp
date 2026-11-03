@@ -10,6 +10,8 @@ class Scene;
 class SceneObject;
 class Vector3;
 class WorldTriangle;
+class BoundingBox;
+class StockSceneOcclusionMapping;
 namespace CompiledSpace
 {
 // The original mapping owns BSMI2 instances, BSMO1 definitions and BSMA1
@@ -25,6 +27,8 @@ public:
     static bool itemIdentity( const SceneObject & object, uint32 & chunkID, uint32 & itemIndex );
     // Original StaticModelFeature model-operation slot 0 returns an empty name.
     static bool modelFilename(const SceneObject& object, BW::string& filename);
+    static bool occlusionTarget(const SceneObject& object,
+        std::shared_ptr<StockSceneOcclusionMapping>& mapping, uint32& instance, BoundingBox& bounds);
     static bool collectStockDecalTriangles(const SceneObject& object, const Vector3& center,
         const Vector3& first, const Vector3& second, const Vector3& third,
         BW::vector<WorldTriangle>& output);

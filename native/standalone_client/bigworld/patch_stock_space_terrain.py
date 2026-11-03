@@ -328,6 +328,41 @@ PROJECTION_CONSTANTS = r'''    if (pBlock->settings()->stockCompiledData() && pB
     }
 '''
 
+COLOUR_LAYER_CONSTANTS = r'''    ID3DXEffect* stockEffect = pMaterial->pEffect_->pEffect()->pEffect();
+    if (wot::is_stock_effect(stockEffect))
+    {
+        // #1513 acc460/acc610 use the last global-colour slot in this batch.
+        Vector4 colourSlot(0.f, 0.f, 0.f, 0.f);
+        for (size_t slot = 0; slot < theLayer.textureLayers_.size() && slot < 4; ++slot)
+        {
+            const auto& texture = theLayer.textureLayers_[slot];
+            if (!texture) continue;
+            BW::string name = texture->textureName();
+            std::transform(name.begin(), name.end(), name.begin(),
+                [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (name.find("color_tex") == BW::string::npos) continue;
+            colourSlot = Vector4(0.f, 0.f, 0.f, 0.f);
+            colourSlot[slot] = 1.f;
+        }
+        const Vector4 inverseSlot(1.f - colourSlot.x, 1.f - colourSlot.y,
+            1.f - colourSlot.z, 1.f - colourSlot.w);
+        pMaterial->SetParam(stockEffect->GetParameterByName(NULL, "colorSlot"), &colourSlot);
+        pMaterial->SetParam(stockEffect->GetParameterByName(NULL, "invColorSlot"), &inverseSlot);
+    }
+'''
+
+AO_CONSTANTS = r'''    ID3DXEffect* stockEffect = pMaterial->pEffect_->pEffect()->pEffect();
+    if (wot::is_stock_effect(stockEffect))
+    {
+        // #1513 acb8c0 gates reflected terrain AO on the current SSAO owner.
+        Renderer* renderer = Renderer::pInstance();
+        IRendererPipeline* pipeline = renderer ? renderer->pipeline() : NULL;
+        SSAOSupport* ssao = pipeline ? pipeline->ssaoSupport() : NULL;
+        pMaterial->SetParam(stockEffect->GetParameterByName(NULL, "enableAO"),
+            pBlock->pAOMap() != NULL && ssao && ssao->enable());
+    }
+'''
+
 # Read the actual final material/device state only once per colour kind and
 # once when that kind first draws an arena-edge tile. A weak compiled-space
 # owner resets the mask on teardown without changing TerrainSettings layout.
@@ -612,6 +647,8 @@ def patch(root):
         '#include "moo/base_texture.hpp"\n#include <cstdio>')
     renderer = replace_once(renderer, '#include <cstdio>',
         '#include <cstdio>\n#include <algorithm>\n#include <cctype>')
+    renderer = replace_once(renderer, '#include <cctype>',
+        '#include <cctype>\n#include "moo/renderer.hpp"\n#include "romp/ssao_support.hpp"')
     renderer = replace_once(renderer, 'namespace\n{', 'namespace\n{' + TECHNIQUE_HELPER)
     for name, legacy, original in (
             ('texturedMaterial_', 'MAIN', 'Color'),
@@ -650,6 +687,12 @@ def patch(root):
         '    pMaterial->SetParam( pMaterial->useMultipassBlending_, blended );',
         '    pMaterial->SetParam( pMaterial->useMultipassBlending_, blended );\n'
         '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );')
+    renderer = replace_once(renderer,
+        '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );',
+        '    pMaterial->SetParam( pMaterial->stockMultipassBranch_, blended );\n' + COLOUR_LAYER_CONSTANTS)
+    renderer = replace_once(renderer,
+        '    pMaterial->SetParam( pMaterial->hasAO_, pBlock->pAOMap() != NULL );',
+        '    pMaterial->SetParam( pMaterial->hasAO_, pBlock->pAOMap() != NULL );\n' + AO_CONSTANTS)
     renderer = replace_once(renderer,
         '        pMaterial->SetParam( pMaterial->useMultipassBlending_, doBlends );',
         '        pMaterial->SetParam( pMaterial->useMultipassBlending_, doBlends );\n'

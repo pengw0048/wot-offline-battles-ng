@@ -523,6 +523,8 @@ print('Licensed SDK input extracted: %d files' % len(members))
         $EngineRoot) "stock-dynamic-octree-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_render_thread.py"),
         $EngineRoot) "stock-render-thread-patch.log"
+    Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scene_occlusion.py"),
+        $EngineRoot) "stock-scene-occlusion-patch.log"
     Invoke-Checked "python" @((Join-Path $StandaloneRoot "patch_stock_scaleform_render_thread.py"),
         $EngineRoot, $ScaleformRoot) "stock-scaleform-render-thread-patch.log"
 

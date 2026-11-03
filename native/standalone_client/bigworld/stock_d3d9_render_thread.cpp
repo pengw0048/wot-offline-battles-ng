@@ -117,7 +117,8 @@ void stallReport(const char* name);   // logs the render thread's stack once whe
 template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
     using R = decltype(f());
     if (!g_started || onRender() || mainOwnsDevice()) return f();
-    struct Ctx { F* f; R r; } ctx{&f, R()};
+    using Callable = typename std::remove_reference<F>::type;
+    struct Ctx { Callable* f; R r; } ctx{&f, R()};
     SyncTask task{[](void* c) { auto* x = static_cast<Ctx*>(c); x->r = (*x->f)(); }, &ctx, 0, threadEvent()};
     if (onMain()) {
         long long t = now(); ++g_syncCount; ++g_syncBy[name];

@@ -4555,7 +4555,7 @@ WorldApp 0x636c05 calls query owner 0xabad80 (the original enabling global has
 initial value 1); 0x636dd1 reaches 0xabad00 and the visibility consumer. Exact
 instruction slices update query history via 0xac20a0 and route the same eligible
 candidate to skip (0xac1e64) or draw-set append (0xac1e3f) according to its
-visibility result. The current NG compiled-space main scene performs frustum
+visibility result. The previously reviewed NG compiled-space main scene performed frustum
 culling without that original GPU-query result filter. This is an identified
 renderer parity gap, not evidence of a particular FPS gain. Query admission,
 proxy geometry, eligibility, temporal history and camera/teardown rules must
@@ -4579,3 +4579,37 @@ owner is appended after existing visual-context members, retaining their
 inline field offsets. Windows desktop performance improvement remains pending.
 Terrain readback uses the collected render log directly because the Consumer
 build compiles its former INFO_MSG output away.
+
+
+The red-line defect is now traced to two missing manual uniforms:
+terrainUProjection/terrainVProjection. Their original defaults are zero, which
+samples border.dds at its transparent centre. The original ae95b0/acd5d0 path
+selects the first case-insensitive color_tex layer and forwards its authored
+projections, rather than deriving them from arena bounds. The adapter now does
+the same. Host coverage includes all 52 original spaces, real A8 mask samples
+and final ordinary/LOD VS registers. Matching package vm-fdc3346c-202611030132
+completes a Windows VM full-HIGH/deferred 28_desert camera sequence with both
+arena edges visibly red, garage return and exit 0. This proves the exercised
+border behavior; the VM resolution and hardware do not establish GTX1070 FPS
+or complete renderer parity. Temporary camera/entry hooks and saved state are
+restored after the run.
+
+
+The primary compiled static-model colour draw now consumes bounded GPU
+occlusion results. Scene-wide query resources are shared across mappings with
+an original-derived 4000-resource limit; creation is lazy and receipts recycle
+only after completion. Queries use the original position material and bounds
+proxy after opaque/terrain depth population. Revision, mapping, viewport,
+depth and device lifetime checks reject stale receipts. Near-plane candidates,
+unready results, errors, capacity exhaustion and 100 ms timeouts remain visible.
+The render-thread query wrapper propagates terminal failures and invalidates
+receipts at reset. State-block capture/apply preserves actual device outcomes
+and the borrowed effect visual context. Host coverage includes 1130 original
+history instruction comparisons, failure mutations and full production owner
+lifecycle tests. Windows GPU behavior and desktop FPS remain separate evidence.
+
+The terrain uniform audit also restores per-batch colorSlot/invColorSlot
+selection, including no-match reset, and the original reflected-terrain enableAO
+gate from the current SSAO owner. Real shader/register tests cover all 256
+selection variants and all 6980 original terrain blocks; no additional atlas
+compatibility path is introduced.

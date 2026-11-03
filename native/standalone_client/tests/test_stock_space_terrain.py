@@ -440,6 +440,64 @@ int main(int argc,char**argv){assert(argc==2);std::ifstream in(argv[1],std::ios:
 """
 
 
+MANUAL_CONSTANTS_PROBE = r"""
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
+namespace BW{using string=std::string;}
+struct Vector4{float x,y,z,w;Vector4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){}
+ float&operator[](size_t i){switch(i){case 0:return x;case 1:return y;case 2:return z;default:return w;}}};
+struct Layer{BW::string name;BW::string textureName()const{return name;}};
+struct Combined{std::vector<std::shared_ptr<Layer>>textureLayers_;};
+struct ID3DXEffect{bool stock=true;const char*GetParameterByName(const void*,const char*n){return n;}};
+namespace wot{bool is_stock_effect(ID3DXEffect*f){return f->stock;}}
+struct Managed{ID3DXEffect fx;ID3DXEffect*pEffect(){return &fx;}};
+struct Material{Managed fx;Managed*pEffect(){return &fx;}};
+struct BaseMaterial{Material material;Material*pEffect_=&material;Vector4 colour,inverse;bool ao=false;unsigned writes=0;
+ void SetParam(const char*n,const Vector4*v){++writes;(std::string(n)=="colorSlot"?colour:inverse)=*v;}
+ void SetParam(const char*n,bool v){assert(std::string(n)=="enableAO");++writes;ao=v;}};
+struct SSAOSupport{bool enabled=false;bool enable(){return enabled;}};
+struct IRendererPipeline{SSAOSupport*ssao=nullptr;SSAOSupport*ssaoSupport(){return ssao;}};
+struct Renderer{static Renderer*active;IRendererPipeline*value=nullptr;
+ static Renderer*pInstance(){return active;}IRendererPipeline*pipeline(){return value;}};
+Renderer*Renderer::active=nullptr;
+struct Block{bool hasAO=false;void*pAOMap(){return hasAO?this:nullptr;}};
+void colour(const Combined&theLayer,BaseMaterial*pMaterial){
+@COLOUR@
+}
+void ao(Block*pBlock,BaseMaterial*pMaterial){
+@AO@
+}
+void check(BaseMaterial&material,const std::vector<std::string>&names,int expected){
+ Combined combined;for(const auto&name:names){if(name=="<null>")combined.textureLayers_.push_back(nullptr);
+  else combined.textureLayers_.push_back(std::make_shared<Layer>(Layer{name}));}
+ material.writes=0;colour(combined,&material);assert(material.writes==2);
+ for(unsigned i=0;i<4;++i){assert(material.colour[i]==float(int(i)==expected));
+  assert(material.inverse[i]==1.f-material.colour[i]);}
+}
+int main(){BaseMaterial material;
+ check(material,{"road","maps/CoLoR_TeX.dds","<null>","sand"},1);
+ check(material,{"color_tex_part.dds","aCOLOR_TEXb","road","COLOR_TEXTURE.dds"},3);
+ check(material,{"colorTexture.dds","colour_tex.dds","color-tex.dds","road"},-1);
+ check(material,{},-1);check(material,{"<null>","<null>","color_tex"},2);
+ // The same material must reset after switching from a colour batch to a plain batch.
+ check(material,{"road"},-1);
+ material.material.fx.fx.stock=false;material.writes=0;colour(Combined{},&material);assert(material.writes==0);
+ Block block;ao(&block,&material);assert(material.writes==0);material.material.fx.fx.stock=true;
+ Renderer renderer;IRendererPipeline pipeline;SSAOSupport ssao;
+ for(unsigned bits=0;bits<32;++bits){block.hasAO=(bits&1)!=0;Renderer::active=(bits&2)?&renderer:nullptr;
+  renderer.value=(bits&4)?&pipeline:nullptr;pipeline.ssao=(bits&8)?&ssao:nullptr;ssao.enabled=(bits&16)!=0;
+  material.writes=0;ao(&block,&material);assert(material.writes==1&&material.ao==(bits==31));}
+ // Turning the live owner off resets the reused material on the next draw.
+ ssao.enabled=false;ao(&block,&material);assert(!material.ao);
+}
+"""
+
+
 BORDER_DIAGNOSTIC_PROBE = r"""
 #include "wot/stock_terrain_binary.hpp"
 #include <cassert>
@@ -571,6 +629,35 @@ void set(wot::StockEffectBinding& binding,const wot::StockEffectBinary& binary,
             }
     assert(false);
 }
+void vector(wot::StockEffectBinding& binding,const wot::StockEffectBinary& binary,
+    const std::string& name,const float*value,const float*expectedDefault){
+    for(size_t b=0;b<binary.uniform_buffers.size();++b)for(size_t u=0;u<binary.uniform_buffers[b].uniforms.size();++u){
+        const auto& uniform=binary.uniform_buffers[b].uniforms[u];if(uniform.name!=name)continue;
+        assert(!uniform.semantic_present&&uniform.flags==0);
+        assert(std::memcmp(binary.uniform_buffers[b].defaults.data()+uniform.byte_offset,expectedDefault,16)==0);
+        std::string error;assert(binding.set_uniform(b,u,value,16,3,error));return;
+    }assert(false);
+}
+wot::StockShaderRegisters stage(wot::StockEffectBinding& binding,const wot::StockShaderBinary&shader){
+    const auto&binary=binding.definition();std::string error;std::vector<wot::StockShaderUniformView>views;
+    for(const auto&resource:shader.resources)if(resource.kind==3){std::optional<std::uint32_t>index;
+        assert(wot::resolve_stock_effect_reference(binary,binding.selection(),wot::StockEffectResourceTable::uniform_buffer,
+            resource.resource_index,index,error)&&index);
+        if(views.size()<=resource.shader_slot)views.resize(resource.shader_slot+1);
+        auto storage=binding.uniform_buffer(*index);views[resource.shader_slot]={storage->bytes().data(),storage->bytes().size()};
+    }
+    wot::StockShaderRegisters registers;assert(wot::stage_stock_shader_registers(shader,views,registers,error));return registers;
+}
+bool shaderUniform(const wot::StockEffectBinary&binary,const wot::StockShaderBinary&shader,const char*name){
+    for(const auto&u:shader.uniforms)if(std::string(reinterpret_cast<const char*>(binary.strings.data()+u.name_offset))==name)return true;
+    return false;
+}
+void checkVector(const wot::StockEffectBinary&binary,const wot::StockShaderBinary&shader,
+    const wot::StockShaderRegisters&registers,const char*name,const float*value){
+    for(const auto&u:shader.uniforms)if(std::string(reinterpret_cast<const char*>(binary.strings.data()+u.name_offset))==name){
+        assert(u.register_kind==2&&std::memcmp(registers[2].words.data()+u.first_register*4,value,16)==0);return;
+    }assert(false);
+}
 int main(int argc,char** argv){
     assert(argc==5);
     for(int i=1;i<argc;++i){
@@ -613,6 +700,12 @@ int main(int argc,char** argv){
         if(i==1){
             for(const char* name:{"g_useBump","g_bumpMaskIndex","useMultipassBlendingBranch",
                     "enablePuddles","puddlesColor","useDetailNormal"})assert(hasUniform(*binary,name));
+            const float zero[4]={},one[4]={1,1,1,1},slot[4]={0,0,1,0},inverse[4]={1,1,0,1};
+            vector(binding,*binary,"colorSlot",slot,zero);vector(binding,*binary,"invColorSlot",inverse,one);
+            bool aoFound=false;for(const auto&buffer:binary->uniform_buffers)for(const auto&uniform:buffer.uniforms)
+                if(uniform.name=="enableAO"){const unsigned off=uniform.byte_offset;
+                    assert(!uniform.semantic_present&&uniform.flags==0&&std::memcmp(buffer.defaults.data()+off,zero,4)==0);aoFound=true;}
+            assert(aoFound);set(binding,*binary,"enableAO",1);
             std::set<unsigned> shaders;
             for(unsigned value=0;value<256;++value){
                 set(binding,*binary,"g_bumpMaskIndex",value&15);
@@ -626,11 +719,20 @@ int main(int argc,char** argv){
                     assert(index<binary->techniques.size());wot::StockDx9PassSelection selection;
                     assert(binding.select_pass(index,0,selection,error)&&selection.vertex_shader&&selection.pixel_shader);
                     assert(*selection.vertex_shader<binary->shaders.size()&&*selection.pixel_shader<binary->shaders.size());
+                    const auto&pixel=binary->shaders[*selection.pixel_shader];const auto packed=stage(binding,pixel);
+                    checkVector(*binary,pixel,packed,"colorSlot",slot);checkVector(*binary,pixel,packed,"invColorSlot",inverse);
+                    assert(shaderUniform(*binary,pixel,"enableAO")== (name=="Reflection"));
+                    if(name=="Reflection")assert(packed[0].words[0]==1);
                     shaders.insert(*selection.pixel_shader);
                 }
             }
             assert(shaders.size()>16);
+            set(binding,*binary,"enableAO",0);
+            size_t reflection=0;while(binary->techniques[reflection].name!="Reflection")++reflection;
+            wot::StockDx9PassSelection reflected;assert(binding.select_pass(reflection,0,reflected,error)&&reflected.pixel_shader);
+            assert(stage(binding,binary->shaders[*reflected.pixel_shader])[0].words[0]==0);
         }
+        if(i==2)assert(!hasUniform(*binary,"enableAO"));
         for(const auto& name:names){
             size_t index=0;while(index<binary->techniques.size()&&binary->techniques[index].name!=name)++index;
             assert(index<binary->techniques.size());wot::StockDx9PassSelection selection;
@@ -878,6 +980,10 @@ class StockSpaceTerrainTests(unittest.TestCase):
                 '#include <algorithm>\n#include <cctype>\n', ''))
             patch.patch(self.root)
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            renderer.write_text(renderer.read_text().replace('\n' + patch.COLOUR_LAYER_CONSTANTS, '').replace(
+                '\n' + patch.AO_CONSTANTS, '').replace('#include "moo/renderer.hpp"\n#include "romp/ssao_support.hpp"\n', ''))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
             # The native instance fields remain byte-for-byte the old layout.
             self.assertNotIn('stockBorderDiagnosticMask_', header.read_text())
             self.assertEqual(header.read_text().count('bool initStockCompiled('), 1)
@@ -907,6 +1013,17 @@ class StockSpaceTerrainTests(unittest.TestCase):
         finally:
             for path, data in final.items():
                 path.write_bytes(data)
+
+    def test_colour_batches_and_live_ao_owner_forward_original_manual_constants(self):
+        renderer = (self.root / 'lib/terrain/terrain2/terrain_renderer2.cpp').read_text()
+        layers = source_function(renderer, 'void TerrainRenderer2::setTextureLayerConstants(')
+        ao = source_function(renderer, 'void TerrainRenderer2::setAOMapConstants(')
+        self.assertIn(patch.COLOUR_LAYER_CONSTANTS, layers)
+        self.assertIn(patch.AO_CONSTANTS, ao)
+        binary = self.compile('manual-constants', MANUAL_CONSTANTS_PROBE.replace(
+            '@COLOUR@', patch.COLOUR_LAYER_CONSTANTS).replace('@AO@', patch.AO_CONSTANTS))
+        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_authored_global_projection_selection_all_original_spaces_and_mask(self):
         client = os.environ.get('WOT_0922_CLIENT')

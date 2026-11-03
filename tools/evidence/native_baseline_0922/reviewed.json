@@ -40,7 +40,11 @@
     "test_stock_space_models",
     "test_stock_scene_intersection",
     "test_stock_instancing_upload",
-    "test_stock_frame_stages"
+    "test_stock_frame_stages",
+    "test_stock_scene_occlusion_history",
+    "test_stock_scene_occlusion",
+    "test_stock_d3d9_render_thread_queries",
+    "test_stock_d3d9_render_thread_state_blocks"
   ],
   "evidence_basis": {
     "latest_bounded_windows_journey": {
@@ -1286,10 +1290,10 @@
     },
     {
       "area": "main-scene-gpu-occlusion",
-      "finding": "Original main-scene GPU occlusion history filters eligible objects before draw-set admission; the NG compiled-space main scene currently uses frustum culling without this query-result filter.",
-      "source": "Original #1513 WorldApp 0x636c05/0x636dd1, query owner 0xabad80, history 0xac20a0 and consumer 0xac1d95; public client/world_app.cpp compiled-space path.",
-      "evidence_and_boundary": "Exact instruction producer/consumer slices route an identical eligible candidate to skip 0xac1e64 or append 0xac1e3f according to GPU-query visibility history. This is distinct from the dormant small-object branch. No desktop FPS contribution or safe replacement query lifecycle has been established.",
-      "status": "confirmed_original_consumer_missing_ng_implementation_pending"
+      "finding": "Primary compiled static-model colour draws now filter by original-derived GPU occlusion history with a shared scene resource pool and fail-open lifecycle guards.",
+      "source": "bigworld/stock_scene_occlusion.cpp; bigworld/patch_stock_scene_occlusion.py; tests/test_stock_scene_occlusion.py; tests/test_stock_scene_occlusion_history.py",
+      "evidence_and_boundary": "Host production owner tests, 1130 exact history instruction comparisons and negative controls pass. Query lifetime, reset, timeout, near-plane and state restoration are covered. Windows GPU visibility and desktop FPS require runtime evidence.",
+      "status": "source_and_host_fixed_windows_acceptance_pending"
     },
     {
       "area": "ephemeral-instance-stream-creation",
@@ -1297,6 +1301,13 @@
       "source": "bigworld/patch_stock_effect_owners.py; tests/test_stock_instancing_upload.py",
       "evidence_and_boundary": "Matching packaged executable/PDB attributes caller RVA 0x0097a982 to RenderOpProcessor::createUnmanagedObjects. Shared EVC/DeviceCallback ownership initializes native indices once per device lifetime; public buffers allocate only for an actual public consumer. Host tests preserve failure/reset/mixed packet contracts; Windows FPS gain is not established.",
       "status": "source_and_host_fixed_windows_acceptance_pending"
+    },
+    {
+      "area": "terrain-border-authored-projections",
+      "finding": "Missing terrainUProjection/terrainVProjection left border UV at the transparent mask centre; forward the first authored color_tex layer projections using the original case-insensitive classification.",
+      "source": "bigworld/patch_stock_space_terrain.py; tests/test_stock_space_terrain.py",
+      "evidence_and_boundary": "Original ae95b0/acd5d0 producer and original effect zero defaults; 52-space authored-data and A8 sampling tests; matching Windows full-HIGH/deferred 28_desert north/east captures show red borders and exit 0. No desktop FPS or complete renderer parity claim.",
+      "status": "source_host_and_bounded_windows_border_fixed"
     }
   ],
   "renderer_unmatched_semantics": {

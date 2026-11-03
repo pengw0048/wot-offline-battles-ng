@@ -21,6 +21,11 @@ int main(int argc,char** argv)
     std::vector<SceneObject> objects;for(auto& pair:space.dynamic.nodes)objects.push_back(pair.second);
     BW::string modelName="stale";assert(StockStaticModelSceneLoader::modelFilename(objects[0],modelName)&&modelName.empty());
     assert(!StockStaticModelSceneLoader::modelFilename(SceneObject(),modelName));
+    std::shared_ptr<StockSceneOcclusionMapping> occlusion;
+    uint32 occlusionIndex=0;BoundingBox occlusionBounds;
+    assert(StockStaticModelSceneLoader::occlusionTarget(objects[0],occlusion,occlusionIndex,occlusionBounds));
+    assert(occlusion&&occlusion->instances==2&&!occlusion->retired&&!occlusionBounds.insideOut());
+    assert(!StockStaticModelSceneLoader::occlusionTarget(SceneObject(),occlusion,occlusionIndex,occlusionBounds));
     Moo::DrawContext draw;SceneDrawContext context{draw,Matrix()};
     auto* drawer=space.scene().getObjectOperation<DrawOperation>()->handler.get();
     auto* ticker=space.scene().getObjectOperation<TickOperation>();
@@ -51,6 +56,7 @@ int main(int argc,char** argv)
     hit={};assert(collision->doCollide(objects[0],WorldTriangle(),Vector3(),SweepParams(),hit));assert(hit.triangles==1);
     // Clear queued resource users before retiring the mapping, as a real frame flush does.
     draw.clear();loader.unload();loader.unload();assert(space.dynamic.nodes.empty());
+    assert(occlusion->retired);
     assert(Moo::liveCaches.empty());assert(Moo::destruction.size()==2&&Moo::destruction[0]=="animation"&&Moo::destruction[1]=="cache");
     // Shader variants can omit authored uniforms. Native setters then fail
     // locally while the real model geometry and collision remain available.
@@ -141,6 +147,10 @@ int main(int argc,char** argv)
     {
         BinaryFormat source=readFixture();StockStaticModelSceneLoader owner(2);
         assert(owner.loadFromSpace(&space,source,{},Matrix(),strings));assert(owner.bind());
+        std::shared_ptr<StockSceneOcclusionMapping> mappingHistory;
+        uint32 mappingIndex=0;BoundingBox mappingBounds;
+        assert(StockStaticModelSceneLoader::occlusionTarget(space.dynamic.nodes.begin()->second,
+            mappingHistory,mappingIndex,mappingBounds));
         auto endpoint=registeredDestructibles.lock();assert(endpoint);
         StockDestructibleSnapshot value;const unsigned item=scenario==2?1:0;
         assert(endpoint->snapshot(item,value)&&value.category==2&&value.effectScale==1.25f&&value.filename.empty());
@@ -155,9 +165,12 @@ int main(int argc,char** argv)
         assert(ordinaryReplacement==(scenario!=0));
         assert(endpoint->restore(error));assert(space.dynamic.nodes.size()==(scenario==2?1u:2u));
         Matrix moved;moved[3][0]=33;assert(endpoint->transform(item,moved,.2f,error));
+        assert(std::find(mappingHistory->invalidated.begin(),mappingHistory->invalidated.end(),item)!=
+            mappingHistory->invalidated.end());
         assert(endpoint->snapshot(item,value)&&value.world[3][0]==33);
         // Retirement is observable before synchronous removal callbacks run.
-        bool retiringObserved=false;space.dynamic.onRemove=[&]{assert(!endpoint->snapshot(item,value));retiringObserved=true;};
+        bool retiringObserved=false;space.dynamic.onRemove=[&]{assert(!endpoint->snapshot(item,value));
+            assert(mappingHistory->retired);retiringObserved=true;};
         owner.unload();assert(retiringObserved&&space.dynamic.nodes.empty()&&registeredDestructibles.expired());
         assert(!endpoint->snapshot(item,value));endpoint.reset();assert(Moo::liveCaches.empty());
     }
