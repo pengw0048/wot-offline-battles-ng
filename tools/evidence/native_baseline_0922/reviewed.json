@@ -1,6 +1,10 @@
 {
   "contract_tests": [
     "test_stock_directional_shadow",
+    "test_stock_directional_shadow_kernel",
+    "test_stock_shadow_focus",
+    "test_stock_shadow_quality_resources",
+    "test_stock_graphics_presets",
     "test_stock_legacy_shared_constants",
     "test_stock_shadow_texture_retirement",
     "test_stock_effect_adapter_reads",
@@ -1096,10 +1100,10 @@
   "renderer_reviews": [
     {
       "area": "shadow_dynamic",
-      "evidence_and_boundary": "Original bias, per-neighbour receiver planes and tile clamps retained. Extracted production arithmetic covers 31,320 plane/tile/tap cases and subtexel continuity; old POINT control jumps 25%, filtered arithmetic about 0.11% before target quantization. The actual new shader compiles and runs in the Windows VM high-quality scene. GTX 1070 temporal-image acceptance and full retail PCSS equivalence remain unproved.",
-      "finding": "R32F receiver compared different points on a sloped surface; rectangular atlas PCF used a square step and the 1-sample path issued four reads. The R32F POINT adapter also omitted the original D16 sampler's bilinear comparison weights, quantizing eight-tap coverage to nine levels.",
-      "source": "bigworld/patch_stock_deferred_buffers.py; bigworld/stock_directional_shadow.fxh; tests/test_stock_directional_shadow.py",
-      "status": "fixed_source_host_and_bounded_windows"
+      "evidence_and_boundary": "Exact HIGH/MEDIUM quality tables select original dynamic_shadows shader12: nine fixed weighted D16 comparison samples, kernel scale .9/physical atlas size, visibility accumulation then 1-sum. Actual patched R32F filter is compared against this contract over planes, narrow casters, screen translations and mixed tile boundaries. GTX1070 moving-image acceptance remains separate. Full HIGH Type62 Windows VM sequences complete translation/rotation/garage return with exit0; GTX1070 remains unproved.",
+      "finding": "The public receiver used rotating screen-space Poisson taps rather than original HIGH/MEDIUM fixed weighted comparison filtering; the R32F adapter also lost bilinear comparison weights and receiver-plane depth agreement.",
+      "source": "bigworld/patch_stock_deferred_buffers.py; bigworld/stock_directional_shadow.fxh; tests/test_stock_directional_shadow.py; tests/test_stock_directional_shadow_kernel.py",
+      "status": "fixed_high_medium_source_host_and_bounded_windows"
     },
     {
       "area": "shadow_world_reconstruction",
@@ -1131,10 +1135,10 @@
     },
     {
       "area": "shadow_matrix_stability",
-      "evidence_and_boundary": "Current ShadowManager defaults allocate 1024 per tile, so the hardcoded grid matches that default. A changed map-size watcher would need actual tile size propagation. Original #1513 cascade distribution, bounds, and culling equivalence is not established.",
-      "finding": "Public PSSM uses jitter-suppressed, light-space texel-snapped split matrices; grid is hardcoded 1024.",
-      "source": "public-sdk/lib/moo/dynamic_shadow.cpp: _calculateLightMatricesOld; public-sdk/lib/moo/shadows_lib/shadow_math.cpp",
-      "status": "covered_source_not_exact_native_equivalence"
+      "evidence_and_boundary": "Original CursorCamera79cf65 and SpeedTreeTargetedCamera7978e0 forward focus through9c5dd0/96ea70/9cd1d0 independently of tree hiding. Original HIGH/MEDIUM first cascade is tight-fit and unsnapped; focus<12m narrows first far to distance+.5, focus12..30m uses the focus box and .4 split lambda. Original9cded0 rectangle arithmetic matches250 instruction-oracle cases exactly. Full projection-wrapper instruction parity, other profiles, far-cascade radius hysteresis and original full distance/ASM agreement remain open. Full HIGH Type62 Windows VM sequences complete translation/rotation/garage return with exit0; GTX1070 remains unproved.",
+      "finding": "Camera renderer target publication omitted the directional-shadow focus. HIGH/MEDIUM used equal 1024 sphere/snapped cascades instead of the original nearest 2048 tight projection; view-Z selection could miss the nearest light-space volume.",
+      "source": "bigworld/stock_directional_shadow.cpp; bigworld/stock_cursor_camera.cpp; bigworld/stock_speedtree_targeted_camera.hpp; bigworld/patch_stock_deferred_buffers.py; include/wot/stock_shadow_rectangle.hpp; tests/test_stock_shadow_focus.py",
+      "status": "fixed_high_medium_source_host_and_bounded_windows"
     },
     {
       "area": "shadow_static_depth_bias",
@@ -1226,6 +1230,13 @@
       "finding": "Scaleform owns its render-thread snapshot/target state; GUI AA/sniper lens/FlashBang/final DRR composition are separate from scene GBuffer/shadow owners.",
       "source": "bigworld/stock_scaleform_render_thread.hpp; bigworld/stock_graphics_settings_consumers.cpp; bigworld/stock_flash_bang.cpp; bigworld/stock_dynamic_resolution.cpp",
       "status": "focused-contracts-and-bounded-windows-flow"
+    },
+    {
+      "area": "graphics_preset_resource_precedence",
+      "finding": "The loose public SDK graphics preset catalogue had12 entries and shadowed the pinned19-entry catalogue. HIGH selected different shadow quality and omitted seven authored settings.",
+      "source": "bigworld/patch_stock_deferred_buffers.py; tests/test_stock_shadow_quality_resources.py; tests/test_stock_graphics_presets.py",
+      "evidence_and_boundary": "Resource patch removes only the SDK preset override. Real original package lookup, full native/Python2 catalogue consumer, complete HIGH settings and cached/idempotent generation are tested. Original client package remains unchanged. Windows native getter returns original19 fields; preset application records matching HIGH textures/LOD/lighting/terrain1 and shadows2, then completes gameplay and normal exit0.",
+      "status": "fixed_resource_host_and_bounded_windows"
     }
   ],
   "renderer_unmatched_semantics": {

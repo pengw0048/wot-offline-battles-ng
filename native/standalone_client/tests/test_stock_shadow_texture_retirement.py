@@ -34,6 +34,8 @@ struct Material{Managed managed;Managed*pEffect(){return &managed;}};
 using MaterialPtr=std::shared_ptr<Material>;
 struct DynamicShadow{Target m_dynamicShadowMapAtlas;bool m_unmanagedObjectsCreated=true;
 std::vector<float>m_stockShadowDepthBiases={.1f,.2f};MaterialPtr m_fillScreenMap;
+std::vector<unsigned>m_stockShadowTileSizes={2048,1024,1024};
+std::vector<float>m_stockShadowTileBounds={0.f,1.f};
 void deleteUnmanagedObjects();};
 struct SemiDynamicShadow{struct Impl{static const int NUM_INDIRECTION_STAGING_TEXTURES=2,QL_TOTAL=2;
 Target m_indirectionMapProjStagingPtr[2],m_indirectionMapTcStagingPtr[2];Target m_indirectionMapProjPtr,m_indirectionMapTcPtr;

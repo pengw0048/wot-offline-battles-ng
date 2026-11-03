@@ -4386,29 +4386,59 @@ upload workaround was added for that premature observation. The exercised VM
 scene has rendered-thumbnail evidence; provider requests alone remain
 insufficient as image-complete or render acknowledgement.
 
-### Directional comparison-filter continuity
+### Original graphics preset resource ownership
 
-The high-quality public directional receiver used eight POINT depth comparisons
-on an R32F COLOR atlas. It therefore produced at most nine coverage levels,
-and repeated taps on the same texel could change coverage by 0.25 after a tiny
-subtexel translation. The exact #1513 producer uses a D16 depth resource, with
-LINEAR comparison sampling; its receiver accumulates filtered comparison
-results. Filtering raw R32F depth before comparing is not equivalent.
+The loose public SDK preset table shadowed `misc.pkg` and supplied twelve
+settings per profile instead of #1513's nineteen. Its HIGH shadow option also
+differed from the original authored choice. Remove that single SDK resource
+from the generated overlay and let the already mounted original catalogue
+supply all preset values. Do not rewrite the user's original package. The
+resource-precedence test executes the real original lookup and the existing
+native/Python2 catalogue contract retains every original profile field.
+Full HIGH Windows acceptance applies this original nineteen-entry preset and
+records both requested and effective values, including texture and object LOD;
+setting only a subset of quality controls is not full-preset evidence.
 
-The adapter now compares the four neighbouring depths independently and
-bilinearly weights those comparison results for each existing Poisson tap.
-Receiver-plane depth correction is evaluated at each actual raster sample, and
-every neighbour clamps to the current atlas tile. HIGH retains its 1024-pixel
-three-split atlas and eight tap locations; its explicit depth fetch count
-increases from eight to 32. The resource patch upgrades both pristine and
-previous POINT kernels, is idempotent and rejects unknown local kernel edits.
+### Directional shadow comparison and near-focus ownership
 
-The extracted production kernel covers 31,320 plane/tile/tap cases and moving
-edge phases. The old POINT negative control jumps by 25%; the filtered host
-arithmetic's largest tested step is about 0.11%, before render-target
-quantization. A Windows VM compiles the actual dynamic_resolve effect and
-completes the matching high-quality movement/fire/garage sequence. These
-checks establish the sampling defect and exercised correction; they do not
-certify all GTX 1070 temporal artifacts or complete retail PCSS equivalence.
-The separate caster/color pose audit found same-frame transform snapshots and
-no normal-path historical dynamic shadow atlas reuse.
+The public R32F receiver discarded the original D16 sampler's bilinear
+comparison weights. Comparing four neighbouring depths before interpolating
+coverage restores that filtering contract; raw-depth interpolation is not
+equivalent. Receiver-plane correction and clamping apply at each physical
+sample, including the unequal atlas tile boundaries.
+
+The subsequent HIGH-quality vehicle playtest still showed changing, coarse
+shadows on small protrusions. Exact quality-table and effect selection now
+identify further differences: original HIGH and MEDIUM both select
+`dynamic_shadows` shader 12, a fixed weighted nine-sample kernel with no screen
+noise, not the public rotating Poisson kernel. The adapter preserves its DEF
+weights, sample order, `.9 / atlasDimensions` offsets and `1 - weightedVisibility`
+output without an invented normalization. This requires 36 explicit R32F reads
+rather than the previous 32. MAX/LOW receiver algorithms remain outside this fix.
+
+The camera also lost its original directional-shadow focus publication:
+CursorCamera and the Homing/Free shared base only notified tree hiding. The
+original renderer publishes the same provider to shadows independently of the
+tree-hide flag. The restored owner retains it until explicit script teardown,
+snapshots callback-visible state, and rejects re-entrant replacement.
+
+For HIGH/MEDIUM the nearest cascade now uses its original 2048-pixel tile and
+tight, unsnapped light-space rectangle. At close focus distances the first far
+plane becomes camera-to-focus distance plus `.5`; at the reviewed 12..30m
+interval it instead fits a thin world-axis focus box. Remaining tiles retain
+1024 pixels. The adapter packs these into a 4096x2048 row atlas and passes
+physical bounds to the receiver; light-space containment selects the nearest
+applicable cascade. The exact rectangle arithmetic matches 250 original x86
+instruction-oracle cases bit for bit. Host tests additionally exercise focus
+lifecycle, translating projected receivers and mixed-tile canaries.
+
+This restores the demonstrated HIGH/MEDIUM near-focus and filtering contracts.
+It does not certify the complete original projection wrapper, MAX PCSS, LOW,
+far-cascade radius hysteresis, original full-distance/ASM agreement, or all
+GTX 1070 temporal artifacts. A Windows VM compiles the new receiver and completes full HIGH-quality
+Type 62 translation, rotation and garage return with exit 0. A separate
+close native-camera sequence preserves the stock input camera and its focus
+provider; its moving captures show stable, finer protrusion shadows. Neither
+sequence lowers lighting quality for acceptance. This is bounded VM evidence;
+GTX 1070 image acceptance remains separate from source, host arithmetic and
+instruction-oracle evidence.

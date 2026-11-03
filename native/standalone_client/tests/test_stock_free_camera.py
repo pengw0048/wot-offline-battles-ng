@@ -50,6 +50,7 @@ std::vector<std::string> events;
 struct MatrixProvider { void matrix(Matrix& value){events.push_back("provider");value.t=Vector3(3,5,7);} };
 typedef std::shared_ptr<MatrixProvider> MatrixProviderPtr;
 void setStockTreeCameraTarget(MatrixProvider* value){events.push_back(value?"tree:1":"tree:0");}
+void publishStockCursorCameraHiding(MatrixProvider* value,bool enabled){setStockTreeCameraTarget(enabled?value:nullptr);}
 struct BaseCamera {
     BaseCamera(PyTypeObject*){} virtual ~BaseCamera(){events.push_back("base");}
     virtual void update(float)=0; Matrix view_,invView_;

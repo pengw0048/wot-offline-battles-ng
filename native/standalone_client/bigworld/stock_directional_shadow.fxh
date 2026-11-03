@@ -1,6 +1,36 @@
 #ifndef WOT_STOCK_DIRECTIONAL_SHADOW_FXH
 #define WOT_STOCK_DIRECTIONAL_SHADOW_FXH
 
+// Chinese HD #1513 HIGH/MEDIUM use dynamic_shadows shader12's fixed comparison
+// kernel, not the public source's screen-space rotated Poisson samples.
+// These are the original DEF floats in their MAD accumulation order, in
+// units of g_kernelSize.xy. The raw weights are not normalized by that shader.
+float2 stockShadowHighKernelOffset(int tap)
+{
+    if (tap == 0) return float2(1.2000000476837158f, 0.f);
+    if (tap == 1) return float2(0.f, 0.f);
+    if (tap == 2) return float2(-1.2000000476837158f, 0.f);
+    if (tap == 3) return float2(0.f, 1.2000000476837158f);
+    if (tap == 4) return float2(0.f, -1.2000000476837158f);
+    if (tap == 5) return float2(.8399999737739563f, .8399999737739563f);
+    if (tap == 6) return float2(-.8399999737739563f, .8399999737739563f);
+    if (tap == 7) return float2(-.8399999737739563f, -.8399999737739563f);
+    return float2(.8399999737739563f, -.8399999737739563f);
+}
+
+float stockShadowHighKernelWeight(int tap)
+{
+    if (tap == 1) return .1208920031785965f;
+    if (tap < 5) return .1108580008149147f;
+    return .11105000227689743f;
+}
+
+float stockShadowHighKernelScale()
+{
+    // Native producer 0x9cbfb6 uses .9 / atlas dimensions, not tile size.
+    return .8999999761581421f;
+}
+
 // Solve the receiver plane in atlas coordinates. Derive world-position
 // differentials before cascade selection; neighbouring pixels can select a
 // different cascade, but must not contribute its matrix to this derivative.

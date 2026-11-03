@@ -92,6 +92,7 @@ set(WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_environment_constants.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_deferred_lighting.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_deferred_buffers.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/stock_directional_shadow.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_antialiasing.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_antialiasing_runtime.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_temporal_antialiasing.cpp"

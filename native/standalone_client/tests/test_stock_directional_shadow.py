@@ -20,6 +20,79 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+# Deployed receiver snapshots from before fixed shader12/unequal atlas support.
+# Keep upgrade inputs independent of the current patch generator.
+DEPLOYED_POINT_FILTER = r'''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
+    float zReceiver, float2 depthGradient, int split, const int samplesCount)
+{
+    // Splits occupy a horizontal atlas, not a square 2x2 allocation.
+    float2 dimensions = float2(g_dynamicShadowMapResolution * g_splitCount,
+                               g_dynamicShadowMapResolution);
+    float2 texel = 1.f / dimensions;
+    float2 lower = float2(split / g_splitCount, 0.f) + .5f * texel;
+    float2 upper = float2((split + 1.f) / g_splitCount, 1.f) - .5f * texel;
+    float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+    float2 noise = tex2D(noiseMapSampler, noiseUV).rg;
+    float2x2 rotation = {noise.r, -noise.g, noise.g, noise.r};
+    float blurFactor = lerp(2.f, 1.f, split / g_splitCount);
+    float sum = 0.f;
+    [unroll]
+    for (int i = 0; i < samplesCount; ++i)
+    {
+        float2 coords = mul(poissonDisk[i], rotation);
+        float2 uv = clamp(shadowUV + coords * (.5f * texel) * blurFactor, lower, upper);
+        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv, dimensions);
+        sum += (receiver > tex2D(s, uv).x);
+    }
+    return sum / samplesCount;
+}
+
+'''
+
+DEPLOYED_BILINEAR_FILTER = r'''float rotated_PCF_filter(sampler s, float2 screenUV, float2 shadowUV,
+    float zReceiver, float2 depthGradient, int split, const int samplesCount)
+{
+    // Splits occupy a horizontal atlas, not a square 2x2 allocation.
+    float2 dimensions = float2(g_dynamicShadowMapResolution * g_splitCount,
+                               g_dynamicShadowMapResolution);
+    float2 texel = 1.f / dimensions;
+    float2 lower = float2(split / g_splitCount, 0.f) + .5f * texel;
+    float2 upper = float2((split + 1.f) / g_splitCount, 1.f) - .5f * texel;
+    float2 noiseUV = screenUV * (g_screen.xy / float2(256,256));
+    float2 noise = tex2D(noiseMapSampler, noiseUV).rg;
+    float2x2 rotation = {noise.r, -noise.g, noise.g, noise.r};
+    float blurFactor = lerp(2.f, 1.f, split / g_splitCount);
+    float sum = 0.f;
+    [unroll]
+    for (int i = 0; i < samplesCount; ++i)
+    {
+        float2 coords = mul(poissonDisk[i], rotation);
+        float2 uv = clamp(shadowUV + coords * (.5f * texel) * blurFactor, lower, upper);
+        float2 grid = uv * dimensions - .5f;
+        float2 base = floor(grid);
+        float2 phase = grid - base;
+        float2 uv00 = clamp((base + float2(.5f, .5f)) * texel, lower, upper);
+        float2 uv10 = clamp((base + float2(1.5f, .5f)) * texel, lower, upper);
+        float2 uv01 = clamp((base + float2(.5f, 1.5f)) * texel, lower, upper);
+        float2 uv11 = clamp((base + float2(1.5f, 1.5f)) * texel, lower, upper);
+        float topLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv00, dimensions) > tex2D(s, uv00).x;
+        float topRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv10, dimensions) > tex2D(s, uv10).x;
+        float bottomLeft = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv01, dimensions) > tex2D(s, uv01).x;
+        float bottomRight = stockShadowReceiverDepth(shadowUV, zReceiver,
+            depthGradient, uv11, dimensions) > tex2D(s, uv11).x;
+        sum += stockShadowBilinearCoverage(topLeft, topRight,
+            bottomLeft, bottomRight, phase);
+    }
+    return sum / samplesCount;
+}
+
+'''
+
+
 class DirectionalShadowTests(unittest.TestCase):
     def test_original_bias_and_receiver_depth_contract(self):
         client = os.environ.get('WOT_0922_CLIENT')
@@ -135,12 +208,12 @@ assert((receiver>atlas+bias)==(receiver-bias>atlas));
             kernel = kernel.replace('g_screen.xy', 'g_screen')
             kernel = kernel.replace('tex2D(noiseMapSampler, noiseUV).rg', 'sampleNoise(noiseUV)')
             kernel = re.sub(r'tex2D\(s, (uv\d*)\)\.x', r'sampleAtlas(s, \1)', kernel)
-            old_kernel = kernel.replace('rotated_PCF_filter(', 'point_PCF_filter(')
-            first = old_kernel.index('        float2 grid =')
-            last = old_kernel.index('\n    }\n    return', first)
-            old_kernel = old_kernel[:first] + '''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
-            depthGradient, uv, dimensions);
-        sum += (receiver > sampleAtlas(s, uv));''' + old_kernel[last:]
+            old_kernel = DEPLOYED_POINT_FILTER.replace('rotated_PCF_filter(', 'point_PCF_filter(')
+            old_kernel = old_kernel.replace('[unroll]', '').replace('sampler s', 'int s')
+            old_kernel = old_kernel.replace('noise.r', 'noise.x').replace('noise.g', 'noise.y')
+            old_kernel = old_kernel.replace('g_screen.xy', 'g_screen')
+            old_kernel = old_kernel.replace('tex2D(noiseMapSampler, noiseUV).rg', 'sampleNoise(noiseUV)')
+            old_kernel = old_kernel.replace('tex2D(s, uv).x', 'sampleAtlas(s, uv)')
             points = shader[shader.index('const static float2 poissonDisk[]'):shader.index('//-- do PCF filter')]
             host = r"""
 #include <algorithm>
@@ -150,6 +223,7 @@ assert((receiver>atlas+bias)==(receiver-bias>atlas));
 using std::min;using std::max;
 struct float2 {float x,y;float2(float a=0):x(a),y(a){}float2(float a,float b):x(a),y(b){}};
 struct float3 {float x,y,z;};
+struct float4 {float2 xy,zw;float4(float a=0,float b=0,float c=0,float d=0):xy(a,b),zw(c,d){}};
 float2 operator+(float2 a,float2 b){return {a.x+b.x,a.y+b.y};}
 float2 operator-(float2 a,float2 b){return {a.x-b.x,a.y-b.y};}
 float2 operator*(float2 a,float2 b){return {a.x*b.x,a.y*b.y};}
@@ -160,6 +234,11 @@ float lerp(float a,float b,float x){return a+(b-a)*x;}
 struct float2x2{float a,b,c,d;};
 float2 mul(float2 v,float2x2 m){return {v.x*m.a+v.y*m.c,v.x*m.b+v.y*m.d};}
 float g_dynamicShadowMapResolution,g_splitCount;float2 g_screen(1920,1080);
+float4 stockShadowAtlasDimensions,stockShadowTileBounds[4];
+void uniformLayout(unsigned resolution,unsigned count){
+stockShadowAtlasDimensions={float(resolution*count),float(resolution),0,0};
+for(unsigned i=0;i<count;++i)stockShadowTileBounds[i]={float(i)/count,0,float(i+1)/count,1};
+}
 float2 currentUV,currentGradient;float currentDepth,bias=.0001f,blocker=0;
 unsigned calls,negativeShadows;int currentSplit;float angle;bool checker=false;
 bool edge=false;float edgeX=0;
@@ -184,7 +263,7 @@ return depth;
 int main(){
 unsigned cases=0,negativeFailures=0;
 for(unsigned resolution:{512u,1024u,2048u})for(unsigned count:{1u,3u,4u}){
-g_dynamicShadowMapResolution=float(resolution);g_splitCount=float(count);
+g_dynamicShadowMapResolution=float(resolution);g_splitCount=float(count);uniformLayout(resolution,count);
 for(int split=0;split<int(count);++split)for(int samples:{1,4,8})
 for(float sx:{-.8f,-.12f,0.f,.12f,.8f})for(float sy:{-.7f,0.f,.7f}){
 currentSplit=split;
@@ -221,7 +300,7 @@ assert(negativeFailures>1000);
 // must fail the same continuity bound, rather than merely differ in source.
 edge=true;blocker=.01f;unsigned fractional=0;float oldMaximumJump=0,newMaximumJump=0;
 for(unsigned resolution:{512u,1024u,2048u})for(unsigned count:{1u,3u,4u}){
-g_dynamicShadowMapResolution=float(resolution);g_splitCount=float(count);
+g_dynamicShadowMapResolution=float(resolution);g_splitCount=float(count);uniformLayout(resolution,count);
 for(int split=0;split<int(count);++split)for(unsigned rotation=0;rotation<18;++rotation)
 for(float sx:{-.8f,0.f,.8f}){
 currentSplit=split;angle=rotation*.174532925f;currentGradient={sx*count,.7f};currentDepth=.5f;
@@ -442,9 +521,6 @@ std::cout.write(reinterpret_cast<const char*>(code.data()),count*4);
                     path.write_bytes(source.extractfile(members[prefix + relative]).read())
             module.apply(root)
             source = (root / 'lib/moo/dynamic_shadow.cpp').read_text()
-            self.assertIn('newViewport.Width = m_dynamicShadowMapSize;', source)
-            self.assertIn('newViewport.Height = m_dynamicShadowMapSize;', source)
-            self.assertIn('m_dynamicShadowMapSize * m_shadowQuality.m_numSplit,', source)
             self.assertIn('m_stockShadowDepthBiases.clear();', source)
             self.assertIn('if (numSplit == 0 || m_shadowQuality.m_numSplit == numSplit', source)
             # Compile the actual producer/storage/upload statements, preserving
@@ -452,32 +528,68 @@ std::cout.write(reinterpret_cast<const char*>(code.data()),count*4);
             assign = re.search(r'm_stockShadowDepthBiases\.assign[^;]+;', source).group()
             update = re.search(r'm_stockShadowDepthBiases\[i\] =[^;]+;', source).group()
             upload = re.search(r'effect->SetFloatArray\("stockShadowDepthBiases",[^;]+;', source).group()
+            layout = re.search(r'm_stockShadowTileSizes\.assign[\s\S]+?'
+                               r'tileX \+= m_stockShadowTileSizes\[i\];\n        }', source).group()
+            viewport = '\n'.join(re.findall(r'newViewport\.(?:X|Y|Width|Height) = [^;]+;', source))
+            atlas_upload = re.search(r'effect->SetVector\("stockShadowAtlasDimensions",[^;]+;', source).group()
+            tile_upload = re.search(r'effect->SetVectorArray\("stockShadowTileBounds",[^;]+;', source).group()
             host = r'''
 #include "wot/stock_directional_shadow.hpp"
+#include <algorithm>
 #include <cassert>
 #include <vector>
+typedef unsigned uint;typedef unsigned DWORD;
+struct Vector4{float x,y,z,w;void set(float a,float b,float c,float d){x=a;y=b;z=c;w=d;}};
+struct AtlasRect{float x,y,w,h;AtlasRect(float a=0,float b=0,float c=0,float d=0):x(a),y(b),w(c),h(d){}};
 struct Projection{float p[3];float operator()(unsigned x,unsigned y)const{assert(x==y);return p[x];}};
-struct Sink{std::vector<float> values;void SetFloatArray(const char*,const float* first,unsigned count){values.assign(first,first+count);}};
+struct Sink{std::vector<float> values;Vector4 dimensions;std::vector<Vector4> tiles;
+void SetFloatArray(const char*,const float* first,unsigned count){values.assign(first,first+count);}
+void SetVector(const char*,const Vector4* value){dimensions=*value;}
+void SetVectorArray(const char*,const Vector4* first,unsigned count){tiles.assign(first,first+count);}};
 int main(){
-struct{unsigned m_numSplit;}m_shadowQuality;std::vector<float> m_stockShadowDepthBiases;
+struct{unsigned m_numSplit,m_blurQuality;}m_shadowQuality;std::vector<float> m_stockShadowDepthBiases;
+std::vector<uint> m_stockShadowTileSizes;std::vector<Vector4> m_stockShadowTileBounds;
+Vector4 m_stockShadowAtlasDimensions;AtlasRect m_atlasLayout[4];
+struct{unsigned X,Y,Width,Height;}newViewport;
 unsigned m_dynamicShadowMapSize=1024;Sink sink;auto effect=&sink;
-for(unsigned count:{4u,3u,1u,4u}){
-m_shadowQuality.m_numSplit=count;@ASSIGN@
+for(unsigned count:{4u,3u,1u,4u})for(unsigned quality:{0u,3u}){
+m_shadowQuality.m_numSplit=count;m_shadowQuality.m_blurQuality=quality;@ASSIGN@ @LAYOUT@
+@ATLAS_UPLOAD@ @TILE_UPLOAD@
+assert(sink.tiles.size()==count);
+// Independent physical contract: nearest HIGH/MEDIUM tile is 2048; each
+// remaining cascade is 1024, packed horizontally without unused columns.
+const unsigned expectedWidth=quality==3?2048+(count-1)*1024:count*1024;
+const unsigned expectedHeight=quality==3?2048:1024;
+assert(sink.dimensions.x==expectedWidth&&sink.dimensions.y==expectedHeight);
+assert(sink.dimensions.z==1.f/expectedWidth&&sink.dimensions.w==1.f/expectedHeight);
 for(unsigned i=0;i<count;++i){assert(m_stockShadowDepthBiases[i]==0.f);
+@VIEWPORT@
+const unsigned expectedTile=quality==3&&i==0?2048:1024;
+const unsigned expectedX=quality==3&&i>0?2048+(i-1)*1024:i*1024;
+assert(newViewport.X==expectedX&&newViewport.Y==0);
+assert(newViewport.Width==expectedTile&&newViewport.Height==expectedTile);
+assert(sink.tiles[i].x==float(expectedX)/expectedWidth&&sink.tiles[i].y==0);
+assert(sink.tiles[i].z==float(expectedX+expectedTile)/expectedWidth);
+assert(sink.tiles[i].w==float(expectedTile)/expectedHeight);
+assert(m_atlasLayout[i].x==sink.tiles[i].x&&m_atlasLayout[i].y==sink.tiles[i].y);
+assert(m_atlasLayout[i].w==float(expectedTile)/expectedWidth);
+assert(m_atlasLayout[i].h==float(expectedTile)/expectedHeight);
 Projection proj={{.02f*(i+1),.03f*(i+1),.001f}};@UPDATE@}
 @UPLOAD@
 assert(sink.values.size()==count);
-for(unsigned i=0;i<count;++i){const float expected=wot::stock_directional_shadow_depth_bias(.02f*(i+1),.03f*(i+1),.001f,1024,1024);
-assert(sink.values[i]==expected);if(i)assert(sink.values[i]<sink.values[i-1]);}
+for(unsigned i=0;i<count;++i){const unsigned tile=quality==3&&i==0?2048:1024;
+const float expected=wot::stock_directional_shadow_depth_bias(.02f*(i+1),.03f*(i+1),.001f,tile,tile);
+assert(sink.values[i]==expected);if(i)assert(sink.values[i]<=sink.values[i-1]);}
 // A single updated split must retain every other split's value.
 const auto before=sink.values;unsigned i=count-1;Projection proj={{.013f,.071f,.004f}};
-m_dynamicShadowMapSize=512;@UPDATE@ @UPLOAD@
+m_stockShadowTileSizes[i]=512;@UPDATE@ @UPLOAD@
 for(unsigned j=0;j<i;++j)assert(sink.values[j]==before[j]);assert(sink.values[i]!=before[i]);
-m_dynamicShadowMapSize=1024;
 }
 m_stockShadowDepthBiases.clear();assert(m_stockShadowDepthBiases.empty());
 }
 '''.replace('@ASSIGN@', assign).replace('@UPDATE@', update).replace('@UPLOAD@', upload)
+            host = host.replace('@LAYOUT@', layout).replace('@VIEWPORT@', viewport)
+            host = host.replace('@ATLAS_UPLOAD@', atlas_upload).replace('@TILE_UPLOAD@', tile_upload)
             (root / 'probe.cpp').write_text(host)
             result = subprocess.run(['c++', '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'include'),
                                      str(root / 'probe.cpp'), '-o', str(root / 'probe')], capture_output=True, text=True)
@@ -504,21 +616,19 @@ m_stockShadowDepthBiases.clear();assert(m_stockShadowDepthBiases.empty());
             before = (root / 'shaders/shadow/dynamic_resolve.fx').read_bytes()
             module.patch_resources(root)
             self.assertEqual(before, (root / 'shaders/shadow/dynamic_resolve.fx').read_bytes())
-            # Upgrade the previous deployed resource tree as well as pristine
-            # public resources. A marker-only guard used to retain POINT PCF.
+            # Upgrade both complete deployed filters. Constructing a POINT
+            # body inside the new fixed-kernel shell is not a deployed version.
             path = root / 'shaders/shadow/dynamic_resolve.fx'
             current = path.read_text(encoding='latin1')
-            first = current.index('        float2 grid =')
-            last = current.index('\n    }\n    return', first)
-            point = current[:first] + '''        float receiver = stockShadowReceiverDepth(shadowUV, zReceiver,
-            depthGradient, uv, dimensions);
-        sum += (receiver > tex2D(s, uv).x);''' + current[last:]
-            path.write_text(point, encoding='latin1')
-            self.assertNotIn('stockShadowBilinearCoverage(', point)
-            module.patch_resources(root)
-            self.assertEqual(before, path.read_bytes())
-            module.patch_resources(root)
-            self.assertEqual(before, path.read_bytes())
+            first = current.index('float rotated_PCF_filter(')
+            last = current.index('//-- Sampling appropriate split.', first)
+            for deployed in (DEPLOYED_POINT_FILTER, DEPLOYED_BILINEAR_FILTER):
+                previous = current[:first] + deployed + current[last:]
+                path.write_text(previous, encoding='latin1')
+                module.patch_resources(root)
+                self.assertEqual(before, path.read_bytes())
+                module.patch_resources(root)
+                self.assertEqual(before, path.read_bytes())
             # Existing markers are not sufficient to accept an unknown edit.
             changed = path.read_text(encoding='latin1').replace(
                 'float blurFactor = lerp(2.f, 1.f, split / g_splitCount);',
