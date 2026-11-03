@@ -1,0 +1,385 @@
+package {
+    import flash.display.DisplayObject;
+    import flash.display.DisplayObjectContainer;
+    import flash.events.Event;
+    import flash.events.MouseEvent;
+    import flash.geom.Point;
+    import flash.geom.Rectangle;
+    import flash.text.TextField;
+    import flash.text.TextFormat;
+    import flash.utils.getQualifiedClassName;
+    import net.wg.infrastructure.base.AbstractWindowView;
+    import net.wg.gui.components.windows.Window;
+    import scaleform.clik.core.UIComponent;
+    import scaleform.clik.data.DataProvider;
+    import scaleform.clik.events.ButtonEvent;
+    import scaleform.clik.events.ListEvent;
+    import scaleform.clik.utils.Padding;
+
+    // Compiled against #1513; the builder gives this movie its own class name.
+    public dynamic class TrainingWindow extends AbstractWindowView {
+        public var offlineAction:Function;
+        private var fields:Object = {};
+        private var widgets:Object = {};
+        private var icons:Object = {};
+        private var updating:Boolean = false;
+        private var queue:Object;
+        private var bodyFormat:TextFormat;
+        private var embedded:Boolean;
+        private var reportedLayout:Boolean = false;
+        private var daily:Boolean = false;
+        private var footerSamples:int = 0;
+        private var layoutFrames:int = 0;
+        // #1513 settingsWindow.swf: 100px submit/cancel faces at x=491/596.
+        private static const FOOTER_GAP:Number = 5;
+
+        public function TrainingWindow() { super(); }
+
+        override protected function initialize():void {
+            super.initialize();
+            // The retained authoring prototype is not the content's geometry.
+            // Window constraints capture scale before configUI runs.
+            _originalWidth = 660;
+            _originalHeight = 298;
+            setActualScale(1, 1);
+        }
+
+        override protected function configUI():void {
+            bodyFormat = this["battleType"].defaultTextFormat;
+            embedded = this["battleType"].embedFonts;
+            bodyFormat.size = 13;
+            bodyFormat.color = 11711136;
+            while (numChildren) removeChildAt(0);
+            graphics.beginFill(0, 0);
+            graphics.drawRect(0, 0, 660, 298);
+            graphics.endFill();
+            setSize(660, 298);
+            super.configUI();
+            text("room", 0, 2, 660);
+            text("players", 0, 24, 660);
+            text("tierLabel", 0, 47, 312);
+            text("skillLabel", 336, 47, 324);
+            dropdown("tier", 0, 65, 312);
+            dropdown("skill", 336, 65, 324);
+            button("map", "ButtonNormal", 0, 97, 504);
+            button("random", "ButtonNormal", 516, 97, 144);
+            text("size1Label", 0, 126, 312);
+            text("size2Label", 336, 126, 324);
+            dropdown("size1", 0, 144, 312);
+            dropdown("size2", 336, 144, 324);
+            var classes:Array = ["random", "lightTank", "mediumTank", "heavyTank", "AT-SPG", "SPG"];
+            for (var side:int = 1; side <= 2; ++side) {
+                for (var index:int = 0; index < classes.length; ++index) {
+                    var xPos:Number = (side == 1 ? 0 : 336) + index * 52;
+                    var key:String = "class_" + side + "_" + classes[index];
+                    var check:Object = component(key, "CheckBox", xPos, 177, 52);
+                    check.label = "";
+                    check.addEventListener(ButtonEvent.CLICK, clicked);
+                    if (classes[index] == "random") continue;
+                    var icon:Object = App.utils.classFactory.getComponent("Image", UIComponent, null, loaderInfo);
+                    icon.x = 24; icon.y = 1;
+                    icon.source = "img://gui/maps/icons/vehicleTypes/" + classes[index] + ".png";
+                    icon.enableInitCallback = false;
+                    icon.mouseEnabled = false;
+                    icons[key] = icon;
+                    DisplayObjectContainer(check).addChild(icon as DisplayObject);
+                }
+            }
+            button("team1", "ButtonNormal", 0, 215, 208);
+            button("team_random", "ButtonNormal", 226, 215, 208);
+            button("team2", "ButtonNormal", 452, 215, 208);
+            text("message", 0, 240, 660);
+            button("start", "ButtonRed", 0, 276, 100);
+            button("close", "ButtonBlack", 0, 276, 100);
+        }
+
+        private function configureDaily():void {
+            clearControls();
+            daily = true;
+            _originalWidth = 560;
+            _originalHeight = 266;
+            graphics.clear();
+            graphics.beginFill(0, 0);
+            graphics.drawRect(0, 0, 560, 266);
+            graphics.endFill();
+            setSize(560, 266);
+            for (var index:int = 0; index < 3; ++index) {
+                text("row" + index, 0, 6 + index * 64, 560);
+                text("reward" + index, 0, 28 + index * 64, 560);
+            }
+            text("note", 0, 208, 560);
+            button("reserves", "ButtonNormal", 0, 244, 100);
+            button("close", "ButtonBlack", 0, 244, 100);
+        }
+
+        private function sizeFooter():void {
+            var close:Object = widgets["close"];
+            var primary:Object = widgets[daily ? "reserves" : "start"];
+            sizeFooterButton(close);
+            sizeFooterButton(primary);
+            close.x = (daily ? 560 : 660) - close.width;
+            primary.x = close.x - FOOTER_GAP - primary.width;
+        }
+
+        private function sizeFooterButton(item:Object):void {
+            // Stock settings has a 100px face around its localized OK label.
+            // Measure that label in this control's own native font, preserving
+            // its total side clearance for longer translated captions.
+            var sample:TextField = new TextField();
+            sample.defaultTextFormat = item.textField.defaultTextFormat;
+            sample.embedFonts = item.textField.embedFonts;
+            sample.text = App.utils.locale.makeString("#settings:ok_button");
+            var clearance:Number = 100 - sample.textWidth;
+            item.width = Math.ceil(item.textField.textWidth + clearance);
+            item.validateNow();
+        }
+
+        private function footerState(event:MouseEvent):void {
+            reportFooter(event.type);
+        }
+
+        private function footerFrame(event:Event):void {
+            if (++layoutFrames < 2) return;
+            removeEventListener(Event.ENTER_FRAME, footerFrame);
+            reportFooter("rendered");
+        }
+
+        private function reportFooter(phase:String):void {
+            if (offlineAction == null || footerSamples++ >= 12) return;
+            var frame:Rectangle = window.getBackground().getBounds(this);
+            var form:Rectangle = Object(window).bgForm.getBounds(this);
+            for each (var role:String in [daily ? "reserves" : "start", "close"]) {
+                var item:Object = widgets[role];
+                var bounds:Rectangle = DisplayObject(item).getBounds(this);
+                var text:TextField = item.textField;
+                var glyphs:Rectangle = null;
+                for (var index:int = 0; index < text.length; ++index) {
+                    var glyph:Rectangle = text.getCharBoundaries(index);
+                    if (glyph != null) glyphs = glyphs == null ? glyph : glyphs.union(glyph);
+                }
+                var left:Number = NaN; var right:Number = NaN;
+                if (glyphs != null) {
+                    var p:Point = globalToLocal(text.localToGlobal(new Point(glyphs.left, glyphs.top)));
+                    var q:Point = globalToLocal(text.localToGlobal(new Point(glyphs.right, glyphs.bottom)));
+                    left = p.x - bounds.left; right = bounds.right - q.x;
+                }
+                offlineAction("diagnostics", "phase=" + phase + " control=" + role +
+                    " logical=" + item.width + "x" + item.height +
+                    " rendered=" + bounds.width + "x" + bounds.height +
+                    " glyphMargins=" + left + "," + right +
+                    " footerMargins=" + (bounds.top - form.bottom) + "," + (frame.bottom - bounds.bottom) +
+                    " actualScale=" + item.actualScaleX + "," + item.actualScaleY);
+            }
+        }
+
+        private function text(key:String, xPos:Number, yPos:Number, w:Number):void {
+            var label:TextField = new TextField();
+            label.defaultTextFormat = bodyFormat;
+            label.embedFonts = embedded;
+            label.selectable = false;
+            label.mouseEnabled = false;
+            label.x = xPos; label.y = yPos; label.width = w; label.height = 21;
+            fields[key] = label;
+            addChild(label);
+        }
+
+        private function component(key:String, linkage:String, xPos:Number, yPos:Number, w:Number):Object {
+            var item:Object = App.utils.classFactory.getComponent(linkage, UIComponent, null, loaderInfo);
+            item.name = key;
+            item.x = xPos; item.y = yPos;
+            // BlackButton.width rescales its internal state clips. setSize
+            // bypasses that override and leaves a 160px face in a 94px slot.
+            // Keep the other stock controls at their authored height too.
+            if (linkage == "ButtonRed") item.height = 22;
+            item.width = w;
+            item.enabled = true;
+            item.enableInitCallback = false;
+            widgets[key] = item;
+            addChild(item as DisplayObject);
+            return item;
+        }
+
+        private function button(key:String, linkage:String, xPos:Number, yPos:Number, w:Number):void {
+            var item:Object = component(key, linkage, xPos, yPos, w);
+            if (key == "start" || key == "reserves" || key == "close") {
+                // #1513 SoundButtonEx dynamic sizing calls setActualSize on
+                // its animated display bounds; a 1px initial face can retain
+                // that transform until rollover. Use the stable width path.
+                item.dynamicSizeByText = false;
+                item.changeSizeOnlyUpwards = false;
+                item.paddingHorizontal = 5;
+                item.addEventListener(MouseEvent.ROLL_OVER, footerState);
+                item.addEventListener(MouseEvent.ROLL_OUT, footerState);
+            }
+            item.addEventListener(ButtonEvent.CLICK, clicked);
+        }
+
+        private function dropdown(key:String, xPos:Number, yPos:Number, w:Number):void {
+            var item:Object = component(key, "DropdownMenuUI", xPos, yPos, w);
+            item.dropdown = "DropdownMenu_ScrollingList";
+            item.itemRenderer = "DropDownListItemRendererSound";
+            item.autoSize = "none";
+            item.focusable = true;
+            item.menuDirection = "down";
+            item.menuMargin = 1;
+            item.menuOffset = new Padding(-5, 0, 0, 3);
+            item.menuPadding = new Padding(0, 0, 0, 0);
+            item.menuRowsFixed = false;
+            item.rowCount = 8;
+            item.menuWidth = -1;
+            item.menuWrapping = "normal";
+            item.scrollBar = "ScrollBar";
+            item.thumbOffsetTop = 0;
+            item.thumbOffsetBottom = 0;
+            item.showEmptyItems = false;
+            item.addEventListener(ListEvent.INDEX_CHANGE, selected);
+        }
+
+        private function clicked(event:ButtonEvent):void {
+            if (!updating && offlineAction != null) offlineAction(event.currentTarget.name, "");
+        }
+
+        private function selected(event:ListEvent):void {
+            if (updating || offlineAction == null) return;
+            var item:Object = event.currentTarget;
+            if (item.selectedIndex >= 0) offlineAction(item.name, item.dataProvider[item.selectedIndex].value);
+        }
+
+        public function as_update(data:Object):void {
+            // Python population can precede CLIK's first render validation.
+            // Build the fields before publishing data; otherwise the first
+            // model is discarded and the wrapper measures only the prototype.
+            validateNow();
+            if (data.daily === true && !daily) configureDaily();
+            updating = true;
+            window.title = data.title;
+            window.useBottomBtns = true;
+            // Match the stock settings' visible upper clearance separately
+            // from its lower frame inset. Default Window footer padding leaves
+            // our 22px controls only 1px below bgForm's measured bounds.
+            // The extra 3px moves the form edge, preserving the accepted lower
+            // inset, button sizes and content dimensions in both panels.
+            window.formBgPadding = new Padding(33, 11, 45, 10);
+            for (var key:String in fields) fields[key].text = data.labels[key] == null ? "" : String(data.labels[key]);
+            for (key in widgets) {
+                var widget:Object = widgets[key];
+                // A stock animated control must finish configUI before its
+                // initial data/selection is applied.
+                widget.validateNow();
+                var state:Object = data.controls[key];
+                widget.visible = state != null && state.visible;
+                widget.enabled = state != null && state.enabled;
+                if (icons[key] != null) icons[key].alpha = widget.enabled ? 1 : 0.45;
+                if (state == null) continue;
+                if (state.options != null) {
+                    // Do not close an open native menu on each room-status tick.
+                    if (widget.dataProvider == null || widget["offlineOptionsKey"] != state.optionsKey) {
+                        widget.dataProvider = new DataProvider(state.options);
+                        widget["offlineOptionsKey"] = state.optionsKey;
+                    }
+                    if (widget.selectedIndex != state.index) widget.selectedIndex = state.index;
+                } else {
+                    widget.label = state.label;
+                    widget.selected = state.selected;
+                    widget.validateNow();
+                }
+            }
+            sizeFooter();
+            // Window.updateSource caches content size. Re-measure after our
+            // dynamic children exist, using the native padding/chrome contract.
+            UIComponent(window).invalidate(Window.INVALID_SRC_VIEW);
+            UIComponent(window).validateNow();
+            updating = false;
+            placeRoom();
+            if (!reportedLayout && offlineAction != null) {
+                reportFooter("initial");
+                addEventListener(Event.ENTER_FRAME, footerFrame);
+                reportedLayout = true;
+                offlineAction("diagnostics", "content=" + width + "x" + height +
+                    " actualScale=" + actualScaleX + "," + actualScaleY +
+                    " frame=" + window.width + "x" + window.height +
+                    " daily=" + daily + " footerGap=" + FOOTER_GAP +
+                    " roomChars=" + (daily ? 0 : TextField(fields["room"]).length) +
+                    " mapChars=" + (daily ? 0 : String(widgets["map"].label).length));
+                for (var role:String in widgets) {
+                    var control:Object = widgets[role];
+                    var bounds:Rectangle = DisplayObject(control).getBounds(this);
+                    offlineAction("diagnostics", "control=" + role +
+                        " logical=" + control.width + "x" + control.height +
+                        " bounds=" + bounds.x + "," + bounds.y + "," + bounds.width + "," + bounds.height +
+                        " scale=" + control.actualScaleX + "," + control.actualScaleY);
+                }
+            }
+        }
+
+        override public function updateStage(w:Number, h:Number):void {
+            super.updateStage(w, h);
+            queue = null;
+            invalidate();
+        }
+
+        override protected function draw():void {
+            super.draw();
+            placeRoom();
+        }
+
+        private function findQueue(node:DisplayObjectContainer, depth:int = 0):Object {
+            if (depth > 12) return null;
+            for (var i:int = 0; i < node.numChildren; ++i) {
+                var child:DisplayObject = node.getChildAt(i);
+                if (getQualifiedClassName(child) == "BattleQueueUI") return child;
+                if (child is DisplayObjectContainer) {
+                    var found:Object = findQueue(child as DisplayObjectContainer, depth + 1);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
+        private function placeRoom():void {
+            if (window == null || stage == null || window.parent == null) return;
+            if (!daily && (queue == null || queue.parent == null)) queue = findQueue(App.stage as DisplayObjectContainer);
+            var top:Number = daily ? 0 : App.appHeight * 0.24;
+            var bottom:Number = daily ? App.appHeight : App.appHeight * 0.80;
+            if (queue != null) {
+                var titleBounds:Rectangle = queue.modeTitle.getBounds(stage);
+                var footerBounds:Rectangle = DisplayObject(queue.exitButton).getBounds(stage);
+                top = titleBounds.bottom;
+                bottom = footerBounds.top;
+            }
+            // An open popup or a glowing button must not change the anchor.
+            // Only the stock frame background defines the room rectangle.
+            var frame:Rectangle = window.getBackground().getBounds(stage);
+            // Bounds and application dimensions use the scaled stage's local coordinates.
+            var origin:Point = stage.globalToLocal(DisplayObject(window).localToGlobal(new Point()));
+            var stagePos:Point = new Point((App.appWidth - frame.width) / 2 - (frame.x - origin.x),
+                top + (bottom - top - frame.height) / 2 - (frame.y - origin.y));
+            var localPos:Point = window.parent.globalToLocal(stage.localToGlobal(stagePos));
+            window.x = Math.round(localPos.x);
+            window.y = Math.round(localPos.y);
+        }
+
+        private function clearControls():void {
+            removeEventListener(Event.ENTER_FRAME, footerFrame);
+            for each (var icon:Object in icons) icon.dispose();
+            icons = {};
+            for (var key:String in widgets) {
+                var widget:Object = widgets[key];
+                widget.removeEventListener(ButtonEvent.CLICK, clicked);
+                widget.removeEventListener(ListEvent.INDEX_CHANGE, selected);
+                widget.removeEventListener(MouseEvent.ROLL_OVER, footerState);
+                widget.removeEventListener(MouseEvent.ROLL_OUT, footerState);
+                if (key == "tier" || key == "skill" || key == "size1" || key == "size2") widget.close();
+                widget.dispose();
+            }
+            widgets = {}; fields = {}; queue = null;
+            while (numChildren) removeChildAt(0);
+        }
+
+        override protected function onDispose():void {
+            clearControls();
+            offlineAction = null;
+            super.onDispose();
+        }
+    }
+}
