@@ -232,6 +232,24 @@ void run(const std::string& requested){
     auto third=objects();filterStockSceneOcclusion(scene,third,Matrix());
     assert(third.buckets[0].size()==2);mapping->retire();issueStockSceneOcclusion(scene);
     assert(fixture::draws==2); // Weak prepared ownership cannot resurrect retired mapping.
+  }else if(scenario=="scene-shared-state"||scenario=="scene-shared-state-failure"){
+    Scene scene;
+    auto a=std::make_shared<StockSceneOcclusionMapping>(1);
+    auto b=std::make_shared<StockSceneOcclusionMapping>(1);
+    IntersectionSet objects;objects.buckets={{{a,0,distant,true},{b,0,distant,true}}};
+    filterStockSceneOcclusion(scene,objects,Matrix());
+    const bool fail=scenario=="scene-shared-state-failure";
+    if(fail)fixture::failure="state-capture";
+    issueStockSceneOcclusion(scene);
+    assert(std::count(fixture::events.begin(),fixture::events.end(),"state-create")==1);
+    assert(std::count(fixture::events.begin(),fixture::events.end(),"state-capture")==1);
+    assert(fixture::draws==(fail?0u:2u)&&fixture::stateApplies==(fail?0u:1u));
+    fixture::failure.clear();Moo::rc().frame=2;
+    if(!fail)for(auto& q:fixtureQueries){q->result=S_OK;q->pixels=1;}
+    IntersectionSet again;again.buckets={{{a,0,distant,true},{b,0,distant,true}}};
+    filterStockSceneOcclusion(scene,again,Matrix());issueStockSceneOcclusion(scene);
+    assert(std::count(fixture::events.begin(),fixture::events.end(),"state-create")==1);
+    assert(fixture::stateApplies==(fail?1u:2u));
   }else if(scenario=="scene-depth-get"||scenario=="scene-viewport-get"){
     Scene scene;auto mapping=std::make_shared<StockSceneOcclusionMapping>(1);
     IntersectionSet objects;objects.buckets={{{mapping,0,distant,true}}};
@@ -315,7 +333,7 @@ class StockSceneOcclusionTests(unittest.TestCase):
                 self.scenario(name)
 
     def test_scene_filter_opaque_issue_and_capacity(self):
-        for name in ('scene', 'capacity', 'scene-depth-get', 'scene-viewport-get',
+        for name in ('scene', 'scene-shared-state', 'scene-shared-state-failure', 'capacity', 'scene-depth-get', 'scene-viewport-get',
                      'off-frustum', 'shared-reuse', 'shared-retire', 'scene-off-frustum'):
             with self.subTest(name=name):
                 self.scenario(name)

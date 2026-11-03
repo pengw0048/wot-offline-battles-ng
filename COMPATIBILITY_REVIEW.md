@@ -4613,3 +4613,21 @@ selection, including no-match reset, and the original reflected-terrain enableAO
 gate from the current SSAO owner. Real shader/register tests cover all 256
 selection variants and all 6980 original terrain blocks; no additional atlas
 compatibility path is introduced.
+
+
+The first desktop occlusion package also exposed implementation overhead: a
+933.56-query/frame window has 1.566 ms/frame synchronous wait, and ordinary
+frames create three state blocks and capture/apply four. These are different
+camera intervals, not a matched FPS regression percentage. Query poll admission
+now indexes pending membership instead of scanning the queue on every BEGIN
+and END; swap-removal maintains the index through reissue and reset. All
+compiled mappings share one primary-view state capture/restore. A known,
+full frontend state-block snapshot can restore cached bindings after successful
+native Apply while retaining uncaptured depth/target ownership; interleaved
+captures, owner captures or unknown live state fall back to native readback.
+The DrawableImage executor avoids an immediately redundant Capture after
+CreateStateBlock, whose D3D9 contract already captures state at creation.
+Failure propagation and visibility history are unchanged. Focused host tests
+cover large pending queues, lifecycle/reset, snapshot invalidation, MRT/depth
+ownership and both shared-scope success and capture failure. Actual desktop
+frame improvement remains a runtime measurement.

@@ -103,7 +103,7 @@ IDirect3DQuery9*wrapOut(void*,IDirect3DQuery9*);
 static void*reuse=nullptr;
 struct WQuery:RefBase<IDirect3DQuery9>{using RefBase::RefBase;
  static void*operator new(size_t n){if(reuse){void*p=reuse;reuse=nullptr;return p;}return ::operator new(n);}
- static void operator delete(void*p){assert(!reuse);reuse=p;}
+ static void operator delete(void*p){if(reuse)::operator delete(p);else reuse=p;}
  D3DQUERYTYPE GetType()override;DWORD GetDataSize()override;
  HRESULT Issue(DWORD)override;HRESULT GetData(void*,DWORD,DWORD)override;
 };
@@ -146,6 +146,22 @@ int main(int argc,char**argv){assert(argc==2);std::string scenario=argv[1];Nativ
   poll();assert(q->GetData(nullptr,0,0)==S_FALSE);rt::drain();r->value=17;poll();
   DWORD result=0;assert(q->GetData(&result,4,0)==S_OK && result==17 && rt::syncs==0);
   q->Release();collect();
+ }else if(scenario=="bulk_poll_membership"){
+  std::vector<WQuery*>queries;
+  for(unsigned i=0;i<1024;++i){auto*q=create(device);queries.push_back(q);
+   q->Issue(D3DISSUE_BEGIN);q->Issue(D3DISSUE_END);}
+  rt::drain();assert(g_qpoll.size()==queries.size() && rt::syncs==0);
+  auto check=[](){for(size_t i=0;i<g_qpoll.size();++i)
+   assert(g_qstate.at(g_qpoll[i].query).pollIndex==i);};check();
+  // Resolving alternating items moves unresolved rows into the removed holes.
+  for(unsigned i=0;i<queries.size();i+=2)static_cast<NativeQuery*>(queries[i]->real)->dataResult=S_OK;
+  poll();assert(g_qpoll.size()==512);check();
+  for(unsigned i=1;i<queries.size();i+=2){auto*q=queries[i];
+   q->Issue(D3DISSUE_BEGIN);q->Issue(D3DISSUE_END);q->Issue(D3DISSUE_END);}
+  rt::drain();assert(g_qpoll.size()==512);check();
+  rt::main=false;rt::render=true;beforeReset();rt::render=false;rt::main=true;
+  assert(g_qpoll.empty());for(auto*q:queries){
+   assert(g_qstate.at(q).pollIndex==size_t(-1));q->Release();}collect();
  }else if(scenario=="retire_pending"){
   auto*q=create(device);rt::drain();q->Issue(D3DISSUE_END);rt::drain();assert(q->refs==2);
   q->Release();poll();collect();
@@ -191,7 +207,7 @@ class RenderThreadQueryTest(unittest.TestCase):
                .replace('@QUERIES@', queries)
                .replace('@BEFORE_RESET@', body(source, 'static void beforeReset()')))
         scenarios = ('create_release', 'creation_failure', 'null_creation', 'issue_failure', 'begin_failure', 'poll_failure',
-                     'generation', 'retire_pending', 'reset_render', 'reset_parked', 'reset_live',
+                     'generation', 'bulk_poll_membership', 'retire_pending', 'reset_render', 'reset_parked', 'reset_live',
                      'reuse', 'bounds', 'vtable_full', 'unbuffered', 'empty')
         with tempfile.TemporaryDirectory(prefix='render-query-host-') as temp:
             root = Path(temp)
@@ -204,6 +220,9 @@ class RenderThreadQueryTest(unittest.TestCase):
                 ('lost_begin_failure', cpp.replace(
                     'if (state.building && FAILED(state.buildingResult)) result = state.buildingResult;', ''),
                  ('begin_failure',), False),
+                ('stale_poll_index', cpp.replace(
+                    'if (index < g_qpoll.size()) g_qstate.at(g_qpoll[index].query).pollIndex = index;', ''),
+                 ('bulk_poll_membership',), False),
                 ('unleased_create', cpp.replace('w->AddRef(); // Creation itself owns a lease, even if the caller releases immediately.',
                                                 '// Missing creation lease.'), ('create_release',), False),
             )

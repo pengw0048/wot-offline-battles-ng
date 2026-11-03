@@ -33,6 +33,7 @@ void AcquireSRWLockExclusive(SRWLOCK*p){assert(!p->held);p->held=true;}
 void ReleaseSRWLockExclusive(SRWLOCK*p){assert(p->held);p->held=false;}
 LONG InterlockedIncrement(volatile LONG*p){return ++*p;}
 LONG InterlockedDecrement(volatile LONG*p){return --*p;}
+LONG InterlockedCompareExchange(volatile LONG*p,LONG value,LONG compare){LONG old=*p;if(old==compare)*p=value;return old;}
 struct Resource {int refs=1;void AddRef(){++refs;}void Release(){assert(refs>0);--refs;}};
 using IUnknown=Resource;using IDirect3DSurface9=Resource;using IDirect3DVertexBuffer9=Resource;
 using IDirect3DIndexBuffer9=Resource;using IDirect3DVertexDeclaration9=Resource;
@@ -77,8 +78,9 @@ struct NativeBlock:IDirect3DStateBlock9 {
  HRESULT Capture()override;HRESULT Apply()override;
 };
 struct NativeDevice {
- Resource*binding=nullptr;HRESULT createResult=S_OK;bool nullSuccess=false;NativeBlock*last=nullptr;
+ Resource*binding=nullptr;Resource*depthBinding=nullptr;HRESULT createResult=S_OK;bool nullSuccess=false;NativeBlock*last=nullptr;
  void bind(Resource*p){assert(rt::onRender());if(p)p->AddRef();if(binding)binding->Release();binding=p;}
+ void bindDepth(Resource*p){assert(rt::onRender());if(p)p->AddRef();if(depthBinding)depthBinding->Release();depthBinding=p;}
  HRESULT CreateStateBlock(D3DSTATEBLOCKTYPE,IDirect3DStateBlock9**out){
   assert(rt::onRender());*out=nullptr;if(FAILED(createResult))return createResult;
   if(!nullSuccess){last=new NativeBlock(this);assert(last->Capture()==S_OK);*out=last;}return createResult;
@@ -90,7 +92,7 @@ HRESULT NativeBlock::Capture(){assert(rt::onRender());if(FAILED(captureResult))r
  if(device->binding)device->binding->AddRef();if(saved)saved->Release();saved=device->binding;return captureResult;}
 HRESULT NativeBlock::Apply(){assert(rt::onRender());device->bind(saved);return applyResult;}
 namespace rt {NativeDevice*device(){return &native;}}
-void refreshShadows(NativeDevice*d){assert(rt::onRender());++refreshes;sh::set(sh::tex[0],d->binding);sh::known=true;}
+void refreshShadows(NativeDevice*d){assert(rt::onRender());++refreshes;sh::set(sh::tex[0],d->binding);sh::set(sh::ds,d->depthBinding);sh::known=true;}
 void ensureShadows(){if(!sh::known)rt::sync([]{refreshShadows(&native);return 0;},"shadow.refresh");}
 struct WSB:RefBase<IDirect3DStateBlock9>{using RefBase::RefBase;HRESULT Capture()override;HRESULT Apply()override;};
 struct WDevice {NativeDevice*real;HRESULT CreateStateBlock(D3DSTATEBLOCKTYPE,IDirect3DStateBlock9**);};
@@ -98,10 +100,11 @@ namespace rt {IDirect3DStateBlock9*wrapOut(void*,IDirect3DStateBlock9*block){ass
 #define REAL real
 @STATE_BLOCKS@
 static void bind(Resource*p){assert(rt::main);sh::set(sh::tex[0],p);rt::post([=]{native.bind(p);});}
+static void bindDepth(Resource*p){assert(rt::main);sh::set(sh::ds,p);rt::post([=]{native.bindDepth(p);});}
 static WSB*create(WDevice&device,D3DSTATEBLOCKTYPE type=D3DSBT_ALL){IDirect3DStateBlock9*block=nullptr;
  assert(device.CreateStateBlock(type,&block)==S_OK && block);return static_cast<WSB*>(block);}
 static void collect(){rt::drain();rt::runDeferred();assert(g_sbShadow.empty() && liveBlocks==0);}
-int main(int argc,char**argv){assert(argc==2);std::string scenario=argv[1];Resource a,b;WDevice device{&native};
+int main(int argc,char**argv){assert(argc==2);std::string scenario=argv[1];Resource a,b,depth;WDevice device{&native};
  rt::g_onDestroyMain = @DESTROY_MAIN@;
  bind(&a);
  if(scenario=="creation_failure" || scenario=="null_creation"){
@@ -131,17 +134,30 @@ int main(int argc,char**argv){assert(argc==2);std::string scenario=argv[1];Resou
   }else if(scenario=="cross_owner_capture"){
    rt::main=false;rt::render=true;native.bind(&b);assert(block->Capture()==S_OK);rt::render=false;rt::main=true;
    assert(g_sbShadow.at(block)->tex[0]==&a);bind(&a);
-   assert(block->Apply()==S_OK && native.binding==&b && sh::known && sh::tex[0]==&b);
+   const unsigned before=refreshes;
+   assert(block->Apply()==S_OK && native.binding==&b && sh::known && sh::tex[0]==&b && refreshes==before+1);
+  }else if(scenario=="interleaved_capture"){
+   bind(&b);auto*other=create(device);assert(other->Capture()==S_OK);
+   const unsigned before=refreshes;
+   assert(block->Apply()==S_OK && native.binding==&a && sh::tex[0]==&a && refreshes==before+1);
+   other->Release();
+  }else if(scenario=="unknown_live_state"){
+   bind(&b);rt::drain();rt::main=false;rt::render=true;native.bindDepth(&depth);
+   rt::render=false;rt::main=true;sh::known=false;const unsigned before=refreshes;
+   assert(block->Apply()==S_OK && native.binding==&a && sh::tex[0]==&a && sh::known);
+   assert(sh::ds==&depth && refreshes==before+1);
   }else {
    bind(&b);assert(block->Capture()==S_OK && native.last->saved==&b);
    if(!partial)assert(g_sbShadow.at(block)->tex[0]==&b);
-   bind(&a);assert(block->Apply()==S_OK && native.binding==&b && sh::tex[0]==&b && sh::known);
+   bind(&a);bindDepth(&depth);const unsigned before=refreshes;
+   assert(block->Apply()==S_OK && native.binding==&b && sh::tex[0]==&b && sh::known);
+   assert(native.depthBinding==&depth && sh::ds==&depth && refreshes==before+unsigned(partial));
   }
   block->Release();collect();
  }
  assert(device.CreateStateBlock(D3DSBT_ALL,nullptr)==D3DERR_INVALIDCALL);
- sh::clearAll();rt::main=false;rt::render=true;native.bind(nullptr);rt::render=false;rt::main=true;
- collect();assert(a.refs==1 && b.refs==1);
+ sh::clearAll();rt::main=false;rt::render=true;native.bind(nullptr);native.bindDepth(nullptr);rt::render=false;rt::main=true;
+ collect();assert(a.refs==1 && b.refs==1 && depth.refs==1);
 }
 '''
 
@@ -152,7 +168,7 @@ class RenderThreadStateBlockTest(unittest.TestCase):
         if not shutil.which(compiler):
             self.skipTest('C++ compiler required')
         source = (ROOT/'bigworld/stock_d3d9_render_thread.cpp').read_text()
-        start = source.index('HRESULT WDevice::CreateStateBlock(')
+        start = source.index('static volatile LONG g_sbCaptureGeneration')
         state_blocks = source[start:source.index('// ------------------------------------------------------------------ resources:', start)]
         start = source.index('namespace sh {')
         shadows = source[start:source.index('static std::unordered_map<void*, sh::Snapshot*>', start)]
@@ -160,7 +176,7 @@ class RenderThreadStateBlockTest(unittest.TestCase):
                .replace('@STATE_BLOCKS@', state_blocks).replace('@SHADOWS@', shadows)
                .replace('@DESTROY_MAIN@', body(source, '[](void* w)')))
         cases = ('creation_failure', 'null_creation', 'null_wrapper', 'render_owner', 'capture_failure',
-                 'apply_failure', 'cross_owner_capture', 'success', 'partial')
+                 'apply_failure', 'cross_owner_capture', 'interleaved_capture', 'unknown_live_state', 'success', 'partial')
         capture = body(source, 'HRESULT WSB::Capture()')
         old_restore = '{auto it=g_sbShadow.find(this);if(it!=g_sbShadow.end())sh::load(*it->second);}'
         variants = (
@@ -172,6 +188,14 @@ class RenderThreadStateBlockTest(unittest.TestCase):
             ('stale_frontend_restore', cpp.replace(
                 'refreshShadows(reinterpret_cast<IDirect3DDevice9*>(rt::unwrap(rt::device())));', old_restore),
              ('cross_owner_capture',), False),
+            ('lost_owner_capture_invalidation', cpp.replace(
+                'if (SUCCEEDED(result)) generation = InterlockedIncrement(&g_sbCaptureGeneration);',
+                'if (SUCCEEDED(result)) generation = g_sbCaptureGeneration;'),
+             ('cross_owner_capture',), False),
+            ('restored_uncaptured_depth', cpp.replace('restored.ds = sh::ds;', ''),
+             ('success',), False),
+            ('trusted_unknown_live_state', cpp.replace('sh::known && snapshot &&', 'snapshot &&'),
+             ('unknown_live_state',), False),
             ('null_creation_accepted', cpp.replace('if (!block) return D3DERR_INVALIDCALL;', ''),
              ('null_creation',), False),
         )

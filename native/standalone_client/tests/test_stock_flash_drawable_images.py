@@ -132,6 +132,14 @@ class FlashDrawableImagesTest(unittest.TestCase):
     def test_patch_is_atomic_idempotent_and_keeps_existing_image_owners(self):
         original=engine(self);patched=patcher.patch_sources(original)
         self.assertEqual(patcher.patch_sources(patched),patched)
+        legacy = dict(patched)
+        legacy[patcher.SOURCE] = legacy[patcher.SOURCE].replace(
+            "    // D3D9 CreateStateBlock already captures the requested device state.\n"
+            "    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) && state;",
+            "    const bool stateSaved = device && SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &state)) &&\n"
+            "        state && SUCCEEDED(state->Capture());")
+        self.assertEqual(patcher.patch_sources(legacy), patched)
+
         self.assertNotIn('BitmapData',patched[patcher.MOVIE])
         self.assertIn('HAL(&drawableImageQueue_)',patched[patcher.SOURCE])
         self.assertIn('Manager::instance().drawableImageQueue()',patched[patcher.MOVIE])

@@ -35,6 +35,7 @@ public:
     void invalidate(uint32 instance);
     void retire();
 private:
+    friend void issueStockSceneOcclusion(Scene& scene);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

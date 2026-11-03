@@ -133,10 +133,20 @@ struct OcclusionQueryPool : Moo::DeviceCallback, std::enable_shared_from_this<Oc
     static const uint32 capacity = 4000; // Original scene-wide ring, including cached queries.
     std::vector<OcclusionPtr<IDirect3DQuery9>> cached;
     std::vector<std::weak_ptr<StockSceneOcclusionMapping>> mappings;
+    OcclusionPtr<IDirect3DStateBlock9> state;
     uint32 allocated = 0;
     std::uint64_t epoch = 1;
     OcclusionQueryPool() { cached.reserve(capacity); }
-    void deleteUnmanagedObjects() override { ++epoch; cached.clear(); allocated = 0; }
+    void deleteUnmanagedObjects() override { ++epoch; cached.clear(); state.reset(); allocated = 0; }
+    IDirect3DStateBlock9* stateBlock()
+    {
+        if (!state) {
+            IDirect3DStateBlock9* block = NULL;
+            if (SUCCEEDED(Moo::rc().device()->CreateStateBlock(D3DSBT_ALL, &block))) state.reset(block);
+            else if (block) block->Release();
+        }
+        return state.get();
+    }
     std::unique_ptr<OcclusionQueryLease> acquire()
     {
         OcclusionPtr<IDirect3DQuery9> query;
@@ -204,7 +214,6 @@ struct StockSceneOcclusionMapping::Impl : Moo::DeviceCallback
     std::vector<uint32> available, requests;
     std::shared_ptr<const StockSceneOcclusionView> frameView;
     OcclusionPtr<IDirect3DSurface9> depth;
-    OcclusionPtr<IDirect3DStateBlock9> state;
     Moo::EffectMaterialPtr material;
     std::shared_ptr<OcclusionQueryPool> pool;
     std::uint64_t epoch = 1;
@@ -243,7 +252,7 @@ struct StockSceneOcclusionMapping::Impl : Moo::DeviceCallback
             if (slot.status == pending && slot.query) slot.query->discard();
         requests.clear(); available.clear(); slots.clear();
         for (auto& entry : entries) { entry.history.reset(); entry.slot = -1; }
-        frameView.reset(); depth.reset(); state.reset();
+        frameView.reset(); depth.reset();
     }
     void invalidate(uint32 index)
     {
@@ -328,7 +337,7 @@ struct StockSceneOcclusionMapping::Impl : Moo::DeviceCallback
         if (admitted) *admitted = true;
         return entry.history.draw(frameView->frame, false, true);
     }
-    void issue()
+    void issue(OcclusionDeviceScope* sharedScope = NULL)
     {
         if (!alive || requests.empty() || !frameView || !depth) { cancelRequests(); return; }
         auto* device = Moo::rc().device();
@@ -340,13 +349,12 @@ struct StockSceneOcclusionMapping::Impl : Moo::DeviceCallback
             !sameMatrix(Moo::rc().viewProjection(), frameView->viewProjection)) {
             cancelRequests(); return;
         }
-        if (!state) {
-            IDirect3DStateBlock9* block = NULL;
-            if (SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &block))) state.reset(block);
-            else if (block) block->Release();
+        std::unique_ptr<OcclusionDeviceScope> localScope;
+        if (!sharedScope) {
+            localScope.reset(new OcclusionDeviceScope(pool->stateBlock()));
+            sharedScope = localScope.get();
         }
-        OcclusionDeviceScope saved(state.get());
-        if (!saved.saved) { cancelRequests(); return; }
+        if (!sharedScope->saved) { cancelRequests(); return; }
         if (!material) {
             material = new Moo::EffectMaterial;
             if (!material->initFromEffect("shaders/std_effects/position.fx")) material = NULL;
@@ -457,7 +465,17 @@ void filterStockSceneOcclusion(Scene& scene, IntersectionSet& objects, const Mat
 void issueStockSceneOcclusion(Scene& scene)
 {
     if (preparedScene != &scene) return;
-    for (const auto& weak : preparedMappings) if (auto mapping = weak.lock()) mapping->issue();
+    std::vector<std::shared_ptr<StockSceneOcclusionMapping>> mappings;
+    for (const auto& weak : preparedMappings)
+        if (auto mapping = weak.lock())
+            if (!mapping->impl_->requests.empty()) mappings.push_back(mapping);
+    if (!mappings.empty()) {
+        const auto pool = sceneQueryPool(&scene);
+        // All mappings borrow one primary-view device state, so one capture and
+        // restore encloses the complete bounds-query pass rather than each tile.
+        OcclusionDeviceScope saved(pool->stateBlock());
+        for (const auto& mapping : mappings) mapping->impl_->issue(&saved);
+    }
     preparedMappings.clear(); preparedScene = NULL;
     statistics.frame();
 }

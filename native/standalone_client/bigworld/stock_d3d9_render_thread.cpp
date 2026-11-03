@@ -338,7 +338,7 @@ static bool known = true, declKnown = true, fvfKnown = true;
 static DWORD fvfAfterDecl;
 struct Snapshot { D3DVIEWPORT9 vp; RECT scissor; IDirect3DSurface9* ds; IDirect3DVertexBuffer9* vb[16]; UINT off[16], stride[16], freq[16];
     IDirect3DIndexBuffer9* ib; IDirect3DVertexDeclaration9* decl; DWORD fvf; IDirect3DVertexShader9* vs; IDirect3DPixelShader9* ps; float npatch;
-    IDirect3DBaseTexture9* tex[264]; bool declKnown, fvfKnown; };
+    IDirect3DBaseTexture9* tex[264]; bool declKnown, fvfKnown; LONG blockGeneration = 0; };
 static void saveRaw(Snapshot& s) { s.vp = vp; s.scissor = scissor; s.ds = ds; memcpy(s.vb, vb, sizeof vb); memcpy(s.off, off, sizeof off); memcpy(s.stride, stride, sizeof stride);
     memcpy(s.freq, freq, sizeof freq); s.ib = ib; s.decl = decl; s.fvf = fvf; s.vs = vs; s.ps = ps; s.npatch = npatch; memcpy(s.tex, tex, sizeof tex); s.declKnown = declKnown; s.fvfKnown = fvfKnown; }
 static void loadRaw(const Snapshot& s) { vp = s.vp; scissor = s.scissor; ds = s.ds; memcpy(vb, s.vb, sizeof vb); memcpy(off, s.off, sizeof off); memcpy(stride, s.stride, sizeof stride);
@@ -573,6 +573,7 @@ struct QState {
     uint64_t generation = 0;
     HRESULT creation = S_FALSE, result = S_FALSE, buildingResult = S_OK;
     bool flush = false, building = false;
+    size_t pollIndex = size_t(-1); // Render-thread-only membership in g_qpoll.
     uint8_t data[16] = {};
 };
 static std::unordered_map<void*, QState> g_qstate;
@@ -602,7 +603,11 @@ static void initQuery(WQuery* w) {
 }
 static void removeQueryPoll(size_t index) {
     WQuery* w = g_qpoll[index].query;
+    AcquireSRWLockExclusive(&g_qLock);
+    g_qstate.at(w).pollIndex = size_t(-1);
     g_qpoll[index] = g_qpoll.back(); g_qpoll.pop_back();
+    if (index < g_qpoll.size()) g_qstate.at(g_qpoll[index].query).pollIndex = index;
+    ReleaseSRWLockExclusive(&g_qLock);
     w->Release();
 }
 static void clearQueryPolls() {
@@ -710,11 +715,15 @@ HRESULT WQuery::Issue(DWORD flags) {
         if (current) state.result = FAILED(result) ? result : S_FALSE;
         const bool buffered = state.size != 0 && state.size <= sizeof(state.data) &&
             state.size == qsize(state.type);
+        const size_t previousPoll = state.pollIndex;
         ReleaseSRWLockExclusive(&g_qLock);
-        for (size_t i = 0; i < g_qpoll.size(); ++i) {
-            if (g_qpoll[i].query == w) { removeQueryPoll(i); break; }
-        }
+        // BEGIN/END usually introduce a new query. Do not scan every other
+        // pending query twice per bounds proxy; replacement is indexed too.
+        if (previousPoll != size_t(-1)) removeQueryPoll(previousPoll);
         if (current && SUCCEEDED(result) && (flags & D3DISSUE_END) && buffered) {
+            AcquireSRWLockExclusive(&g_qLock);
+            g_qstate.at(w).pollIndex = g_qpoll.size();
+            ReleaseSRWLockExclusive(&g_qLock);
             w->AddRef(); g_qpoll.push_back({w, generation});
         }
         w->Release();
@@ -744,11 +753,16 @@ HRESULT WQuery::GetData(void* data, DWORD size, DWORD flags) {
 }
 
 // ------------------------------------------------------------------ state blocks
+// Only the device owner advances this after a successful native capture.
+// Any capture invalidates older frontend snapshots, including owner-side calls
+// which cannot safely access the main-thread snapshot map.
+static volatile LONG g_sbCaptureGeneration = 0;
 HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9** out) {
     if (!out) return D3DERR_INVALIDCALL;
     *out = nullptr;
     const bool frontend = rt::onMain();
     if (frontend) ensureShadows();
+    LONG generation = 0;
     auto r = REAL;
     const HRESULT result = rt::sync([&]() -> HRESULT {
         IDirect3DStateBlock9* block = nullptr;
@@ -756,11 +770,13 @@ HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9**
         if (FAILED(result)) { if (block) block->Release(); return result; }
         if (!block) return D3DERR_INVALIDCALL;
         *out = rt::wrapOut(this, block);
+        generation = InterlockedIncrement(&g_sbCaptureGeneration);
         return result;
     }, "CreateStateBlock");
     if (SUCCEEDED(result) && frontend && type == D3DSBT_ALL) {
         auto* snapshot = new sh::Snapshot();
         sh::saveRaw(*snapshot); sh::addRefs(*snapshot);
+        snapshot->blockGeneration = generation;
         g_sbShadow[*out] = snapshot;
     }
     return result;
@@ -768,22 +784,40 @@ HRESULT WDevice::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9**
 HRESULT WSB::Capture() {
     const bool frontend = rt::onMain();
     if (frontend) ensureShadows();
+    LONG generation = 0;
     const HRESULT result = rt::sync([&]() -> HRESULT {
-        return rt::reportResult("SB.Capture", real ? real->Capture() : D3DERR_INVALIDCALL);
+        const HRESULT result = rt::reportResult("SB.Capture", real ? real->Capture() : D3DERR_INVALIDCALL);
+        if (SUCCEEDED(result)) generation = InterlockedIncrement(&g_sbCaptureGeneration);
+        return result;
     }, "SB.Capture");
     if (SUCCEEDED(result) && frontend) {
         auto it = g_sbShadow.find(this);
-        if (it != g_sbShadow.end()) sh::save(*it->second);
+        if (it != g_sbShadow.end()) {
+            sh::save(*it->second); it->second->blockGeneration = generation;
+        }
     }
     return result;
 }
 HRESULT WSB::Apply() {
+    sh::Snapshot* snapshot = nullptr;
+    if (rt::onMain()) {
+        auto it = g_sbShadow.find(this);
+        if (it != g_sbShadow.end()) snapshot = it->second;
+    }
     return rt::sync([&]() -> HRESULT {
         const HRESULT result = rt::reportResult("SB.Apply", real ? real->Apply() : D3DERR_INVALIDCALL);
-        // Capture can also run on the device owner. Its real bindings, rather
-        // than a potentially older frontend snapshot, decide what Apply restored.
-        if (SUCCEEDED(result))
-            refreshShadows(reinterpret_cast<IDirect3DDevice9*>(rt::unwrap(rt::device())));
+        if (SUCCEEDED(result)) {
+            if (sh::known && snapshot && snapshot->blockGeneration ==
+                    InterlockedCompareExchange(&g_sbCaptureGeneration, 0, 0)) {
+                // D3DSBT_ALL restores captured bindings, but does not capture
+                // render targets or the depth-stencil surface. Keep their
+                // current ownership rather than rolling depth back with it.
+                sh::Snapshot restored = *snapshot; restored.ds = sh::ds;
+                sh::load(restored);
+            } else {
+                refreshShadows(reinterpret_cast<IDirect3DDevice9*>(rt::unwrap(rt::device())));
+            }
+        }
         else
             sh::known = false;
         return result;

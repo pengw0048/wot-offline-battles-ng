@@ -25,7 +25,7 @@ struct IDirect3DDevice9
     IDirect3DSurface9* depth = &z;
     D3DVIEWPORT9 viewport;
     int state=37;
-    unsigned targetCount=4;
+    unsigned targetCount=4, stateCaptures=0;
     HRESULT GetDeviceCaps(D3DCAPS9* caps){caps->NumSimultaneousRTs=targetCount;return S_OK;}
     bool captureFail=false, restoreFail=false;
     bool sceneOpen=false,sceneFail=false;unsigned beginCalls=0,endCalls=0;
@@ -43,12 +43,12 @@ struct IDirect3DStateBlock9
 {
     IDirect3DDevice9* device;
     int state=0;
-    explicit IDirect3DStateBlock9(IDirect3DDevice9* value):device(value){}
-    HRESULT Capture(){state=device->state;return device->captureFail?E_FAIL:S_OK;}
+    explicit IDirect3DStateBlock9(IDirect3DDevice9* value):device(value),state(value->state){}
+    HRESULT Capture(){++device->stateCaptures;state=device->state;return device->captureFail?E_FAIL:S_OK;}
     HRESULT Apply(){device->state=state;return device->restoreFail?E_FAIL:S_OK;}
     void Release(){delete this;}
 };
-HRESULT IDirect3DDevice9::CreateStateBlock(int,IDirect3DStateBlock9** value){*value=new IDirect3DStateBlock9(this);return S_OK;}
+HRESULT IDirect3DDevice9::CreateStateBlock(int,IDirect3DStateBlock9** value){*value=nullptr;if(captureFail)return E_FAIL;*value=new IDirect3DStateBlock9(this);return S_OK;}
 namespace Moo
 {
 struct Context
@@ -164,6 +164,7 @@ static void one(bool nullDevice, bool sceneFail, bool captureFail, bool restoreF
     command->Release();
     assert(commandDestroyed);
     assert(Moo::rc().sceneCount==nested);
+    assert(device.stateCaptures==0);
     assert(Moo::rc().beginCalls==0&&Moo::rc().endCalls==0&&Moo::rc().invalidations==0);
     assert(device.beginCalls==unsigned(!nullDevice&&!nested));
     assert(device.endCalls==unsigned(!nullDevice&&!nested&&!sceneFail));
