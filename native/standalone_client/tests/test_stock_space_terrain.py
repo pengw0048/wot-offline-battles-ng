@@ -396,6 +396,50 @@ int main(){
 }
 '''
 
+PROJECTION_PROBE = r"""
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <cstring>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <vector>
+namespace BW{using string=std::string;}
+struct Vector4{float v[4]{};};
+struct Layer{BW::string name;Vector4 u,v;BW::string textureName()const{return name;}
+ const Vector4&uProjection()const{return u;}const Vector4&vProjection()const{return v;}};
+struct Combined{std::vector<std::shared_ptr<Layer>>textureLayers_;};
+struct Blends{std::vector<Combined>combinedLayers_;};
+struct Settings{bool compiled=true;const void*stockCompiledData()const{return compiled?this:nullptr;}};
+struct Block{Settings cfg;Settings*settings(){return &cfg;}};
+struct ID3DXEffect{const char*GetParameterByName(const void*,const char*name){return name;}};
+struct Managed{ID3DXEffect fx;ID3DXEffect*pEffect(){return &fx;}};
+struct Material{Managed fx;Managed*pEffect(){return &fx;}};
+struct BaseMaterial{Material material;Material*pEffect_=&material;Vector4 u,v;unsigned writes=0;
+ void SetParam(const char*name,const Vector4*value){++writes;(std::string(name)=="terrainUProjection"?u:v)=*value;}};
+void apply(Block*pBlock,const std::shared_ptr<Blends>&pBlends,BaseMaterial*pMaterial){
+@PROJECTION@
+}
+template<class T>T read(std::ifstream&in){T v;in.read(reinterpret_cast<char*>(&v),sizeof(v));assert(in);return v;}
+int main(int argc,char**argv){assert(argc==2);std::ifstream in(argv[1],std::ios::binary);
+ const unsigned count=read<unsigned>(in);
+ for(unsigned row=0;row<count;++row){auto blends=std::make_shared<Blends>();
+  unsigned groups=read<unsigned>(in);for(unsigned g=0;g<groups;++g){Combined combined;
+   unsigned n=read<unsigned>(in);for(unsigned i=0;i<n;++i){auto layer=std::make_shared<Layer>();
+    unsigned len=read<unsigned>(in);layer->name.resize(len);in.read(&layer->name[0],len);
+    layer->u=read<Vector4>(in);layer->v=read<Vector4>(in);combined.textureLayers_.push_back(layer);}
+   blends->combinedLayers_.push_back(combined);}
+  Vector4 expectedU=read<Vector4>(in),expectedV=read<Vector4>(in);unsigned writes=read<unsigned>(in);
+  Block block;BaseMaterial material;apply(&block,blends,&material);
+  assert(material.writes==writes&&std::memcmp(&material.u,&expectedU,16)==0&&std::memcmp(&material.v,&expectedV,16)==0);
+  block.cfg.compiled=false;material.writes=0;apply(&block,blends,&material);assert(material.writes==0);
+ }
+ Block block;BaseMaterial material;apply(&block,nullptr,&material);assert(material.writes==0);
+}
+"""
+
+
 BORDER_DIAGNOSTIC_PROBE = r"""
 #include "wot/stock_terrain_binary.hpp"
 #include <cassert>
@@ -509,6 +553,7 @@ SHADER_PROBE = r'''
 #include "wot/stock_effect_binding.hpp"
 #include "wot/stock_shader_runtime.hpp"
 #include <cassert>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <set>
@@ -542,6 +587,28 @@ int main(int argc,char** argv){
             assert(hasUniform(*binary,"outerBorder")&&hasUniform(*binary,"invBorderDiffMul2Blend"));
             bool map=false;for(const auto& view:binary->resource_views)if(view.name=="borderBlendMap")map=true;
             assert(map);
+            const float authored[2][4]={{1.f/1200.f,0,0,0},{0,0,1.f/1200.f,0}};
+            for(unsigned which=0;which<2;++which){bool found=false;
+                for(size_t b=0;b<binary->uniform_buffers.size();++b)for(size_t u=0;u<binary->uniform_buffers[b].uniforms.size();++u){
+                    const auto& uniform=binary->uniform_buffers[b].uniforms[u];
+                    if(uniform.name!=(which==0?"terrainUProjection":"terrainVProjection"))continue;
+                    const auto& defaults=binary->uniform_buffers[b].defaults;
+                    const float zero[4]={};assert(std::memcmp(defaults.data()+uniform.byte_offset,zero,16)==0);
+                    assert(binding.set_uniform(b,u,authored[which],16,3,error));found=true;
+                }assert(found);
+            }
+            size_t technique=0;while(binary->techniques[technique].name!="Color")++technique;
+            wot::StockDx9PassSelection selected;assert(binding.select_pass(technique,0,selected,error)&&selected.vertex_shader);
+            const auto& shader=binary->shaders[*selected.vertex_shader];std::vector<wot::StockShaderUniformView> views;
+            for(const auto& resource:shader.resources)if(resource.kind==3){std::optional<std::uint32_t> index;
+                assert(wot::resolve_stock_effect_reference(*binary,binding.selection(),wot::StockEffectResourceTable::uniform_buffer,
+                    resource.resource_index,index,error)&&index);
+                if(views.size()<=resource.shader_slot)views.resize(resource.shader_slot+1);
+                auto storage=binding.uniform_buffer(*index);views[resource.shader_slot]={storage->bytes().data(),storage->bytes().size()};
+            }
+            wot::StockShaderRegisters registers;assert(wot::stage_stock_shader_registers(shader,views,registers,error));
+            const size_t first=i==1?22:11;
+            assert(std::memcmp(registers[2].words.data()+first*4,authored,32)==0);
         }
         if(i==1){
             for(const char* name:{"g_useBump","g_bumpMaskIndex","useMultipassBlendingBranch",
@@ -807,6 +874,10 @@ class StockSpaceTerrainTests(unittest.TestCase):
                 patch.PREVIOUS_STDIO_DIAGNOSTIC_READBACK))
             patch.patch(self.root)
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            renderer.write_text(renderer.read_text().replace(patch.PROJECTION_CONSTANTS, '').replace(
+                '#include <algorithm>\n#include <cctype>\n', ''))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
             # The native instance fields remain byte-for-byte the old layout.
             self.assertNotIn('stockBorderDiagnosticMask_', header.read_text())
             self.assertEqual(header.read_text().count('bool initStockCompiled('), 1)
@@ -836,6 +907,86 @@ class StockSpaceTerrainTests(unittest.TestCase):
         finally:
             for path, data in final.items():
                 path.write_bytes(data)
+
+    def test_authored_global_projection_selection_all_original_spaces_and_mask(self):
+        client = os.environ.get('WOT_0922_CLIENT')
+        if not client:
+            self.skipTest('WOT_0922_CLIENT is required for authored terrain layers')
+        import io
+        sys.path.insert(0, str(REPOSITORY / 'tools'))
+        from prepare_native_client import OriginalResources
+        zero = (0., 0., 0., 0.)
+        cases = [([[('road.dds', zero, zero)]], None),
+                 ([[('COLOR_TEX_part.dds', (1.,2.,3.,4.), (5.,6.,7.,8.))],
+                   [('color_tex.dds', zero, zero)]], ((1.,2.,3.,4.), (5.,6.,7.,8.))),
+                 ([[('color_texture.dds', zero, zero)],
+                   [('maps/CoLoR_TeX.dds', (9.,8.,7.,6.), (5.,4.,3.,2.))]], ((9.,8.,7.,6.), (5.,4.,3.,2.)))]
+        # color_texture contains the original substring too; the first match wins.
+        cases[2] = (cases[2][0], (zero, zero))
+        def authored_layers(data):
+            layers = []
+            with zipfile.ZipFile(io.BytesIO(data)) as block:
+                for name in block.namelist():
+                    if not name.startswith('terrain2/layer '):
+                        continue
+                    data = block.read(name)
+                    if struct.unpack_from('<I',data)[0] != 0x00646c62:
+                        continue
+                    length = struct.unpack_from('<I',data,64)[0]
+                    texture = data[68:68+length].split(b'\0')[0].decode('ascii')
+                    layers.append((texture, struct.unpack_from('<4f',data,16), struct.unpack_from('<4f',data,32)))
+            expected = next(((u,v) for name,u,v in layers if 'color_tex' in name.lower()), None)
+            return ([layers], expected)
+        spaces = 0
+        with OriginalResources(client) as resources:
+            for key in resources.index:
+                if not key.endswith('/space.bin'):
+                    continue
+                space = key[:-len('space.bin')]
+                blocks = sorted(name for name in resources.index if name.startswith(space) and name.endswith('.cdata_processed'))
+                if blocks:
+                    cases.append(authored_layers(resources.read(blocks[0])))
+                    spaces += 1
+            # Also audit packaged spaces omitted from this installation's HD
+            # mounts; they still belong to the pinned resource corpus.
+            for package in (Path(client) / 'res/packages').glob('*.pkg'):
+                with zipfile.ZipFile(package) as archive:
+                    for name in archive.namelist():
+                        if not name.endswith('/space.bin') or name.lower() in resources.index:
+                            continue
+                        prefix = name[:-len('space.bin')].lower()
+                        blocks = sorted(n for n in archive.namelist() if n.lower().startswith(prefix) and n.endswith('.cdata_processed'))
+                        if blocks:
+                            cases.append(authored_layers(archive.read(blocks[0])))
+                            spaces += 1
+            self.assertEqual(spaces, 52)
+            # Use the real case-insensitive resource owner and untouched A8 mask.
+            border = resources.read('maps/landscape/28_desert/border.dds')
+            height,width = struct.unpack_from('<II',border,12)
+            self.assertEqual(struct.unpack_from('<I',border,88)[0],8)
+            pixels = border[128:128+width*height]
+            self.assertEqual(pixels[(height//2)*width+width//2],0)
+            projection = next(expected for groups,expected in cases
+                if expected and any('28_desert/color_tex' in name.lower() for group in groups for name,u,v in group))
+            u,v = projection
+            # Original VS UV: dot(world,U)+.5, -dot(world,V)+.5.
+            alpha = lambda x,z: pixels[int((.5-z*v[2])*height)*width+int((.5+x*u[0])*width)]
+            self.assertGreater(alpha(500,0),0)
+            self.assertGreater(alpha(-300,500),0)
+        payload = bytearray(struct.pack('<I',len(cases)))
+        for groups,expected in cases:
+            payload += struct.pack('<I',len(groups))
+            for group in groups:
+                payload += struct.pack('<I',len(group))
+                for name,u,v in group:
+                    text=name.encode('ascii');payload += struct.pack('<I',len(text))+text+struct.pack('<8f',*(u+v))
+            u,v = expected or (zero,zero)
+            payload += struct.pack('<8fI',*(u+v),2 if expected else 0)
+        path=self.root/'projection-cases.bin';path.write_bytes(payload)
+        binary=self.compile('authored-projection',PROJECTION_PROBE.replace('@PROJECTION@',patch.PROJECTION_CONSTANTS))
+        result=subprocess.run([str(binary),str(path)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        print('Production authored projection selection passed %d original spaces and the original A8 border mask' % spaces)
 
     def test_final_border_readback_is_bounded_and_releases_device_references(self):
         renderer = (self.root / 'lib/terrain/terrain2/terrain_renderer2.cpp').read_text()

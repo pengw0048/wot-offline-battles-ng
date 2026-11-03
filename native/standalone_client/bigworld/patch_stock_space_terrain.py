@@ -303,6 +303,31 @@ MATERIAL_CONSTANTS = '''
     }
 '''
 
+PROJECTION_CONSTANTS = r'''    if (pBlock->settings()->stockCompiledData() && pBlends)
+    {
+        // #1513 ae95b0 classifies color_tex layers case-insensitively;
+        // acd5d0 forwards the first such layer's authored projections.
+        bool found = false;
+        for (const auto& combined : pBlends->combinedLayers_)
+        {
+            for (const auto& layer : combined.textureLayers_)
+            {
+                if (!layer) continue;
+                BW::string name = layer->textureName();
+                std::transform(name.begin(), name.end(), name.begin(),
+                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                if (name.find("color_tex") == BW::string::npos) continue;
+                ID3DXEffect* effect = pMaterial->pEffect_->pEffect()->pEffect();
+                pMaterial->SetParam(effect->GetParameterByName(NULL, "terrainUProjection"), &layer->uProjection());
+                pMaterial->SetParam(effect->GetParameterByName(NULL, "terrainVProjection"), &layer->vProjection());
+                found = true;
+                break;
+            }
+            if (found) break;
+        }
+    }
+'''
+
 # Read the actual final material/device state only once per colour kind and
 # once when that kind first draws an arena-edge tile. A weak compiled-space
 # owner resets the mask on teardown without changing TerrainSettings layout.
@@ -585,6 +610,8 @@ def patch(root):
         '#include "wot/stock_terrain_binary.hpp"\n#include "moo/base_texture.hpp"')
     renderer = replace_once(renderer, '#include "moo/base_texture.hpp"',
         '#include "moo/base_texture.hpp"\n#include <cstdio>')
+    renderer = replace_once(renderer, '#include <cstdio>',
+        '#include <cstdio>\n#include <algorithm>\n#include <cctype>')
     renderer = replace_once(renderer, 'namespace\n{', 'namespace\n{' + TECHNIQUE_HELPER)
     for name, legacy, original in (
             ('texturedMaterial_', 'MAIN', 'Color'),
@@ -630,6 +657,7 @@ def patch(root):
     renderer = replace_once(renderer,
         '    setTransformConstants( pBlock, pMaterial );',
         '    setTransformConstants( pBlock, pMaterial );\n' + MATERIAL_CONSTANTS)
+    renderer = replace_once(renderer, MATERIAL_CONSTANTS, MATERIAL_CONSTANTS + PROJECTION_CONSTANTS)
     renderer = replace_once(renderer,
         '    pMaterial->SetParam( pMaterial->holesSize_, (float)pBlock->holesSize() );',
         '    pMaterial->SetParam( pMaterial->holesSize_, (float)pBlock->holesSize() );\n'
