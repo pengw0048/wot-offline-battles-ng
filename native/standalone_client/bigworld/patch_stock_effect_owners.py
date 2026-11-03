@@ -731,6 +731,67 @@ public:
 '''
 
 
+def staged_instance_uploads(text):
+    text = replace_once(text, '\t\t\tMF_ASSERT( instancedVB_.valid() );',
+        '\t\t\t// Buffer failures are isolated to their actual stream consumers at flush.',
+        'collect CPU instances independently of unused public GPU storage')
+    text = replace_once(text,
+        '\tvoid openInstancingBuffer()\n\t{\n\t\tif (instancedVB_.valid())',
+        '\tvoid openInstancingBuffer()\n\t{\n\t\tif (!instanceMatrixArray_)',
+        'open CPU staging independently of public GPU storage')
+    text = replace_once(text, '\t\t\tMF_ASSERT(success);',
+        '\t\t\tif (!success) ERROR_MSG("Instancing: public matrix buffer creation failed\\n");',
+        'contain public matrix allocation failure at its consumer boundary')
+    text = replace_once(text, 'BW::vector<Matrix> stockInstanceMatrices_;',
+        'BW::vector<Matrix> stockInstanceMatrices_;\n'
+        '\tBW::vector<Matrix> stockInstanceScratch_;\n'
+        '\tbool stockNeedsPublicInstanceUpload_ = false;\n'
+        '\tbool stockPublicInstanceUploadReady_ = true;', 'CPU instance staging owner')
+    text = replace_once(text,
+        '\t\t\tstockInstanceMatrices_.push_back(*rop->instanceData_->matrix());',
+        '\t\t\tif (!wot::is_stock_effect(rop->effect_->pEffect())) stockNeedsPublicInstanceUpload_ = true;\n'
+        '\t\t\tstockInstanceMatrices_.push_back(*rop->instanceData_->matrix());',
+        'mark the actual public matrix-stream consumer')
+    text = replace_once(text,
+        '\t\t\tinstancedVB_.lock( 0, MAX_NUM_INSTANCED_MATRICES * InstancingStream::ELEMENT_SIZE,\n'
+        '\t\t\t\t(void**)&instanceMatrixArray_, D3DLOCK_DISCARD );',
+        '''            // ARIE consumes its matrix constants and FLOAT1 index stream,
+            // so collect on the CPU without uploading an unused public stream.
+            if (stockInstanceScratch_.size() != MAX_NUM_INSTANCED_MATRICES)
+            {
+                stockInstanceScratch_.resize(MAX_NUM_INSTANCED_MATRICES);
+                stockInstanceMatrices_.reserve(MAX_NUM_INSTANCED_MATRICES);
+            }
+            instanceMatrixArray_ = stockInstanceScratch_.data();
+            stockNeedsPublicInstanceUpload_ = false;
+            stockPublicInstanceUploadReady_ = true;''', 'defer matrix-stream upload until its consumers are known')
+    text = replace_once(text, '\t\t\tinstancedVB_.unlock();',
+        '''            if (stockNeedsPublicInstanceUpload_)
+            {
+                const uint32 bytes = uint32(nextInstanceMatrix_ - instanceMatrixArray_) * InstancingStream::ELEMENT_SIZE;
+                void* destination = NULL;
+                const HRESULT locked = instancedVB_.valid() ?
+                    instancedVB_.lock(0, bytes, &destination, D3DLOCK_DISCARD) : E_FAIL;
+                stockPublicInstanceUploadReady_ = SUCCEEDED(locked) && destination;
+                if (stockPublicInstanceUploadReady_)
+                {
+                    memcpy(destination, instanceMatrixArray_, bytes);
+                    stockPublicInstanceUploadReady_ = SUCCEEDED(instancedVB_.unlock());
+                }
+                else if (SUCCEEDED(locked)) instancedVB_.unlock();
+                if (!stockPublicInstanceUploadReady_)
+                    ERROR_MSG("Instancing: public matrix upload failed\\n");
+            }''', 'upload only a consumed public matrix prefix')
+    text = replace_once(text,
+        '            if (wot::is_stock_effect(rop->effect_->pEffect()))\n'
+        '            {\n                if (!stockInstanceIndexVB_.valid()) return;',
+        '            if (!stockPublicInstanceUploadReady_ && !wot::is_stock_effect(rop->effect_->pEffect())) return;\n'
+        '            if (wot::is_stock_effect(rop->effect_->pEffect()))\n'
+        '            {\n                if (!stockInstanceIndexVB_.valid()) return;',
+        'contain a failed public upload without cancelling native packets')
+    return text
+
+
 def patch_instancing(root):
     apply_file(root, Path("lib/moo/effect_visual_context.hpp"), [
         ("const Matrix*\t\tworldMatrix() const { return worldMatrix_; }", r'''const Matrix*        worldMatrix() const { return worldMatrix_; }
@@ -803,7 +864,7 @@ def patch_instancing(root):
     old = "\t\tBW_GUARD;\n\t\tif (instancedVB_.valid())"
     new = "\t\tBW_GUARD;\n\t\tif (stockInstanceIndexVB_.valid()) stockInstanceIndexVB_.release();\n\t\tif (instancedVB_.valid())"
     text = replace_once(text, old, new, "native index device teardown")
-    path.write_text(text)
+    path.write_text(staged_instance_uploads(text))
 
 
 # The upstream constructor body is one whitespace-only line; keep it exact.

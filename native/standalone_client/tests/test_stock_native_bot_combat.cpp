@@ -50,6 +50,21 @@ int main() {
     assert(!poll_bot_equipment(kit,burning,1.,false));
     assert(poll_bot_equipment(kit,burning,1.1,false) && kit.uses_left==0);
     assert(*burning.critical.devices["engineHealth"].hp==100.);
+    for (bool all : {false,true}) for (const char* selected : {"leftTrackHealth","rightTrackHealth"}) {
+        CombatState repaired;repaired.health=repaired.maximum_health=100;
+        for (const char* name : {"leftTrackHealth","rightTrackHealth"})
+            repaired.critical.devices[name]={25.,200.,100.,true,false,200.};
+        EquipmentEffect effect;effect.action=EquipmentAction::repair_devices;effect.all=all;effect.selected=selected;
+        assert(apply_equipment(repaired,effect));
+        for (const auto& row : repaired.critical.devices) {
+            const bool restored=all||row.first==selected;
+            assert(row.second.hp==std::optional<double>(restored?200.:25.));
+            assert(row.second.destroyed!=restored && !row.second.critical);
+        }
+        advance_critical(repaired,20.,20.,.57,1.);
+        for (const auto& row : repaired.critical.devices)
+            if (all||row.first==selected)assert(row.second.hp==std::optional<double>(200.)&&!row.second.destroyed&&!row.second.critical);
+    }
     CriticalState damage;
     damage.crew_ko={"gunner1","commander"};
     damage.devices["gunHealth"]={40.,100.,50.,false,true,100.};

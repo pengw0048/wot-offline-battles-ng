@@ -1,6 +1,8 @@
 from pathlib import Path
+import copy
 import json
 import sys
+import types
 import unittest
 
 import bot_state_rows
@@ -14,6 +16,7 @@ from lan_battle_server import (  # noqa: E402
     PREBATTLE_SECONDS, TICK_HZ,
 )
 from gui.mods.offline_lan_0922.spawn_planner import SpawnPlanner  # noqa: E402
+from gui.mods.offline_lan_0922 import equipment_mechanics  # noqa: E402
 from effective_params_fixture import effective_params  # noqa: E402
 
 
@@ -36,6 +39,15 @@ def _player(player_id, team, x, z, world_pose=True):
 
 
 class ServerCaptureTests(unittest.TestCase):
+    def _mount_repair_kit(self, state, player, repair_all):
+        player.effective_params['equipment'] = [
+            equipment_mechanics.project_equipment(types.SimpleNamespace(
+                name='largeRepairkit' if repair_all else 'repairkit',
+                id=(11, 23), compactDescr=423, tags=('repairkit',),
+                reuseCount=1, cooldownSeconds=90.0,
+                repairAll=repair_all, bonusValue=0.10))]
+        self.assertTrue(state._install_player_equipments(player))
+
     def _state(self):
         state = BattleState(map_name='13_erlenberg')
         state.client_build = CLIENT_BUILD_0922
@@ -440,6 +452,140 @@ class ServerCaptureTests(unittest.TestCase):
             2, report(3, 50.0, name='engineHealth')))
         self.assertFalse(state.report_track_repair(
             2, report(3, 50.0, name='rightTrackHealth')))
+
+    def test_repair_kit_publishes_normal_tracks_before_old_owner_reports(self):
+        tracks = ('leftTrackHealth', 'rightTrackHealth')
+        for repair_all in (False, True):
+            for damaged_track in tracks:
+                with self.subTest(repair_all=repair_all, track=damaged_track):
+                    state = self._state()
+                    player = _player(2, 2, 0.0, 0.0)
+                    state.players[2] = player
+                    player.effective_params['critical'] = {
+                        'devices': [
+                            {'name': name, 'max_hp': 260.0, 'regen_hp': 130.0}
+                            for name in tracks],
+                        'activation_targets': [
+                            {'index': index + 7, 'name': name}
+                            for index, name in enumerate(tracks)],
+                    }
+                    self._mount_repair_kit(state, player, repair_all)
+                    player.critical = {
+                        'devices': [
+                            {'name': name,
+                             'hp': 0.0 if name == damaged_track else 260.0,
+                             'max_hp': 260.0,
+                             'state': ('destroyed' if name == damaged_track
+                                       else 'normal')}
+                            for name in tracks],
+                        'destroyed': [damaged_track], 'crew_ko': [],
+                        'fire': False, 'ammo_rack_death': False, 'events': [],
+                    }
+                    player.critical_revision = 2
+                    player.critical_report_base_revision = 2
+                    high_word = 1 if repair_all else tracks.index(damaged_track) + 7
+                    intent = {
+                        'type': 'equipment_intent', 'round_id': state.round_id,
+                        'intent_seq': 1, 'equipment_id': 23,
+                        'activation_code': (high_word << 16) | 23,
+                        'selected': None if repair_all else damaged_track,
+                        'requested_active': None,
+                    }
+
+                    self.assertTrue(state.submit_equipment_intent(2, intent))
+                    self.assertEqual(
+                        {'intent_seq': 1, 'accepted': True, 'reason': ''},
+                        player.equipment_intent_result)
+                    published = state._public_player(player, include_outfits=False)
+                    self.assertEqual((3, 2, 0), (
+                        published['critical_revision'],
+                        published['critical_base_revision'],
+                        published['critical_ack_seq']))
+                    self.assertEqual([], published['critical']['destroyed'])
+                    self.assertEqual(
+                        [(name, 260.0, 'normal') for name in tracks],
+                        [(row['name'], row['hp'], row['state'])
+                         for row in published['critical']['devices']])
+                    repaired = copy.deepcopy(published['critical'])
+                    state.tick += int(round(20.0 * TICK_HZ))
+                    self.assertEqual(0, state._tick_player_critical(20.0))
+                    self.assertEqual(repaired, player.critical)
+
+                    self.assertTrue(state.report_track_repair(2, {
+                        'type': 'track_repair', 'round_id': state.round_id,
+                        'critical_base_revision': 2, 'repair_seq': 1,
+                        'tracks': [{
+                            'name': damaged_track, 'hp': 10.0,
+                            'max_hp': 260.0, 'state': 'destroyed',
+                        }],
+                    }))
+                    published = state._public_player(player, include_outfits=False)
+                    self.assertEqual((4, 2, 1), (
+                        published['critical_revision'],
+                        published['critical_base_revision'],
+                        published['critical_ack_seq']))
+                    self.assertEqual(repaired, published['critical'])
+
+    def test_single_engine_kit_preserves_inflight_track_repair_lineage(self):
+        state = self._state()
+        player = _player(2, 2, 0.0, 0.0)
+        state.players[2] = player
+        player.effective_params['critical'] = {
+            'devices': [
+                {'name': 'leftTrackHealth', 'max_hp': 260.0, 'regen_hp': 130.0},
+                {'name': 'engineHealth', 'max_hp': 170.0, 'regen_hp': 130.0}],
+            'activation_targets': [{'index': 9, 'name': 'engineHealth'}],
+        }
+        self._mount_repair_kit(state, player, False)
+        player.critical = {
+            'devices': [
+                {'name': 'engineHealth', 'hp': 0.0,
+                 'max_hp': 170.0, 'state': 'destroyed'},
+                {'name': 'leftTrackHealth', 'hp': 20.0,
+                 'max_hp': 260.0, 'state': 'destroyed'}],
+            'destroyed': ['engineHealth', 'leftTrackHealth'], 'crew_ko': [],
+            'fire': False, 'ammo_rack_death': False, 'events': [],
+        }
+        player.critical_revision = 2
+        player.critical_report_base_revision = 2
+
+        def report(seq, hp):
+            return {
+                'type': 'track_repair', 'round_id': state.round_id,
+                'critical_base_revision': 2, 'repair_seq': seq,
+                'tracks': [{'name': 'leftTrackHealth', 'hp': hp,
+                            'max_hp': 260.0, 'state': 'destroyed'}],
+            }
+
+        self.assertTrue(state.report_track_repair(2, report(1, 30.0)))
+        fingerprints = copy.deepcopy(player.track_repair_fingerprints)
+        self.assertTrue(state.submit_equipment_intent(2, {
+            'type': 'equipment_intent', 'round_id': state.round_id,
+            'intent_seq': 1, 'equipment_id': 23,
+            'activation_code': (9 << 16) | 23,
+            'selected': 'engineHealth', 'requested_active': None,
+        }))
+        self.assertTrue(player.equipment_intent_result['accepted'])
+        published = state._public_player(player, include_outfits=False)
+        self.assertEqual((4, 2, 1), (
+            published['critical_revision'], published['critical_base_revision'],
+            published['critical_ack_seq']))
+        self.assertEqual(fingerprints, player.track_repair_fingerprints)
+        devices = {row['name']: row for row in published['critical']['devices']}
+        self.assertEqual((170.0, 'normal'),
+                         (devices['engineHealth']['hp'], devices['engineHealth']['state']))
+        self.assertEqual((30.0, 'destroyed'),
+                         (devices['leftTrackHealth']['hp'], devices['leftTrackHealth']['state']))
+
+        self.assertTrue(state.report_track_repair(2, report(2, 40.0)))
+        self.assertEqual((5, 2, 2), (
+            player.critical_revision, player.critical_report_base_revision,
+            player.critical_ack_seq))
+        devices = {row['name']: row for row in player.critical['devices']}
+        self.assertEqual((170.0, 'normal'),
+                         (devices['engineHealth']['hp'], devices['engineHealth']['state']))
+        self.assertEqual((40.0, 'destroyed'),
+                         (devices['leftTrackHealth']['hp'], devices['leftTrackHealth']['state']))
 
     def test_track_repair_merges_progress_beside_converged_track(self):
         state = self._state()

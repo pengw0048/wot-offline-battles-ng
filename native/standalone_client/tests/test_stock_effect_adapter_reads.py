@@ -37,7 +37,7 @@ std::shared_ptr<wot::StockEffectBinary> definition(){
  wot::StockEffectUniformBuffer selection;selection.name="$Selection";selection.defaults.resize(8);wot::StockEffectUniform u;u.name="choose";u.type_index=4;u.elements=1;selection.uniforms.push_back(u);e->uniform_buffers.push_back(selection);
  wot::StockEffectUniformBuffer shared;shared.name="PerFrame";shared.flags=1;shared.defaults.resize(16);u.name="frameValue";u.semantic="TestFrame";u.semantic_present=true;u.type_index=1;shared.uniforms.push_back(u);e->uniform_buffers.push_back(shared);
  wot::StockEffectResource resource;resource.name="texture";resource.type_index=6;resource.semantic="TestTexture";resource.semantic_present=true;e->resource_views.push_back(resource);
- wot::StockShaderBinary shader;shader.stage=1;shader.bytecode={0xfffe0300,0xffff};e->shaders.push_back(shader);shader.stage=2;shader.bytecode={0xffff0300,0xffff};e->shaders.push_back(shader);wot::StockEffectPass pass;pass.descriptor={0xffffffff,1,0,0xffffffff,0xffffffff,0xffffffff,0xffffffff};e->resource_indirections[5]={0,1};e->techniques.push_back({"COLOR",0xffffffff,{pass}});return e;
+ wot::StockShaderBinary shader;shader.stage=1;shader.bytecode={0xfffe0300,0xffff};e->shaders.push_back(shader);shader.stage=2;shader.bytecode={0xffff0300,0xffff};e->shaders.push_back(shader);wot::StockEffectPass pass;pass.descriptor={0xffffffff,1,0,0xffffffff,0xffffffff,0xffffffff,0xffffffff};e->resource_indirections[1]={0};e->shaders[1].resources.push_back({2,0,0});e->resource_indirections[5]={0,1};e->techniques.push_back({"COLOR",0xffffffff,{pass}});return e;
 }
 int main(){try{
  auto e=definition();auto* device=new IDirect3DDevice9;auto* states=new ID3DXEffectStateManager;
@@ -130,7 +130,7 @@ class EffectAdapterReadTests(unittest.TestCase):
         methods=re.findall(r'^\s+([A-Z][^;]*?)\s+override;',body,re.M|re.S)
         self.assertGreater(len(methods),60)
         begin=adapter.index('HRESULT StockEffectAdapter::read(')
-        end=adapter.index('bool StockEffectAdapter::update_resources()',begin)
+        end=adapter.index('bool StockEffectAdapter::update_resources(',begin)
         # Exact pre-fix adapter body: keep the regression control independent of Git HEAD.
         old_read=r'''HRESULT StockEffectAdapter::read(D3DXHANDLE parameter, void *data, UINT size,
                                  unsigned annotation_type) {

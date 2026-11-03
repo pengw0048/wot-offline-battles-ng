@@ -35,7 +35,11 @@
     "test_stock_hdr",
     "test_stock_hdr_disabled_bloom",
     "test_stock_effect_capture_allocations",
-    "test_stock_effect_lookup_allocations"
+    "test_stock_effect_lookup_allocations",
+    "test_stock_effect_selected_resources",
+    "test_stock_space_models",
+    "test_stock_scene_intersection",
+    "test_stock_instancing_upload"
   ],
   "evidence_basis": {
     "latest_bounded_windows_journey": {
@@ -214,6 +218,11 @@
       "native_paths": [
         "Math.PyNoiseOscillator"
       ]
+    },
+    {
+      "category": "canonical-repair-supersedes-local-track-progress",
+      "evidence_limit": "Live native Owner/Status/drive gates, checkpoint/HUD, Bot equipment and server repair combinations are exercised by focused tests. A repaired canonical track with newer revision and unchanged damage base must replace the local destroyed overlay without waiting for an unrelated auto-repair ACK. Other damaged track progress and sequence identity are preserved. Lifecycle guards and per-round reconstruction are source-reviewed; actual Windows repair-kit movement remains a separate acceptance boundary.",
+      "classification": "fixed-native-owner-with-differential-and-lifecycle-evidence"
     }
   ],
   "native_statuses": {
@@ -1266,6 +1275,13 @@
       "source": "bigworld/stock_effect_adapter.cpp; include/wot/stock_effect_reflection.hpp; src/stock_effect_reflection.cpp; tests/test_stock_effect_capture_allocations.py; tests/test_stock_effect_lookup_allocations.py",
       "evidence_and_boundary": "Actual adapter/storage and full reflection paths have allocation-counting regressions with old-behavior negative controls. Numeric layout, writer policy, lexical ordering, embedded NUL semantics, null adapter guards and encoded handles remain covered. Views are call-local and never retained. This is not a cross-frame constant-upload cache or a claim about total renderer frame cost.",
       "status": "allocation_contracts_native_frame_gain_pending"
+    },
+    {
+      "area": "building-visible-submission",
+      "finding": "Visibility traversals copied every hit node list; stock instance batches uploaded unused public full-matrix streams; effect draws updated inactive texture providers and repeatedly searched shared capture/initialisation metadata.",
+      "source": "bigworld/patch_stock_space_models.py; bigworld/patch_stock_effect_owners.py; bigworld/stock_effect_adapter.cpp",
+      "evidence_and_boundary": "Actual SDK bodies preserve intersection sets, collision callback copies, instance ordering/offsets and stock/public failure isolation. Pure-stock batches require no public matrix upload; mixed batches upload their used prefix. Used automatic texture values still refresh each draw; only their selection metadata is retained. Shared initialisation and capture indexing retain producer/cleanup contracts. No GTX1070 frame-rate gain is established by host tests; the dormant original small-object cull branch is not treated as an active parity gap.",
+      "status": "source_and_host_fixed_windows_combined_acceptance_pending"
     }
   ],
   "renderer_unmatched_semantics": {

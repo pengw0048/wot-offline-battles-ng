@@ -847,7 +847,10 @@ IDirect3DDevice9* wrap_device(IDirect3DDevice9* device, bool ex) {
     if (rt::g_dev) { rt::g_retired = true; return device; }
     const char* mode = getenv("WOT_D3D9_RENDER_THREAD");
     if (mode && !strcmp(mode, "0")) return device;
-    rt::g_stats = getenv("WOT_D3D9_RENDER_THREAD_STATS") != nullptr;
+    // Counters are already collected; retain their low-frequency summary in
+    // normal reports so a slow view can be separated from sync/queue waits.
+    const char* statistics = getenv("WOT_D3D9_RENDER_THREAD_STATS");
+    rt::g_stats = !statistics || strcmp(statistics, "0") != 0;
     QueryPerformanceFrequency(&rt::g_freq);
     return wrapDevice(device, ex);
 }

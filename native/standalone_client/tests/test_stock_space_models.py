@@ -17,7 +17,8 @@ FILES = ['lib/moo/' + name for name in ('draw_context.hpp', 'draw_context.cpp',
          'effect_visual_context.hpp', 'effect_visual_context.cpp', 'animation.hpp',
          'animation.cpp', 'lod_settings.hpp', 'lod_settings.cpp')] + ['client/finale_app.cpp',
          'lib/moo/fog_helper.hpp', 'lib/romp/enviro_minder.hpp', 'lib/romp/enviro_minder.cpp',
-         'lib/scene/tick_scene_view.cpp']
+         'lib/scene/tick_scene_view.cpp', 'lib/space/dynamic_scene_provider.cpp',
+         'lib/space/enviro_minder_scene_provider.cpp']
 
 
 def module(name):

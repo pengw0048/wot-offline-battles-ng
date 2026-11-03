@@ -4222,8 +4222,14 @@ possible. The complete map WGDE omits the adjacent forward and lateral cells.
 This distinguishes the empty-cell ownership defect from an actual tree or
 terrain collision. Bounded MOBILITY state transitions additionally preserve
 module, input, support and contact evidence for future damage-related stops.
-Status/repair-owner regressions cover independent track, turret and engine
-conditions; they do not establish the cause of a session without module events.
+The later Airfield session records a functional canonical track repair while
+an older locally owned auto-repair overlay still blocks movement. A repair kit
+is not an acknowledgement of that overlay's checkpoint: newer canonical
+functional tracks now supersede it independently, preserving an unrepaired
+opposite track and the sequence fence against stale acknowledgements. Tests
+exercise actual core equipment repair through Status and the movement gate,
+including subsequent damage. This establishes the local cause and correction;
+the complete kit-to-motion journey still requires Windows acceptance.
 
 ### Reproducible native, renderer and GUI baseline review
 
@@ -4489,3 +4495,24 @@ producer/cleanup tests cover these changes. These checks do not establish GPU
 stage times or a GTX1070 frame-rate gain. A runtime pipeline switch requires a
 restart before comparing forward and deferred profiles; a requested preset
 alone does not identify the active renderer.
+
+
+The building-heavy submission review additionally removes a value copy from
+DynamicSceneProvider's callback-free intersection query; callback-bearing
+collision queries keep their snapshots. The patch accepts both the original
+and reviewed ground-decal tree expression, in either application order.
+Original stock instancing retains its matrix constants and index stream but
+uses CPU staging instead of uploading an unused full-matrix GPU stream. Public
+and mixed operations retain offsets, upload only the used prefix, and isolate
+allocation/lock failures without disabling valid stock draws.
+
+Effect submission refreshes only automatic textures consumed by the selected
+vertex/pixel shaders. Selection metadata is cached; live texture values still
+refresh each draw. A pending-declaration count and immutable capture index
+replace repeated shared-schema scans. Executable contract tests cover selected
+provider failures, late schema registration, retained handles and old-behavior
+negative controls. Existing low-frequency D3D9 submission summaries are enabled
+by default, with the existing environment opt-out. These changes remove proved
+redundant CPU/upload work; they do not establish a GTX1070 FPS gain. The inspected
+original small-object culling branch is dormant behind a constant-return
+producer, so it is not restored as a speculative optimization.

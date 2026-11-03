@@ -15,6 +15,26 @@ V names(const std::set<std::string>&values){auto out=array();for(const auto&n:va
 bool track(const std::string&n){return n=="leftTrackHealth"||n=="rightTrackHealth";}
 void mergeTracks(const Critical&source,Critical&target){for(const char*name:{"leftTrackHealth","rightTrackHealth"}){const auto from=source.devices.find(name);if(from==source.devices.end())continue;auto&to=target.devices[name];to.hp=from->second.hp;to.destroyed=from->second.destroyed;to.critical=from->second.critical;}}
 std::string deviceState(const Device&d){if(d.destroyed)return "destroyed";if(d.critical)return "critical";if(!d.hp||*d.hp<=0.)return "destroyed";if(d.maximum&&*d.hp<=*d.maximum*.5)return "critical";return "normal";}
+bool sameTrack(const Device&a,const Device&b){return a.hp==b.hp&&a.destroyed==b.destroyed&&a.critical==b.critical;}
+bool acceptFunctionalTracks(const Critical&canonical,Critical&owned){
+ bool changed=false;
+ for(const char*name:{"leftTrackHealth","rightTrackHealth"}){
+  const auto source=canonical.devices.find(name);const auto previous=owned.devices.find(name);
+  if(source==canonical.devices.end()||previous==owned.devices.end()||source->second.destroyed||
+     deviceState(source->second)=="destroyed"||sameTrack(source->second,previous->second))continue;
+  previous->second.hp=source->second.hp;previous->second.destroyed=false;previous->second.critical=source->second.critical;changed=true;
+ }
+ return changed;
+}
+bool tracksDiffer(const Critical&owned,const Critical&canonical){
+ for(const char*name:{"leftTrackHealth","rightTrackHealth"}){
+  const auto local=owned.devices.find(name),source=canonical.devices.find(name);
+  if(local==owned.devices.end())continue;
+  if(source==canonical.devices.end()){if(local->second.destroyed||local->second.critical)return true;}
+  else if(!sameTrack(local->second,source->second))return true;
+ }
+ return false;
+}
 std::string payloadState(Device device,const std::string&name,const Metadata&metadata){
  // _state first projects the accepted descriptor's yellow threshold; the
  // later _payload record uses the actual mounted descriptor's HP pool.
@@ -37,6 +57,10 @@ Owner::Owner(Metadata metadata,Critical critical,State state,std::set<std::strin
 bool Owner::accept(std::int64_t revision,std::int64_t base,std::int64_t ack,Critical&canonical){revision=std::max<std::int64_t>(0,revision);base=std::max<std::int64_t>(0,base);ack=std::max<std::int64_t>(0,ack);if(have_revision_&&revision<state_.server_revision){mergeTracks(tracks_,canonical);return false;}const bool newer=!have_revision_||revision>state_.server_revision;const auto pending=state_.report;bool acknowledged=false;
  state_.server_revision=revision;if(base!=state_.base_revision){state_.base_revision=base;state_.next_sequence=0;state_.owned=false;state_.report=V{};}else if(pending.resolved().kind!=V::Kind::Null&&ack>=std::int64_t(pending.get("critical_seq").numeric())){bool complete=!pending.get("tracks").resolved().array.empty();for(const auto&row:pending.get("tracks").resolved().array)complete=complete&&row.get("state").resolved().text=="critical";state_.report=V{};state_.owned=!complete;acknowledged=true;}
  if(acknowledged&&state_.owned&&pending.resolved().kind!=V::Kind::Null){bool functional=!pending.get("tracks").resolved().array.empty();for(const auto&row:pending.get("tracks").resolved().array){const auto found=canonical.devices.find(row.get("name").resolved().text);functional=functional&&found!=canonical.devices.end()&&!found->second.destroyed&&(deviceState(found->second)=="normal"||deviceState(found->second)=="critical");}if(functional)state_.owned=false;}
+ // A repair kit is canonical progress within the same damage lineage, not an
+ // acknowledgement of our auto-repair checkpoint. Accept each restored track
+ // immediately, retaining only the other track's still-unconfirmed progress.
+ if(newer&&state_.owned&&acceptFunctionalTracks(canonical,tracks_)){state_.report=V{};state_.owned=tracksDiffer(tracks_,canonical);}
  if(!newer||state_.owned)mergeTracks(tracks_,canonical);tracks_=canonical;have_revision_=true;return newer;
 }
 void Owner::reconcile(const shared::Actor&actor,Critical&canonical){const auto&state=actor.state;for(const char*name:{"critical_revision","critical_base_revision","critical_ack_seq"})if(state.get(name).resolved().kind==V::Kind::Null){if(have_revision_)mergeTracks(tracks_,canonical);else tracks_=canonical;return;}accept(std::int64_t(state.get("critical_revision").numeric()),std::int64_t(state.get("critical_base_revision").numeric()),std::int64_t(state.get("critical_ack_seq").numeric()),canonical);}

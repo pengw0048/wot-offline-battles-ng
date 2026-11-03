@@ -250,6 +250,21 @@ def patch(root):
         f = replace(f, '    LodSettings::instance().init(lodOptionsSec);',
             lod_hook + '\n    LodSettings::instance().init(lodOptionsSec);', 'native LOD configuration producer')
     history = previous_poses(root)
+    dynamic_scene = root / 'lib/space/dynamic_scene_provider.cpp'
+    scene = dynamic_scene.read_text(encoding='utf-8-sig')
+    # intersect has no callbacks, including the ground-decal collision-tree
+    # query. Actual collision traversal keeps its copies for re-entrant callbacks.
+    for tree in ('visibilityTreeContents_',
+                 '(collisionOnly ? collisionTreeContents_ : visibilityTreeContents_)'):
+        before = ('\t\tOctreeNodeContents contents = \n\t\t\t' + tree + '[nodeRef];\n'
+                  '\t\tfor (OctreeNodeContents::iterator itemIter = contents.begin();')
+        after = ('\t\tconst OctreeNodeContents& contents =\n\t\t\t' + tree + '[nodeRef];\n'
+                 '\t\tfor (OctreeNodeContents::const_iterator itemIter = contents.begin();')
+        if before in scene or after in scene:
+            scene = replace(scene, before, after, 'borrow immutable scene-query node membership')
+            break
+    else:
+        raise ValueError('Pinned scene-query membership changed')
     base = Path(__file__).resolve().parent
     copies = [(base / 'stock_static_model_scene.hpp', root / 'lib/compiled_space/stock_static_model_scene.hpp'),
               (base / 'stock_static_model_scene.cpp', root / 'lib/compiled_space/stock_static_model_scene.cpp'),
@@ -258,6 +273,7 @@ def patch(root):
     contents = [(source.read_bytes(), destination) for source, destination in copies]
     for path, text in history:
         path.write_text(text, encoding='utf-8')
+    dynamic_scene.write_text(scene, encoding='utf-8')
     lod_header.write_text(lh, encoding='utf-8')
     lod_implementation.write_text(lc, encoding='utf-8')
     finale.write_text(f, encoding='utf-8')
