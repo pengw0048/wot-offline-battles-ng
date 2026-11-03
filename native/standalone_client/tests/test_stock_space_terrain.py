@@ -429,6 +429,8 @@ int logPrintf(FILE*file,const char*format,...){assert(file==reinterpret_cast<FIL
     char line[2048];va_list args;va_start(args,format);int result=std::vsnprintf(line,sizeof(line),format,args);
     va_end(args);logs.push_back(line);return result;}
 int logClose(FILE*file){assert(file==reinterpret_cast<FILE*>(&opens));++closes;return 0;}
+namespace BW{FILE* bw_fopen(const char*path,const char*mode){return logOpen(path,mode);}}
+@FOPEN_MACRO@
 #define INFO_MSG(...) ((void)0) // Match Consumer: successful file output must not depend on this macro.
 struct ID3DXEffect{
  const char*GetCurrentTechnique(){return "Color";}
@@ -468,9 +470,12 @@ struct BaseMaterial{
  const char*stockBorderBlend_="blend";const char*stockBorderMap_="map";
 };
 enum{DM_Z_ONLY,DM_SHADOW_CAST,DM_SINGLE_LOD,DM_SINGLE_OVERRIDE,DM_BLEND,DM_BUMP};
+namespace BW {
 void draw(Block*pBlock,Material*pEffectMaterial,BaseMaterial*pMaterial,unsigned drawMethod,unsigned i=0){
 @DIAGNOSTIC@
 }
+}
+using BW::draw;
 int main(){Block block;Material material;BaseMaterial base;
  auto set=[&](unsigned i,float f){std::memcpy(&block.cfg.data.settings[i],&f,4);};
  set(20,-500);set(21,-500);set(22,500);set(23,500);set(24,1);set(25,.6f);
@@ -631,6 +636,9 @@ class StockSpaceTerrainTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 cls.original[name] = source.extractfile(member).read()
                 path.write_bytes(cls.original[name])
+            utility = next(n for n in source.getnames() if n.endswith('/programming/bigworld/lib/cstdmf/bw_util.hpp'))
+            cls.fopen_macro = next(line for line in source.extractfile(utility).read().decode('utf-8-sig').splitlines()
+                if line.startswith('#define fopen '))
         patch.patch(cls.root)
         before = {p: p.read_bytes() for p in cls.root.rglob('*') if p.is_file()}
         patch.patch(cls.root)
@@ -795,6 +803,10 @@ class StockSpaceTerrainTests(unittest.TestCase):
                 patch.PREVIOUS_INFO_DIAGNOSTIC_READBACK).replace('#include <cstdio>\n', ''))
             patch.patch(self.root)
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            renderer.write_text(renderer.read_text().replace(patch.BORDER_DIAGNOSTIC,
+                patch.PREVIOUS_STDIO_DIAGNOSTIC_READBACK))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
             # The native instance fields remain byte-for-byte the old layout.
             self.assertNotIn('stockBorderDiagnosticMask_', header.read_text())
             self.assertEqual(header.read_text().count('bool initStockCompiled('), 1)
@@ -831,7 +843,7 @@ class StockSpaceTerrainTests(unittest.TestCase):
         self.assertLess(draw.index('pEffectMaterial->beginPass(i)'), draw.index(patch.BORDER_DIAGNOSTIC))
         self.assertLess(draw.index(patch.BORDER_DIAGNOSTIC), draw.index('pBlock->draw( pEffectMaterial )'))
         binary = self.compile('border-diagnostic', BORDER_DIAGNOSTIC_PROBE.replace(
-            '@DIAGNOSTIC@', patch.BORDER_DIAGNOSTIC.replace('std::fopen', 'logOpen').replace(
+            '@FOPEN_MACRO@', self.fopen_macro).replace('@DIAGNOSTIC@', patch.BORDER_DIAGNOSTIC.replace(
                 'std::fprintf', 'logPrintf').replace('std::fclose', 'logClose')))
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
