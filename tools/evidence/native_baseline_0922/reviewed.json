@@ -31,7 +31,11 @@
     "test_stock_d3d9_render_thread_commands",
     "test_stock_d3d9_render_thread_scene",
     "test_stock_scaleform_command_shutdown",
-    "test_stock_flash_drawable_images"
+    "test_stock_flash_drawable_images",
+    "test_stock_hdr",
+    "test_stock_hdr_disabled_bloom",
+    "test_stock_effect_capture_allocations",
+    "test_stock_effect_lookup_allocations"
   ],
   "evidence_basis": {
     "latest_bounded_windows_journey": {
@@ -1248,6 +1252,20 @@
       "source": "bigworld/patch_stock_scaleform_render_thread.py; bigworld/stock_flash_drawable_images.hpp; bigworld/stock_scaleform_render_thread.hpp; bigworld/stock_d3d9_render_thread.cpp; tests/test_stock_scaleform_command_shutdown.py; tests/test_stock_d3d9_render_thread_commands.py; tests/test_stock_d3d9_render_thread_scene.py",
       "evidence_and_boundary": "Actual SDK Context::Shutdown holds its lock while admitting RT service work, then waits after unlocking. Commands retain leases and run asynchronously; all producers share one FIFO with a monotonic published-record fence and explicit completion acknowledgement before final RT release. RT scene helpers avoid main RenderContext mutable state. Matching symbols place an intermittent pre-fix exit AV in MeshKeyManager cleanup, but no matching dump was captured and causality is not asserted.",
       "status": "fixed_source_and_host_windows_pending"
+    },
+    {
+      "area": "deferred_work_without_consumers",
+      "finding": "The public HDR path generated bloom while final original tone mapping forced its tint to zero. DBE also downsampled and filtered neutral channels after all of their light consumers were disabled.",
+      "source": "bigworld/stock_hdr.cpp; bigworld/patch_stock_hdr.py; bigworld/stock_deferred_buffers.cpp; tests/test_stock_hdr_disabled_bloom.py; tests/test_stock_deferred_buffers.py",
+      "evidence_and_boundary": "Exact map HDR settings and finite black DDS mips are inspected. Keep luminance targets/AA, use managed finite black bloom input, preserve a physically cleared neutral DBE target, and disable unused ScalarTAA so reactivation reseeds history. Actual producer bodies, cache upgrade, retirement, quality transitions and failure cleanup are tested. No GTX1070 frame-time gain is claimed by source/host checks.",
+      "status": "source_host_contracts_native_performance_pending"
+    },
+    {
+      "area": "effect_capture_and_lookup_allocations",
+      "finding": "Automatic uniform capture copied immutable names/semantics on every numeric write; named reflection calls constructed temporary owning strings.",
+      "source": "bigworld/stock_effect_adapter.cpp; include/wot/stock_effect_reflection.hpp; src/stock_effect_reflection.cpp; tests/test_stock_effect_capture_allocations.py; tests/test_stock_effect_lookup_allocations.py",
+      "evidence_and_boundary": "Actual adapter/storage and full reflection paths have allocation-counting regressions with old-behavior negative controls. Numeric layout, writer policy, lexical ordering, embedded NUL semantics, null adapter guards and encoded handles remain covered. Views are call-local and never retained. This is not a cross-frame constant-upload cache or a claim about total renderer frame cost.",
+      "status": "allocation_contracts_native_frame_gain_pending"
     }
   ],
   "renderer_unmatched_semantics": {

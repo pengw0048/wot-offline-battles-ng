@@ -79,10 +79,45 @@ void reflection_checks() {
     check(unregistered.parameter_count() == 5 && unregistered.parameter_by_name("automaticMap"),
           "Resource is reflected when its semantic has no registered producer");
 }
+void lookup_boundaries() {
+    auto effect = definition();
+    auto field = effect->uniform_buffers[0].uniforms[0];
+    field.name.clear(); field.semantic.clear();
+    effect->uniform_buffers[0].uniforms.push_back(field);
+    const std::string binary("binary\0suffix", 13), semantic("SEM\0suffix", 10);
+    field.name = binary; field.semantic = semantic; field.annotations = 2;
+    effect->uniform_buffers[0].uniforms.push_back(field);
+    field.name = std::string(1, char(0x80)); field.semantic_present = false;
+    effect->uniform_buffers[0].uniforms.push_back(field);
+    effect->annotations.push_back({{binary,4,{1,0,0,0}}, {"",4,{0,0,0,0}}});
+    effect->techniques.push_back({binary,0xffffffff,{}});
+    effect->techniques.push_back({"",0xffffffff,{}});
+    wot::StockEffectReflection reflection(effect, {});
+    check(reflection.parameter_by_name("") && reflection.parameter_by_semantic(""),
+          "Empty query remains a valid exact name or semantic");
+    const auto parameter = reflection.parameter_by_name(binary);
+    check(parameter && reflection.parameter_by_semantic(semantic) == parameter &&
+          !reflection.parameter_by_name(binary.c_str()) &&
+          !reflection.parameter_by_semantic(semantic.c_str()),
+          "String lengths retain embedded NUL while C strings stop at NUL");
+    check(reflection.technique_by_name(binary) && !reflection.technique_by_name(binary.c_str()) &&
+          reflection.technique_by_name(""), "Technique string boundaries changed");
+    check(reflection.annotation_by_name(parameter,binary) &&
+          !reflection.annotation_by_name(parameter,binary.c_str()) &&
+          reflection.annotation_by_name(parameter,""), "Annotation string boundaries changed");
+    check(reflection.parameter_by_name(std::string(1,char(0x80))), "High-bit name lookup changed");
+    std::string previous;
+    for (std::size_t i=0; i<reflection.parameter_count(); ++i) {
+        const auto& name = reflection.parameter_reference(reflection.parameter(i))->name;
+        check(i == 0 || previous <= name, "Binary name sorting changed");
+        previous = name;
+    }
+}
 } // namespace
 int main() {
     try {
         reflection_checks();
+        lookup_boundaries();
         std::cout << "Stock effect reflection checks passed\n";
         return 0;
     } catch (const std::exception& error) {

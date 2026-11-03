@@ -6,6 +6,7 @@
 #include "moo/fullscreen_quad.hpp"
 #include "moo/render_context.hpp"
 #include "moo/texture_manager.hpp"
+#include "resmgr/bwresource.hpp"
 #include "romp/hdr_settings.hpp"
 
 BW_BEGIN_NAMESPACE
@@ -78,11 +79,27 @@ Moo::BaseTexturePtr loadStockColorCorrection(const BW::string& resource)
         resource, true, true, true, "Art/File Textures/");
 }
 
+Moo::BaseTexturePtr loadStockDisabledBloom()
+{
+    // The original resource contains finite RGB zero in every mip. A zero
+    // tint alone does not make an uninitialised floating-point target safe.
+    const char* resource = "system/maps/col_black.dds";
+    Moo::BaseTexturePtr texture = BWResource::fileExists(resource) ?
+        Moo::TextureManager::instance()->get(resource, true, false, true, "Art/File Textures/") : NULL;
+    if (!texture || !texture->pTexture() || texture->status() != Moo::BaseTexture::STATUS_READY)
+    {
+        ERROR_MSG("HDR: disabled bloom input is unavailable\n");
+        return NULL;
+    }
+    return texture;
+}
+
 bool drawStockToneMapping(const Moo::EffectMaterialPtr& material, const HDRSettings& settings,
     Moo::RenderTarget* averageLuminance, Moo::RenderTarget* hdr,
-    Moo::RenderTarget* bloom, const Moo::BaseTexturePtr& colorCorrection)
+    const Moo::BaseTexturePtr& disabledBloom, const Moo::BaseTexturePtr& colorCorrection)
 {
-    if (!material || !material->pEffect() || !averageLuminance || !hdr || !bloom ||
+    if (!material || !material->pEffect() || !averageLuminance || !hdr ||
+        !disabledBloom || !disabledBloom->pTexture() ||
         !colorCorrection || !colorCorrection->pTexture() ||
         !material->properties().select(*material->pEffect())) return false;
     ID3DXEffect* effect = material->pEffect()->pEffect();
@@ -99,8 +116,11 @@ bool drawStockToneMapping(const Moo::EffectMaterialPtr& material, const HDRSetti
     // This client has no original bloom, lens-flare, dirt or god-ray owner, so
     // a72c7c's disabled-bloom tint and both disabled flags apply.
     const Vector4 bloomTint(0.f, 0.f, 0.f, 0.f);
+    const Vector4 bloomProjection(1.f, 1.f, 0.f, 0.f);
     return SUCCEEDED(effect->SetTexture("g_avgLumMap", averageLuminance->pTexture())) &&
-        setStockHdrTarget(effect, "g_HDRMap", hdr) && setStockHdrTarget(effect, "g_bloomMap", bloom) &&
+        setStockHdrTarget(effect, "g_HDRMap", hdr) &&
+        SUCCEEDED(effect->SetTexture("g_bloomMap", disabledBloom->pTexture())) &&
+        SUCCEEDED(effect->SetVector("g_bloomMapDRRParams", &bloomProjection)) &&
         SUCCEEDED(effect->SetBool("g_enableLensFlare", FALSE)) &&
         SUCCEEDED(effect->SetBool("g_enableGodRays", FALSE)) &&
         SUCCEEDED(effect->SetTexture("g_rgbCubeMap", colorCorrection->pTexture())) &&

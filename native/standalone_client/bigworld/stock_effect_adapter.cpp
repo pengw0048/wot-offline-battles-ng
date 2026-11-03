@@ -421,8 +421,12 @@ HRESULT StockEffectAdapter::write_capture(const Destination &target,
                      uniform.semantic;
     return E_INVALIDARG;
   }
-  auto writable = uniform;
-  writable.flags &= ~2u;
+  // Storage consumes the numeric layout only. Keep producer writes writable
+  // without copying the immutable name/semantic strings on every capture.
+  const StockEffectUniform writable{
+      uniform.flags & ~2u, {}, {}, uniform.semantic_present, uniform.type_index,
+      uniform.byte_offset, uniform.elements, uniform.element_padding,
+      uniform.annotations};
   if (!storage->write_uniform(writable, type, data, size, error)) {
     capture_error_ = error;
     return E_INVALIDARG;

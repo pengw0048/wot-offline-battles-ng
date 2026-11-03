@@ -23,7 +23,7 @@ TONEMAPPING = '''void HDRSupport::doTonemapping()
     MF_ASSERT( m_bloomMaps.size() );
 
     if (!drawStockToneMapping(m_toneMappingMat, g_cfg, m_finalAvgLumRT.get(), m_hdrRT.get(),
-            m_bloomMaps[0].second.get(), m_stockColorCorrection))
+            m_stockDisabledBloom, m_stockColorCorrection))
         ERROR_MSG("HDR: original tone mapping failed\\n");
 }
 '''
@@ -114,6 +114,9 @@ def patch_support(root, pending):
     text = replace_once(text, '\tMoo::EffectMaterialPtr\t\t\t\tm_toneMappingMat;\n',
         '\tMoo::EffectMaterialPtr\t\t\t\tm_toneMappingMat;\n'
         '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n', 'HDR colour correction owner')
+    text = replace_once(text, '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n',
+        '\tMoo::BaseTexturePtr\t\t\t\tm_stockColorCorrection;\n'
+        '\tMoo::BaseTexturePtr\t\t\t\tm_stockDisabledBloom;\n', 'HDR disabled bloom owner')
     pending[path] = text
 
     path = root / 'lib/romp/hdr_support.cpp'
@@ -122,6 +125,16 @@ def patch_support(root, pending):
         '#include "hdr_support.hpp"\n#include "stock_hdr.hpp"\n', 'HDR support include')
     text = replace_once(text, '#include "stock_hdr.hpp"\n',
         '#include "stock_hdr.hpp"\n#include "stock_effect_adapter.hpp"\n', 'HDR binding lifecycle include')
+    text = replace_once(text, '    bool success = true;\n',
+        '    bool success = true;\n'
+        '    m_stockDisabledBloom = loadStockDisabledBloom();\n'
+        '    success &= bool(m_stockDisabledBloom);\n', 'HDR finite disabled bloom input')
+    text = replace_once(text, '    m_gaussianBlurMat     = NULL;\n',
+        '    m_gaussianBlurMat     = NULL;\n'
+        '    m_stockDisabledBloom  = NULL;\n', 'HDR disabled bloom retirement')
+    text = replace_once(text, '        calcBloom();\n',
+        '        // ToneMapping has no bloom owner; its finite black input is managed separately.\n',
+        'HDR unused bloom work')
     signature = 'void HDRSupport::deleteUnmanagedObjects()\n'
     text = replace_once(text, signature, RELEASE_TARGETS + signature, 'HDR manual texture cleanup helper')
     text = replace_once(text, signature + '{\n    BW_GUARD;\n',

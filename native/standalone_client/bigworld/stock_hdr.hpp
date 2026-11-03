@@ -15,8 +15,10 @@ void loadStockToneMappings(const DataSectionPtr& hdr, HDRSettings& settings);
 int stockActiveToneMapping(const HDRSettings& settings);
 // a7356c: the environment's colour-correction cube strip.
 Moo::BaseTexturePtr loadStockColorCorrection(const BW::string& resource);
+// Finite black input for the disabled bloom consumer; no uninitialised RT.
+Moo::BaseTexturePtr loadStockDisabledBloom();
 // a729d0: the original ToneMapping pass into the current target.
 bool drawStockToneMapping(const Moo::EffectMaterialPtr& material, const HDRSettings& settings,
     Moo::RenderTarget* averageLuminance, Moo::RenderTarget* hdr,
-    Moo::RenderTarget* bloom, const Moo::BaseTexturePtr& colorCorrection);
+    const Moo::BaseTexturePtr& disabledBloom, const Moo::BaseTexturePtr& colorCorrection);
 BW_END_NAMESPACE

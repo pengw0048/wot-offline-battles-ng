@@ -4469,3 +4469,23 @@ AV in MeshKeyManager cleanup, including a candidate predating the near-shadow
 change. That address evidence alone is not a native crash diagnosis: no matching
 crash dump was captured, and these independently demonstrated protocol repairs
 do not establish the AV's precise cause.
+
+### Deferred work with no active consumer
+
+The restored tone mapper disables bloom, but the public HDR resolve still
+called its bloom pyramid. The pinned Steppes and Mannerheim sky settings enable
+that producer; its successful 4K path contains 27 draws. Omit that unused chain
+and bind the pinned finite-black managed texture instead of an uninitialised
+floating-point target. Keep luminance, exposure, AA and their reused targets.
+When both DBE light consumers are disabled, clear the selected physical target
+to neutral RGBA and skip depth-copy, reconstruction and filters. Disable its
+unused ScalarTAA owner so reactivation recreates and seeds temporal history.
+
+Automatic uniform capture retains numeric layout and writer policy without
+copying immutable descriptor strings. Named reflection uses call-local string
+views, preserving sorting, encoded handles and embedded-NUL semantics without
+retaining caller memory. Allocation-counting old-behaviour controls and actual
+producer/cleanup tests cover these changes. These checks do not establish GPU
+stage times or a GTX1070 frame-rate gain. A runtime pipeline switch requires a
+restart before comparing forward and deferred profiles; a requested preset
+alone does not identify the active renderer.

@@ -61,9 +61,12 @@ struct StockDeferredBuffers{
 ComObjectWrap<Surface> previousDepth_,depthSurface_;
 struct{int lighting=0;}depthQuality_;
 struct Temporal{bool beginOK=true,velocityOK=true;unsigned cancels=0,ends=0;
-bool beginFrame(bool scalar){assert(scalar);return beginOK;}void cancelFrame(){++cancels;}
+bool expectedScalar=true,lastScalar=false;
+bool beginFrame(bool scalar){lastScalar=scalar;assert(scalar==expectedScalar);return beginOK;}void cancelFrame(){++cancels;}
 bool prepareVelocity(Surface*,bool,bool){return velocityOK;}void endFrame(){++ends;}}temporalAA_;
-bool contactShadowsEnabled(){return false;}
+bool aoEnabled=true,contactEnabled=false;
+bool ambientOcclusionEnabled(){return aoEnabled;}
+bool contactShadowsEnabled(){return contactEnabled;}
 bool frameActive_=false,prepared_=false,kindCopied_=false;
 unsigned allocationRetryFrames_=0,creations=0;void createUnmanagedObjects(){++creations;}
 bool resourcesReady=true,fillSuccess=true,conversionSuccess=true,depthEffectsSuccess=true;
@@ -111,6 +114,15 @@ assert(device.SetDepthStencilSurface(&original)==0);
 assert(owner.begin()); // Destructor must restore the previous depth once.
 }
 assert(device.current==&original&&original.refs==2&&depth.refs==1);
+{
+StockDeferredBuffers owner;owner.depthSurface_=&depth;
+owner.aoEnabled=false;owner.temporalAA_.expectedScalar=false;
+assert(owner.begin()&&!owner.temporalAA_.lastScalar);assert(owner.end());
+owner.contactEnabled=true;owner.temporalAA_.expectedScalar=true;
+assert(owner.begin()&&owner.temporalAA_.lastScalar);assert(owner.end());
+owner.contactEnabled=false;owner.aoEnabled=true;
+assert(owner.begin()&&owner.temporalAA_.lastScalar);assert(owner.end());
+}
 device.SetDepthStencilSurface(nullptr);assert(original.refs==1);
 }
 '''.replace('@PRODUCTION@','\n'.join(bodies))
@@ -138,6 +150,7 @@ device.SetDepthStencilSurface(nullptr);assert(original.refs==1);
             'class TargetScope', 'Vector4 targetProjection(',
             'bool StockDeferredBuffers::select(', 'bool StockDeferredBuffers::draw(',
             'bool StockDeferredBuffers::blurDepthEffects(', 'bool StockDeferredBuffers::fillDepthEffects()',
+            'bool StockDeferredBuffers::contactShadowsEnabled() const',
             'bool StockDeferredBuffers::drawSpaceDecals()', 'bool StockDeferredBuffers::drawSpaceDecalsAO()',
             'bool drawStockDeferredSunLight('))
         # The class extraction includes its closing brace, not its semicolon.
@@ -156,7 +169,7 @@ device.SetDepthStencilSurface(nullptr);assert(original.refs==1);
 #define SUCCEEDED(hr) ((hr)>=0)
 using uint=unsigned;using D3DXHANDLE=const char*;
 const int D3DCLEAR_TARGET=1;
-unsigned steps=0,failAt=0;
+unsigned steps=0,failAt=0,clears=0;std::string boundTarget,clearedTarget;bool clearedScene=true,clearScene=true;
 bool step(){return ++steps!=failAt;}
 struct Vector4{float x,y,z,w;Vector4(float a=0,float b=0,float c=0,float d=0):x(a),y(b),z(c),w(d){}};
 namespace DX{struct Surface{std::string name;};struct Viewport{uint X,Y,Width,Height;float MinZ,MaxZ;};}
@@ -208,14 +221,14 @@ std::vector<Saved> stack;uint w=1279,h=719;bool scene=true;std::string target="s
 struct Desc{uint Width=1279,Height=719;} desc;
 bool pushRenderTarget(){if(!step())return false;stack.push_back({w,h,scene,target});return true;}
 void popRenderTarget(){assert(!stack.empty());auto s=stack.back();stack.pop_back();w=s.w;h=s.h;scene=s.scene;target=s.target;}
-int setRenderTarget(unsigned index,const ComObjectWrap<DX::Surface>& s){if(!step())return -1;if(index==0)target=s.value->name;return 0;}
+int setRenderTarget(unsigned index,const ComObjectWrap<DX::Surface>& s){if(!step())return -1;if(index==0){target=s.value->name;boundTarget=target;}return 0;}
 int setRenderTarget(unsigned,void*){return step()?0:-1;}
 uint screenWidth()const{return w;}uint screenHeight()const{return h;}
 void screenWidth(uint v){w=v;}void screenHeight(uint v){h=v;}
 const Desc& backBufferDesc()const{return desc;}
 unsigned frameTimestamp()const{return 0;}
 struct Device{int SetDepthStencilSurface(DX::Surface*){return step()?0:-1;}
-int Clear(unsigned,void*,int flags,unsigned color,float,unsigned){assert(flags==D3DCLEAR_TARGET&&color==0x00ff00ffu);return step()?0:-1;}} gpu;
+int Clear(unsigned,void*,int flags,unsigned color,float,unsigned){assert(flags==D3DCLEAR_TARGET&&color==0x00ff00ffu);++clears;clearedTarget=boundTarget;clearedScene=clearScene;return step()?0:-1;}} gpu;
 Device* device(){return &gpu;}
 struct Constants{void updateSharedConstants(int){}} constants;
 Constants& effectVisualContext(){return constants;}
@@ -232,7 +245,7 @@ passes.push_back({m.technique,rc().target,rc().scene,adjust,width,height,m.bindi
 bool Context::Quad::drawChecked(Material& m,uint width,uint height){return drawChecked(m,width,height,rc().scene);}
 enum{CONSTANTS_PER_SCREEN};
 }
-int setStockSceneViewport(DX::Viewport*,bool scene){if(!step())return -1;Moo::rc().scene=scene;return 0;}
+int setStockSceneViewport(DX::Viewport*,bool scene){if(!step())return -1;Moo::rc().scene=scene;clearScene=scene;return 0;}
 bool drawStockSpaceDecalsPhase(unsigned phase){
 assert((phase==0&&Moo::rc().target=="gbuffer0") || (phase==1&&(Moo::rc().target=="half"||Moo::rc().target=="full")));
 assert(Moo::rc().scene);
@@ -274,7 +287,7 @@ aoMaterial_=std::make_shared<Moo::Material>();contactShadowMaterial_=std::make_s
 bilateralUpscaleMaterial_=std::make_shared<Moo::Material>();bilateralBlurMaterial_=std::make_shared<Moo::Material>();}
 DX::Surface fullDepth{"fullDepth"};
 bool ambientOcclusionEnabled()const{return aoEnvironment&&depthQuality_.ambientOcclusionEnabled();}
-bool contactShadowsEnabled()const{return activeScreenShadows.enabled&&depthQuality_.contactShadowsEnabled();}
+bool contactShadowsEnabled()const;
 bool select(const Moo::EffectMaterialPtr&,const char*);bool draw(const Moo::EffectMaterialPtr&);
 bool blurDepthEffects(const Moo::RenderTargetPtr&,const Moo::RenderTargetPtr&,bool,bool,bool,float,float);
 bool fillDepthEffects();
@@ -290,9 +303,16 @@ resolution.value.set_scale(.73f);
 for(int quality=0;quality!=5;++quality)for(int shadow=0;shadow!=5;++shadow)
 for(bool enabled:{false,true}){
 StockDeferredBuffers owner;owner.depthQuality_.lighting=quality;owner.depthQuality_.shadows=shadow;
-owner.aoEnvironment=enabled;activeScreenShadows.enabled=enabled;steps=0;failAt=0;passes.clear();
+owner.aoEnvironment=enabled;activeScreenShadows.enabled=enabled;steps=0;failAt=0;clears=0;passes.clear();
 assert(owner.fillDepthEffects());assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene");
 assert(Moo::rc().w==1279&&Moo::rc().h==719&&Moo::rc().scene);
+if(!owner.ambientOcclusionEnabled()&&!owner.contactShadowsEnabled()){
+assert(passes.empty()&&clears==1&&!clearedScene&&clearedTarget==(quality<2?"full":"half"));
+const unsigned operations=steps;
+for(unsigned failure=1;failure<=operations;++failure){steps=0;failAt=failure;
+assert(!owner.fillDepthEffects()&&passes.empty());
+assert(Moo::rc().stack.empty()&&Moo::rc().target=="scene"&&Moo::rc().w==1279&&Moo::rc().h==719);}
+failAt=0;continue;}
 unsigned index=0;const auto& copy=passes[index++];
 assert(copy.technique=="COPY_DEPTH"&&copy.target=="lowDepth"&&!copy.scene&&copy.halfTexel);
 assert(copy.width==639&&copy.height==359);
@@ -304,7 +324,7 @@ assert(near(ao.parameters.at("g_packedParams0")[0],quality==2?.065f:.1f));
 assert(near(ao.parameters.at("g_packedParams0")[1],quality==1?1.f:2.f));
 assert(near(ao.parameters.at("g_packedParams1")[0],quality>0?.65f:1.f));
 assert(ao.textures.at("g_noiseMapSSAO")==std::string(quality<2?"horizon":"sphere"));}
-if(enabled&&shadow<2){const auto& contact=passes[index++];assert(contact.technique=="TRACE"&&contact.target=="half");
+if(enabled&&quality<3&&shadow<2){const auto& contact=passes[index++];assert(contact.technique=="TRACE"&&contact.target=="half");
 assert(contact.parameters.at("g_lowQuality")[0]==float(shadow>0));
 assert(contact.parameters.at("g_ssShadowsParams")[0]==1.5f&&contact.parameters.at("g_enableTAA")[0]==0.f);}
 if(quality<2){const auto& up=passes[index++];assert(up.technique=="BILATERAL_UPSCALE"&&up.target=="full");
