@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'bigworld'))
 from prepare_offline_fork import (
     ACCOUNT_ATTEMPT, ADAPTERS, BOOTSTRAP_PATH, COMPAT_PATH, ENTRY_PATH, ENTRY_SOURCE,
     INSTANCE_GUARD_PATH, NATIVE_MATH_PATH, PINNED_COMMIT, PINNED_RESOURCES,
-    NATIVE_MODULE_ROOT, RETIRED, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
+    NATIVE_MODULE_ROOT, RETIRED, ROOM_RESOURCES, RUNTIME_ROOT, SERVICES_PATH, SERVICES_SOURCE, adapt_instance_guard, adapt_native_math,
     prepare, adapt_bot_fittings)
 
 PY27 = Path(os.environ.get('WOT_TEST_PY27', '/Users/peng/.pyenv/versions/2.7.18/bin/python2.7'))
@@ -194,6 +194,9 @@ class OfflineForkPreparationTests(unittest.TestCase):
             if relative == NATIVE_MATH_PATH.with_name('bot_fittings.py').relative_to(PINNED_RESOURCES):
                 battle = (self.source / NATIVE_MATH_PATH.with_name('bot_runtime.py')).read_text()
                 self.assertEqual(output.decode('utf-8'), adapt_bot_fittings(original.decode('utf-8'), battle))
+            elif PINNED_RESOURCES / relative in ROOM_RESOURCES:
+                self.assertEqual(output, ROOM_RESOURCES[PINNED_RESOURCES / relative].read_bytes())
+                self.assertNotEqual(output, original)
             elif relative in adapted:
                 adapt = ADAPTERS[PINNED_RESOURCES / relative]
                 self.assertEqual(output, adapt(original.decode('utf-8')).encode('utf-8'))
@@ -206,6 +209,7 @@ class OfflineForkPreparationTests(unittest.TestCase):
         self.assertEqual(manifest['revision'], PINNED_COMMIT)
         self.assertEqual(manifest['files'], len(shipped))
         self.assertEqual(manifest['adapted'], sorted([p.as_posix() for p in ADAPTERS] +
+            [p.as_posix() for p in ROOM_RESOURCES] +
             [NATIVE_MATH_PATH.with_name('bot_fittings.py').as_posix()]))
 
     def test_staged_customization_style_zero_is_a_terminal_uninstall(self):

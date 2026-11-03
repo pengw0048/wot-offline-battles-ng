@@ -320,6 +320,12 @@ def retired_imports(path, source):
     return found
 
 
+ROOM_RESOURCES = {
+    PINNED_RESOURCES / 'gui/flash' / name: Path(__file__).with_name('offline_entry') / name
+    for name in ('offlineWaitingRoom.swf', 'offlineWaitingRoom.swf.json')
+}
+
+
 def stage_runtime(source, staged):
     """Copy the complete pinned payload and adapt only the reviewed seams."""
     resources = source / PINNED_RESOURCES
@@ -341,6 +347,9 @@ def stage_runtime(source, staged):
             output.write_bytes(adapt_bot_fittings(path.read_bytes().decode('utf-8'),
                 (source / NATIVE_MATH_PATH.with_name('bot_runtime.py')).read_bytes().decode('utf-8')).encode('utf-8'))
             adapted.append(relative.as_posix())
+        elif relative in ROOM_RESOURCES:
+            shutil.copyfile(ROOM_RESOURCES[relative], output)
+            adapted.append(relative.as_posix())
         elif relative in ADAPTERS:
             # Bytes, so a Windows build keeps the archive's LF line endings.
             output.write_bytes(ADAPTERS[relative](
@@ -349,6 +358,7 @@ def stage_runtime(source, staged):
         else:
             shutil.copyfile(path, output)
     if sorted(adapted) != sorted([path.as_posix() for path in ADAPTERS] +
+                                  [path.as_posix() for path in ROOM_RESOURCES] +
                                   [NATIVE_MATH_PATH.with_name('bot_fittings.py').as_posix()]):
         raise ValueError('The pinned payload is missing an adapted consumer')
     check = subprocess.run([

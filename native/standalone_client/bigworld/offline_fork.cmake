@@ -6,7 +6,10 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 file(GLOB WOT_OFFLINE_FORK_ADAPTER_INPUTS CONFIGURE_DEPENDS LIST_DIRECTORIES false
     "${CMAKE_CURRENT_LIST_DIR}/*.py"
     "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.py"
-    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.txt")
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.txt"
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.as"
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.swf"
+    "${CMAKE_CURRENT_LIST_DIR}/offline_entry/*.swf.json")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${WOT_OFFLINE_FORK_ADAPTER_INPUTS}
     "${CMAKE_CURRENT_LIST_DIR}/wgde_empty_rows.json"

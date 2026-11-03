@@ -1352,7 +1352,7 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
             // install guards, modules, devices, directive and seasonal style together.
             p::Ref fittings(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
             p::Ref args(PyTuple_Pack(5, b.engine.vehicles.get(), p::text(vehicle_name).get(),
-                p::text(skillForRating(rating)).get(), p::integer(stock_native_bot_descriptor::crewLevelForRating(rating)).get(), Py_None));
+                p::text(skillForRating(rating)).get(), p::Ref(Py_BuildValue("i", stock_native_bot_descriptor::crewLevelForRating(rating))).get(), Py_None));
             auto resolved = p::call(fittings.get(), "build", args.get());
             pair = descriptorPair(resolved.get());
         } catch (const std::exception& e) {

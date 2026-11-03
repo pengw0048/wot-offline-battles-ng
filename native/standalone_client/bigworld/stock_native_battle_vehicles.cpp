@@ -138,8 +138,11 @@ p::Ref botDescriptor(Battle& b, const Value& state) {
     if (fitting.resolved().kind != Value::Kind::Object) throw p::Error("Bot fitting is unavailable");
     p::Ref module(PyImport_ImportModule("gui.mods.offline_lan_0922.bot_fittings"));
     p::Ref restored(cs::write(fitting));
+    // Restore the stock Python 2 field type after decoding the native wire value.
+    p::Ref crew_level(Py_BuildValue("i", int(integer(field(fitting, "crew_level")))));
+    p::set(restored.get(), "crew_level", crew_level);
     p::Ref args(PyTuple_Pack(5, b.engine.vehicles.get(), p::text(field(fitting, "vehicle").resolved().text).get(),
-        p::text(field(fitting, "tier").resolved().text).get(), p::integer(integer(field(fitting, "crew_level"))).get(), restored.get()));
+        p::text(field(fitting, "tier").resolved().text).get(), crew_level.get(), restored.get()));
     return p::call(module.get(), "build", args.get());
 }
 p::Ref botOutfit(Battle& b, PyObject* descriptor) {
