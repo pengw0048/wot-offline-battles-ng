@@ -106,6 +106,7 @@ int main(){try{
   context->detach_providers();check(material.Begin(&passes,D3DXFX_DONOTSAVESTATE)==S_OK,"detached begin");check(material.BeginPass(0)!=S_OK,"detached providers guarded");material.EndPass();material.End();
  }
  for(auto* texture:textures){check(texture->refs==1,"resource lifetime");texture->Release();}
+ runtime.reset();states->Release();device->Release();
  std::cout<<"Selected resources refresh per draw; unused providers, variant transitions and failure isolation passed\n";
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
 '''
