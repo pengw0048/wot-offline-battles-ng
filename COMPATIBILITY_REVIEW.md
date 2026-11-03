@@ -4442,3 +4442,30 @@ provider; its moving captures show stable, finer protrusion shadows. Neither
 sequence lowers lighting quality for acceptance. This is bounded VM evidence;
 GTX 1070 image acceptance remains separate from source, host arithmetic and
 instruction-oracle evidence.
+
+### Scaleform command and retirement thread ownership
+
+`ThreadCommandQueue` is shared by DrawableImage work and native context
+shutdown. `Context::Shutdown(true)` admits its RT service command while holding
+the context lock, then waits after unlocking; DrawableImage destruction also
+forbids flushing that queue while a capture lock may be held. The former
+`drain(); Execute()` adapter violated these producer contracts and could release
+MeshKey cache objects on the caller instead of the configured HAL thread.
+
+Retain each command and post it asynchronously without querying device state
+or waiting in Push. Main and foreign submissions share one FIFO and capture a
+monotonic published-record fence without reserving ring capacity. Commands run
+after prior device records and before later records. A queue sentinel provides
+an explicit completion acknowledgement before the renderer/HAL are finally
+released on their owning thread. Existing foreign synchronous calls retain
+their separate behavior. RT commands save/restore actual device state and use
+tracked real BeginScene/EndScene/Reset outcomes; they do not touch the main
+RenderContext's scene nesting, preload, profiling or state-cache fields.
+
+Actual SDK shutdown, command leases, completion events, thread-off operation,
+producer/consumer ordering and scene-state tests cover these contracts with
+failing old-behavior controls. Matching PDB symbols place an intermittent exit
+AV in MeshKeyManager cleanup, including a candidate predating the near-shadow
+change. That address evidence alone is not a native crash diagnosis: no matching
+crash dump was captured, and these independently demonstrated protocol repairs
+do not establish the AV's precise cause.

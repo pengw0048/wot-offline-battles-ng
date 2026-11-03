@@ -37,12 +37,19 @@ static void executeStockFlashDrawableImageCommandNow(Render::ThreadCommand* comm
          r'''    if (state) state->Release();
     if (device) Moo::rc().invalidateStateCache();
 }
-// The caller may hold Scaleform locks that render-thread work needs, so the
-// command runs here once every queued HAL job has finished.
+// Context shutdown and DrawableImage destruction can enqueue while holding
+// SDK locks. Keep a lease and return; the HAL owner executes after admitted
+// display jobs, once the producer has released its lock.
 static void executeStockFlashDrawableImageCommand(Render::ThreadCommand* command)
 {
-    StockRenderThread::drain();
-    executeStockFlashDrawableImageCommandNow(command);
+    struct CommandJob
+    {
+        Ptr<Render::ThreadCommand> command;
+        void operator()() { executeStockFlashDrawableImageCommandNow(command.GetPtr()); }
+    };
+    CommandJob* job = new CommandJob();
+    job->command = command;
+    StockRenderThread::postCommand(job);
 }
 
 '''),
@@ -374,6 +381,64 @@ HAL_HEADER = 'Src/Render/D3D9/D3D9_HAL.h'
 HAL_CONTRACT = '''                  UInt32 halConfigFlags = 0,
                   ThreadId renderThreadId = ThreadId())'''
 
+LEGACY_COMMAND_EXECUTOR = r'''    if (state) state->Release();
+    if (device) Moo::rc().invalidateStateCache();
+}
+// The caller may hold Scaleform locks that render-thread work needs, so the
+// command runs here once every queued HAL job has finished.
+static void executeStockFlashDrawableImageCommand(Render::ThreadCommand* command)
+{
+    StockRenderThread::drain();
+    executeStockFlashDrawableImageCommandNow(command);
+}
+
+'''
+
+
+def render_thread_shutdown(text):
+    # SDK producers can request Context retirement while releasing DrawText
+    # and Loader on their original caller. Their commands must finish before
+    # renderer/HAL destruction, which itself belongs to the actual HAL thread.
+    before = '''\t\tpRenderer_ = NULL;
+\t\tpRenderHAL_ = NULL;
+\t\tdrawableImageQueue_.configure(Render::Interfaces());
+\t\tpLogger_ = NULL;
+\t\tpTexMgr_ = NULL;'''
+    after = '''\t\t// Retiring caller-side contexts may admit more native commands.
+\t\t// Establish their consumer fence before admitting final owner release.
+\t\tStockRenderThread::drainCommands();
+\t\t{
+\t\t\tauto releaseRenderOwners = [this]() {
+\t\t\t\tpRenderer_ = NULL;
+\t\t\t\tpRenderHAL_ = NULL;
+\t\t\t\tpTexMgr_ = NULL;
+\t\t\t};
+\t\t\tStockRenderThread::runSync(releaseRenderOwners);
+\t\t}
+\t\tdrawableImageQueue_.configure(Render::Interfaces());
+\t\tpLogger_ = NULL;'''
+    return replace_once(text, before, after, 'Scaleform render owner shutdown')
+
+
+def command_scene_ownership(text):
+    # The main thread keeps recording Moo state while native commands execute.
+    # Its scene nesting counter, resource preload and profiling are not RT state.
+    text = text.replace(
+        '    const HRESULT scene = device ? Moo::rc().beginScene() : S_OK;',
+        '    const bool nativeOwner = StockRenderThread::id() != 0;\n'
+        '    bool openedScene = false;\n'
+        '    const HRESULT scene = nativeOwner ?\n'
+        '        ::wot::d3d9rt::begin_command_scene(device, openedScene) :\n'
+        '        (device ? Moo::rc().beginScene() : S_OK);')
+    text = text.replace(
+        '    if (device && FAILED(Moo::rc().endScene()))',
+        '    const HRESULT ended = nativeOwner ?\n'
+        '        ::wot::d3d9rt::end_command_scene(device, openedScene) :\n'
+        '        (device ? Moo::rc().endScene() : S_OK);\n'
+        '    if (FAILED(ended))')
+    return text.replace('    if (device) Moo::rc().invalidateStateCache();',
+                        '    if (device && !nativeOwner) Moo::rc().invalidateStateCache();')
+
 
 def viewport_before_capture(text):
     # #1513 aa84df/aa84f4 publishes the viewport before aa8504 captures it.
@@ -478,24 +543,36 @@ def patch_overlay_lifecycle(root):
     path.write_text(text)
 
 
+def patch_render_thread_source(relative, text):
+    edits = EDITS[relative]
+    if relative == 'lib/scaleform/manager.cpp' and LEGACY_COMMAND_EXECUTOR in text:
+        text = replace_once(text, LEGACY_COMMAND_EXECUTOR, edits[2][1],
+                            'Scaleform asynchronous command upgrade')
+    for old, new in edits:
+        viewport_ordered = viewport_before_capture(new)
+        render_owned = render_job_ownership(viewport_ordered)
+        ordered = overlay_surface_ownership(render_owned)
+        if relative == 'lib/scaleform/manager.cpp':
+            ordered = command_scene_ownership(ordered)
+        # Upgrade the preceding render-thread adapter in cached SDK trees.
+        for previous in (new, viewport_ordered, render_owned):
+            if ordered != previous and previous in text:
+                text = replace_once(text, previous, ordered, relative)
+        text = replace_once(text, old, ordered, relative)
+    if relative == 'lib/scaleform/manager.cpp':
+        text = render_thread_shutdown(text)
+        text = command_scene_ownership(text)
+    return text
+
+
 def patch(root, scaleform_root):
     # Display jobs rely on the D3D9 HAL accepting the render thread at init.
     if HAL_CONTRACT not in (Path(scaleform_root) / HAL_HEADER).read_text():
         raise RuntimeError("Scaleform D3D9 HAL lacks the render thread init parameter")
     patch_reset_lifecycle(root)
-    for relative, edits in EDITS.items():
+    for relative in EDITS:
         path = Path(root) / relative
-        text = path.read_text()
-        for old, new in edits:
-            viewport_ordered = viewport_before_capture(new)
-            render_owned = render_job_ownership(viewport_ordered)
-            ordered = overlay_surface_ownership(render_owned)
-            # Upgrade the preceding render-thread adapter in cached SDK trees.
-            for previous in (new, viewport_ordered, render_owned):
-                if ordered != previous and previous in text:
-                    text = replace_once(text, previous, ordered, relative)
-            text = replace_once(text, old, ordered, relative)
-        path.write_text(text)
+        path.write_text(patch_render_thread_source(relative, path.read_text()))
     patch_overlay_lifecycle(root)
 
 

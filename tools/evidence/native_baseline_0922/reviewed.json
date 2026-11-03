@@ -27,7 +27,11 @@
     "test_stock_flash_camouflage_loader",
     "test_stock_desktop_utilities",
     "test_stock_customization_helper",
-    "test_stock_scaleform_mask_filter"
+    "test_stock_scaleform_mask_filter",
+    "test_stock_d3d9_render_thread_commands",
+    "test_stock_d3d9_render_thread_scene",
+    "test_stock_scaleform_command_shutdown",
+    "test_stock_flash_drawable_images"
   ],
   "evidence_basis": {
     "latest_bounded_windows_journey": {
@@ -1237,6 +1241,13 @@
       "source": "bigworld/patch_stock_deferred_buffers.py; tests/test_stock_shadow_quality_resources.py; tests/test_stock_graphics_presets.py",
       "evidence_and_boundary": "Resource patch removes only the SDK preset override. Real original package lookup, full native/Python2 catalogue consumer, complete HIGH settings and cached/idempotent generation are tested. Original client package remains unchanged. Windows native getter returns original19 fields; preset application records matching HIGH textures/LOD/lighting/terrain1 and shadows2, then completes gameplay and normal exit0.",
       "status": "fixed_resource_host_and_bounded_windows"
+    },
+    {
+      "area": "scaleform_native_command_retirement",
+      "finding": "The SDK queue also carries context shutdown; drain plus caller Execute violated asynchronous Push and render-cache thread ownership. Final Renderer/HAL release remained on caller.",
+      "source": "bigworld/patch_stock_scaleform_render_thread.py; bigworld/stock_flash_drawable_images.hpp; bigworld/stock_scaleform_render_thread.hpp; bigworld/stock_d3d9_render_thread.cpp; tests/test_stock_scaleform_command_shutdown.py; tests/test_stock_d3d9_render_thread_commands.py; tests/test_stock_d3d9_render_thread_scene.py",
+      "evidence_and_boundary": "Actual SDK Context::Shutdown holds its lock while admitting RT service work, then waits after unlocking. Commands retain leases and run asynchronously; all producers share one FIFO with a monotonic published-record fence and explicit completion acknowledgement before final RT release. RT scene helpers avoid main RenderContext mutable state. Matching symbols place an intermittent pre-fix exit AV in MeshKeyManager cleanup, but no matching dump was captured and causality is not asserted.",
+      "status": "fixed_source_and_host_windows_pending"
     }
   ],
   "renderer_unmatched_semantics": {

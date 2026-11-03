@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <deque>
 #include <new>
 #include <type_traits>
 #include <unordered_map>
@@ -26,6 +27,9 @@ static FILE* reportLog() { if (!g_log) g_log = fopen("d3d9_render_thread.log", "
 static DWORD g_main, g_renderId; static bool g_started;
 static const uint32_t RING = 128u << 20;
 static uint8_t* g_ring; static volatile LONG g_head, g_tail, g_sleeping, g_foreign;
+// Count real records before publishing head; wrap markers are not records.
+// External command admission reads this atomically without reserving ring space.
+alignas(8) static volatile LONG64 g_published;
 static HANDLE g_work, g_idle;
 static uint32_t g_sinceWake;
 static volatile LONG g_framesQueued, g_framesDone;
@@ -37,6 +41,8 @@ inline bool onMain() { return g_started && GetCurrentThreadId() == g_main; }
 inline bool onRender() { return GetCurrentThreadId() == g_renderId; }
 // While the render thread is parked for a window-thread Reset, the main thread owns the device.
 static bool g_parked;
+// Written only while the actual device owner executes BeginScene/EndScene.
+static bool g_sceneOpen;
 inline bool mainOwnsDevice() { return g_parked && onMain(); }
 
 struct Rec { uint32_t size; void (*fn)(void*); };
@@ -61,6 +67,7 @@ static void* reserve(uint32_t payload, void (*fn)(void*)) {
 static void commit(bool flush = false) {
     const uint32_t size = reinterpret_cast<Rec*>(g_ring + g_head)->size;
     g_bytes += size; g_sinceWake += size;
+    InterlockedIncrement64(&g_published);
     MemoryBarrier(); InterlockedExchange(&g_head, g_head + size);
     if (flush || g_sinceWake > (32u << 10)) { g_sinceWake = 0; wake(); }
 }
@@ -86,6 +93,9 @@ template<class F> void postData(const void* data, uint32_t n, F&& f) {
 struct SyncTask { void (*run)(void*); void* ctx; volatile LONG done; HANDLE ev; };
 static void runTask(SyncTask* t) { t->run(t->ctx); InterlockedExchange(&t->done, 1); SetEvent(t->ev); }
 static CRITICAL_SECTION g_foreignLock; static std::vector<SyncTask*> g_foreignTasks;
+struct AsyncCommand { void (*run)(void*); void* ctx; LONG64 fence; };
+static std::deque<AsyncCommand> g_foreignCommands;
+static volatile LONG g_commandsPending;
 static HANDLE threadEvent() { static thread_local HANDLE ev = CreateEventA(nullptr, FALSE, FALSE, nullptr); return ev; }
 void stallReport(const char* name);   // logs the render thread's stack once when a sync stalls
 template<class F> auto sync(F&& f, const char* name) -> decltype(f()) {
@@ -443,8 +453,8 @@ HRESULT WDevice::Clear(DWORD n, const D3DRECT* rects, DWORD f, D3DCOLOR c, float
     rt::postData(rects, n * sizeof(D3DRECT), [r, n, f, c, z, s](const uint8_t* d) { rt::reportResult("Clear", r->Clear(n, n ? reinterpret_cast<const D3DRECT*>(d) : nullptr, f, c, z, s)); });
     return D3D_OK;
 }
-HRESULT WDevice::BeginScene() { auto r = REAL; return ASYNC("BeginScene", r->BeginScene()); }
-HRESULT WDevice::EndScene() { auto r = REAL; return ASYNC("EndScene", r->EndScene()); }
+HRESULT WDevice::BeginScene() { auto r = REAL; return ASYNC("BeginScene", ([r]() { const HRESULT result = r->BeginScene(); if (SUCCEEDED(result)) rt::g_sceneOpen = true; return result; })()); }
+HRESULT WDevice::EndScene() { auto r = REAL; return ASYNC("EndScene", ([r]() { const HRESULT result = r->EndScene(); if (SUCCEEDED(result)) rt::g_sceneOpen = false; return result; })()); }
 HRESULT WDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE t, INT b, UINT m, UINT n, UINT s, UINT c) { auto r = REAL; return ASYNC("DrawIndexedPrimitive", r->DrawIndexedPrimitive(t, b, m, n, s, c)); }
 HRESULT WDevice::DrawPrimitive(D3DPRIMITIVETYPE t, UINT s, UINT c) { auto r = REAL; return ASYNC("DrawPrimitive", r->DrawPrimitive(t, s, c)); }
 static UINT vertsFor(D3DPRIMITIVETYPE t, UINT c) {
@@ -691,13 +701,14 @@ static void beforeReset() { rt::g_inlineRetire = true; sh::clearAll(); rt::runDe
 // D3D9 rejects Reset/ResetEx (D3DERR_INVALIDCALL) from any thread but the device window's.
 // The render thread drains the queue and parks; the window thread resets the device it then owns.
 template<class F> static HRESULT resetOnWindowThread(IDirect3DDevice9Ex* real, F&& reset, const char* name) {
-    if (!rt::onMain() || rt::g_parked) return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = reset(); refreshShadows(real); return h; }, name);
+    if (!rt::onMain() || rt::g_parked) return rt::sync([&]() -> HRESULT { beforeReset(); HRESULT h = reset(); refreshShadows(real); if (SUCCEEDED(h)) rt::g_sceneOpen = false; return h; }, name);
     static HANDLE parked = CreateEventA(nullptr, FALSE, FALSE, nullptr), resume = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     rt::post([] { beforeReset(); SetEvent(parked); WaitForSingleObject(resume, INFINITE); });
     rt::g_sinceWake = 0; rt::wake();
     WaitForSingleObject(parked, INFINITE);
     rt::g_parked = true;
     HRESULT h = reset(); refreshShadows(real);
+    if (SUCCEEDED(h)) rt::g_sceneOpen = false;
     rt::g_parked = false;
     SetEvent(resume);
     return h;
@@ -736,27 +747,45 @@ void rt::stallReport(const char* name) {
 static DWORD WINAPI renderThread(void*) {
     rt::g_renderId = GetCurrentThreadId();
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    LONG64 completed = 0;
     for (;;) {
         if (rt::g_foreign) {
             std::vector<rt::SyncTask*> tasks;
             EnterCriticalSection(&rt::g_foreignLock); tasks.swap(rt::g_foreignTasks); InterlockedExchange(&rt::g_foreign, 0); LeaveCriticalSection(&rt::g_foreignLock);
             for (auto* t : tasks) rt::runTask(t);
         }
-        const uint32_t tail = rt::g_tail;
-        if (tail != (uint32_t)rt::g_head) {
-            MemoryBarrier();
+        // Snapshot the ring before checking command readiness. If a producer
+        // admits a command after this check, only records already in this
+        // snapshot may execute before the next command check.
+        const uint32_t tail = rt::g_tail, head = rt::g_head;
+        MemoryBarrier();
+        if (rt::g_commandsPending) {
+            rt::AsyncCommand command = {};
+            bool ready = false;
+            EnterCriticalSection(&rt::g_foreignLock);
+            if (!rt::g_foreignCommands.empty() && completed >= rt::g_foreignCommands.front().fence) {
+                command = rt::g_foreignCommands.front();
+                rt::g_foreignCommands.pop_front();
+                ready = true;
+            }
+            InterlockedExchange(&rt::g_commandsPending, !rt::g_foreignCommands.empty());
+            LeaveCriticalSection(&rt::g_foreignLock);
+            if (ready) { command.run(command.ctx); continue; }
+        }
+        if (tail != head) {
             rt::Rec* r = reinterpret_cast<rt::Rec*>(rt::g_ring + tail);
             if (!r->fn) { InterlockedExchange(&rt::g_tail, 0); continue; }
             r->fn(r + 1);
+            ++completed;
             MemoryBarrier(); InterlockedExchange(&rt::g_tail, tail + r->size);
             continue;
         }
         rt::runDeferred(); pollQueries();
         SetEvent(rt::g_idle);
-        int spins = 0; while (rt::g_tail == rt::g_head && !rt::g_foreign && spins++ < 4000) YieldProcessor();
-        if (rt::g_tail != rt::g_head || rt::g_foreign) continue;
+        int spins = 0; while (rt::g_tail == rt::g_head && !rt::g_foreign && !rt::g_commandsPending && spins++ < 4000) YieldProcessor();
+        if (rt::g_tail != rt::g_head || rt::g_foreign || rt::g_commandsPending) continue;
         InterlockedExchange(&rt::g_sleeping, 1);
-        if (rt::g_tail == rt::g_head && !rt::g_foreign) WaitForSingleObject(rt::g_work, g_qpoll.empty() ? 2 : 1);
+        if (rt::g_tail == rt::g_head && !rt::g_foreign && !rt::g_commandsPending) WaitForSingleObject(rt::g_work, g_qpoll.empty() ? 2 : 1);
         InterlockedExchange(&rt::g_sleeping, 0);
     }
 }
@@ -839,5 +868,49 @@ void post(void (*fn)(void*), void* ctx) {
         restoreShadowed(r, *snap, rts);
         sh::releaseRefs(*snap); delete snap; for (int i = 0; i < 4; ++i) if (rts[i]) rts[i]->Release(); delete[] rts;
     });
+}
+void post_command(void (*fn)(void*), void* ctx) {
+    if (!render_thread_id() || rt::onRender() || rt::mainOwnsDevice()) { fn(ctx); return; }
+    // Any SDK producer can hold a Context lock needed by a queued Display.
+    // Admission must not wait for ring capacity. This one queue also orders
+    // commands from main and foreign producers by their lock acquisition.
+    EnterCriticalSection(&rt::g_foreignLock);
+    // Publish pending before taking the fence. Otherwise a foreign producer
+    // paused after its fence read could let a later ring record pass unnoticed.
+    InterlockedExchange(&rt::g_commandsPending, 1);
+    const LONG64 fence = InterlockedCompareExchange64(&rt::g_published, 0, 0);
+    rt::g_foreignCommands.push_back({fn, ctx, fence});
+    LeaveCriticalSection(&rt::g_foreignLock);
+    rt::wake();
+}
+void drain_commands() {
+    if (!render_thread_id() || rt::onRender() || rt::mainOwnsDevice()) return;
+    struct Barrier { volatile LONG done; HANDLE event; } completed{0, rt::threadEvent()};
+    // The shared command queue acknowledges every prior command and the real
+    // records published before this sentinel, independently of ring capacity.
+    post_command([](void* context) {
+        auto* barrier = static_cast<Barrier*>(context);
+        const HANDLE event = barrier->event;
+        InterlockedExchange(&barrier->done, 1);
+        SetEvent(event);
+    }, &completed);
+    for (unsigned waits = 0; !completed.done; ++waits) {
+        WaitForSingleObject(completed.event, 5);
+        if (waits == 2000) rt::stallReport("d3d9rt::drain_commands");
+    }
+}
+HRESULT begin_command_scene(IDirect3DDevice9* device, bool& opened) {
+    opened = false;
+    if (!device || rt::g_sceneOpen) return D3D_OK;
+    const HRESULT result = device->BeginScene();
+    opened = SUCCEEDED(result);
+    if (opened) rt::g_sceneOpen = true;
+    return result;
+}
+HRESULT end_command_scene(IDirect3DDevice9* device, bool opened) {
+    if (!device || !opened) return D3D_OK;
+    const HRESULT result = device->EndScene();
+    if (SUCCEEDED(result)) rt::g_sceneOpen = false;
+    return result;
 }
 }}

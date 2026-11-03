@@ -24,6 +24,27 @@ def load_patch(name):
 
 
 patcher=load_patch('patch_stock_flash_drawable_images')
+thread_patcher=load_patch('patch_stock_scaleform_render_thread')
+
+
+def threaded_executor(legacy=False):
+    source=patcher.EXECUTOR
+    # Run the actual two production transformations: preserve the existing
+    # device-state owner and replace only command dispatch.
+    for before,after in thread_patcher.EDITS[patcher.SOURCE][1:3]:
+        if before not in source:
+            raise AssertionError('DrawableImage executor anchor changed')
+        source=source.replace(before,after,1)
+    if legacy:
+        source=source.replace(thread_patcher.EDITS[patcher.SOURCE][2][1],
+                              thread_patcher.LEGACY_COMMAND_EXECUTOR,1)
+    return source if legacy else thread_patcher.command_scene_ownership(source)
+
+
+def native_scene_helpers():
+    source=(ROOT/'bigworld/stock_d3d9_render_thread.cpp').read_text()
+    return '\n'.join(block(source,signature) for signature in (
+        'HRESULT begin_command_scene(', 'HRESULT end_command_scene('))
 
 
 def sdk(test):
@@ -130,7 +151,8 @@ class FlashDrawableImagesTest(unittest.TestCase):
     def test_actual_sdk_completion_and_device_state_owner(self):
         source=(HERE/'stock_flash_drawable_images_host.cpp').read_text()
         queue=(sdk(self)/'Src/Render/Render_DrawableImage_Queue.cpp').read_text(encoding='utf-8-sig')
-        source=source.replace('@EXECUTOR@',patcher.EXECUTOR).replace('@SDK_COMPLETION@',
+        template=source
+        source=source.replace('// @SCENE_HELPERS@',native_scene_helpers()).replace('@EXECUTOR@',threaded_executor()).replace('@SDK_COMPLETION@',
             block(queue,'void DICommandQueue::ExecuteCommand::Execute()'))
         with tempfile.TemporaryDirectory() as directory:
             exe=build(self,directory,'queue',source)
@@ -138,7 +160,16 @@ class FlashDrawableImagesTest(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertIn('SDK completion/refs',result.stdout)
             wrong=subprocess.run([str(exe),'wrong-thread'],capture_output=True,text=True)
-            self.assertNotEqual(wrong.returncode,0,'Unsupported cross-thread access was silently admitted')
+            self.assertEqual(wrong.returncode,0,wrong.stdout+wrong.stderr)
+            inline=subprocess.run([str(exe),'thread-off'],capture_output=True,text=True)
+            self.assertEqual(inline.returncode,0,inline.stdout+inline.stderr)
+            self.assertIn('PASS legacy thread-off caller scene owner',inline.stdout)
+            old=template.replace('// @SCENE_HELPERS@',native_scene_helpers()).replace('@EXECUTOR@',threaded_executor(legacy=True)).replace('@SDK_COMPLETION@',
+                block(queue,'void DICommandQueue::ExecuteCommand::Execute()'))
+            negative=build(self,directory,'caller-execute',old)
+            failed=subprocess.run([str(negative)],capture_output=True,text=True)
+            self.assertNotEqual(failed.returncode,0,
+                                'Old caller-thread drain/Execute unexpectedly passed held-lock admission')
 
     def test_original_factory_call_reproduces_missing_image_and_fixed_call_allocates(self):
         original=engine(self);patched=patcher.patch_sources(original)

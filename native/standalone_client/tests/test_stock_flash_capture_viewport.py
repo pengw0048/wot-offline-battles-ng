@@ -5,12 +5,14 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
 from native_test_compile_flags import native_test_compile_flags
 from stock_battle_gui_support import client_executable
 from test_stock_cursor_camera import function
+from test_stock_flash_drawable_images import load_patch, patcher as drawable_patch
 from test_stock_scaleform_scene import REVISION
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,33 +32,72 @@ class FlashCaptureViewportTests(unittest.TestCase):
         self.assertEqual(exe.code(0xaa8504, 3), bytes.fromhex('ff5064'))
 
     def test_fresh_cached_and_repeated_patch_use_the_same_order(self):
+        archive = Path(os.environ.get('WOT_PUBLIC_ENGINE_ARCHIVE', '/tmp/wot-bigworld-engine-14.4.1.tar.gz'))
+        source_root = os.environ.get('WOT_PUBLIC_ENGINE_SOURCE')
+        names = set(PATCH.EDITS) | set(drawable_patch.FILES)
+        if source_root:
+            pristine = {name: (Path(source_root) / name).read_text(encoding='utf-8-sig')
+                        for name in names}
+        else:
+            if not archive.is_file():
+                if 'WOT_PUBLIC_ENGINE_ARCHIVE' in os.environ:
+                    self.fail('Configured public engine archive missing: ' + str(archive))
+                self.skipTest('Pinned public engine source or archive required')
+            pristine = {}
+            with tarfile.open(archive) as engine:
+                for member in engine:
+                    for name in names:
+                        if member.name.endswith('/programming/bigworld/' + name):
+                            pristine[name] = engine.extractfile(member).read().decode('utf-8-sig')
+            self.assertEqual(set(pristine), names)
+        # The render adapter consumes the full manager after these production
+        # prerequisites, including its executor and final owner-release tail.
+        glyph = load_patch('patch_stock_glyph_cache')
+        for relative, unused in glyph.FILES:
+            pristine[relative] = glyph.patch_source(relative, pristine[relative])
+        pristine = drawable_patch.patch_sources(pristine)
+        profiler = load_patch('patch_stock_gui_profiler')
+        for relative in set(profiler.TOKENS) & names:
+            pristine[relative] = profiler.patch_source(relative, pristine[relative])
+        def movie_view_edit(path, before, after, label):
+            name = str(path)
+            if name in pristine:
+                self.assertEqual(pristine[name].count(before), 1, label)
+                pristine[name] = pristine[name].replace(before, after, 1)
+        load_patch('patch_scaleform_sdk').movie_view_edits(Path('.'), movie_view_edit)
         with tempfile.TemporaryDirectory(prefix='flash-capture-patch-') as temp:
             root = Path(temp)
             sdk = root / 'sdk'
             (sdk / PATCH.HAL_HEADER).parent.mkdir(parents=True)
             (sdk / PATCH.HAL_HEADER).write_text(PATCH.HAL_CONTRACT)
-            header = root / 'lib/scaleform/manager.hpp'
-            header.parent.mkdir(parents=True)
-            header.write_text('#include "loader.hpp"\n\t\tvoid createUnmanagedObjects();\n'
-                              '\t\tPtr<Render::Renderer2D> & pRenderer() { return pRenderer_; }\n'
-                              '\t\tRender::D3D9::TextureManager *pTexMgr_;')
-            for relative, edits in PATCH.EDITS.items():
-                (root / relative).write_text('\n'.join(old for old, unused in edits))
+            def write(sources):
+                for name, text in sources.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_text(text)
+            write(pristine)
             PATCH.patch(root, sdk)
-            expected = {name: (root / name).read_text() for name in PATCH.EDITS}
+            expected = {name: (root / name).read_text() for name in pristine}
             PATCH.patch(root, sdk)
             self.assertEqual(expected, {name: (root / name).read_text() for name in expected})
-            # Recreate precisely the preceding adapter, then upgrade in place.
-            for relative, edits in PATCH.EDITS.items():
-                text = expected[relative]
-                for unused, previous in edits:
-                    ordered = PATCH.overlay_surface_ownership(PATCH.render_job_ownership(PATCH.viewport_before_capture(previous)))
-                    if ordered != previous:
-                        self.assertEqual(text.count(ordered), 1)
-                        text = text.replace(ordered, previous)
-                (root / relative).write_text(text)
-            PATCH.patch(root, sdk)
-            self.assertEqual(expected, {name: (root / name).read_text() for name in expected})
+            # Rebuild complete cached generations, rather than undoing pieces
+            # of today's scene-owner transform inside an incomplete fixture.
+            for stage in range(4):
+                with self.subTest(cached_stage=stage):
+                    cached = dict(pristine)
+                    for relative, edits in PATCH.EDITS.items():
+                        text = cached[relative]
+                        for index, (old, previous) in enumerate(edits):
+                            if relative == drawable_patch.SOURCE and index == 2:
+                                previous = PATCH.LEGACY_COMMAND_EXECUTOR
+                            for transform in (PATCH.viewport_before_capture, PATCH.render_job_ownership,
+                                              PATCH.overlay_surface_ownership)[:stage]:
+                                previous = transform(previous)
+                            self.assertEqual(text.count(old), 1, (relative, index))
+                            text = text.replace(old, previous, 1)
+                        cached[relative] = text
+                    write(cached)
+                    PATCH.patch(root, sdk)
+                    self.assertEqual(expected, {name: (root / name).read_text() for name in expected})
 
     def test_global_and_component_sequences_freeze_the_current_viewport(self):
         compiler = shutil.which(os.environ.get('CXX', 'c++'))
