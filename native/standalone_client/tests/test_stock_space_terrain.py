@@ -422,10 +422,14 @@ struct Texture:BaseTexture{HRESULT GetLevelDesc(unsigned,D3DSURFACE_DESC*d){*d={
 struct Surface{int refs=1;HRESULT GetDesc(D3DSURFACE_DESC*d){*d={1280,720,21};return S_OK;}void Release(){--refs;}};
 }
 DX::Texture texture;DX::Surface target;
-int reads=0;bool fail=false;std::vector<std::string> logs;
-void logMessage(const char*format,...){char line[2048];va_list args;va_start(args,format);
-    std::vsnprintf(line,sizeof(line),format,args);va_end(args);logs.push_back(line);}
-#define INFO_MSG(...) logMessage(__VA_ARGS__)
+int reads=0,opens=0,closes=0;bool fail=false,failLog=false;std::vector<std::string> logs;
+FILE* logOpen(const char*path,const char*mode){++opens;assert(std::string(path)=="d3d9_render_thread.log"&&std::string(mode)=="a");
+    return failLog?nullptr:reinterpret_cast<FILE*>(&opens);}
+int logPrintf(FILE*file,const char*format,...){assert(file==reinterpret_cast<FILE*>(&opens));
+    char line[2048];va_list args;va_start(args,format);int result=std::vsnprintf(line,sizeof(line),format,args);
+    va_end(args);logs.push_back(line);return result;}
+int logClose(FILE*file){assert(file==reinterpret_cast<FILE*>(&opens));++closes;return 0;}
+#define INFO_MSG(...) ((void)0) // Match Consumer: successful file output must not depend on this macro.
 struct ID3DXEffect{
  const char*GetCurrentTechnique(){return "Color";}
  HRESULT GetTechniqueDesc(const char*,D3DXTECHNIQUE_DESC*d){d->Name="Color";return S_OK;}
@@ -488,6 +492,9 @@ int main(){Block block;Material material;BaseMaterial base;
  draw(&block,&material,&base,DM_BUMP);assert(logs.size()==16);
  assert(texture.refs==1&&target.refs==1); // Both GetTexture references and the target are released even on failed readback.
  Block another;another.cfg.data=block.cfg.data;draw(&another,&material,&base,DM_BLEND);assert(logs.size()==20);
+ assert(opens==5&&closes==5);
+ failLog=true;Block unavailable;unavailable.cfg.data=block.cfg.data;draw(&unavailable,&material,&base,DM_BLEND);
+ assert(logs.size()==20&&opens==6&&closes==5&&texture.refs==1&&target.refs==1);
 }
 """
 
@@ -784,6 +791,10 @@ class StockSpaceTerrainTests(unittest.TestCase):
                 patch.PREVIOUS_DIAGNOSTIC_READBACK))
             patch.patch(self.root)
             self.assertEqual({path: path.read_bytes() for path in paths}, final)
+            renderer.write_text(renderer.read_text().replace(patch.BORDER_DIAGNOSTIC,
+                patch.PREVIOUS_INFO_DIAGNOSTIC_READBACK).replace('#include <cstdio>\n', ''))
+            patch.patch(self.root)
+            self.assertEqual({path: path.read_bytes() for path in paths}, final)
             # The native instance fields remain byte-for-byte the old layout.
             self.assertNotIn('stockBorderDiagnosticMask_', header.read_text())
             self.assertEqual(header.read_text().count('bool initStockCompiled('), 1)
@@ -820,7 +831,8 @@ class StockSpaceTerrainTests(unittest.TestCase):
         self.assertLess(draw.index('pEffectMaterial->beginPass(i)'), draw.index(patch.BORDER_DIAGNOSTIC))
         self.assertLess(draw.index(patch.BORDER_DIAGNOSTIC), draw.index('pBlock->draw( pEffectMaterial )'))
         binary = self.compile('border-diagnostic', BORDER_DIAGNOSTIC_PROBE.replace(
-            '@DIAGNOSTIC@', patch.BORDER_DIAGNOSTIC))
+            '@DIAGNOSTIC@', patch.BORDER_DIAGNOSTIC.replace('std::fopen', 'logOpen').replace(
+                'std::fprintf', 'logPrintf').replace('std::fclose', 'logClose')))
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

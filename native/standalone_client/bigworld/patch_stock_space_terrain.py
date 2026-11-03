@@ -383,26 +383,31 @@ BORDER_DIAGNOSTIC = r'''                if (i == 0 && !Moo::rc().reflectionScene
                             const Vector3 camera = Moo::rc().lodInvView().applyToOrigin();
                             const auto expected = data->borderParameters();
                             const SmartPointer<Moo::BaseTexture>& resource = pBlock->settings()->stockBorderMap();
-                            INFO_MSG("TerrainBorder draw kind=%u edge=%u technique=%s tile=(%.3f,%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) arena=(%.3f,%.3f,%.3f,%.3f) width=%.6f authoredBlend=%.6f resource=%s\n",
-                                kind, unsigned(edge), technique.Name ? technique.Name : "<unknown>", low.x, low.z, high.x, high.z, camera.x, camera.y, camera.z,
-                                data->settingFloat(20), data->settingFloat(21), data->settingFloat(22), data->settingFloat(23),
-                                data->settingFloat(24), data->settingFloat(25), resource ? resource->resourceID().c_str() : "<none>");
-                            INFO_MSG("TerrainBorder binding hr=(%08lx,%08lx,%08lx,%08lx) outer=(%.6f,%.6f,%.6f,%.6f) inverse=(%.6f,%.6f,%.6f,%.6f) blend=%.6f expectedBlend=%.6f\n",
-                                static_cast<unsigned long>(outerResult), static_cast<unsigned long>(inverseResult),
-                                static_cast<unsigned long>(blendResult), static_cast<unsigned long>(mapResult),
-                                outer.x, outer.y, outer.z, outer.w, inverse.x, inverse.y, inverse.z, inverse.w, blend, expected.blend);
-                            INFO_MSG("TerrainBorder device hr=(%08lx,%08lx,%08lx,%08lx,%08lx) c%u=(%.6f,%.6f,%.6f,%.6f) c%u=(%.6f,%.6f,%.6f,%.6f) c%u.x=%.6f s%u_bound=%u sampledSlots=%04lx texture=(%u,%u,%u) color2=(%u,%u,%u) writeMask=%lu\n",
-                                static_cast<unsigned long>(registerResult), static_cast<unsigned long>(samplerResult),
-                                static_cast<unsigned long>(descResult), static_cast<unsigned long>(targetResult), static_cast<unsigned long>(writeResult),
-                                firstRegister, actual[0], actual[1], actual[2], actual[3], firstRegister + 1,
-                                actual[4], actual[5], actual[6], actual[7], firstRegister + 2, actual[8], sampler,
-                                unsigned(boundMap && boundMap == sampledMap), static_cast<unsigned long>(sampledSlots), mapDesc.Width, mapDesc.Height, unsigned(mapDesc.Format),
-                                targetDesc.Width, targetDesc.Height, unsigned(targetDesc.Format), static_cast<unsigned long>(writeMask));
-                            INFO_MSG("TerrainBorder sampler s%u hr=(%08lx,%08lx,%08lx,%08lx) address=(%lu,%lu) filter=(%lu,%lu)\n",
-                                sampler, static_cast<unsigned long>(addressU), static_cast<unsigned long>(addressV),
-                                static_cast<unsigned long>(minFilter), static_cast<unsigned long>(magFilter),
-                                static_cast<unsigned long>(addressing[0]), static_cast<unsigned long>(addressing[1]),
-                                static_cast<unsigned long>(filtering[0]), static_cast<unsigned long>(filtering[1]));
+                            FILE* diagnostic = std::fopen("d3d9_render_thread.log", "a");
+                            if (diagnostic)
+                            {
+                                std::fprintf(diagnostic, "TerrainBorder draw kind=%u edge=%u technique=%s tile=(%.3f,%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) arena=(%.3f,%.3f,%.3f,%.3f) width=%.6f authoredBlend=%.6f resource=%s\n",
+                                    kind, unsigned(edge), technique.Name ? technique.Name : "<unknown>", low.x, low.z, high.x, high.z, camera.x, camera.y, camera.z,
+                                    data->settingFloat(20), data->settingFloat(21), data->settingFloat(22), data->settingFloat(23),
+                                    data->settingFloat(24), data->settingFloat(25), resource ? resource->resourceID().c_str() : "<none>");
+                                std::fprintf(diagnostic, "TerrainBorder binding hr=(%08lx,%08lx,%08lx,%08lx) outer=(%.6f,%.6f,%.6f,%.6f) inverse=(%.6f,%.6f,%.6f,%.6f) blend=%.6f expectedBlend=%.6f\n",
+                                    static_cast<unsigned long>(outerResult), static_cast<unsigned long>(inverseResult),
+                                    static_cast<unsigned long>(blendResult), static_cast<unsigned long>(mapResult),
+                                    outer.x, outer.y, outer.z, outer.w, inverse.x, inverse.y, inverse.z, inverse.w, blend, expected.blend);
+                                std::fprintf(diagnostic, "TerrainBorder device hr=(%08lx,%08lx,%08lx,%08lx,%08lx) c%u=(%.6f,%.6f,%.6f,%.6f) c%u=(%.6f,%.6f,%.6f,%.6f) c%u.x=%.6f s%u_bound=%u sampledSlots=%04lx texture=(%u,%u,%u) color2=(%u,%u,%u) writeMask=%lu\n",
+                                    static_cast<unsigned long>(registerResult), static_cast<unsigned long>(samplerResult),
+                                    static_cast<unsigned long>(descResult), static_cast<unsigned long>(targetResult), static_cast<unsigned long>(writeResult),
+                                    firstRegister, actual[0], actual[1], actual[2], actual[3], firstRegister + 1,
+                                    actual[4], actual[5], actual[6], actual[7], firstRegister + 2, actual[8], sampler,
+                                    unsigned(boundMap && boundMap == sampledMap), static_cast<unsigned long>(sampledSlots), mapDesc.Width, mapDesc.Height, unsigned(mapDesc.Format),
+                                    targetDesc.Width, targetDesc.Height, unsigned(targetDesc.Format), static_cast<unsigned long>(writeMask));
+                                std::fprintf(diagnostic, "TerrainBorder sampler s%u hr=(%08lx,%08lx,%08lx,%08lx) address=(%lu,%lu) filter=(%lu,%lu)\n",
+                                    sampler, static_cast<unsigned long>(addressU), static_cast<unsigned long>(addressV),
+                                    static_cast<unsigned long>(minFilter), static_cast<unsigned long>(magFilter),
+                                    static_cast<unsigned long>(addressing[0]), static_cast<unsigned long>(addressing[1]),
+                                    static_cast<unsigned long>(filtering[0]), static_cast<unsigned long>(filtering[1]));
+                                std::fclose(diagnostic);
+                            }
                             if (target) target->Release();
                             if (sampledMap) sampledMap->Release();
                             if (boundMap) boundMap->Release();
@@ -411,6 +416,15 @@ BORDER_DIAGNOSTIC = r'''                if (i == 0 && !Moo::rc().reflectionScene
                 }
 
 '''
+
+# Consumer builds compile INFO_MSG out. Retire the exact earlier logger block
+# when preparing an already-built SDK, without adding a second draw diagnostic.
+_output_start = BORDER_DIAGNOSTIC.index('                            FILE* diagnostic =')
+_output_end = BORDER_DIAGNOSTIC.index('                            if (target) target->Release();', _output_start)
+_previous_output = ''.join(line[4:].replace('std::fprintf(diagnostic, ', 'INFO_MSG(', 1)
+    for line in BORDER_DIAGNOSTIC[_output_start:_output_end].splitlines(True)[3:-2])
+PREVIOUS_INFO_DIAGNOSTIC_READBACK = (BORDER_DIAGNOSTIC[:_output_start] +
+    _previous_output + BORDER_DIAGNOSTIC[_output_end:])
 
 PREVIOUS_DIAGNOSTIC_READBACK = '                if (i == 0 && !Moo::rc().reflectionScene() &&\n                    (drawMethod == DM_BLEND || drawMethod == DM_BUMP || drawMethod == DM_SINGLE_LOD))\n                {\n                    const unsigned kind = drawMethod == DM_SINGLE_LOD ? 0 : drawMethod == DM_BLEND ? 1 : 2;\n                    const wot::StockTerrainBinary* data = pBlock->settings()->stockCompiledData();\n                    if (data && pBlock->settings()->stockNeedsBorderDiagnostic(kind))\n                    {\n                        const Vector3 low = Moo::rc().world().applyToOrigin();\n                        const Vector3 high = Moo::rc().world().applyPoint(Vector3(pBlock->blockSize(), 0.f, pBlock->blockSize()));\n                        const bool edge =\n                            (((low.x <= data->settingFloat(20) && high.x >= data->settingFloat(20)) ||\n                              (low.x <= data->settingFloat(22) && high.x >= data->settingFloat(22))) &&\n                             low.z <= data->settingFloat(23) && high.z >= data->settingFloat(21)) ||\n                            (((low.z <= data->settingFloat(21) && high.z >= data->settingFloat(21)) ||\n                              (low.z <= data->settingFloat(23) && high.z >= data->settingFloat(23))) &&\n                             low.x <= data->settingFloat(22) && high.x >= data->settingFloat(20));\n                        if (pBlock->settings()->stockTakeBorderDiagnostic(kind + (edge ? 3 : 0)))\n                        {\n                            ID3DXEffect* effect = pEffectMaterial->pEffect()->pEffect();\n                            D3DXVECTOR4 outer = {}, inverse = {};\n                            float blend = 0.f;\n                            const HRESULT outerResult = effect->GetVector(pMaterial->stockOuterBorder_, &outer);\n                            const HRESULT inverseResult = effect->GetVector(pMaterial->stockInverseBorder_, &inverse);\n                            const HRESULT blendResult = effect->GetFloat(pMaterial->stockBorderBlend_, &blend);\n                            DX::BaseTexture* boundMap = NULL;\n                            const HRESULT mapResult = effect->GetTexture(pMaterial->stockBorderMap_, &boundMap);\n                            const unsigned firstRegister = kind == 0 ? 13 : 24, sampler = kind == 0 ? 0 : 4;\n                            float actual[12] = {};\n                            const HRESULT registerResult = Moo::rc().device()->GetVertexShaderConstantF(firstRegister, actual, 3);\n                            DX::BaseTexture* sampledMap = NULL;\n                            const HRESULT samplerResult = Moo::rc().device()->GetTexture(sampler, &sampledMap);\n                            D3DSURFACE_DESC mapDesc = {}, targetDesc = {};\n                            HRESULT descResult = E_FAIL, targetResult = E_FAIL;\n                            if (sampledMap && sampledMap->GetType() == D3DRTYPE_TEXTURE)\n                                descResult = static_cast<DX::Texture*>(sampledMap)->GetLevelDesc(0, &mapDesc);\n                            DX::Surface* target = NULL;\n                            targetResult = Moo::rc().device()->GetRenderTarget(2, &target);\n                            if (SUCCEEDED(targetResult) && target) targetResult = target->GetDesc(&targetDesc);\n                            DWORD writeMask = 0;\n                            const HRESULT writeResult = Moo::rc().device()->GetRenderState(D3DRS_COLORWRITEENABLE2, &writeMask);\n                            const Vector3 camera = Moo::rc().lodInvView().applyToOrigin();\n                            const auto expected = data->borderParameters();\n                            const SmartPointer<Moo::BaseTexture>& resource = pBlock->settings()->stockBorderMap();\n                            INFO_MSG("TerrainBorder draw kind=%u edge=%u tile=(%.3f,%.3f,%.3f,%.3f) camera=(%.3f,%.3f,%.3f) arena=(%.3f,%.3f,%.3f,%.3f) width=%.6f authoredBlend=%.6f resource=%s\\n",\n                                kind, unsigned(edge), low.x, low.z, high.x, high.z, camera.x, camera.y, camera.z,\n                                data->settingFloat(20), data->settingFloat(21), data->settingFloat(22), data->settingFloat(23),\n                                data->settingFloat(24), data->settingFloat(25), resource ? resource->resourceID().c_str() : "<none>");\n                            INFO_MSG("TerrainBorder binding hr=(%08lx,%08lx,%08lx,%08lx) outer=(%.6f,%.6f,%.6f,%.6f) inverse=(%.6f,%.6f,%.6f,%.6f) blend=%.6f expectedBlend=%.6f\\n",\n                                static_cast<unsigned long>(outerResult), static_cast<unsigned long>(inverseResult),\n                                static_cast<unsigned long>(blendResult), static_cast<unsigned long>(mapResult),\n                                outer.x, outer.y, outer.z, outer.w, inverse.x, inverse.y, inverse.z, inverse.w, blend, expected.blend);\n                            INFO_MSG("TerrainBorder device hr=(%08lx,%08lx,%08lx,%08lx,%08lx) c%u=(%.6f,%.6f,%.6f,%.6f) c%u=(%.6f,%.6f,%.6f,%.6f) c%u.x=%.6f s%u_bound=%u texture=(%u,%u,%u) color2=(%u,%u,%u) writeMask=%lu\\n",\n                                static_cast<unsigned long>(registerResult), static_cast<unsigned long>(samplerResult),\n                                static_cast<unsigned long>(descResult), static_cast<unsigned long>(targetResult), static_cast<unsigned long>(writeResult),\n                                firstRegister, actual[0], actual[1], actual[2], actual[3], firstRegister + 1,\n                                actual[4], actual[5], actual[6], actual[7], firstRegister + 2, actual[8], sampler,\n                                unsigned(boundMap && boundMap == sampledMap), mapDesc.Width, mapDesc.Height, unsigned(mapDesc.Format),\n                                targetDesc.Width, targetDesc.Height, unsigned(targetDesc.Format), static_cast<unsigned long>(writeMask));\n                            if (target) target->Release();\n                            if (sampledMap) sampledMap->Release();\n                            if (boundMap) boundMap->Release();\n                        }\n                    }\n                }\n\n'
 
@@ -566,6 +580,8 @@ def patch(root):
     renderer = replace_once(renderer, '#include "terrain_renderer2.hpp"',
         '#include "terrain_renderer2.hpp"\n#include "stock_effect_adapter.hpp"\n'
         '#include "wot/stock_terrain_binary.hpp"\n#include "moo/base_texture.hpp"')
+    renderer = replace_once(renderer, '#include "moo/base_texture.hpp"',
+        '#include "moo/base_texture.hpp"\n#include <cstdio>')
     renderer = replace_once(renderer, 'namespace\n{', 'namespace\n{' + TECHNIQUE_HELPER)
     for name, legacy, original in (
             ('texturedMaterial_', 'MAIN', 'Color'),
@@ -628,6 +644,7 @@ def patch(root):
         '                else if (DM_SHADOW_CAST != drawMethod && DM_Z_ONLY != drawMethod &&\n'
         '                    (!wot::is_stock_effect(pEffectMaterial->pEffect()->pEffect()) || !Moo::rc().reflectionScene()))')
     renderer = upgrade_block(renderer, PREVIOUS_DIAGNOSTIC_READBACK, BORDER_DIAGNOSTIC)
+    renderer = upgrade_block(renderer, PREVIOUS_INFO_DIAGNOSTIC_READBACK, BORDER_DIAGNOSTIC)
     renderer = replace_once(renderer, '                // draw single material',
         BORDER_DIAGNOSTIC + '                // draw single material')
     graphics_path = root / 'lib/terrain/terrain_graphics_options.cpp'
