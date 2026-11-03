@@ -342,6 +342,9 @@ source hash in this instruction file.
 
 ## Change, validation, and handoff discipline
 
+- Do not trigger or wait for full BigWorld builds on GitHub Actions. Use local
+  compilation when a full engine build is needed.
+
 - Diagnose with read-only checks first. Implement only when the task includes a
   change.
 - Test the narrow failure first, then the relevant subsystem, and run a broader

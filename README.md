@@ -304,9 +304,9 @@ and compares its output bits with the C++ implementation. These checks do not
 establish complete resource, vehicle-physics or gameplay parity; the reviewed
 boundaries are in [COMPATIBILITY_REVIEW.md](COMPATIBILITY_REVIEW.md).
 
-The separate `Build standalone BigWorld client` workflow builds the pinned
+Build the pinned
 [BigWorld 14.4.1 source](https://github.com/v2v3v4/BigWorld-Engine-14.4.1/tree/3d3cc16ae60bb1d71cb014e9b0539e54e6d8c4fb)
-with Windows/MSVC. To reproduce it on Windows with Visual Studio 2022, v142,
+locally with Windows/MSVC. On Windows with Visual Studio 2022, v142,
 CMake and PowerShell 7, use a new temporary work directory:
 
 ```powershell
@@ -391,8 +391,8 @@ The Bot tactics editor is not supported by the NG client yet. Multiplayer
 rendering, gameplay and repeated-round lifecycle still require Windows
 acceptance with multiple clients.
 
-Build it on Windows with x64 Python 3.11 from the `bigworld-client-win32`
-artifact of the `Build standalone BigWorld client` workflow. The launcher, its
+Build it on Windows with x64 Python 3.11 from a locally built native client
+package. The launcher, its
 tests and its build read the pinned v1.1.1 server and tools, so compose that
 source tree first:
 

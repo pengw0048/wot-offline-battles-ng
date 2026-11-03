@@ -207,9 +207,7 @@ print('Licensed SDK input extracted: %d files' % len(members))
     $GlooxRoot = Join-Path $WorkRoot "gloox"
     $GlooxPrefix = "gloox-$GlooxVersion"
     New-Item -ItemType Directory -Path $GlooxRoot | Out-Null
-    Invoke-Checked "curl.exe" @("--fail", "--location", "--retry", "2",
-        "--connect-timeout", "15", "--max-time", "60", "--output", $GlooxArchive,
-        "https://camaya.net/download/gloox-$GlooxVersion.tar.bz2") "gloox-source-download.log"
+    Invoke-WebRequest -Uri "https://camaya.net/download/gloox-$GlooxVersion.tar.bz2" -OutFile $GlooxArchive
     $GlooxMembers = @(& tar -tjf $GlooxArchive)
     if ($LASTEXITCODE -ne 0 -or $GlooxMembers.Count -eq 0) {
         throw "Cannot inspect the pinned gloox source archive."
