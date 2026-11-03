@@ -66,6 +66,44 @@ SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=Tr
 '''
 
 EDITS = (
+    # A delayed main-loop probe remains useful after the next probe is sent.
+    # The trusted worker echoes the original client clock, so the relay does
+    # not need a latest-sequence ledger that would discard slow responses.
+    ('        self.worker_ping_pending = {}\n', '', 1),
+    ('''            self.worker_ping_pending[player.player_id] = (
+                seq, stamp, self.round_id, self.authority_epoch, worker)
+            # Remove departed players; one outstanding probe per live player.
+            for player_id in list(self.worker_ping_pending):
+                if player_id not in self.players:
+                    self.worker_ping_pending.pop(player_id, None)
+            return worker.offer_reliable({
+                'type': 'worker_ping', 'player_id': player.player_id,
+                'seq': seq, 'round_id': self.round_id,
+                'authority_epoch': self.authority_epoch})
+''', '''            return worker.offer_reliable({
+                'type': 'worker_ping', 'player_id': player.player_id,
+                'seq': seq, 'client_time': stamp, 'round_id': self.round_id,
+                'authority_epoch': self.authority_epoch})
+''', 1),
+    ('''            pending = self.worker_ping_pending.get(player_id)
+            if pending is None:
+                return False
+            seq, stamp, round_id, epoch, owner = pending
+            if (worker is not owner or worker is not self.simulation_worker or
+                    not worker.connected or message.get('seq') != seq or
+                    message.get('round_id') != round_id or
+                    message.get('authority_epoch') != epoch or
+                    self.round_id != round_id or self.authority_epoch != epoch):
+                return False
+            self.worker_ping_pending.pop(player_id, None)
+''', '''            if (worker is not self.simulation_worker or
+                    not worker.connected or
+                    message.get('round_id') != self.round_id or
+                    message.get('authority_epoch') != self.authority_epoch):
+                return False
+            seq, stamp = message.get('seq'), message.get('client_time')
+            round_id, epoch = self.round_id, self.authority_epoch
+''', 1),
     ('from gui.mods.offline_lan_0922 import ram_history, ram_motion\n',
      'from gui.mods.offline_lan_0922 import ram_history\nimport battle_wire_ram_motion as ram_motion\n', 1),
     ('from gui.mods.offline_lan_0922 import bot_state_codec, tank_contact_ledger, turret_contact_ledger\n',

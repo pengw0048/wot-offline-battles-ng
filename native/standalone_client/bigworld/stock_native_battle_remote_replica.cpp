@@ -305,6 +305,9 @@ void receive(Battle& b, const Value& data, double now, bool manifest) {
     const auto epoch = s.epoch;
     ++owner->received;
     auto events = manifest ? cs::manifest(s, data) : cs::snapshot(s, data, now);
+    // The worker never runs replica interpolation. Retain accepted contact
+    // receipts, but release the presentation samples it cannot consume.
+    if (b.worker) for (auto& entry : s.actors) entry.second->samples.clear();
     if (epoch != s.epoch) {
         owner->bindings.clear();
         owner->last_advance.reset();

@@ -98,7 +98,7 @@ def runtime(log, v):
     records = {'bot:1': {'kind': 'bot', 'spot_visible': v % 2 == 0, 'spot_marker_visible': 0},
                'bot:2': {'kind': 'bot'}, 'player:4': {'kind': 'player'}, 'bot:3': {'kind': u'bot', 'spot_visible': 'yes'}}
     rotator = Obj(log, 'rotator', turretYaw=0.5, gunPitch=-0.1) if v % 3 else None
-    entity = Obj(log, 'entity', health=(300, 299.7, None)[v % 3] if v % 23 != 22 else 'x', gunAngles=12)
+    entity = Obj(log, 'entity', health=(300, 299.7, None)[v % 3] if v % 23 != 22 else 'x', gunAngles=999, gunAnglesPacked=12)
     gun = Obj(log, 'gun', ammo={'shell': [1, 2]}, shot_index=3, clip=[1, 2], reload_time=4.5) if v % 4 else None
     attrs = dict(client=client, state='stopped' if v % 13 == 12 else 'running', _worker_mode=v % 29 == 28, _client_ready_received=v % 8 != 7, _ready_sent=True,
                  _start_message=({'round_id': 'r1'}, None)[v % 14 == 13], _config={'map': 'm', 'vehicle': 'v', 'other': 1},

@@ -172,6 +172,13 @@ for seed in range(int(sys.argv[3])):
             print('seed %d length %d != %d' % (seed, len(a), len(b)))
         sys.exit(1)
     cases += len(a)
+client, unused_rng = build('native', 1)
+snapshot_delta.materialize = lambda value: value
+client._handle_message = lambda message: setattr(client, '_worker_pong_time', message['received']) if message.get('accepted') else None
+assert client._dispatch_message(dict(type='worker_pong', seq=42, received=12., accepted=True), None)
+assert client._worker_probe_rx_seq == 42
+assert client._dispatch_message(dict(type='worker_pong', seq=43, received=13., accepted=False), None)
+assert client._worker_probe_rx_seq == 42
 print('lan poll differential ok %d' % cases)
 '''
 

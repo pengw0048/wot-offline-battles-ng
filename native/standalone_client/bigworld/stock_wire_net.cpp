@@ -75,6 +75,9 @@ struct Shared {
     std::deque<Outgoing> outgoing;
     std::size_t outgoing_bytes = 0;
     std::deque<Received> frames;
+    // Windowed high-water marks, read only by the existing PERF owner.
+    std::size_t rx_high=0,tx_high=0,tx_bytes_high=0;
+    double rx_age_high=0.;
     // Replay recording: every received frame in arrival order, on the replay clock.
     std::shared_ptr<stock_wire_replay::Writer> recorder;
     Clock::time_point record_origin;
@@ -249,6 +252,7 @@ void receiver(std::shared_ptr<Shared> shared, std::string host, int port, double
                 for (const auto& item : ready) stock_wire_replay::record_frame(*shared->recorder, item.frame, t);
             }
             for (auto& item : ready) shared->frames.push_back(item);
+            shared->rx_high=std::max(shared->rx_high,shared->frames.size());
         }
     }
 }
@@ -310,6 +314,8 @@ PyObject* sendPython(PyObject*, PyObject* args) {
         Py_RETURN_FALSE;
     shared.outgoing.push_back(Outgoing{std::string(static_cast<const char*>(data), static_cast<std::size_t>(size)), std::string(), {}});
     shared.outgoing_bytes += static_cast<std::size_t>(size);
+    shared.tx_high=std::max(shared.tx_high,shared.outgoing.size());
+    shared.tx_bytes_high=std::max(shared.tx_bytes_high,shared.outgoing_bytes);
     shared.wake.notify_all();
     Py_RETURN_TRUE;
 }
@@ -326,6 +332,8 @@ PyObject* receivePython(PyObject*, PyObject* args) {
     {
         std::lock_guard<std::mutex> lock(value->shared->mutex);
         auto& frames = value->shared->frames;
+        if(!frames.empty())value->shared->rx_age_high=std::max(value->shared->rx_age_high,
+            std::chrono::duration<double>(Clock::now()-frames.front().arrival).count());
         std::size_t count = std::min(frames.size(), static_cast<std::size_t>(limit > 0 ? limit : 0));
         for (std::size_t i = 0; i < count; ++i) { taken.push_back(std::move(frames.front())); frames.pop_front(); }
         // A terminal state is reported only after every received frame was taken.
@@ -367,6 +375,17 @@ PyObject* recordPython(PyObject*, PyObject* args) {
     value->shared->record_origin = Clock::now();
     value->shared->record_offset = elapsed;
     Py_RETURN_NONE;
+}
+
+PyObject* diagnosticsPython(PyObject*, PyObject* capsule) {
+    Connection* value=connection(capsule);if(!value)return nullptr;
+    auto& shared=*value->shared;std::lock_guard<std::mutex> lock(shared.mutex);
+    if(!shared.frames.empty())shared.rx_age_high=std::max(shared.rx_age_high,
+        std::chrono::duration<double>(Clock::now()-shared.frames.front().arrival).count());
+    PyObject* result=Py_BuildValue("(KKKd)",static_cast<unsigned long long>(shared.rx_high),
+        static_cast<unsigned long long>(shared.tx_high),static_cast<unsigned long long>(shared.tx_bytes_high),shared.rx_age_high);
+    shared.rx_high=shared.frames.size();shared.tx_high=shared.outgoing.size();shared.tx_bytes_high=shared.outgoing_bytes;shared.rx_age_high=0.;
+    return result;
 }
 
 PyObject* closePython(PyObject*, PyObject* args) {
@@ -415,6 +434,8 @@ Queued send(Native& native, std::string payload, const std::string& type, const 
     if (shared.outgoing.size() >= max_messages || shared.outgoing_bytes + payload.size() > max_bytes) return Queued::refused;
     shared.outgoing_bytes += payload.size();
     shared.outgoing.push_back(Outgoing{std::move(payload), type, key});
+    shared.tx_high=std::max(shared.tx_high,shared.outgoing.size());
+    shared.tx_bytes_high=std::max(shared.tx_bytes_high,shared.outgoing_bytes);
     shared.wake.notify_all();
     return Queued::queued;
 }
@@ -431,6 +452,7 @@ Status receive(Native& native, std::size_t limit, std::vector<Frame>& out) {
         status.state = state == State::connecting ? "connecting" : state == State::connected ? "connected"
                      : state == State::closed ? "closed" : "failed";
         status.error = shared.error;
+        status.received_pending=shared.frames.size();status.outgoing_pending=shared.outgoing.size();status.outgoing_bytes=shared.outgoing_bytes;
     }
     const Clock::time_point now = Clock::now();
     for (auto& item : taken)
@@ -448,6 +470,7 @@ PyMethodDef* methods() {
         {"net_open", openPython, METH_VARARGS, "Connect natively and start the receive and send threads."},
         {"net_send", sendPython, METH_VARARGS, "Queue one encoded frame; False once the transport ended or is full."},
         {"net_receive", receivePython, METH_VARARGS, "Take received frames with their ages and the transport state."},
+        {"net_diagnostics", diagnosticsPython, METH_O, "Take windowed queue high-water marks."},
         {"net_close", closePython, METH_VARARGS, "Flush queued frames briefly, then close the transport."},
         {"net_record", recordPython, METH_VARARGS, "Record every received frame into a replay writer, or stop."},
         {nullptr, nullptr, 0, nullptr}};
