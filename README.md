@@ -304,6 +304,25 @@ and compares its output bits with the C++ implementation. These checks do not
 establish complete resource, vehicle-physics or gameplay parity; the reviewed
 boundaries are in [COMPATIBILITY_REVIEW.md](COMPATIBILITY_REVIEW.md).
 
+For Bot fitting or startup changes, run the cold geometry audit before packaging
+on a Unix host with a C++17 compiler and CPython 2.7.18. Supply the pinned gameplay
+checkout used by the build; missing inputs fail this command rather than skipping
+the audit:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 native/standalone_client/tests/audit_stock_bot_geometry_cold.py \
+  --client "$WOT_0922_CLIENT" --fork-source "$WOT_FORK_SOURCE" \
+  --python27 "$WOT_PYTHON27"
+```
+
+This checks every baked fitting and Siege mode against exact model, visual and
+BSP resources, using the stock Python hit-tester lifecycle and the native
+preparation/geometry consumers. It covers cold loading, shared ownership and
+release on the host; it does not establish Windows resource streaming or battle
+startup acceptance. The focused Python 2 bridge and cold-start regression tests
+also require `WOT_FORK_SOURCE` and `WOT_PYTHON27`; ordinary test discovery without
+those inputs can skip them.
+
 Build the pinned
 [BigWorld 14.4.1 source](https://github.com/v2v3v4/BigWorld-Engine-14.4.1/tree/3d3cc16ae60bb1d71cb014e9b0539e54e6d8c4fb)
 locally with Windows/MSVC. On Windows with Visual Studio 2022, v142,
