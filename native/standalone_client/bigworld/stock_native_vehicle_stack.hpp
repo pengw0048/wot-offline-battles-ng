@@ -15,6 +15,15 @@
 
 namespace stock_native_vehicle_stack {
 using Point=std::array<double,3>;
+// Python 2 can rename MSVC's <cmath> wrapper before this header is reached.
+// Use its CRT primitive without depending on the wrapper's spelling.
+inline double hypot2(double x,double y) {
+#if defined(_MSC_VER)
+    return ::_hypot(x,y);
+#else
+    return std::hypot(x,y);
+#endif
+}
 struct Identity {
     bool human=false;std::int64_t id=0;
     bool operator<(const Identity& other)const{return std::tie(human,id)<std::tie(other.human,other.id);}
@@ -32,7 +41,7 @@ inline Point offset(const Point& point,double pitch,double roll) {
 }
 inline bool roof_candidate(const Body& upper,const Body& lower,double x,double z) {
     if(upper.key==lower.key||upper.position[1]<lower.position[1]+.5||
-       std::hypot(upper.position[0]-lower.position[0],upper.position[2]-lower.position[2])>12.)return false;
+       hypot2(upper.position[0]-lower.position[0],upper.position[2]-lower.position[2])>12.)return false;
     const double dx=x-lower.position[0],dz=z-lower.position[2],sn=std::sin(lower.yaw),cs=std::cos(lower.yaw);
     return std::abs(cs*dx-sn*dz)<=lower.shape[0]+.5&&std::abs(sn*dx+cs*dz)<=lower.shape[1]+.5;
 }
@@ -44,7 +53,7 @@ inline bool admit_roof(const Body& upper,const Surface& surface,const Point& sta
 inline std::optional<Surface> settled_carrier(const std::vector<Point>& contacts,const std::vector<Surface>& hits) {
     std::map<Identity,std::pair<unsigned,Surface>> matches;
     for(const auto& point:contacts)for(const auto& hit:hits) {
-        if(std::abs(hit.point[1]-point[1])>.03||std::hypot(hit.point[0]-point[0],hit.point[2]-point[2])>.05)continue;
+        if(std::abs(hit.point[1]-point[1])>.03||hypot2(hit.point[0]-point[0],hit.point[2]-point[2])>.05)continue;
         auto& row=matches[hit.carrier];++row.first;row.second=hit;break;
     }
     std::optional<Surface> selected;unsigned count=0;
@@ -52,13 +61,13 @@ inline std::optional<Surface> settled_carrier(const std::vector<Point>& contacts
     return selected;
 }
 inline double vertical_closing(const Surface& surface,double velocity) {
-    const auto&n=surface.normal;const double length=std::hypot(std::hypot(n[0],n[1]),n[2]);
+    const auto&n=surface.normal;const double length=hypot2(hypot2(n[0],n[1]),n[2]);
     return std::isfinite(length)&&length>0.?std::max(0.,-velocity*n[1]/length):std::max(0.,-velocity);
 }
 inline std::optional<Surface> impact_surface(const std::vector<Point>&contacts,const std::vector<Surface>&hits,double vertical_velocity) {
     std::optional<Surface> selected;double speed=-1.;
     for(const auto&point:contacts)for(const auto&hit:hits) {
-        if(std::abs(hit.point[1]-point[1])>.03||std::hypot(hit.point[0]-point[0],hit.point[2]-point[2])>.05)continue;
+        if(std::abs(hit.point[1]-point[1])>.03||hypot2(hit.point[0]-point[0],hit.point[2]-point[2])>.05)continue;
         const double closing=vertical_closing(hit,vertical_velocity);
         if(closing>speed){selected=hit;speed=closing;}break;
     }
