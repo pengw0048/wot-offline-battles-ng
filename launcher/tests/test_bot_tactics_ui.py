@@ -463,10 +463,10 @@ class EditorUITests(unittest.TestCase):
 class LauncherEntryTests(unittest.TestCase):
     def test_real_launcher_entry_opens_real_editor(self):
         import core,wot_launcher
-        with tempfile.TemporaryDirectory() as tmp,mock.patch.dict(os.environ,{'LOCALAPPDATA':tmp}),\
+        with tempfile.TemporaryDirectory() as tmp,mock.patch.dict(os.environ,{'LOCALAPPDATA':tmp+'/local','APPDATA':tmp+'/roaming'}),\
              mock.patch.object(core,'load_settings',return_value={'language':'zh','free_notice_seen':True}),\
              mock.patch.object(core,'discover_game_folders',return_value=[]),\
-             mock.patch.object(ui_module.messagebox,'showerror') as errors:
+             mock.patch.object(ui_module.messagebox,'showerror',side_effect=AssertionError('Unexpected editor error dialog')) as errors:
             app=wot_launcher.LauncherWindow(tk,ttk,filedialog)
             try:
                 app.root.update()

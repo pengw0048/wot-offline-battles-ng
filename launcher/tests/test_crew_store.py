@@ -204,7 +204,7 @@ class CrewUITests(unittest.TestCase):
         from tkinter import ttk
         self.root=tk.Tk();self.root.withdraw();self.addCleanup(self.root.destroy)
         self.owner=NS(_tk=tk,_ttk=ttk,_t=lambda x:x,game_root=tk.StringVar(value='game'),
-                      _save_slot_id='one',_busy=False,_maintenance_busy=False)
+                      _save_slot_id='one',_busy=False,_maintenance_busy=False,_client_root=lambda:'game')
         capacity_patch=patch.object(store,'capacity',return_value=dict(total=2000,occupied=0,pending=0,available=2000))
         capacity_patch.start();self.addCleanup(capacity_patch.stop)
         self.frame=ttk.Frame(self.root)

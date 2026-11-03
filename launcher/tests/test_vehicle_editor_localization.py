@@ -53,7 +53,7 @@ class VehicleEditorLanguageTests(unittest.TestCase):
         def open_editor(parent, game_root, profile_name, **options):
             return vehicle_editor_ui.VehicleEditorWindow(parent, game_root, profile_name,
                 tk, ttk, mock.Mock(), service=service, armor_viewer_factory=viewer, **options)
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {'LOCALAPPDATA': temp}), \
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {'LOCALAPPDATA': temp + '/local', 'APPDATA': temp + '/roaming'}), \
              mock.patch.object(core, 'load_settings', return_value={'language': 'en', 'free_notice_seen': True}), \
              mock.patch.object(core, 'discover_game_folders', return_value=[]):
             app = wot_launcher.LauncherWindow(tk, ttk, filedialog)

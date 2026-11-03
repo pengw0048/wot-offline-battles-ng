@@ -2936,8 +2936,7 @@ class LauncherWindow(object):
                 from . import bot_tactics_ui
             status = self._refresh_client()
             editor = bot_tactics_ui.open_editor(self.root, status.get("path", ""),
-                                               language=self.language, log=self._log,
-                                                lineup=lambda:bot_lineup_profiles.runtime_assignments(self._bot_lineup_store,self.bot_lineup_profile.get().strip()))
+                                               language=self.language, log=self._log)
             editors = [value for value in getattr(self, '_bot_tactics_editors', ())
                        if value.root.winfo_exists()]
             editors.append(editor)

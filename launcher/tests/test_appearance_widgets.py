@@ -25,7 +25,7 @@ class WidgetTests(unittest.TestCase):
                            dict(kind=4,id=128,label='Style',category='Preset style',rules=[],igr=False,
                                 hidden=True,rent_count=0)]
                     owner=types.SimpleNamespace(_save_slot_id='fixture',game_root=tk.StringVar(value='unused'),
-                        save_dialog=root,_tk=tk,_ttk=ttk,_t=tr)
+                        save_dialog=root,_tk=tk,_ttk=ttk,_t=tr,_client_root=lambda:'unused')
                     with mock.patch.object(ui.store,'appearance_catalogue',return_value=(items,vehicles)), \
                          mock.patch.object(ui.store,'read_inventory',return_value={}), \
                          mock.patch.object(ui.store,'_target',return_value=('unused',{'vehicles':{'101':{},'102':{}}},{},'',True)):
