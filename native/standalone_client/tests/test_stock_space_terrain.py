@@ -792,6 +792,28 @@ class StockSpaceTerrainTests(unittest.TestCase):
             for path, data in final.items():
                 path.write_bytes(data)
 
+    def test_cached_member_gap_and_exact_adjacent_duplicate_upgrade(self):
+        paths = [self.root / name for name in FILES]
+        final = {path: path.read_bytes() for path in paths}
+        header = self.root / 'lib/terrain/terrain_settings.hpp'
+        try:
+            for duplicate in (patch.PREVIOUS_DIAGNOSTIC_MEMBERS, patch.SETTINGS_MEMBERS):
+                # This is the actual failed-cache order: baseline members first,
+                # then the new/duplicate block nearest version_. Removing it
+                # leaves a gap that must not trigger another insertion.
+                header.write_text(final[header].decode().replace(patch.SETTINGS_MEMBERS,
+                    patch.SETTINGS_MEMBERS + '\n\n' + duplicate))
+                patch.patch(self.root)
+                text = header.read_text()
+                self.assertEqual(text.count(patch.SETTINGS_MEMBERS), 1)
+                self.assertNotIn('stockBorderDiagnosticMask_', text)
+                once = {path: path.read_bytes() for path in paths}
+                patch.patch(self.root)
+                self.assertEqual({path: path.read_bytes() for path in paths}, once)
+        finally:
+            for path, data in final.items():
+                path.write_bytes(data)
+
     def test_final_border_readback_is_bounded_and_releases_device_references(self):
         renderer = (self.root / 'lib/terrain/terrain2/terrain_renderer2.cpp').read_text()
         draw = source_function(renderer, 'bool TerrainRenderer2::drawTerrainMaterial(')

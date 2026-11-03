@@ -511,6 +511,15 @@ def patch(root):
         '    stockBorderMap_ = NULL;\n    stockBorderDiagnosticMask_ = 0;\n', 1)
     settings_header = upgrade_block(settings_header, PREVIOUS_DIAGNOSTIC_DECLARATIONS, SETTINGS_DECLARATIONS)
     settings_header = upgrade_block(settings_header, previous_declarations, SETTINGS_DECLARATIONS)
+    # An interrupted earlier preparation can leave two exact member blocks.
+    # Recognize only an adjacent pair separated by whitespace, not arbitrary
+    # duplicate declarations elsewhere in a modified SDK.
+    if settings_header.count(SETTINGS_MEMBERS) == 2:
+        first = settings_header.index(SETTINGS_MEMBERS)
+        second = settings_header.index(SETTINGS_MEMBERS, first + len(SETTINGS_MEMBERS))
+        if settings_header[first + len(SETTINGS_MEMBERS):second].strip():
+            raise ValueError('Unrecognized separated cached terrain member blocks')
+        settings_header = settings_header[:first] + settings_header[first + len(SETTINGS_MEMBERS):]
     settings_header = upgrade_block(settings_header, PREVIOUS_DIAGNOSTIC_MEMBERS, SETTINGS_MEMBERS)
     settings_source = upgrade_block(settings_source, previous_settings, SETTINGS)
     settings_header = replace_once(settings_header, '#include "resmgr/datasection.hpp"',
@@ -520,8 +529,9 @@ def patch(root):
         '\t~TerrainSettings();\n' + SETTINGS_DECLARATIONS)
     settings_header = replace_once(settings_header, 'namespace Terrain\n{',
         'namespace Moo { class BaseTexture; }\n\nnamespace Terrain\n{')
-    settings_header = replace_once(settings_header, '\tuint32 version_;',
-        SETTINGS_MEMBERS + '\n\tuint32 version_;')
+    if SETTINGS_MEMBERS not in settings_header:
+        settings_header = replace_once(settings_header, '\tuint32 version_;',
+            SETTINGS_MEMBERS + '\n\tuint32 version_;')
     settings_source = replace_once(settings_source, '#include "terrain_settings.hpp"',
         '#include "terrain_settings.hpp"\n#include "wot/stock_terrain_binary.hpp"\n'
         '#include "moo/texture_manager.hpp"\n#include "resmgr/bwresource.hpp"')
