@@ -66,7 +66,10 @@ void Owner::fence(const std::string&id,bool resolution){auto&set=resolution?reso
 bool Owner::admit(const Launch&l,double now,bool restore,std::optional<double> local_anchor){
     if(!epoch_)return false;if(terminal_fence_.count(l.id)||resolution_fence_.count(l.id))return true;
     last_now_=std::max(last_now_,now);auto*flight=install(l);if(!flight)return false;if(local_anchor&&!flight->anchor)flight->anchor=local_anchor;if(restore)flight->canonical_seen=true;if(flight->continuation)return true;const Key key{l.id,flight->canonical.segment};if(cursors_.contains(key))return true;
-    if(flight->terminal){if(restore)flight->awaiting=false;return true;}
+    // A snapshot may predate the reliable terminal already admitted by the
+    // transport. Only a refused enqueue needs another send; an old echo is
+    // not a negative acknowledgement. Canonical retirement finishes the flight.
+    if(flight->terminal)return true;
     auto c=snapshot(*flight,now);const bool restored=restore||l.segment!=0;const bool ok=restored?cursors_.restore(c,restore?now:std::max(now,c.cursor_time)):cursors_.launch(c,std::max(now,c.cursor_time));
     if(!ok){++metrics_.rejected;return false;}
     flight->meta.presentation_offsets=world_.presentationOffsets(l,now);if(restored)++metrics_.restores;else ++metrics_.launches;
