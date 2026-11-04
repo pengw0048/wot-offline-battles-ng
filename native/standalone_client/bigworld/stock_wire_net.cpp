@@ -25,6 +25,7 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -64,6 +65,12 @@ struct Received {
 struct Outgoing {
     std::string payload, type;
     std::optional<std::string> key;
+    Clock::time_point enqueued = Clock::now();
+};
+
+struct SendCounts {
+    std::size_t queued=0, replaced=0, refused=0, sent=0, bytes=0;
+    double send_ms=0., send_max_ms=0.;
 };
 
 struct Shared {
@@ -74,6 +81,10 @@ struct Shared {
     Socket socket = invalid_socket;
     std::deque<Outgoing> outgoing;
     std::size_t outgoing_bytes = 0;
+    std::map<std::string, SendCounts> send_counts;
+    std::string sending_type;
+    Clock::time_point sending_since;
+    Clock::time_point send_window = Clock::now();
     std::deque<Received> frames;
     // Windowed high-water marks, read only by the existing PERF owner.
     std::size_t rx_high=0,tx_high=0,tx_bytes_high=0;
@@ -169,6 +180,8 @@ void sender(std::shared_ptr<Shared> shared) {
             continue;
         }
         std::string payload;
+        shared->sending_type = shared->outgoing.front().type;
+        shared->sending_since = Clock::now();
         payload.swap(shared->outgoing.front().payload);
         shared->outgoing.pop_front();
         shared->outgoing_bytes -= payload.size();
@@ -182,6 +195,12 @@ void sender(std::shared_ptr<Shared> shared) {
             offset += static_cast<std::size_t>(sent);
         }
         lock.lock();
+        auto& counts = shared->send_counts[shared->sending_type];
+        const double elapsed = std::chrono::duration<double, std::milli>(Clock::now() - shared->sending_since).count();
+        counts.send_ms += elapsed;
+        counts.send_max_ms = std::max(counts.send_max_ms, elapsed);
+        if (ok) { ++counts.sent; counts.bytes += payload.size(); }
+        shared->sending_type.clear();
         if (!ok) {
             lock.unlock();
             shared->finish(State::failed, "server closed the connection");
@@ -309,10 +328,14 @@ PyObject* sendPython(PyObject*, PyObject* args) {
     if (!value || PyObject_AsReadBuffer(payload, &data, &size) < 0) return nullptr;
     Shared& shared = *value->shared;
     std::lock_guard<std::mutex> lock(shared.mutex);
+    const std::string type = "wire_id_" + std::to_string(stock_wire::frame_message(static_cast<const unsigned char*>(data), static_cast<std::size_t>(size)));
     if (shared.closing || shared.state == State::closed || shared.state == State::failed ||
-        shared.outgoing_bytes + static_cast<std::size_t>(size) > max_send_bytes)
+        shared.outgoing_bytes + static_cast<std::size_t>(size) > max_send_bytes) {
+        ++shared.send_counts[type].refused;
         Py_RETURN_FALSE;
-    shared.outgoing.push_back(Outgoing{std::string(static_cast<const char*>(data), static_cast<std::size_t>(size)), std::string(), {}});
+    }
+    shared.outgoing.push_back(Outgoing{std::string(static_cast<const char*>(data), static_cast<std::size_t>(size)), type, {}});
+    ++shared.send_counts[type].queued;
     shared.outgoing_bytes += static_cast<std::size_t>(size);
     shared.tx_high=std::max(shared.tx_high,shared.outgoing.size());
     shared.tx_bytes_high=std::max(shared.tx_bytes_high,shared.outgoing_bytes);
@@ -377,6 +400,50 @@ PyObject* recordPython(PyObject*, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+// The existing ten-second PERF owner takes counters; socket threads never write logs.
+std::vector<std::string> takeSendDiagnostics(Shared& shared) {
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    const auto now = Clock::now();
+    const double window = std::chrono::duration<double>(now - shared.send_window).count();
+    std::map<std::string, std::pair<std::size_t, double>> pending;
+    for (const auto& item : shared.outgoing) {
+        auto& row = pending[item.type];
+        ++row.first;
+        row.second = std::max(row.second, std::chrono::duration<double, std::milli>(now - item.enqueued).count());
+    }
+    if (!shared.sending_type.empty()) shared.send_counts[shared.sending_type];
+    for (const auto& row : pending) shared.send_counts[row.first];
+    std::vector<std::string> lines;
+    for (const auto& entry : shared.send_counts) {
+        const auto& c = entry.second;
+        const auto p = pending[entry.first];
+        const double inflight = entry.first == shared.sending_type
+            ? std::chrono::duration<double, std::milli>(now - shared.sending_since).count() : 0.;
+        lines.push_back("WIRE_TX type=" + entry.first + " window_s=" + std::to_string(window) +
+            " queued=" + std::to_string(c.queued) + " replaced=" + std::to_string(c.replaced) +
+            " refused=" + std::to_string(c.refused) + " sent=" + std::to_string(c.sent) +
+            " sent_bytes=" + std::to_string(c.bytes) + " pending=" + std::to_string(p.first) +
+            " oldest_ms=" + std::to_string(p.second) + " inflight_ms=" + std::to_string(inflight) +
+            " send_ms=" + std::to_string(c.send_ms) + " send_max_ms=" + std::to_string(c.send_max_ms));
+    }
+    shared.send_counts.clear();
+    shared.send_window = now;
+    return lines;
+}
+
+PyObject* sendDiagnosticsPython(PyObject*, PyObject* capsule) {
+    Connection* value = connection(capsule); if (!value) return nullptr;
+    const auto lines = takeSendDiagnostics(*value->shared);
+    PyObject* result = PyList_New(0);
+    if (!result) return nullptr;
+    for (const auto& line : lines) {
+        PyObject* text = PyString_FromString(line.c_str());
+        if (!text || PyList_Append(result, text) < 0) { Py_XDECREF(text); Py_DECREF(result); return nullptr; }
+        Py_DECREF(text);
+    }
+    return result;
+}
+
 PyObject* diagnosticsPython(PyObject*, PyObject* capsule) {
     Connection* value=connection(capsule);if(!value)return nullptr;
     auto& shared=*value->shared;std::lock_guard<std::mutex> lock(shared.mutex);
@@ -416,7 +483,7 @@ Queued send(Native& native, std::string payload, const std::string& type, const 
             std::size_t max_messages, std::size_t max_bytes) {
     Shared& shared = *native.connection.shared;
     std::lock_guard<std::mutex> lock(shared.mutex);
-    if (shared.closing || shared.state == State::closed || shared.state == State::failed) return Queued::refused;
+    if (shared.closing || shared.state == State::closed || shared.state == State::failed) { ++shared.send_counts[type].refused; return Queued::refused; }
     if (key) {
         // Only an unsent checkpoint with the same key may be superseded, never across another checkpoint or a ram report.
         for (auto queued = shared.outgoing.rbegin(); queued != shared.outgoing.rend(); ++queued) {
@@ -425,13 +492,16 @@ Queued send(Native& native, std::string payload, const std::string& type, const 
                 shared.outgoing_bytes = shared.outgoing_bytes - queued->payload.size() + payload.size();
                 queued->payload.swap(payload);
                 queued->type = type;
+                queued->enqueued = Clock::now();
+                ++shared.send_counts[type].replaced;
                 shared.wake.notify_all();
                 return Queued::replaced;
             }
             if (queued->type == "bot_ram_report") break;
         }
     }
-    if (shared.outgoing.size() >= max_messages || shared.outgoing_bytes + payload.size() > max_bytes) return Queued::refused;
+    if (shared.outgoing.size() >= max_messages || shared.outgoing_bytes + payload.size() > max_bytes) { ++shared.send_counts[type].refused; return Queued::refused; }
+    ++shared.send_counts[type].queued;
     shared.outgoing_bytes += payload.size();
     shared.outgoing.push_back(Outgoing{std::move(payload), type, key});
     shared.tx_high=std::max(shared.tx_high,shared.outgoing.size());
@@ -460,6 +530,10 @@ Status receive(Native& native, std::size_t limit, std::vector<Frame>& out) {
     return status;
 }
 
+std::vector<std::string> takeSendDiagnostics(Native& native) {
+    return takeSendDiagnostics(*native.connection.shared);
+}
+
 void close(Native& native, double flush) {
     { std::lock_guard<std::mutex> lock(native.connection.shared->mutex); native.connection.shared->flush_seconds = flush; }
     native.connection.close();
@@ -470,6 +544,7 @@ PyMethodDef* methods() {
         {"net_open", openPython, METH_VARARGS, "Connect natively and start the receive and send threads."},
         {"net_send", sendPython, METH_VARARGS, "Queue one encoded frame; False once the transport ended or is full."},
         {"net_receive", receivePython, METH_VARARGS, "Take received frames with their ages and the transport state."},
+        {"net_send_diagnostics", sendDiagnosticsPython, METH_O, "Take per-message send counters and queue ages."},
         {"net_diagnostics", diagnosticsPython, METH_O, "Take windowed queue high-water marks."},
         {"net_close", closePython, METH_VARARGS, "Flush queued frames briefly, then close the transport."},
         {"net_record", recordPython, METH_VARARGS, "Record every received frame into a replay writer, or stop."},

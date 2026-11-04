@@ -38,6 +38,83 @@ def _decode_frame(frame):
     return _WIRE.decode(frame)
 
 
+class _WorkerIngressPerf:
+    """Bounded, connection-local counters; socket and handler timing stay separate."""
+    def __init__(self, worker_id, clock=None, cpu_clock=None):
+        self.worker_id = worker_id
+        self.clock = clock or time.perf_counter
+        self.cpu_clock = cpu_clock or time.thread_time
+        self.started = self.clock()
+        self.types = {}
+        self.recv_stats = {}
+
+    @staticmethod
+    def _timing(row, name, wall, cpu):
+        for suffix, value in (("wall_ms", wall * 1000.0),
+                              ("cpu_ms", cpu * 1000.0)):
+            key = name + "_" + suffix
+            row[key] = row.get(key, 0.0) + value
+            row[key + "_max"] = max(row.get(key + "_max", 0.0), value)
+
+    def _row(self, kind):
+        if not isinstance(kind, str):
+            kind = "invalid"
+        if kind not in self.types and len(self.types) >= 31:
+            kind = "other"
+        return self.types.setdefault(kind, {})
+
+    def decode(self, frame):
+        wall, cpu = self.clock(), self.cpu_clock()
+        message = None
+        try:
+            message = _decode_frame(frame)
+            return message
+        finally:
+            row = self._row(message.get("type") if isinstance(message, dict) else None)
+            row["frames"] = row.get("frames", 0) + 1
+            row["bytes"] = row.get("bytes", 0) + len(frame)
+            self._timing(row, "decode", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def dispatch(self, handler, server, worker, message):
+        wall, cpu = self.clock(), self.cpu_clock()
+        try:
+            return handler(server, worker, message)
+        finally:
+            row = self._row(message.get("type"))
+            self._timing(row, "handler", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def recv(self, conn, size):
+        wall, cpu = self.clock(), self.cpu_clock()
+        row = self.recv_stats
+        row["calls"] = row.get("calls", 0) + 1
+        try:
+            chunk = conn.recv(size)
+            row["bytes"] = row.get("bytes", 0) + len(chunk)
+            if not chunk:
+                row["eof"] = row.get("eof", 0) + 1
+            return chunk
+        except socket.timeout:
+            row["timeouts"] = row.get("timeouts", 0) + 1
+            raise
+        finally:
+            self._timing(row, "wait", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def report(self):
+        now = self.clock()
+        if now - self.started < 10.0:
+            return
+        def rounded(row):
+            return {key: round(value, 3) if isinstance(value, float) else value
+                    for key, value in row.items()}
+        _server_log("PERF worker_ingress " + json.dumps({
+            "worker": self.worker_id, "window_s": round(now - self.started, 3),
+            "types": {kind: rounded(row) for kind, row in self.types.items()},
+            "recv": rounded(self.recv_stats)}, sort_keys=True, separators=(",", ":")))
+        self.started = now
+        self.types.clear()
+        self.recv_stats.clear()
+
+
 def _ng_probe_identity():
     return {
         "schema": 1,
@@ -222,7 +299,37 @@ def stage_text(text):
             text = text[:index] + HELPERS + text[index:]
         else:
             text = text.replace(before, after)
-    return text
+    return _worker_ingress_diagnostics_source(text)
+
+
+def _worker_ingress_diagnostics_source(text):
+    # Restrict instrumentation to the worker loop; the visible socket path is unchanged.
+    start = text.index('    def _handle_simulation_worker(')
+    end = text.index('    def handle(self):', start)
+    source = text[start:end]
+    replacements = (
+        ('            conn.settimeout(0.5)\n',
+         '            conn.settimeout(0.5)\n'
+         '            ingress_perf = _WorkerIngressPerf(worker.worker_id)\n'),
+        ('            while True:\n',
+         '            while True:\n                ingress_perf.report()\n'),
+        ('                while _frame_ready(buffer):\n',
+         '                while _frame_ready(buffer):\n                    ingress_perf.report()\n'),
+        ('                        message = _decode_frame(line)\n',
+         '                        message = ingress_perf.decode(line)\n'),
+        ('                            self._dispatch_simulation_worker_message(\n'
+         '                                server, worker, message)\n',
+         '                            ingress_perf.dispatch(\n'
+         '                                self._dispatch_simulation_worker_message,\n'
+         '                                server, worker, message)\n'),
+        ('                    chunk = conn.recv(4096)\n',
+         '                    chunk = ingress_perf.recv(conn, 4096)\n'),
+    )
+    for before, after in replacements:
+        if source.count(before) != 1:
+            raise ValueError('pinned worker ingress seam changed: %r' % before)
+        source = source.replace(before, after, 1)
+    return text[:start] + source + text[end:]
 
 
 def _receipt_replace(source, before, after, count=1):

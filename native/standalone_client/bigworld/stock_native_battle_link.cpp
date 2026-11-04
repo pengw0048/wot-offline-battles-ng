@@ -1185,6 +1185,7 @@ void recordFrame(double seconds) {
 
 std::string takeProbeDiagnostics() {
     if(!link)return {};
+    if (link->net) for (const auto& line : stock_wire_net::takeSendDiagnostics(*link->net)) log(line);
     const std::string result=" probe_rx="+std::to_string(link->probe_rx)+" probe_last_seq="+std::to_string(link->probe_last_seq)+
         " probe_reply_queued="+std::to_string(link->probe_reply_queued)+" probe_reply_refused="+std::to_string(link->probe_reply_refused)+
         " probe_dispatch_max_ms="+std::to_string(link->probe_max_dispatch_age*1000.)+" probe_frame_ms="+std::to_string(link->probe_last_frame_ms)+

@@ -205,6 +205,13 @@ assert [item[0] for item in received] == frames, (len(received), len(frames))
 assert all(item[1] >= 0.0 for item in received)
 rx_high, tx_high, tx_bytes_high, age_high = wire.net_diagnostics(sock._handle)
 assert rx_high >= 1 and tx_high >= 1 and tx_bytes_high > 0 and age_high >= 0., (rx_high, tx_high, tx_bytes_high, age_high)
+send_rows = wire.net_send_diagnostics(sock._handle)
+assert len(send_rows) == 1, send_rows
+assert 'type=wire_id_' in send_rows[0] and ' queued=1 ' in send_rows[0], send_rows
+assert ' sent=1 ' in send_rows[0] and ' pending=0 ' in send_rows[0], send_rows
+assert ' inflight_ms=0.000000 ' in send_rows[0], send_rows
+assert wire.net_send_diagnostics(sock._handle) == [], 'send windows must reset'
+
 replicas = 0
 for frame, age, native in received:
     if wire.decode(frame)['type'] != 'replica_snapshot':
