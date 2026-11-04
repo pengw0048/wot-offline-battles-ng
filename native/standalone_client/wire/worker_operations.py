@@ -142,7 +142,9 @@ class Operations:
                     else:
                         self._fail(key, 'launch_not_admitted')
                     self.launches.pop(key, None)
-                elif state.last_projectile_launch_reject_code in ('launch_edge_pending', 'order'):
+                elif (state.last_projectile_launch_reject_code in ('launch_edge_pending', 'capacity') or
+                      (state.last_projectile_launch_reject_code == 'order' and
+                       state.last_projectile_launch_reject == 'bot projectile launch edge is out of order')):
                     blocked.add(bot)
                 else:
                     self._fail(key, state.last_projectile_launch_reject_code or 'launch_rejected')

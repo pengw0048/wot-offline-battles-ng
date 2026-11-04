@@ -128,6 +128,15 @@ class ReliableOperations(unittest.TestCase):
         self.assertIn('1:b:17:1',state.projectiles)
         self.assertIn((16,2),owner.launches)
 
+    def test_temporary_capacity_waits_without_discarding_the_shot(self):
+        state,message=setup();owner=operations.owner(state,server.__dict__)
+        with mock.patch.object(server,'PROJECTILE_MAX_PER_SHOOTER',0):
+            self.assertTrue(owner.launch(launch()))
+        self.assertIn((16,1),owner.launches)
+        self.assertFalse(any(e['kind']=='projectile_launch_failed' for e in state.pending_events))
+        owner.advance()
+        self.assertFalse(owner.launches);self.assertIn('1:b:16:1',state.projectiles)
+
     def test_contact_waits_for_other_owner_publication_without_network_retry(self):
         state=fixture._state(players=1);player=state.players[1]
         player.destructible_contact_seq=1
