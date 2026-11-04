@@ -50,6 +50,14 @@ def _ng_probe_identity():
 SERIALIZE_BEFORE = '    def _serialize_message(self, message, report_failure=True):\n        outgoing = _monotonic_endpoint_server_time(self, message)\n        try:\n            payload = (json.dumps(\n                outgoing, separators=(",", ":")) + "\\n").encode("utf-8")\n        except Exception as error:\n            self._record_outbound_failure(\n                "encode_error", message, error=error, sent_bytes=0)\n            raise\n        if len(payload) > MAX_LINE_BYTES:\n            try:\n                framed = state_transfer.frame_payload(\n                    outgoing, payload,\n                    state_transfer.CAPABILITY in getattr(self, "capabilities", ()))\n            except state_transfer.TransferError:\n                if report_failure:\n                    self._record_outbound_failure(\n                        "message_too_large", message, payload, sent_bytes=0)\n                return None\n            _server_log_limited(\n                "state-transfer:%s:%s" % (id(self), outgoing.get("type")),\n                "STATE_TRANSFER send kind=%s round=%s bytes=%d "\n                        "frames=%d wire_bytes=%d endpoint=%s" % (\n                outgoing.get("type"), outgoing.get("round_id"), len(payload),\n                framed.count(b"\\n"), len(framed),\n                getattr(self, "player_id", getattr(self, "worker_id", None))))\n            return framed\n        return payload\n\n'
 SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=True):
         outgoing = _monotonic_endpoint_server_time(self, message)
+        if "bot_orders" in outgoing:
+            # Native control and order signatures ignore these server-only
+            # receipts. Keep their richer planner data in server logs without
+            # serializing it or mutating the server-owned orders.
+            outgoing = dict(outgoing, bot_orders=[
+                {key: value for key, value in order.items()
+                 if key not in ("route_attempt", "route_assignment", "tactical_evidence")}
+                for order in outgoing["bot_orders"]])
         try:
             payload = _WIRE.encode(outgoing)
         except Exception as error:
