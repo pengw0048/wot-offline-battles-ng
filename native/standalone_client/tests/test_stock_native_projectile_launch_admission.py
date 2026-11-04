@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from native_test_compile_flags import native_test_compile_flags
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,7 +38,8 @@ class NativeProjectileLaunchAdmission(unittest.TestCase):
             path.write_text(host)
             binary = directory / 'admission'
             result = subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
-                '-fsanitize=address,undefined', str(path), '-o', str(binary)],
+                # The production bridge uses compact single-line guards.
+                '-Wno-misleading-indentation', *native_test_compile_flags('c++'), str(path), '-o', str(binary)],
                 text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=20)
