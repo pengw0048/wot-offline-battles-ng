@@ -33,6 +33,34 @@ void add(w::Registry& registry,double y){w::Instance item;item.kind=w::Kind::Fra
     item.filename="exact/prop";item.origin={0.,y,0.};w::Box box;box.center=item.origin;
     box.axes={{{.2,0.,0.}},{{0.,.2,0.}},{{0.,0.,.2}}};item.boxes={box};item.scaled_health[-1]=item.reference_health[-1]=1.;
     item.item_scale=1.;item.descriptor_valid=item.native_name_exact=true;registry.put({1,1},item);}
+void frozenVerdictRetries(){
+    for(bool accepted:{false,true}){
+        Fake world;
+        world.proposal=world.committed=result(int(accepted?w::ContactStatus::Crushed:w::ContactStatus::Clear),accepted?1:0);
+        Owner owner;const auto row=request();auto initial=owner.update({row},1.,world);
+        assert(initial.size()==1&&initial[0].accepted==accepted);
+        const auto frozen=initial[0];const auto proposals=world.proposal_calls,commits=world.commit_calls;
+        // The transport refused the first attempt: retry the same immutable
+        // verdict immediately, without repeating an irreversible world commit.
+        world.proposal=world.committed=result(int(w::ContactStatus::Pending),0,true);
+        auto refused=owner.update({row},1.001,world);
+        assert(refused.size()==1&&refused[0].serial==frozen.serial&&refused[0].accepted==accepted&&refused[0].token==frozen.token);
+        assert(world.proposal_calls==proposals&&world.commit_calls==commits);
+        assert(owner.acknowledge(frozen.serial,1.001));
+        for(unsigned frame=0;frame<24;++frame)assert(owner.update({row},1.001+frame*.01,world).empty());
+        // A stale canonical snapshot cannot replay an admitted reliable
+        // result. The server retains any missing publication dependency.
+        for(unsigned frame=0;frame<600;++frame)assert(owner.update({row},1.252+frame*.1,world).empty());
+        assert(world.proposal_calls==proposals&&world.commit_calls==commits);
+        assert(owner.acknowledge(frozen.serial,1.252));
+        assert(owner.update({},2.,world).empty());
+        // Another player or receipt must retain its own outcome.
+        auto other=row;other.receipt.player=2;other.receipt.sequence=2;
+        world.proposal=world.committed=result(int(w::ContactStatus::Crushed),1);
+        auto distinct=owner.update({other},2.,world);
+        assert(distinct.size()==1&&distinct[0].serial!=frozen.serial&&distinct[0].player==2&&distinct[0].sequence==2);
+    }
+}
 int main(int argc,char**argv){
     if(argc==2&&std::string(argv[1])=="oracle"){
         unsigned requested,tm,pm,cm;int t0,t1,ts,ps,cs,pending_proposal,pending_commit;
@@ -43,11 +71,12 @@ int main(int argc,char**argv){
             std::cout<<(values.empty()?-1:values[0].accepted?1:0)<<' '<<fake.tree_calls<<' '<<fake.proposal_calls<<' '<<fake.commit_calls<<'\n';
         }return 0;
     }
+    frozenVerdictRetries();
     Fake fake;fake.proposal=fake.committed=result(int(w::ContactStatus::Crushed),1);Owner owner;auto row=request();
     auto values=owner.update({row},1.,fake);assert(values.size()==1&&values[0].accepted&&fake.proposal_calls==1&&fake.commit_calls==1);
     const auto serial=values[0].serial;assert(owner.update({row},1.01,fake).size()==1&&fake.proposal_calls==1);
     assert(owner.acknowledge(serial,1.01));assert(owner.update({row},1.25,fake).empty());
-    assert(owner.update({row},1.26,fake).size()==1&&fake.commit_calls==1);assert(owner.acknowledge(serial,1.26));
+    assert(owner.update({row},1.26,fake).empty()&&fake.commit_calls==1);assert(owner.acknowledge(serial,1.26));
     row.receipt.start[0]=1.;assert(owner.update({row},1.27,fake).size()==1&&fake.commit_calls==2);
     for(int i=2;i<=1026;++i){row.receipt.sequence=i;assert(owner.update({row},2.,fake).size()==1);}
     assert(owner.cached()==1024&&!owner.acknowledge(serial,3.));

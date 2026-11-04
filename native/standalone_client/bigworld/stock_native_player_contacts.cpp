@@ -94,13 +94,13 @@ std::vector<Verdict> Owner::update(const std::vector<Request>& requests,double n
     for(const auto& request:requests){const auto&r=request.receipt;if(!valid(r)){++statistics_.failures;continue;}
         auto cached=results_.find(r);
         if(cached!=results_.end()){
-            if(now>=cached->second.next_retry){output.push_back(cached->second.verdict);++statistics_.retries;}
+            if(!cached->second.submitted){output.push_back(cached->second.verdict);++statistics_.retries;}
             continue;
         }
         try{
             const auto accepted=resolve(request,now,source);if(!accepted)continue;
             Verdict result{next_serial_++,r.player,r.sequence,*accepted,r.token};
-            results_[r]={result,now};serials_[result.serial]=r;order_.push_back(r);++statistics_.terminals;
+            results_[r]={result,false};serials_[result.serial]=r;order_.push_back(r);++statistics_.terminals;
             while(order_.size()>1024){const auto old=results_.find(order_.front());if(old!=results_.end()){serials_.erase(old->second.verdict.serial);results_.erase(old);}order_.pop_front();}
             output.push_back(std::move(result));
         }catch(const std::exception&){++statistics_.failures;}
@@ -111,6 +111,6 @@ bool Owner::acknowledge(std::uint64_t serial,double now){
     if(!std::isfinite(now))return false;
     const auto key=serials_.find(serial);if(key==serials_.end())return false;
     auto value=results_.find(key->second);if(value==results_.end())return false;
-    value->second.next_retry=now+.25;return true;
+    value->second.submitted=true;return true;
 }
 }

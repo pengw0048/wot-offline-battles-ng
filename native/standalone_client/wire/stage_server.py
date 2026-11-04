@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HELPERS = '''
 import battle_wire_schema as _battle_wire_schema
 import battle_wire_replica as _replica_split
+import battle_wire_worker_operations as _worker_ops
 _WIRE = _battle_wire_schema.SCHEMA
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
@@ -40,11 +41,13 @@ def _decode_frame(frame):
 
 class _WorkerIngressPerf:
     """Bounded, connection-local counters; socket and handler timing stay separate."""
-    def __init__(self, worker_id, clock=None, cpu_clock=None):
+    def __init__(self, worker_id, clock=None, cpu_clock=None, process_clock=None):
         self.worker_id = worker_id
         self.clock = clock or time.perf_counter
         self.cpu_clock = cpu_clock or time.thread_time
+        self.process_clock = process_clock or time.process_time
         self.started = self.clock()
+        self.process_started = self.process_clock()
         self.types = {}
         self.recv_stats = {}
 
@@ -83,6 +86,15 @@ class _WorkerIngressPerf:
             row = self._row(message.get("type"))
             self._timing(row, "handler", self.clock() - wall, self.cpu_clock() - cpu)
 
+    def lock_started(self):
+        return self.clock(), self.cpu_clock()
+
+    def lock_acquired(self, message, started):
+        row = self._row(message.get("type"))
+        row["lock_calls"] = row.get("lock_calls", 0) + 1
+        self._timing(row, "lock_wait", self.clock() - started[0],
+                     self.cpu_clock() - started[1])
+
     def recv(self, conn, size):
         wall, cpu = self.clock(), self.cpu_clock()
         row = self.recv_stats
@@ -103,14 +115,17 @@ class _WorkerIngressPerf:
         now = self.clock()
         if now - self.started < 10.0:
             return
+        process_now = self.process_clock()
         def rounded(row):
             return {key: round(value, 3) if isinstance(value, float) else value
                     for key, value in row.items()}
         _server_log("PERF worker_ingress " + json.dumps({
             "worker": self.worker_id, "window_s": round(now - self.started, 3),
+            "process_cpu_ms": round((process_now - self.process_started) * 1000.0, 3),
             "types": {kind: rounded(row) for kind, row in self.types.items()},
             "recv": rounded(self.recv_stats)}, sort_keys=True, separators=(",", ":")))
         self.started = now
+        self.process_started = process_now
         self.types.clear()
         self.recv_stats.clear()
 
@@ -299,7 +314,46 @@ def stage_text(text):
             text = text[:index] + HELPERS + text[index:]
         else:
             text = text.replace(before, after)
-    return _worker_ingress_diagnostics_source(text)
+    return _worker_operations_source(_worker_ingress_diagnostics_source(text))
+
+
+def _worker_operations_source(text):
+    before = '            accepted = server.state.launch_projectile(authority_id, message)\n'
+    after = '            accepted = _worker_ops.owner(server.state, globals()).launch(message)\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned worker launch seam changed')
+    text = text.replace(before, after, 1)
+    before = ('            accepted = server.state.report_player_destructible_contact_result(\n'
+              '                authority_id, message)\n')
+    after = '            accepted = _worker_ops.owner(server.state, globals()).contact(message)\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned worker contact seam changed')
+    text = text.replace(before, after, 1)
+    before = '        return bool(accepted)\n\n    def _handle_simulation_worker('
+    after = ('        if accepted and message_type in ("bot_state", "destructible", "projectile_progress",\n'
+             '                                           "projectile_ricochet", "projectile_resolve"):\n'
+             '            _worker_ops.owner(server.state, globals()).advance()\n'
+             '        return bool(accepted)\n\n    def _handle_simulation_worker(')
+    if text.count(before) != 1:
+        raise ValueError('pinned worker operation completion seam changed')
+    text = text.replace(before, after, 1)
+    start = text.index('    def _prune_orphaned_bot_launch_edges(self):')
+    end = text.index('    @staticmethod', start)
+    text = text[:start] + ('    def _prune_orphaned_bot_launch_edges(self):\n'
+        '        # A later burst or death cannot revoke an already admitted shot.\n'
+        '        # Launch consumption and round reset own this pending ledger.\n'
+        '        return\n\n') + text[end:]
+    before = '                if not shooter.get("alive"):\n'
+    after = '                if not shooter.get("alive") and expected_edge is None:\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned accepted-before-death launch seam changed')
+    text = text.replace(before, after, 1)
+    start = text.index('    def _finish_battle(self, winner, reason, base_team=0,')
+    end = text.index('        winner = ', start)
+    text = text[:end] + ('        cached = getattr(self, "_native_worker_operations", None)\n'
+        '        if cached is not None and cached[0] == (self.round_id, self.authority_epoch):\n'
+        '            cached[1].finish()\n') + text[end:]
+    return text
 
 
 def _worker_ingress_diagnostics_source(text):
@@ -310,9 +364,18 @@ def _worker_ingress_diagnostics_source(text):
     replacements = (
         ('            conn.settimeout(0.5)\n',
          '            conn.settimeout(0.5)\n'
-         '            ingress_perf = _WorkerIngressPerf(worker.worker_id)\n'),
+         '            ingress_perf = _WorkerIngressPerf(worker.worker_id)\n'
+         '            worker._ng_ingress_perf = ingress_perf\n'),
         ('            while True:\n',
          '            while True:\n                ingress_perf.report()\n'),
+        ('                now = time.monotonic()\n'
+         '                with server.state.lock:\n'
+         '                    active_phase = (\n',
+         '                now = time.monotonic()\n'
+         '                lock_started = ingress_perf.lock_started()\n'
+         '                with server.state.lock:\n'
+         '                    ingress_perf.lock_acquired({"type": "_receive_loop"}, lock_started)\n'
+         '                    active_phase = (\n'),
         ('                while _frame_ready(buffer):\n',
          '                while _frame_ready(buffer):\n                    ingress_perf.report()\n'),
         ('                        message = _decode_frame(line)\n',
@@ -329,6 +392,21 @@ def _worker_ingress_diagnostics_source(text):
         if source.count(before) != 1:
             raise ValueError('pinned worker ingress seam changed: %r' % before)
         source = source.replace(before, after, 1)
+    text = text[:start] + source + text[end:]
+    start = text.index('    def _dispatch_simulation_worker_message(')
+    end = text.index('    def _handle_simulation_worker(', start)
+    source = text[start:end]
+    before = ('        with server.state.lock:\n'
+              '            if (server.state.simulation_worker is not worker or\n')
+    after = ('        ingress_perf = getattr(worker, "_ng_ingress_perf", None)\n'
+             '        lock_started = ingress_perf.lock_started() if ingress_perf else None\n'
+             '        with server.state.lock:\n'
+             '            if ingress_perf is not None:\n'
+             '                ingress_perf.lock_acquired(message, lock_started)\n'
+             '            if (server.state.simulation_worker is not worker or\n')
+    if source.count(before) != 1:
+        raise ValueError('pinned worker dispatch lock seam changed')
+    source = source.replace(before, after, 1)
     return text[:start] + source + text[end:]
 
 
@@ -406,6 +484,7 @@ def stage(pinned, output, client_source=None):
         compile(adapted, name + '.py', 'exec')
         with open(os.path.join(output, 'battle_wire_' + name + '.py'), 'w', encoding='utf-8') as target:
             target.write(adapted)
+    shutil.copyfile(os.path.join(HERE, 'worker_operations.py'), os.path.join(output, 'battle_wire_worker_operations.py'))
     shutil.copyfile(os.path.join(HERE, 'codec.py'), os.path.join(output, 'battle_wire_codec.py'))
     with open(os.path.join(HERE, 'schema.py'), encoding='utf-8') as source:
         schema = source.read().replace('from codec import', 'from battle_wire_codec import')

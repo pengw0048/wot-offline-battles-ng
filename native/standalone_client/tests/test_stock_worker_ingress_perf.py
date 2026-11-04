@@ -26,6 +26,7 @@ from battle_wire_schema import SCHEMA
 class Clock:
     wall = 0.0
     cpu = 0.0
+    process = 0.0
 
     def advance(self, wall, cpu=0.0):
         self.wall += wall
@@ -42,7 +43,8 @@ class IngressTests(unittest.TestCase):
 
     def perf(self):
         return server._WorkerIngressPerf(-1, lambda: self.clock.wall,
-                                        lambda: self.clock.cpu)
+                                        lambda: self.clock.cpu,
+                                        lambda: self.clock.process)
 
     def records(self):
         prefix = 'PERF worker_ingress '
@@ -110,10 +112,16 @@ class IngressTests(unittest.TestCase):
         self.assertEqual(1, records[0]['recv']['timeouts'])
         self.assertAlmostEqual(10200., records[0]['recv']['wait_wall_ms'])
         self.assertAlmostEqual(2., records[0]['recv']['wait_cpu_ms'])
+        receive_lock = records[0]['types']['_receive_loop']
+        self.assertEqual(2, receive_lock['lock_calls'])
+        self.assertEqual(0., receive_lock['lock_wait_wall_ms'])
+        self.assertNotIn('frames', receive_lock)
         # The interval rolls over before the following frames arrive.
         clock.advance(10.)
         perf.report()
         record = self.records()[-1]
+        self.assertEqual(2, record['types']['_receive_loop']['lock_calls'])
+        self.assertNotIn('frames', record['types']['_receive_loop'])
         row = record['types']['worker_pong']
         self.assertEqual(2, row['frames'])
         self.assertEqual(sum(map(len, frames)), row['bytes'])
@@ -147,8 +155,11 @@ class IngressTests(unittest.TestCase):
         perf.report()
         self.assertEqual([], self.records())
         self.clock.advance(10.)
+        self.clock.process = 7.0
         perf.report()
-        row = self.records()[0]['types']['bot_state']
+        record = self.records()[0]
+        self.assertEqual(7000., record['process_cpu_ms'])
+        row = record['types']['bot_state']
         self.assertEqual(2, row['frames'])
         self.assertEqual(8, row['bytes'])
         self.assertEqual(60., row['decode_wall_ms'])
@@ -159,7 +170,59 @@ class IngressTests(unittest.TestCase):
         self.assertEqual({}, perf.recv_stats)
         perf.report()
         self.assertEqual(1, len(self.records()))
+        self.clock.advance(10.)
+        self.clock.process += 2.0
+        perf.report()
+        self.assertEqual(2000., self.records()[-1]['process_cpu_ms'])
 
+    def test_actual_dispatch_measures_existing_lock_contention_without_replacing_lock(self):
+        perf = self.perf()
+        lock = threading.RLock()
+        worker = SimpleNamespace(connected=True, _ng_ingress_perf=perf)
+        state = SimpleNamespace(lock=lock, simulation_worker=worker,
+            _message_round_matches=lambda message: True,
+            resolve_worker_ping=lambda endpoint, message: True)
+        handler = server.ClientHandler.__new__(server.ClientHandler)
+        message = dict(type='worker_pong')
+        entered = threading.Event()
+        finished = threading.Event()
+        result = []
+        original = perf.lock_started
+
+        def started():
+            stamp = original()
+            entered.set()
+            return stamp
+
+        perf.lock_started = started
+
+        def run():
+            try:
+                result.append(perf.dispatch(handler._dispatch_simulation_worker_message,
+                    SimpleNamespace(state=state), worker, message))
+            except BaseException as error:
+                result.append(error)
+            finally:
+                finished.set()
+
+        with lock:
+            thread = threading.Thread(target=run)
+            thread.start()
+            self.assertTrue(entered.wait(5.))
+            self.assertFalse(finished.is_set())
+            self.clock.advance(3.)
+        self.assertTrue(finished.wait(5.))
+        thread.join(5.)
+        self.assertEqual([True], result)
+        self.assertIs(lock, state.lock)
+        self.clock.advance(10.)
+        perf.report()
+        row = self.records()[0]['types']['worker_pong']
+        self.assertEqual(1, row['lock_calls'])
+        self.assertEqual(3000., row['lock_wait_wall_ms'])
+        self.assertEqual(3000., row['lock_wait_wall_ms_max'])
+        self.assertEqual(0., row['lock_wait_cpu_ms'])
+        self.assertEqual(3000., row['handler_wall_ms'])
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 '''
