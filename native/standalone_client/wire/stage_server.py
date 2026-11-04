@@ -39,6 +39,48 @@ def _decode_frame(frame):
     return _WIRE.decode(frame)
 
 
+class _SnapshotSections:
+    """Own only the latest frozen version of each immutable tick section."""
+    def __init__(self):
+        self.manifest_key = self.destructibles_key = None
+        self.manifest = self.destructibles = None
+
+    def freeze_snapshot(self, state, snapshot):
+        key = (state.round_id, state.authority_epoch, state.bot_manifest_revision)
+        if self.manifest_key != key:
+            self.manifest = copy.deepcopy(snapshot["bot_manifest"])
+            self.manifest_key = key
+        # Per-tick mutable actor/rule state remains independently frozen.
+        dynamic = {name: value for name, value in snapshot.items() if name != "bot_manifest"}
+        frozen = copy.deepcopy(dynamic)
+        frozen["bot_manifest"] = self.manifest
+        return frozen
+
+    def freeze_destructibles(self, state):
+        key = (state.round_id, state.authority_epoch, state.destructible_revision)
+        if self.destructibles_key != key:
+            self.destructibles = copy.deepcopy(list(state.destructibles.values()))
+            self.destructibles_key = key
+        return self.destructibles
+
+
+def _snapshot_sections(state):
+    cache = getattr(state, "_ng_snapshot_sections", None)
+    if cache is None:
+        cache = _SnapshotSections()
+        state._ng_snapshot_sections = cache
+    return cache
+
+
+def _freeze_bot_orders(orders):
+    # Ammo policy may change shell_index without changing the order revision.
+    # Freeze every tick, excluding diagnostic trees that never go on the wire.
+    return copy.deepcopy([
+        {name: value for name, value in order.items()
+         if name not in ("route_attempt", "route_assignment", "tactical_evidence")}
+        for order in orders])
+
+
 class _WorkerIngressPerf:
     """Bounded, connection-local counters; socket and handler timing stay separate."""
     def __init__(self, worker_id, clock=None, cpu_clock=None, process_clock=None):
@@ -314,7 +356,24 @@ def stage_text(text):
             text = text[:index] + HELPERS + text[index:]
         else:
             text = text.replace(before, after)
-    return _worker_operations_source(_worker_ingress_diagnostics_source(text))
+    return _snapshot_freeze_source(_worker_operations_source(_worker_ingress_diagnostics_source(text)))
+
+
+def _snapshot_freeze_source(text):
+    replacements = (
+        ('            snapshot = copy.deepcopy(snapshot)\n',
+         '            snapshot = _snapshot_sections(self).freeze_snapshot(self, snapshot)\n'),
+        ('            snapshot_orders = copy.deepcopy(self.bot_orders["orders"])\n',
+         '            snapshot_orders = _freeze_bot_orders(self.bot_orders["orders"])\n'),
+        ('            snapshot_destructibles = copy.deepcopy(\n'
+         '                list(self.destructibles.values()))\n',
+         '            snapshot_destructibles = _snapshot_sections(self).freeze_destructibles(self)\n'),
+    )
+    for before, after in replacements:
+        if text.count(before) != 1:
+            raise ValueError('pinned snapshot section freeze seam changed: %r' % before)
+        text = text.replace(before, after, 1)
+    return text
 
 
 def _worker_operations_source(text):
@@ -386,7 +445,7 @@ def _worker_ingress_diagnostics_source(text):
          '                                self._dispatch_simulation_worker_message,\n'
          '                                server, worker, message)\n'),
         ('                    chunk = conn.recv(4096)\n',
-         '                    chunk = ingress_perf.recv(conn, 4096)\n'),
+         '                    chunk = ingress_perf.recv(conn, 65536)\n'),
     )
     for before, after in replacements:
         if source.count(before) != 1:

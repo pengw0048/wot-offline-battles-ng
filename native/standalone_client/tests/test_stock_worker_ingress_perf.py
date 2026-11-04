@@ -103,7 +103,7 @@ class IngressTests(unittest.TestCase):
         self.assertEqual([1, 2], dispatched)
         self.assertEqual([], actions)
         self.assertEqual(.5, conn.timeout)
-        self.assertEqual(4096, conn.size)
+        self.assertEqual(65536, conn.size)
         self.assertEqual(Path(server_root)/'lan_battle_server.py',
             Path(handler._handle_simulation_worker.__code__.co_filename))
         records = self.records()
