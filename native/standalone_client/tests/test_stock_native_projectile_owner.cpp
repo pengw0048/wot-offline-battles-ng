@@ -87,7 +87,7 @@ int main(){
     assert(owner.advance(1.1));dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].kind=="progress");owner.acknowledge(dispatch[0].serial,false);assert(owner.flights().at("shell").terminal&&!owner.flights().at("shell").awaiting);
     l.checked_ms=100;l.checked_distance=frozen.distance;assert(owner.reconcile({l},{l.id},1.1));assert(owner.advance(1.11));dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].kind=="resolve");assert(dispatch[0].proposal->outcome=="expired"&&dispatch[0].proposal->frontier.base_ms==100);const auto serial=dispatch[0].serial;assert(owner.acknowledge(serial,false));
     assert(owner.advance(1.12));dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].proposal->frontier.checked_ms==1000);assert(owner.acknowledge(dispatch[0].serial,true));assert(owner.flights().at("shell").awaiting);
-    assert(owner.reconcile({l},{l.id},1.12));assert(!owner.flights().at("shell").awaiting);assert(owner.advance(1.13));dispatch=owner.dispatches();assert(dispatch.size()==1);owner.acknowledge(dispatch[0].serial,true);
+    assert(owner.reconcile({l},{l.id},1.12));assert(owner.flights().at("shell").awaiting);assert(owner.advance(1.13));assert(owner.dispatches().empty());
     assert(owner.reconcile({}, {},1.14));assert(owner.flights().empty());assert(owner.launch(l,1.15));assert(owner.flights().empty());
     assert(owner.observe(8,2000,2,2));world.block=true;l=launch("impact");l.launch_ms=2000;assert(owner.launch(l,2));owner.advance(2.1);dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].proposal&&dispatch[0].proposal->outcome=="impact");assert(world.resolutions==1);owner.acknowledge(dispatch[0].serial,false);owner.advance(2.2);assert(world.resolutions==1);assert(owner.terminalEvent(l.id,8));assert(owner.launch(l,2.2));assert(owner.flights().empty());
     assert(owner.observe(9,3000,3,3));world.block=false;world.fail=true;l=launch("failed");l.launch_ms=3000;assert(owner.launch(l,3));owner.advance(3.1);dispatch=owner.dispatches();assert(dispatch.size()==1&&dispatch[0].proposal->outcome=="expired"&&!dispatch[0].proposal->direct);assert(owner.metrics().local_failures==1);
@@ -104,6 +104,41 @@ int main(){
         // its absence. A canonical launch/event first establishes that owner.
         native.reconcile({}, {},.4);assert(native.flights().size()==1);assert(native.acceptCanonical(shot,.4));native.reconcile({}, {},.5);assert(native.flights().empty());
         auto rejected=launch("not-sent");assert(native.launch(rejected,.5));assert(native.discard(rejected.id));assert(native.flights().empty());
+    }
+    // A delayed canonical snapshot is not a rejection of an already queued
+    // terminal. Exercise two minutes of stale echoes for both authority paths.
+    for(bool player:{false,true}) {
+        World worker;PlayerWorld visible;World& scene=player?static_cast<World&>(visible):worker;
+        scene.block=true;Owner native(scene);assert(native.observe(1,0,0,0));auto shot=launch("delayed-terminal");
+        assert(native.launch(shot,0));assert(native.advance(.1));auto messages=native.dispatches();
+        assert(messages.size()==1&&messages.front().kind=="resolve");
+        assert(native.acknowledge(messages.front().serial,false));
+        assert(native.reconcile({shot},{shot.id},.11));assert(native.advance(.12));messages=native.dispatches();
+        assert(messages.size()==1&&messages.front().kind=="resolve");
+        assert(native.acknowledge(messages.front().serial,true));
+        for(int frame=0;frame<1800;++frame) {
+            const double now=.2+frame/15.;
+            assert(native.reconcile({shot},{shot.id},now));assert(native.advance(now));
+            assert(native.dispatches().empty());assert(native.flights().at(shot.id).awaiting);
+        }
+        assert(native.terminalEvent(shot.id,1));assert(native.flights().empty());
+        assert(native.observe(2,0,121,121));assert(native.launch(shot,121));assert(native.advance(121.1));
+        assert(native.dispatches().size()==1);
+    }
+    // A new canonical ricochet segment is a state transition, rather than an
+    // old echo: it must still release the terminal wait and restore motion.
+    {
+        World scene;scene.block=true;Owner native(scene);assert(native.observe(1,0,0,0));
+        auto shot=launch("canonical-ricochet");assert(native.launch(shot,0));assert(native.advance(.1));
+        const auto messages=native.dispatches();assert(messages.size()==1);
+        assert(native.acknowledge(messages.front().serial,true));
+        auto bounced=shot;bounced.segment=1;bounced.segment_ms=bounced.checked_ms=50;
+        bounced.segment_origin={0,0,5};bounced.segment_velocity={0,0,-100};
+        bounced.multiplier=*damage::firstRicochetMultiplier(bounced.shot.shell.kind);
+        assert(native.reconcile({bounced},{shot.id},.11));
+        const auto& flight=native.flights().at(shot.id);
+        assert(flight.canonical.segment==1&&!flight.terminal&&!flight.awaiting);
+        assert(native.metrics().restores==1);
     }
     std::cout<<"Native projectile owner lifecycle passed\n";
 }

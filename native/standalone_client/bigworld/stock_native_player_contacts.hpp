@@ -59,7 +59,7 @@ public:
 };
 struct Statistics {std::uint64_t proposals=0,commits=0,deferred=0,terminals=0,retries=0,failures=0;};
 class Owner {
-    struct Record {Verdict verdict;double next_retry=0.;};
+    struct Record {Verdict verdict;bool submitted=false;};
     std::map<Receipt,Record> results_;
     std::map<std::uint64_t,Receipt> serials_;
     std::deque<Receipt> order_;
@@ -68,7 +68,8 @@ class Owner {
     std::optional<bool> resolve(const Request&,double,World&);
 public:
     std::vector<Verdict> update(const std::vector<Request>&,double now,World&);
-    // Call only after the transport accepts the exact returned verdict.
+    // Call only after the reliable transport accepts the exact returned verdict.
+    // Canonical snapshots may still contain the receipt until server settlement.
     bool acknowledge(std::uint64_t serial,double now);
     const Statistics& statistics()const{return statistics_;}
     std::size_t cached()const{return results_.size();}

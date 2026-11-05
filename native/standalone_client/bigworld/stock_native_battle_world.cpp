@@ -299,7 +299,13 @@ void destructibleContact(Battle& b, const Value& message) {
         throw p::Error("worker player destructible contact violates its contract");
     Value players;
     players.kind = Kind::Array;
-    players.array.push_back(owned(player));
+    // This compact relay is emitted only after the server admitted an active
+    // participant's contact against its world-pose history. Restore those
+    // producer guarantees before using the full-snapshot contact reader.
+    Value admitted = owned(player);
+    admitted.object["participating"] = boolean(true);
+    admitted.object["world_pose"] = boolean(true);
+    players.array.push_back(std::move(admitted));
     bots::playerContacts(b, players, b.clock());
 }
 

@@ -31,6 +31,8 @@ std::shared_ptr<Native> open(const std::string& host, int port, double timeout);
 Queued send(Native& native, std::string payload, const std::string& type, const std::optional<std::string>& key,
             std::size_t max_messages, std::size_t max_bytes);
 Status receive(Native& native, std::size_t limit, std::vector<Frame>& out);
+// Take windowed per-message counters, queue ages and active socket-send age.
+std::vector<std::string> takeSendDiagnostics(Native& native);
 // Flush queued frames briefly, then close.
 void close(Native& native, double flush);
 }

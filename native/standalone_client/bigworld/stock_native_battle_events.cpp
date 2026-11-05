@@ -47,7 +47,7 @@ bool oneOf(const std::string& v, std::initializer_list<const char*> options) {
 bool shotKind(const std::string& k) { return k == "shot" || k == "bot_shot"; }
 bool combatKind(const std::string& k) { return oneOf(k, {"health", "hit", "bot_hit", "bot_human_hit", "bot_bot_hit"}); }
 bool simpleKind(const std::string& k) {
-    return oneOf(k, {"authority", "bot_manifest", "vehicle_statistics", "destructible", "projectile_ricochet", "projectile_impact",
+    return oneOf(k, {"authority", "bot_manifest", "vehicle_statistics", "destructible", "projectile_ricochet", "projectile_impact", "projectile_launch_failed",
                      "battle_result", "assist", "stun", "detection", "environment_critical"});
 }
 bool anyHit(const std::string& k) { return oneOf(k, {"hit", "bot_hit", "bot_human_hit", "bot_bot_hit"}); }
@@ -394,6 +394,7 @@ bool applyOrdered(Battle& b, const Value& event) {
         world::applyDestructibleState(b, rows);
     } else if (kind == "projectile_ricochet") projectiles::ricochet(b, event);
     else if (kind == "projectile_impact") projectiles::terminal(b, event);
+    else if (kind == "projectile_launch_failed") { if (b.worker) bots::projectileEvent(b, event, b.clock()); }
     else if (kind == "battle_result") battleResult(b, event);
     else if (kind != "bot_manifest") throw p::Error("ordered LAN event kind is unsupported: " + kind);
     return true;

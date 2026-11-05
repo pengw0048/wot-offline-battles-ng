@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HELPERS = '''
 import battle_wire_schema as _battle_wire_schema
 import battle_wire_replica as _replica_split
+import battle_wire_worker_operations as _worker_ops
 _WIRE = _battle_wire_schema.SCHEMA
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
@@ -38,6 +39,139 @@ def _decode_frame(frame):
     return _WIRE.decode(frame)
 
 
+class _SnapshotSections:
+    """Own only the latest frozen version of each immutable tick section."""
+    def __init__(self):
+        self.manifest_key = self.destructibles_key = None
+        self.manifest = self.destructibles = None
+
+    def freeze_snapshot(self, state, snapshot):
+        key = (state.round_id, state.authority_epoch, state.bot_manifest_revision)
+        if self.manifest_key != key:
+            self.manifest = copy.deepcopy(snapshot["bot_manifest"])
+            self.manifest_key = key
+        # Per-tick mutable actor/rule state remains independently frozen.
+        dynamic = {name: value for name, value in snapshot.items() if name != "bot_manifest"}
+        frozen = copy.deepcopy(dynamic)
+        frozen["bot_manifest"] = self.manifest
+        return frozen
+
+    def freeze_destructibles(self, state):
+        key = (state.round_id, state.authority_epoch, state.destructible_revision)
+        if self.destructibles_key != key:
+            self.destructibles = copy.deepcopy(list(state.destructibles.values()))
+            self.destructibles_key = key
+        return self.destructibles
+
+
+def _snapshot_sections(state):
+    cache = getattr(state, "_ng_snapshot_sections", None)
+    if cache is None:
+        cache = _SnapshotSections()
+        state._ng_snapshot_sections = cache
+    return cache
+
+
+def _freeze_bot_orders(orders):
+    # Ammo policy may change shell_index without changing the order revision.
+    # Freeze every tick, excluding diagnostic trees that never go on the wire.
+    return copy.deepcopy([
+        {name: value for name, value in order.items()
+         if name not in ("route_attempt", "route_assignment", "tactical_evidence")}
+        for order in orders])
+
+
+class _WorkerIngressPerf:
+    """Bounded, connection-local counters; socket and handler timing stay separate."""
+    def __init__(self, worker_id, clock=None, cpu_clock=None, process_clock=None):
+        self.worker_id = worker_id
+        self.clock = clock or time.perf_counter
+        self.cpu_clock = cpu_clock or time.thread_time
+        self.process_clock = process_clock or time.process_time
+        self.started = self.clock()
+        self.process_started = self.process_clock()
+        self.types = {}
+        self.recv_stats = {}
+
+    @staticmethod
+    def _timing(row, name, wall, cpu):
+        for suffix, value in (("wall_ms", wall * 1000.0),
+                              ("cpu_ms", cpu * 1000.0)):
+            key = name + "_" + suffix
+            row[key] = row.get(key, 0.0) + value
+            row[key + "_max"] = max(row.get(key + "_max", 0.0), value)
+
+    def _row(self, kind):
+        if not isinstance(kind, str):
+            kind = "invalid"
+        if kind not in self.types and len(self.types) >= 31:
+            kind = "other"
+        return self.types.setdefault(kind, {})
+
+    def decode(self, frame):
+        wall, cpu = self.clock(), self.cpu_clock()
+        message = None
+        try:
+            message = _decode_frame(frame)
+            return message
+        finally:
+            row = self._row(message.get("type") if isinstance(message, dict) else None)
+            row["frames"] = row.get("frames", 0) + 1
+            row["bytes"] = row.get("bytes", 0) + len(frame)
+            self._timing(row, "decode", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def dispatch(self, handler, server, worker, message):
+        wall, cpu = self.clock(), self.cpu_clock()
+        try:
+            return handler(server, worker, message)
+        finally:
+            row = self._row(message.get("type"))
+            self._timing(row, "handler", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def lock_started(self):
+        return self.clock(), self.cpu_clock()
+
+    def lock_acquired(self, message, started):
+        row = self._row(message.get("type"))
+        row["lock_calls"] = row.get("lock_calls", 0) + 1
+        self._timing(row, "lock_wait", self.clock() - started[0],
+                     self.cpu_clock() - started[1])
+
+    def recv(self, conn, size):
+        wall, cpu = self.clock(), self.cpu_clock()
+        row = self.recv_stats
+        row["calls"] = row.get("calls", 0) + 1
+        try:
+            chunk = conn.recv(size)
+            row["bytes"] = row.get("bytes", 0) + len(chunk)
+            if not chunk:
+                row["eof"] = row.get("eof", 0) + 1
+            return chunk
+        except socket.timeout:
+            row["timeouts"] = row.get("timeouts", 0) + 1
+            raise
+        finally:
+            self._timing(row, "wait", self.clock() - wall, self.cpu_clock() - cpu)
+
+    def report(self):
+        now = self.clock()
+        if now - self.started < 10.0:
+            return
+        process_now = self.process_clock()
+        def rounded(row):
+            return {key: round(value, 3) if isinstance(value, float) else value
+                    for key, value in row.items()}
+        _server_log("PERF worker_ingress " + json.dumps({
+            "worker": self.worker_id, "window_s": round(now - self.started, 3),
+            "process_cpu_ms": round((process_now - self.process_started) * 1000.0, 3),
+            "types": {kind: rounded(row) for kind, row in self.types.items()},
+            "recv": rounded(self.recv_stats)}, sort_keys=True, separators=(",", ":")))
+        self.started = now
+        self.process_started = process_now
+        self.types.clear()
+        self.recv_stats.clear()
+
+
 def _ng_probe_identity():
     return {
         "schema": 1,
@@ -50,6 +184,14 @@ def _ng_probe_identity():
 SERIALIZE_BEFORE = '    def _serialize_message(self, message, report_failure=True):\n        outgoing = _monotonic_endpoint_server_time(self, message)\n        try:\n            payload = (json.dumps(\n                outgoing, separators=(",", ":")) + "\\n").encode("utf-8")\n        except Exception as error:\n            self._record_outbound_failure(\n                "encode_error", message, error=error, sent_bytes=0)\n            raise\n        if len(payload) > MAX_LINE_BYTES:\n            try:\n                framed = state_transfer.frame_payload(\n                    outgoing, payload,\n                    state_transfer.CAPABILITY in getattr(self, "capabilities", ()))\n            except state_transfer.TransferError:\n                if report_failure:\n                    self._record_outbound_failure(\n                        "message_too_large", message, payload, sent_bytes=0)\n                return None\n            _server_log_limited(\n                "state-transfer:%s:%s" % (id(self), outgoing.get("type")),\n                "STATE_TRANSFER send kind=%s round=%s bytes=%d "\n                        "frames=%d wire_bytes=%d endpoint=%s" % (\n                outgoing.get("type"), outgoing.get("round_id"), len(payload),\n                framed.count(b"\\n"), len(framed),\n                getattr(self, "player_id", getattr(self, "worker_id", None))))\n            return framed\n        return payload\n\n'
 SERIALIZE_AFTER = '''    def _serialize_message(self, message, report_failure=True):
         outgoing = _monotonic_endpoint_server_time(self, message)
+        if "bot_orders" in outgoing:
+            # Native control and order signatures ignore these server-only
+            # receipts. Keep their richer planner data in server logs without
+            # serializing it or mutating the server-owned orders.
+            outgoing = dict(outgoing, bot_orders=[
+                {key: value for key, value in order.items()
+                 if key not in ("route_attempt", "route_assignment", "tactical_evidence")}
+                for order in outgoing["bot_orders"]])
         try:
             payload = _WIRE.encode(outgoing)
         except Exception as error:
@@ -214,7 +356,117 @@ def stage_text(text):
             text = text[:index] + HELPERS + text[index:]
         else:
             text = text.replace(before, after)
+    return _snapshot_freeze_source(_worker_operations_source(_worker_ingress_diagnostics_source(text)))
+
+
+def _snapshot_freeze_source(text):
+    replacements = (
+        ('            snapshot = copy.deepcopy(snapshot)\n',
+         '            snapshot = _snapshot_sections(self).freeze_snapshot(self, snapshot)\n'),
+        ('            snapshot_orders = copy.deepcopy(self.bot_orders["orders"])\n',
+         '            snapshot_orders = _freeze_bot_orders(self.bot_orders["orders"])\n'),
+        ('            snapshot_destructibles = copy.deepcopy(\n'
+         '                list(self.destructibles.values()))\n',
+         '            snapshot_destructibles = _snapshot_sections(self).freeze_destructibles(self)\n'),
+    )
+    for before, after in replacements:
+        if text.count(before) != 1:
+            raise ValueError('pinned snapshot section freeze seam changed: %r' % before)
+        text = text.replace(before, after, 1)
     return text
+
+
+def _worker_operations_source(text):
+    before = '            accepted = server.state.launch_projectile(authority_id, message)\n'
+    after = '            accepted = _worker_ops.owner(server.state, globals()).launch(message)\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned worker launch seam changed')
+    text = text.replace(before, after, 1)
+    before = ('            accepted = server.state.report_player_destructible_contact_result(\n'
+              '                authority_id, message)\n')
+    after = '            accepted = _worker_ops.owner(server.state, globals()).contact(message)\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned worker contact seam changed')
+    text = text.replace(before, after, 1)
+    before = '        return bool(accepted)\n\n    def _handle_simulation_worker('
+    after = ('        if accepted and message_type in ("bot_state", "destructible", "projectile_progress",\n'
+             '                                           "projectile_ricochet", "projectile_resolve"):\n'
+             '            _worker_ops.owner(server.state, globals()).advance()\n'
+             '        return bool(accepted)\n\n    def _handle_simulation_worker(')
+    if text.count(before) != 1:
+        raise ValueError('pinned worker operation completion seam changed')
+    text = text.replace(before, after, 1)
+    start = text.index('    def _prune_orphaned_bot_launch_edges(self):')
+    end = text.index('    @staticmethod', start)
+    text = text[:start] + ('    def _prune_orphaned_bot_launch_edges(self):\n'
+        '        # A later burst or death cannot revoke an already admitted shot.\n'
+        '        # Launch consumption and round reset own this pending ledger.\n'
+        '        return\n\n') + text[end:]
+    before = '                if not shooter.get("alive"):\n'
+    after = '                if not shooter.get("alive") and expected_edge is None:\n'
+    if text.count(before) != 1:
+        raise ValueError('pinned accepted-before-death launch seam changed')
+    text = text.replace(before, after, 1)
+    start = text.index('    def _finish_battle(self, winner, reason, base_team=0,')
+    end = text.index('        winner = ', start)
+    text = text[:end] + ('        cached = getattr(self, "_native_worker_operations", None)\n'
+        '        if cached is not None and cached[0] == (self.round_id, self.authority_epoch):\n'
+        '            cached[1].finish()\n') + text[end:]
+    return text
+
+
+def _worker_ingress_diagnostics_source(text):
+    # Restrict instrumentation to the worker loop; the visible socket path is unchanged.
+    start = text.index('    def _handle_simulation_worker(')
+    end = text.index('    def handle(self):', start)
+    source = text[start:end]
+    replacements = (
+        ('            conn.settimeout(0.5)\n',
+         '            conn.settimeout(0.5)\n'
+         '            ingress_perf = _WorkerIngressPerf(worker.worker_id)\n'
+         '            worker._ng_ingress_perf = ingress_perf\n'),
+        ('            while True:\n',
+         '            while True:\n                ingress_perf.report()\n'),
+        ('                now = time.monotonic()\n'
+         '                with server.state.lock:\n'
+         '                    active_phase = (\n',
+         '                now = time.monotonic()\n'
+         '                lock_started = ingress_perf.lock_started()\n'
+         '                with server.state.lock:\n'
+         '                    ingress_perf.lock_acquired({"type": "_receive_loop"}, lock_started)\n'
+         '                    active_phase = (\n'),
+        ('                while _frame_ready(buffer):\n',
+         '                while _frame_ready(buffer):\n                    ingress_perf.report()\n'),
+        ('                        message = _decode_frame(line)\n',
+         '                        message = ingress_perf.decode(line)\n'),
+        ('                            self._dispatch_simulation_worker_message(\n'
+         '                                server, worker, message)\n',
+         '                            ingress_perf.dispatch(\n'
+         '                                self._dispatch_simulation_worker_message,\n'
+         '                                server, worker, message)\n'),
+        ('                    chunk = conn.recv(4096)\n',
+         '                    chunk = ingress_perf.recv(conn, 65536)\n'),
+    )
+    for before, after in replacements:
+        if source.count(before) != 1:
+            raise ValueError('pinned worker ingress seam changed: %r' % before)
+        source = source.replace(before, after, 1)
+    text = text[:start] + source + text[end:]
+    start = text.index('    def _dispatch_simulation_worker_message(')
+    end = text.index('    def _handle_simulation_worker(', start)
+    source = text[start:end]
+    before = ('        with server.state.lock:\n'
+              '            if (server.state.simulation_worker is not worker or\n')
+    after = ('        ingress_perf = getattr(worker, "_ng_ingress_perf", None)\n'
+             '        lock_started = ingress_perf.lock_started() if ingress_perf else None\n'
+             '        with server.state.lock:\n'
+             '            if ingress_perf is not None:\n'
+             '                ingress_perf.lock_acquired(message, lock_started)\n'
+             '            if (server.state.simulation_worker is not worker or\n')
+    if source.count(before) != 1:
+        raise ValueError('pinned worker dispatch lock seam changed')
+    source = source.replace(before, after, 1)
+    return text[:start] + source + text[end:]
 
 
 def _receipt_replace(source, before, after, count=1):
@@ -291,6 +543,7 @@ def stage(pinned, output, client_source=None):
         compile(adapted, name + '.py', 'exec')
         with open(os.path.join(output, 'battle_wire_' + name + '.py'), 'w', encoding='utf-8') as target:
             target.write(adapted)
+    shutil.copyfile(os.path.join(HERE, 'worker_operations.py'), os.path.join(output, 'battle_wire_worker_operations.py'))
     shutil.copyfile(os.path.join(HERE, 'codec.py'), os.path.join(output, 'battle_wire_codec.py'))
     with open(os.path.join(HERE, 'schema.py'), encoding='utf-8') as source:
         schema = source.read().replace('from codec import', 'from battle_wire_codec import')

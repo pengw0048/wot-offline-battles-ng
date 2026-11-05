@@ -80,6 +80,9 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     std::vector<Record> record_order;
     std::vector<world::Destruction> destructions;
     std::map<std::int64_t,std::int64_t> confirmed_sequences;
+    // This round's reliable transport owns each admitted launch exactly once.
+    // Canonical confirmation separately retires the weapon and frozen source.
+    std::map<std::int64_t,std::int64_t> transport_admitted_sequences;
     std::map<std::int64_t,std::set<std::int64_t>> confirmations;
     std::map<std::pair<std::int64_t,std::int64_t>,FrozenLaunch> launch_payloads;
     std::map<std::string,std::array<std::optional<unsigned>,2>> source_stickers;
@@ -157,12 +160,15 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         }
         return result;
     }
+    bool confirmSequence(std::int64_t bot,std::int64_t sequence){
+        auto&last=confirmed_sequences[bot];if(sequence<=last)return false;auto&pending=confirmations[bot];if(!pending.insert(sequence).second)return false;
+        while(pending.count(last+1)){const auto next=last+1;if(!runtime.acknowledgeLaunch(bot,next))throw p::Error("Canonical native Bot launch acknowledgement is out of order");pending.erase(next);launch_payloads.erase({bot,next});last=next;}
+        if(pending.empty())confirmations.erase(bot);
+        battle->projectiles->bot_fire_seen[bot]=last;return true;
+    }
     void confirmed(const Launch&launch)override{
         const auto frozen=launch_payloads.find({launch.shooter,launch.sequence});if(frozen!=launch_payloads.end())source_stickers.emplace(launch.id,frozen->second.stickers);
-        auto&last=confirmed_sequences[launch.shooter];if(launch.sequence<=last)return;auto&pending=confirmations[launch.shooter];pending.insert(launch.sequence);
-        while(pending.count(last+1)){const auto next=last+1;if(!runtime.acknowledgeLaunch(launch.shooter,next))throw p::Error("Canonical native Bot launch acknowledgement is out of order");pending.erase(next);launch_payloads.erase({launch.shooter,next});last=next;}
-        if(pending.empty())confirmations.erase(launch.shooter);
-        battle->projectiles->bot_fire_seen[launch.shooter]=last;
+        confirmSequence(launch.shooter,launch.sequence);
     }
 
     bool observe(const Value&raw,double at){
@@ -187,6 +193,16 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
     }
     bool event(const Value&value,double at){
         current();const auto&raw=value.resolved();if(raw.kind!=Kind::Object||!matchingRound(raw))return false;const auto kind=w::string(raw.get("kind"));
+        if(kind=="projectile_launch_failed"){
+            const auto epoch=optionalInteger(raw,"authority_epoch");if(raw.get("round_id").resolved().kind==Kind::Null||!epoch||!owner.epoch()||epoch!=owner.epoch())return false;
+            const auto bot=w::wide(raw.get("shooter_id")),sequence=w::wide(raw.get("shot_seq"));const auto admitted=transport_admitted_sequences.find(bot);
+            if(bot<=0||sequence<=0||runtime.actors().find(bot)==runtime.actors().end()||admitted==transport_admitted_sequences.end()||sequence>admitted->second)return false;
+            if(confirmSequence(bot,sequence)){
+                owner.terminalEvent(round+":b:"+std::to_string(bot)+":"+std::to_string(sequence),epoch);
+                error("launch",p::Error("server rejected Bot "+std::to_string(bot)+" shot "+std::to_string(sequence)+": "+w::string(raw.get("reason")).substr(0,160)));
+            }
+            return true;
+        }
         if(kind=="projectile_impact"){return owner.terminalEvent(w::string(raw.get("projectile_id")),optionalInteger(raw,"authority_epoch"));}
         if(kind=="projectile_ricochet"){const auto epoch=optionalInteger(raw,"authority_epoch");if(epoch&&owner.epoch()&&epoch!=owner.epoch())return false;}
         if(kind!="authority"&&kind!="shot"&&kind!="bot_shot"&&kind!="projectile_ricochet")return false;if(!observe(raw,at))return false;if(kind=="authority")return true;
@@ -198,10 +214,10 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         o["authority_epoch"]=f.epoch?w::integer(*f.epoch):Value();o["penetration_factor"]=w::number(f.factor);o["source_shot"]=shotWire(d);o["burst_group_seq"]=w::integer(r.edge.group_seq);o["burst_index"]=w::integer(r.edge.index);o["burst_count"]=w::integer(r.edge.count);o["launch_time_us"]=w::integer(r.launch_time_us);o["launch_pose"]=w::numbers(std::array<double,6>{r.pose.position[0],r.pose.position[1],r.pose.position[2],r.pose.yaw,r.pose.pitch,r.pose.roll});o["shells_before_shot"]=r.has_shells_before?w::integer(r.shells_before):Value();return out;
     }
     std::vector<LaunchMessage> launches(const Value*message){
-        current();if(message){if(sending)throw p::Error("Native Bot launch transport result missing");const auto&m=message->resolved();launch_batch.clear();launch_cursor=0;blocked_bots.clear();next_sequences.clear();if(w::string(m.get("type"))!="bot_state")return {};const auto&admitted=m.get("launches").resolved();if(admitted.kind!=Kind::Null){if(admitted.kind!=Kind::Array)throw p::Error("Native Bot event is not a sequence");std::map<std::pair<std::int64_t,std::int64_t>,const LaunchRecord*> pending;for(const auto&row:runtime.weapons().pending())pending[{row.actor.id,row.edge.shot_seq}]=&row;for(const auto&row:admitted.array){const auto integral=[&](const char*key){const auto&v=row.get(key).resolved();return v.kind==Kind::Null?std::int64_t(0):w::wide(v);};const auto id=integral("id"),sequence=integral("fire_seq");if(id<=0||sequence<=0)throw p::Error("Bot launch publication identity invalid");if(sequence<=confirmed_sequences[id])continue;const auto found=pending.find({id,sequence});if(found==pending.end()){blocked_bots.insert(id);continue;}launch_batch.push_back(*found->second);}}}
+        current();if(message){if(sending)throw p::Error("Native Bot launch transport result missing");const auto&m=message->resolved();launch_batch.clear();launch_cursor=0;blocked_bots.clear();next_sequences.clear();if(w::string(m.get("type"))!="bot_state")return {};const auto&admitted=m.get("launches").resolved();if(admitted.kind!=Kind::Null){if(admitted.kind!=Kind::Array)throw p::Error("Native Bot event is not a sequence");std::map<std::pair<std::int64_t,std::int64_t>,const LaunchRecord*> pending;for(const auto&row:runtime.weapons().pending())pending[{row.actor.id,row.edge.shot_seq}]=&row;for(const auto&row:admitted.array){const auto integral=[&](const char*key){const auto&v=row.get(key).resolved();return v.kind==Kind::Null?std::int64_t(0):w::wide(v);};const auto id=integral("id"),sequence=integral("fire_seq");if(id<=0||sequence<=0)throw p::Error("Bot launch publication identity invalid");if(sequence<=std::max(confirmed_sequences[id],transport_admitted_sequences[id]))continue;const auto found=pending.find({id,sequence});if(found==pending.end()){blocked_bots.insert(id);continue;}launch_batch.push_back(*found->second);}}}
         if(sending)throw p::Error("Native Bot launch transport result missing");std::vector<LaunchMessage> out;
         while(launch_cursor<launch_batch.size()){
-            const auto&r=launch_batch[launch_cursor++];const auto bot=r.actor.id,sequence=r.edge.shot_seq;const auto last=confirmed_sequences[bot];if(sequence<=last||blocked_bots.count(bot))continue;const auto next=next_sequences.find(bot);const auto expected=next==next_sequences.end()?last+1:next->second;if(sequence!=expected){blocked_bots.insert(bot);continue;}
+            const auto&r=launch_batch[launch_cursor++];const auto bot=r.actor.id,sequence=r.edge.shot_seq;const auto last=std::max(confirmed_sequences[bot],transport_admitted_sequences[bot]);if(sequence<=last||blocked_bots.count(bot))continue;const auto next=next_sequences.find(bot);const auto expected=next==next_sequences.end()?last+1:next->second;if(sequence!=expected){blocked_bots.insert(bot);continue;}
             const auto key=std::make_pair(bot,sequence);auto frozen=launch_payloads.find(key);
             if(frozen==launch_payloads.end())try{
                 const auto*s=services.find({ActorKind::Bot,bot});const auto state=runtime.actors().find(bot);if(!s||state==runtime.actors().end()||!s->available||!s->record_ready||!r.has_origin||r.launch_time_us<0)throw p::Error("Bot launch source unavailable");const auto&shots=s->launch_shots[state->second.mode==1?1:0];if(r.edge.shell<0||std::size_t(r.edge.shell)>=shots.size())throw p::Error("Bot launch shell unavailable");FrozenLaunch launch;launch.source=r;launch.descriptor=shots[std::size_t(r.edge.shell)];const auto cosmetics=s->projectile_stickers[state->second.mode==1?1:0].find(r.edge.shell);if(cosmetics!=s->projectile_stickers[state->second.mode==1?1:0].end())launch.stickers=cosmetics->second;const auto&d=launch.descriptor;const double horizontal=std::cos(r.pitch);Point direction{std::sin(r.yaw)*horizontal,std::sin(r.pitch),std::cos(r.yaw)*horizontal};const double n=length({},direction);if(n<=1e-6||d.speed<=0||d.gravity<=0||d.maximum<=0)throw p::Error("Bot launch trajectory invalid");for(unsigned i=0;i<3;++i)launch.velocity[i]=direction[i]*d.speed/(r.artillery?1.:n);
@@ -212,7 +228,7 @@ struct NativeProjectiles::State final:OwnerWorld,stock_native_bot_turret::Detach
         }
         return out;
     }
-    bool launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){const auto key=std::make_pair(bot,sequence);if(!sending||*sending!=key)return false;sending.reset();if(accepted)next_sequences[bot]=sequence+1;else blocked_bots.insert(bot);return true;}
+    bool launchResult(std::int64_t bot,std::int64_t sequence,bool accepted){const auto key=std::make_pair(bot,sequence);if(!sending||*sending!=key)return false;sending.reset();if(accepted){transport_admitted_sequences[bot]=std::max(transport_admitted_sequences[bot],sequence);next_sequences[bot]=sequence+1;}else blocked_bots.insert(bot);return true;}
     std::vector<WireDispatch> advance(native_battle::Battle&b,double at,bool force){
         current(&b);now=at;refresh();
         const auto start=std::chrono::steady_clock::now();owner.advance(at,force);
