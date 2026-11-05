@@ -1,6 +1,7 @@
 #include "../room/room_test_resources.hpp"
 #include "../room/room_json.hpp"
 #include "../room/room_lobby_policy.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 using namespace wot::room;
