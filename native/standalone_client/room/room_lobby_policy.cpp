@@ -4,6 +4,7 @@
 #include <cctype>
 #include <charconv>
 #include <iomanip>
+#include <iterator>
 #include <regex>
 #include <sstream>
 #include <tuple>

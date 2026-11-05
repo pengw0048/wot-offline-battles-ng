@@ -4,6 +4,7 @@
 #include "room_lobby_policy.hpp"
 #include <algorithm>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 
 namespace wot::room {
