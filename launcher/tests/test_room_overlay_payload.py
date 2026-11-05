@@ -46,7 +46,7 @@ class RoomOverlayPayload(unittest.TestCase):
         root = self.game / overlays.OVERLAY_ROOT
         root.mkdir(parents=True)
         manifest = overlays._empty_manifest()
-        (root / overlays.MANIFEST_NAME).write_text(json.dumps(manifest))
+        (root / overlays.MANIFEST_NAME).write_text(json.dumps(manifest), encoding='utf-8')
         payload = overlays.room_overlay_payload(str(self.game))
         self.assertTrue(payload['manifest']['present'])
         self.assertEqual(manifest, payload['manifest']['manifest'])
@@ -56,7 +56,7 @@ class RoomOverlayPayload(unittest.TestCase):
         manifest, installed = self.install()
         target = Path(self.folder.name) / 'worker' / 'room-overlay.json'
         overlays.export_room_overlay(str(self.game), str(target))
-        payload = json.loads(target.read_text())
+        payload = json.loads(target.read_text(encoding='utf-8'))
         self.assertEqual(manifest, payload['manifest']['manifest'])
         self.assertEqual('测试车辆方案', payload['manifest']['profile'])
         member = payload['members'][self.MEMBER]
@@ -110,7 +110,7 @@ class RoomOverlayPayload(unittest.TestCase):
         for changed in [dict(manifest, schema=999),
                         dict(manifest, members=manifest['members'] * 2),
                         dict(manifest, members=[dict(manifest['members'][0], overlaySha256='invalid')])]:
-            path.write_text(json.dumps(changed))
+            path.write_text(json.dumps(changed), encoding='utf-8')
             with self.assertRaises(overlays.VehicleOverlayError):
                 overlays.room_overlay_payload(str(self.game))
         path.write_text(json.dumps(manifest))
