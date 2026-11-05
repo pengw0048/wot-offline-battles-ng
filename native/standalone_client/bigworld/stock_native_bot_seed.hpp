@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+namespace offline_navigation { struct MapInput; }
 namespace stock_native_bot {
 // One consumable of a Bot's fixed ledger (equipment_mechanics.EquipmentState) at the round start.
 struct SeedEquipment {
@@ -45,6 +46,7 @@ struct RoundSeed {
     double control_seconds = 0.;
     std::string map;
     stock_native_client_state::Handle graph;                // the validated baked navigation graph
+    mutable std::shared_ptr<offline_navigation::MapInput> navigation_input; // One cold read, consumed by native owner installation.
     std::vector<unsigned> hazards;                          // its cell hazards after with_shore_hazards
     std::map<std::int64_t, BotSeed> bots;
     std::map<std::int64_t, stock_native_client_state::Value> agents;          // BattleDirector.agents

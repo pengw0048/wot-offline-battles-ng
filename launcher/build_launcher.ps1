@@ -33,15 +33,14 @@ New-Item -ItemType Directory -Force -Path $SpecRoot | Out-Null
 python (Join-Path $LauncherRoot "stage_payload.py") `
     --output $PayloadRoot `
     --source $RepoRoot `
-    --ng-client $NgClient `
-    --verify-servers
+    --ng-client $NgClient
 if ($LASTEXITCODE -ne 0) {
     throw "Payload staging failed with exit code $LASTEXITCODE"
 }
 
-foreach ($entry in @("servers\0.9.22\server\windows_server.py",
-                     "ng-client\bwclient_h.exe",
+foreach ($entry in @("ng-client\bwclient_h.exe",
                      "ng-client\offline-res.json",
+                     "ng-client\native-room-data.json",
                      "ng-client\mods\configs\offline_lan_0922\build_identity.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $PayloadRoot $entry))) {
         throw "Payload is incomplete: $entry"
@@ -75,8 +74,10 @@ python -m PyInstaller `
     --hidden-import PIL.DdsImagePlugin `
     --hidden-import packed_xml `
     --hidden-import vehicle_prices `
-    --add-data "$PayloadRoot\servers;servers" `
+    --hidden-import battle_wire_schema `
+    --hidden-import battle_wire_codec `
     --add-data "$PayloadRoot\ng-client;ng-client" `
+    --add-data "$PayloadRoot\launcher-contracts;launcher-contracts" `
     (Join-Path $LauncherRoot "wot_launcher.py")
 
 if ($LASTEXITCODE -ne 0) {
@@ -85,18 +86,23 @@ if ($LASTEXITCODE -ne 0) {
 
 $AppRoot = Join-Path $DistRoot $AppName
 
-$ServerPayloadRoot = Join-Path $AppRoot "_internal\servers"
-$ServerPayloads = @(
-    Get-ChildItem -LiteralPath $ServerPayloadRoot -Directory -Force)
+if (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\servers")) {
+    throw "The native worker-host must not carry a Python battle server payload"
+}
 if (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\client")) {
     throw "The NG launcher must not carry the original-mod client payload"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\ng-client\bwclient_h.exe"))) {
     throw "The NG launcher is missing its NG client package"
 }
-if ($ServerPayloads.Count -ne 1 -or
-        $ServerPayloads[0].Name -ne "0.9.22") {
-    throw "Launcher must carry only the 0.9.22 server payload"
+if (-not (Test-Path -LiteralPath (Join-Path $AppRoot "_internal\ng-client\native-room-data.json"))) {
+    throw "The NG launcher is missing its native room data"
+}
+foreach ($entry in @("bot_tactics.py", "crew_recruits.py", "internal_layout_console.py")) {
+    $Contract = Join-Path $AppRoot "_internal\launcher-contracts\gui\mods\offline_lan_0922\$entry"
+    if (-not (Test-Path -LiteralPath $Contract)) {
+        throw "The NG launcher is missing its data helper: $entry"
+    }
 }
 $ForbiddenEntries = @(
     Get-ChildItem -LiteralPath $AppRoot -Recurse -Force |
@@ -127,8 +133,7 @@ Copy-Item -Force `
     (Join-Path $RepoRoot "licenses\Boost-1.0.txt") `
     (Join-Path $LicenseRoot "Boost-1.0.txt")
 
-# The editor's shared pure modules are read from the bundled server source,
-# not a partial frozen gui package that would hide other server imports.
+# Shared data tools are staged explicitly outside the frozen game GUI package.
 python (Join-Path $RepoRoot "tools/stage_editor_licenses.py") $LicenseRoot
 if ($LASTEXITCODE -ne 0) { throw "Pillow license staging failed" }
 

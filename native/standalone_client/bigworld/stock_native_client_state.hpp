@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -61,6 +62,31 @@ struct Value {
 };
 // Keep passive Actor/State consumers independent of the Python data decoder.
 inline ObjectFields::~ObjectFields()=default;
+inline ObjectFields::ObjectFields(const ObjectFields&v):fields_(v.fields_?std::make_unique<Map>(*v.fields_):nullptr){}
+inline ObjectFields& ObjectFields::operator=(const ObjectFields&v){if(this!=&v){ObjectFields copy(v);fields_.swap(copy.fields_);}return *this;}
+inline ObjectFields::ObjectFields(ObjectFields&&)noexcept=default;
+inline ObjectFields& ObjectFields::operator=(ObjectFields&&)noexcept=default;
+inline ObjectFields::Map& ObjectFields::writable(){if(!fields_)fields_=std::make_unique<Map>();return *fields_;}
+inline ObjectFields::Map& ObjectFields::emptyFields(){static Map empty;return empty;}
+inline Value& ObjectFields::operator[](const std::string&key){return writable()[key];}
+inline std::pair<ObjectFields::iterator,bool> ObjectFields::emplace(std::string key,Value value){return writable().emplace(std::move(key),std::move(value));}
+inline ObjectFields::iterator ObjectFields::begin(){return fields_?fields_->begin():emptyFields().end();}
+inline ObjectFields::iterator ObjectFields::end(){return fields_?fields_->end():emptyFields().end();}
+inline ObjectFields::const_iterator ObjectFields::begin()const{return fields_?fields_->cbegin():emptyFields().cend();}
+inline ObjectFields::const_iterator ObjectFields::end()const{return fields_?fields_->cend():emptyFields().cend();}
+inline ObjectFields::iterator ObjectFields::find(const std::string&key){return fields_?fields_->find(key):emptyFields().end();}
+inline ObjectFields::const_iterator ObjectFields::find(const std::string&key)const{return fields_?fields_->find(key):emptyFields().cend();}
+inline std::size_t ObjectFields::count(const std::string&key)const{return fields_?fields_->count(key):0;}
+inline std::size_t ObjectFields::size()const noexcept{return fields_?fields_->size():0;}
+inline bool ObjectFields::empty()const noexcept{return !fields_||fields_->empty();}
+inline std::size_t ObjectFields::erase(const std::string&key){return fields_?fields_->erase(key):0;}
+inline void ObjectFields::clear()noexcept{if(fields_)fields_->clear();}
+inline bool ObjectFields::operator==(const ObjectFields&v)const{if(empty()||v.empty())return empty()&&v.empty();return *fields_==*v.fields_;}
+inline bool Value::operator==(const Value&v)const{if(reference&&reference==v.reference)return true;if(reference||v.reference)return resolved()==v.resolved();if(kind!=v.kind){if((kind==Kind::Integer||kind==Kind::Number)&&(v.kind==Kind::Integer||v.kind==Kind::Number))return numeric()==v.numeric();return false;}switch(kind){case Kind::Null:return true;case Kind::Boolean:return boolean==v.boolean;case Kind::Integer:return integer==v.integer&&unsigned_integer==v.unsigned_integer;case Kind::Number:return number==v.number;case Kind::Text:return text==v.text;case Kind::Array:return array==v.array;case Kind::Object:return object==v.object;case Kind::Shared:return false;}return false;}
+inline const Value& Value::get(const std::string&key)const{if(reference)return reference->get(key);auto i=object.find(key);static const Value null;return i==object.end()?null:i->second;}
+inline double Value::numeric(double fallback)const{if(reference)return reference->numeric(fallback);if(kind==Kind::Integer)return unsigned_integer?double(std::uint64_t(integer)):double(integer);if(kind==Kind::Number)return std::isfinite(number)?number:fallback;if(kind==Kind::Boolean)return boolean?1.:0.;if(kind==Kind::Text)try{std::size_t end=0;const double n=std::stod(text,&end);return end==text.size()&&std::isfinite(n)?n:fallback;}catch(...){return fallback;}return fallback;}
+inline bool Value::truth(bool fallback)const{if(reference)return reference->truth(fallback);switch(kind){case Kind::Null:return fallback;case Kind::Boolean:return boolean;case Kind::Integer:return integer!=0;case Kind::Number:return number!=0.;case Kind::Text:return !text.empty();case Kind::Array:return !array.empty();case Kind::Object:return !object.empty();case Kind::Shared:return fallback;}return fallback;}
+
 std::optional<std::array<double,8>> hydraulicBody(const Value&);
 struct Sample {double time=0.;std::optional<std::int64_t> revision;Pose value{};Value state;};
 // Accepted contact history owns exactly the newest 512 revisions. Physical

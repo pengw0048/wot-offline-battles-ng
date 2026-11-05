@@ -15,7 +15,7 @@ bool presented(const Actor& v) { return v.engine_id != 0; }
 Value object() { Value v; v.kind = Value::Kind::Object; return v; }
 Value text(const std::string& s) { Value v; v.kind = Value::Kind::Text; v.text = s; return v; }
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }

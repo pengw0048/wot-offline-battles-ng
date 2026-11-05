@@ -303,7 +303,8 @@ HIT_FIELDS = (
     O('critical_revision', I64), O('critical_base_revision', I64), O('critical_ack_seq', I64),
     O('combat_revision', I64), O('combat_base_revision', I64), O('combat_ack_seq', I64),
     O('cosmetic_only', BOOL), O('ram_operation_id', STR), O('ram_frontier_time_us', I64),
-    O('push_attributed', BOOL), O('critical_feedback_separate', BOOL), O('display_health', I64))
+    O('push_attributed', BOOL), O('critical_feedback_separate', BOOL), O('display_health', I64),
+    O('stack_phase', STR))
 for _kind in ('health', 'hit', 'bot_hit', 'bot_human_hit', 'bot_bot_hit'):
     R['Event_' + _kind] = Record('Event_' + _kind, list(HIT_FIELDS))
 SHOT_FIELDS = (EVENT_ID,) + PROJECTILE_FIELDS + (
@@ -319,6 +320,9 @@ R['Event_projectile_impact'] = Record('Event_projectile_impact', [
     F('penetration_factor', F64), F('hit_vehicle', BOOL), F('shooter_kind', Enum('player', 'bot')),
     F('shooter_id', I64), F('shot_seq', I64), O('impact', VEC3),
     O('wreck_hit', Any())])
+R['Event_projectile_launch_failed'] = Record('Event_projectile_launch_failed', [
+    EVENT_ID, F('shooter_id', I64), F('shot_seq', I64), F('round_id', I64),
+    F('authority_epoch', I64), F('reason', STR)])
 R['Event_authority'] = Record('Event_authority', [
     EVENT_ID, N('player_id', I64), F('round_id', I64), F('authority_epoch', I64)])
 R['Event_bot_manifest'] = Record('Event_bot_manifest', [EVENT_ID, F('bots', List(MANIFEST_ROW, 30))])
@@ -347,7 +351,7 @@ R['Event_battle_result'] = Record('Event_battle_result', [
 EVENT_KINDS = ('authority', 'bot_manifest', 'destructible', 'health', 'hit', 'bot_hit',
                'bot_human_hit', 'bot_bot_hit', 'shot', 'bot_shot', 'projectile_ricochet',
                'projectile_impact', 'stun', 'environment_critical', 'vehicle_statistics',
-               'detection', 'assist', 'battle_result')
+               'detection', 'assist', 'battle_result', 'projectile_launch_failed')
 EVENT = Variant('kind', dict((k, 'Event_' + k) for k in EVENT_KINDS))
 EVENT.order = list(EVENT_KINDS)
 

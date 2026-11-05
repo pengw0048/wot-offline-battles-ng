@@ -8,9 +8,10 @@ binary battle wire the independent client uses. The composed tree is:
 
 - every file of the pinned source archive or directory;
 - ``launcher/`` replaced by this repository's NG launcher;
-- ``server/`` replaced by ``native/standalone_client/wire/stage_server.py``,
-  listening on its own port so an NG room never answers an original-mod
-  launcher.
+- ``server/`` adapted by ``native/standalone_client/wire/stage_server.py``
+  for source-oracle tests only;
+- immutable native room resources baked from that pinned source. The launcher
+  ships the native worker host and client probe codec, not a Python server.
 
     python3 tools/stage_ng_launcher_source.py --output OUT [--fork-source PATH]
 
@@ -20,6 +21,7 @@ Without ``--fork-source`` the pinned revision is downloaded from GitHub.
 import argparse
 import io
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -151,6 +153,15 @@ def stage(output, fork_source=None, revision=None):
         (tree / 'server').rename(pinned_server)
         stage_server.stage(str(pinned_server), str(tree / 'server'), str(tree / 'src/res/scripts/client'))
         _stage_server_port(tree / 'server/windows_server.py')
+        # The launcher probes the native room using the canonical wire codec.
+        # These are client-side protocol tools, never a battle server payload.
+        shutil.copyfile(WIRE / 'codec.py', tree / 'launcher/battle_wire_codec.py')
+        schema = (WIRE / 'schema.py').read_text(encoding='utf-8')
+        (tree / 'launcher/battle_wire_schema.py').write_text(
+            schema.replace('from codec import', 'from battle_wire_codec import'), encoding='utf-8')
+        subprocess.run([sys.executable, str(ROOT / 'native/standalone_client/room/bake_resources.py'),
+                        str(tree), str(tree / 'native-room-data.json')], check=True,
+                       env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
         record = {'fork_repository': FORK_REPOSITORY, 'fork_revision': revision,
                   'ng_revision': _ng_revision()}
         (tree / SOURCE_RECORD).write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')

@@ -1,7 +1,7 @@
 wot-0.9.22-offline-battles NG v1.1.1
 
 Supported client: Chinese HD World of Tanks 0.9.22.0.1 #1513 (32-bit).
-The launcher and bundled server require 64-bit Windows.
+The launcher requires 64-bit Windows. The native client is 32-bit.
 
 This launcher starts the independent NG client (bwclient_h.exe), not the
 original mod. It is in development and has not passed full gameplay acceptance.
@@ -19,7 +19,8 @@ settings of the original-mod launcher are neither read nor changed, and both
 launchers can be installed side by side. The NG room uses TCP 28792.
 
 For LAN play, select Online and Start LAN room on the host PC. The host
-starts the server and one hidden simulation worker. Each player, including
+starts one hidden simulation worker that also owns the native room listener.
+Each player, including
 the host, then selects Join network battle with the host's address on TCP
 28792. Allow inbound TCP 28792 through the host's Windows firewall. Everyone
 must use the same NG launcher build; a different package identity is rejected
@@ -42,7 +43,7 @@ from the original installation. Keep res_mods for the vehicle editor. Individual
 plugin compatibility needs Windows testing.
 
 Closing the visible single-player game also closes its hidden simulation worker
-and temporary server. The launcher itself stays open.
+and its temporary room listener. The launcher itself stays open.
 
 Set replay recording to Off, Last or All in the game. Recordings are saved under
 replays/offline in the player instance. Open .wotlanreplay files from the
@@ -65,7 +66,8 @@ This mod is free; resale is prohibited. World of Tanks game assets are not
 included. This unofficial project is not endorsed by Wargaming.
 See LICENSE, THIRD_PARTY_NOTICES.md and licenses for license terms. The optional
 crash recorder downloads Microsoft ProcDump only with the launcher's consent
-setting. The launcher and LAN server share CPython 3.11.9 from python.org.
+setting. The launcher uses CPython 3.11.9 from python.org. The native room
+server runs inside the hidden worker; no separate Python battle server is shipped.
 Native replay recording and playback do not require a separate Python runtime.
 The viewer bundles NumPy, ModernGL and glcontext; their wheel license files
 are included with their distribution metadata under _internal.

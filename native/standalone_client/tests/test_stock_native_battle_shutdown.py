@@ -11,7 +11,7 @@ SOURCE = os.environ.get("WOT_FORK_SOURCE")
 
 @unittest.skipUnless(SOURCE, "set WOT_FORK_SOURCE to the fixed gameplay checkout")
 class BattleShutdownTests(unittest.TestCase):
-    def test_worker_link_closes_and_releases_owners_even_when_leave_fails(self):
+    def test_worker_link_stops_host_and_releases_owners_even_when_stop_fails(self):
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
@@ -32,8 +32,14 @@ class World(object):
   raise RuntimeError('callback already retired')
 for fail in (0,1):
  rows=native.run(World(),fail)
- assert rows==(['leave','transport-destroy'] if fail else ['leave','close','transport-destroy']),rows
-print('Worker-link detach, callback failure, failed leave, transport-before-script release and repeated shutdown passed')
+ assert rows==['stop','host-destroy'],rows
+class CallbackWorld(object):
+ def __init__(self):self.next=0;self.last=None
+ def callback(self,delay,fn):
+  self.next+=1;self.last=fn;return self.next
+ def cancelCallback(self,token):pass
+assert native.reconnect(CallbackWorld())
+print('Worker-link detach, callback failure, failed stop, host-before-script release and repeated shutdown passed')
 '''
             result = subprocess.run([py27, '-B', '-c', script], cwd=directory, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

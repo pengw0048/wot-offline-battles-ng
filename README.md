@@ -396,7 +396,11 @@ instances and their logs. The room server listens on TCP 28792, so an NG room
 and an original-mod room can run on the same PC without answering each other.
 
 For LAN play, open **Online** and click **Start LAN room** on the host PC.
-The host starts the room server and one hidden simulation worker. Each player,
+The host starts one hidden simulation worker containing the native C++ room
+server. One room thread owns shared battle state; a separate network thread
+encodes and sends replicas. The engine exchanges immutable native messages
+with the room through bounded queues, without a loopback socket or Python
+battle server process. Each player,
 including the host, then clicks **Join network battle** with the host's address
 on TCP 28792. Allow inbound TCP 28792 through the host's Windows firewall.
 All players must use the same NG launcher build; the launcher checks the
@@ -412,8 +416,9 @@ acceptance with multiple clients.
 
 Build it on Windows with x64 Python 3.11 from a locally built native client
 package. The launcher, its
-tests and its build read the pinned v1.1.1 server and tools, so compose that
-source tree first:
+tests and its resource baker read the pinned v1.1.1 source and tools. The
+Python server remains a test oracle and is excluded from the launcher payload.
+Compose the source tree first:
 
 ```powershell
 python -m pip install -r launcher/requirements-build.txt

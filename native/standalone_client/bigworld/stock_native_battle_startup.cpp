@@ -27,7 +27,7 @@ constexpr const char* kStandardGameplay = "ctf";
 Value boolean(bool v) { Value x; x.kind = Value::Kind::Boolean; x.boolean = v; return x; }
 Value number(double v) { Value x; x.kind = Value::Kind::Number; x.number = v; return x; }
 Value& writable(Value& v) {
-    if (v.reference) { Value copy = *v.reference; v = std::move(copy); }
+    if (v.reference) { Value copy = v.resolved(); v = std::move(copy); }
     if (v.kind != Value::Kind::Object) v.kind = Value::Kind::Object;
     return v;
 }

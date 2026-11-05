@@ -116,6 +116,7 @@ jobs:
           with zipfile.ZipFile(archive) as final_zip:
               names = [name.replace('\\', '/') for name in final_zip.namelist()]
               assert package_prefix + 'bwclient_h.exe' in names, 'final ZIP is missing the NG executable'
+              assert not any('/servers/' in '/' + name for name in names), 'final ZIP contains a Python server payload'
               verify_retired_entries([name[len(package_prefix):].rstrip('/')
                                       for name in names if name.startswith(package_prefix)],
                                      'final launcher ZIP')
@@ -124,46 +125,32 @@ jobs:
               throw "NG payload verification failed"
           }
 
-          $ProtocolProbe = @'
+          # Full worker startup needs the exact game resources and D3D runtime.
+          # CI verifies the package boundary and the retired launcher entry.
+          if (Test-Path (Join-Path $appRoot "_internal\servers")) {
+              throw "The native worker-host package contains a Python server payload"
+          }
+          $process = Start-Process -FilePath $launcher `
+              -ArgumentList "--serve", "0.9.22" -PassThru -Wait
+          if ($process.ExitCode -ne 2) {
+              throw "The retired Python server entry did not reject startup"
+          }
+          @'
           import os
           import sys
           sys.path.insert(0, os.path.join(sys.argv[1], 'launcher'))
           import core
-          raise SystemExit(0 if core.probe_server_protocol(
-              core.PORT_0_9_22, '127.0.0.1', core.DEFAULT_SERVER_PORT,
-              timeout=1.0) else 1)
-          '@
-          $process = Start-Process -FilePath $launcher `
-              -ArgumentList "--serve", "0.9.22" -PassThru
-          try {
-              $deadline = (Get-Date).AddSeconds(60)
-              $compatible = $false
-              while ((Get-Date) -lt $deadline) {
-                  if ($process.HasExited) {
-                      throw "The bundled server exited before its protocol answered"
-                  }
-                  $ProtocolProbe | python - $tree
-                  if ($LASTEXITCODE -eq 0) {
-                      $compatible = $true
-                      break
-                  }
-                  Start-Sleep -Milliseconds 250
-              }
-              if (-not $compatible) {
-                  throw "The bundled server did not answer the battle wire protocol"
-              }
-          }
-          finally {
-              if (-not $process.HasExited) {
-                  & taskkill.exe /PID $process.Id /T /F | Out-Null
-                  $global:LASTEXITCODE = 0
-              }
-              $log = Join-Path $appRoot "server.log"
-              if (Test-Path $log) {
-                  Write-Host "--- launcher server log ---"
-                  Get-Content $log -Tail 60
-              }
-              Start-Sleep -Seconds 2
+          message = {'type': 'hello', 'protocol': 5,
+                     'client_build': 'wot-0.9.22.0.1-cn-1513', 'role': 'probe',
+                     'name': 'Launcher-Probe', 'vehicle': 'ussr:R11_MS-1',
+                     'max_health': 1, 'vehicle_compact_descr': 'AA==',
+                     'capabilities': list(core._SERVER_PROBES[core.PORT_0_9_22]['capabilities'])}
+          schema = core._battle_wire_schema()
+          assert schema.decode(schema.encode(message)) == message
+          assert not hasattr(core, 'run_server_payload')
+          '@ | python - $tree
+          if ($LASTEXITCODE -ne 0) {
+              throw "Launcher probe codec verification failed"
           }
       - uses: actions/upload-artifact@v4
         with:

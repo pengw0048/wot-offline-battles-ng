@@ -45,6 +45,7 @@ bool readPlanningSnapshot(const stock_native_bot::RoundSeed & seed,const stock_n
     PlanningSnapshot & result);
 // The round's baked grid: its validated graph with the shore-classified hazards.
 bool readMapInput(const stock_native_bot::RoundSeed & seed,offline_navigation::MapInput & result);
+bool readSharedMapInput(const stock_native_bot::RoundSeed & seed,std::shared_ptr<const offline_navigation::MapInput> & result);
 bool readNavigationMode(const stock_native_client_state::Value & state,_object * descriptor,
     stock_native_bot_navigation::ExactDescriptor & result);
 // Undamaged visibility/radio coefficients and descriptor checkpoints for one

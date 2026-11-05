@@ -122,6 +122,9 @@ struct Session {
     double probe_time = 0., process_time = -1., process_cpu = -1.;
 };
 std::unique_ptr<Session> session;
+// WorkerSession can be rebuilt without restarting the engine. Tokens belong
+// to the process lifetime, so a retained callback cannot enter a new owner.
+std::uint64_t session_generations = 0;
 
 bool authorityHere() { return session->linked && link::authority(); }
 void log(const std::string& line) { native_battle::log(line); }
@@ -313,7 +316,7 @@ bool failure(const std::string& error) {
     if (session->linked) link::dropAuthority();
     bool cleanup_failed = false;
     try { retireRuntime("worker_failed"); } catch (const std::exception& e) { cleanup_failed = true; log("worker cleanup failed: " + describe(e)); }
-    ++session->generation;
+    session->generation = ++session_generations;
     if (session->linked) {
         session->linked = false;
         link::disconnect(false);
@@ -455,7 +458,8 @@ void monitor() {
 
 bool connect() {
     if (session->stopped) return false;
-    const auto generation = ++session->generation;
+    const auto generation = ++session_generations;
+    session->generation = generation;
     auto config = cs::read(session->config.get());
     const std::string host = config.get("host").kind == Value::Kind::Text ? config.get("host").text : std::string("127.0.0.1");
     const int port = int(config.get("port").numeric(28782.));
@@ -552,6 +556,7 @@ PyObject* callbackEntry(PyObject* self, PyObject*) {
 
 void install(PyObject* config, PyObject* lobby_ready, PyObject* bigworld) {
     session.reset(new Session);
+    session->generation = ++session_generations;
     session->config = own(p::Ref(PyDict_Copy(config)));
     session->lobby_ready = borrow(lobby_ready);
     session->bigworld = borrow(bigworld);
@@ -571,7 +576,7 @@ void stop(bool restore_account) {
     if (!session) return;
     if (session->stopped && !current() && !session->linked && !session->draw.active) return;
     session->stopped = true;
-    ++session->generation;
+    session->generation = ++session_generations;
     cancel(session->monitor_id);
     cancel(session->retry_id);
     if (session->linked) link::dropAuthority();

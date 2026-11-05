@@ -116,8 +116,7 @@ class NativeReplayPreflightTests(unittest.TestCase):
             self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
             import core
             import replay_launch
-            with mock.patch.object(core, 'server_script', return_value=str(folder / 'server/windows_server.py')):
-                result = replay_launch.validate(folder / 'replays/replay_last_battle.wotlanreplay')
+            result = replay_launch.validate(folder / 'replays/replay_last_battle.wotlanreplay')
             self.assertEqual(8, result['records'])
             self.assertGreater(result['logical_bytes'], 3 * 1024 * 1024)
             played = subprocess.run(args + ['read'], text=True, capture_output=True)

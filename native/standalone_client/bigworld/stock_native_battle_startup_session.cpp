@@ -15,7 +15,7 @@ namespace {
 constexpr std::size_t kWarningTextLimit = 240;
 
 Value& writable(Value& v) {
-    if (v.reference) { Value copy = *v.reference; v = std::move(copy); }
+    if (v.reference) { Value copy = v.resolved(); v = std::move(copy); }
     if (v.kind != Value::Kind::Object) v.kind = Value::Kind::Object;
     return v;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy the LAN server and NG client package the launcher carries."""
+"""Copy the native worker-host and player package the launcher carries."""
 
 from __future__ import annotations
 
@@ -8,36 +8,24 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 import uuid
 
-SERVER_DIR = "servers"
 NG_CLIENT_DIR = "ng-client"
-
-PAYLOAD_FILES = {
-    "0.9.22": (
-        "server/battle_wire_codec.py",
-        "server/battle_wire_bot_state_codec.py",
-        "server/battle_wire_ram_motion.py",
-        "server/battle_wire_replica.py",
-        "server/battle_wire_schema.py",
-        "server/lan_battle_server.py",
-        "server/offline_rewards.py",
-        "server/retired_vehicles.py",
-        "server/server_bot_ai.py",
-        "server/server_route_recovery.py",
-        "server/server_route_tasks.py",
-        "server/server_empty_ammo.py",
-        "server/vehicle_overlay_store.py",
-        "server/windows_server.py",
-    ),
-}
-
-PAYLOAD_TREES = {
-    "0.9.22": ("src/res/scripts/client/gui/mods/offline_lan_0922",),
-}
+LAUNCHER_CONTRACTS_DIR = "launcher-contracts"
+# Existing launcher editors and save tools use these Python-2-compatible
+# data helpers. Keep them separate from the native room's battle authority.
+LAUNCHER_CONTRACTS = (
+    "__init__.py", "bot_editor_maps.py", "bot_gunnery.py", "bot_tactics.py",
+    "bot_tactics_runtime.py", "config.py", "crew_recruits.py",
+    "crew_seat_data.py", "crew_skills.py", "initial_allocation.py",
+    "internal_layout_console.py", "native_input_diagnostics.py", "native_math.py",
+    "offline_services.py", "price_catalogue.py", "route_network.py",
+    "spg_position_data.py", "spg_positions.py", "worker_diagnostics.py",
+    "account_rpc/__init__.py", "account_rpc/economy.py",
+)
+LAUNCHER_CONTRACTS_RELATIVE = "gui/mods/offline_lan_0922"
 
 # Files every NG client package must carry before the launcher can run it.
 NG_CLIENT_REQUIRED = (
@@ -132,37 +120,6 @@ def _copy_tree(source, target, keep_bytecode=False, suffixes=None,
     return written
 
 
-def stage_servers(target_root, source_root=None):
-    source_root = source_root or repository_root()
-    written = []
-    for port_version, relative_paths in PAYLOAD_FILES.items():
-        for relative_path in relative_paths:
-            source = os.path.join(source_root, *relative_path.split("/"))
-            target = os.path.join(target_root, port_version,
-                                  *relative_path.split("/"))
-            _copy_file(source, target)
-            written.append(target)
-    for port_version, relative_dirs in PAYLOAD_TREES.items():
-        for relative_dir in relative_dirs:
-            source = os.path.join(source_root, *relative_dir.split("/"))
-            target = os.path.join(target_root, port_version,
-                                  *relative_dir.split("/"))
-            written.extend(_copy_tree(source, target, suffixes=(".py",)))
-    return written
-
-
-def verify_servers(target_root):
-    """Import the staged server in isolation, without checkout fallbacks."""
-    for port_version in PAYLOAD_FILES:
-        directory = os.path.abspath(os.path.join(target_root, port_version, "server"))
-        result = subprocess.run(
-            [sys.executable, "-I", "-S", "-B", "-c",
-             "import sys; sys.path.insert(0, sys.argv[1]); import lan_battle_server",
-             directory], cwd=directory, capture_output=True, text=True)
-        if result.returncode:
-            raise ValueError("Staged server import failed: %s" % result.stderr.strip())
-
-
 def launcher_version(source_root=None):
     source_root = source_root or repository_root()
     with open(os.path.join(source_root, "launcher", "wot_launcher.py"),
@@ -171,6 +128,23 @@ def launcher_version(source_root=None):
     if match is None:
         raise ValueError("LAUNCHER_VERSION is missing from wot_launcher.py")
     return match.group(1)
+
+
+def stage_launcher_contracts(target_root, source_root=None):
+    """Stage only the launcher's imported data tools, never server modules."""
+    source_root = source_root or repository_root()
+    source = os.path.join(source_root, "src", "res", "scripts", "client",
+                          *LAUNCHER_CONTRACTS_RELATIVE.split("/"))
+    written = []
+    for relative in LAUNCHER_CONTRACTS:
+        origin = os.path.join(source, *relative.split("/"))
+        if not os.path.isfile(origin):
+            raise ValueError("Launcher data helper is missing: %s" % relative)
+        target = os.path.join(target_root, *LAUNCHER_CONTRACTS_RELATIVE.split("/"),
+                              *relative.split("/"))
+        _copy_file(origin, target)
+        written.append(target)
+    return written
 
 
 def build_identity(environ=None):
@@ -207,11 +181,23 @@ def stage_ng_client(target_root, ng_client, source_root=None, identity=None):
     if actual != expected:
         raise ValueError("NG client gameplay revision %r does not match the launcher/server %s" %
                          (actual, expected))
+    room_data = os.path.join(source_root, "native-room-data.json")
+    try:
+        with open(room_data, encoding="utf-8") as stream:
+            room_identity = json.load(stream)
+        if room_identity.get("schema") != 1 or room_identity.get("gameplay_revision") != expected:
+            raise ValueError("native room data does not match the gameplay revision")
+    except (OSError, ValueError, TypeError) as error:
+        raise ValueError("Native room data is missing or invalid: %s" % error)
     # Python 2.7 bytecode can be part of the client runtime. Debug symbols
     # are archived beside each build instead of shipping to every player.
     written = _copy_tree(ng_client, target_root, keep_bytecode=True,
                          excluded_suffixes=NG_CLIENT_EXCLUDED_SUFFIXES,
-                         excluded_relative_paths=NG_CLIENT_EXCLUDED_RELATIVE_PATHS)
+                         excluded_relative_paths=NG_CLIENT_EXCLUDED_RELATIVE_PATHS + (
+                             "native-room-data.json", BUILD_IDENTITY_RELATIVE))
+    room_target = os.path.join(target_root, "native-room-data.json")
+    _copy_file(room_data, room_target)
+    written.append(room_target)
     target = os.path.join(target_root, *BUILD_IDENTITY_RELATIVE.split("/"))
     payload = {
         "schema": 1,
@@ -234,11 +220,14 @@ def stage(target_root, source_root=None, include_clients=True,
     """Write the complete payload under target_root and return every file."""
     if os.path.isdir(target_root):
         shutil.rmtree(target_root)
-    written = stage_servers(os.path.join(target_root, SERVER_DIR), source_root)
+    os.makedirs(target_root, exist_ok=True)
+    written = []
     if include_clients:
         written.extend(stage_ng_client(
             os.path.join(target_root, NG_CLIENT_DIR), ng_client,
             source_root, identity))
+        written.extend(stage_launcher_contracts(
+            os.path.join(target_root, LAUNCHER_CONTRACTS_DIR), source_root))
     return written
 
 
@@ -250,17 +239,10 @@ def main(argv=None):
                         help="repository root (default: this checkout)")
     parser.add_argument("--ng-client", default=None,
                         help="NG client package directory (bwclient_h.exe)")
-    parser.add_argument("--servers-only", action="store_true",
-                        help="stage the LAN servers without the NG client")
-    parser.add_argument("--verify-servers", action="store_true",
-                        help="import the staged servers without checkout fallbacks")
     arguments = parser.parse_args(argv)
     try:
         written = stage(arguments.output, arguments.source,
-                        include_clients=not arguments.servers_only,
                         ng_client=arguments.ng_client)
-        if arguments.verify_servers:
-            verify_servers(os.path.join(arguments.output, SERVER_DIR))
     except ValueError as error:
         sys.stderr.write("%s\n" % error)
         return 1

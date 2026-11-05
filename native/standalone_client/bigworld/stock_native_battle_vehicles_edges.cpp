@@ -24,7 +24,7 @@ std::int64_t integer(const Value& v, std::int64_t fallback = 0) {
 }
 bool exactInteger(const Value& v) { return v.resolved().kind == Value::Kind::Integer; }
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }
@@ -380,7 +380,8 @@ void applyHealth(Battle& b, Actor& v, Value& state, const HealthEdge& edge) {
         const Value payload = critical::applyDeath(b, entity.get(), cause);
         if (payload.resolved().kind != Value::Kind::Null) {
             Value canonical = payload.resolved();
-            writable(canonical).object["events"].kind = Value::Kind::Array;
+            writable(canonical).object["events"] = Value();
+            canonical.object["events"].kind = Value::Kind::Array;
             writable(state).object["critical"] = canonical;
             d.critical = canonical;
             d.state = state;
@@ -485,6 +486,7 @@ void applyPose(Battle& b, Actor& v, const Pose& pose) {
     const double now = b.clock();
     const std::int64_t siege = has(state, "siege_state") ? integer(field(state, "siege_state")) : 0;
     d.collision_pose = projectiles::boundaryPose(b, {pose[0], pose[1], pose[2]}, state);
+    writable(d.collision_pose).object["siege_state"] = Value();
     writable(d.collision_pose).object["siege_state"].kind = Value::Kind::Integer;
     writable(d.collision_pose).object["siege_state"].integer = siege;
     const bool is_alive = field(state, "alive").truth(true) && integer(field(state, "health"), 1) > 0;

@@ -165,6 +165,20 @@ state = native.details()
 assert world.restores == 1 and state['cleanups'] == 1 and not state['restore_pending'], state
 assert not any(delay == 0. for delay, unused in world.callbacks.values()), world.callbacks
 native.shutdown()
+# A retained monitor from a destroyed WorkerSession cannot enter a newly
+# installed one, even though both sessions made their first connection.
+world = fresh()
+stale = [fn for delay, fn in world.callbacks.values() if delay == .1]
+assert len(stale) == 1
+replacement = World()
+assert native.initialise(replacement, lambda: replacement.ready, dict(startupTimeoutSeconds=30.))
+before = native.details()
+monitors = lambda: [fn for delay, fn in replacement.callbacks.values() if delay == .1]
+assert len(monitors()) == 1
+stale[0]()
+assert len(monitors()) == 1, replacement.callbacks
+assert native.details() == before
+native.shutdown()
 print('Consecutive production worker rounds, native restore callbacks and identity fences passed')
 '''
 

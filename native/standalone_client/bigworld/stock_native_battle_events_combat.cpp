@@ -23,7 +23,7 @@ std::int64_t integer(const Value& v, std::int64_t fallback = 0) {
     return std::int64_t(r.numeric(double(fallback)));
 }
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }
@@ -81,7 +81,8 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
     const auto& critical = field(event, "critical");
     if (critical.resolved().kind == Value::Kind::Object) {
         Value canonical = critical.resolved();
-        writable(canonical).object["events"].kind = Value::Kind::Array;
+        writable(canonical).object["events"] = Value();
+        canonical.object["events"].kind = Value::Kind::Array;
         canonical.object["events"].array.clear();
         const bool apply = vehicles::reconcileCriticalAuthority(b, *target, event, &canonical);
         if (apply) {
@@ -115,9 +116,11 @@ void applyCombat(Battle& b, const Value& event, bool update_state) {
             vehicles::presentCritical(b, *target, events, attacker_engine);
         }
     }
-    if (has(event, "display_health"))
-        writable(state).object["display_health"].kind = Value::Kind::Integer,
+    if (has(event, "display_health")) {
+        writable(state).object["display_health"] = Value();
+        state.object["display_health"].kind = Value::Kind::Integer;
         state.object["display_health"].integer = std::max<std::int64_t>(0, integer(field(event, "display_health"), integer(field(state, "health"))));
+    }
     const std::int64_t death_reason = integer(field(event, "death_reason"));
     const bool force = std::max<std::int64_t>(0, integer(field(event, "damage"))) > 0 || field(event, "dead").truth();
     vehicles::HealthEdge edge;
@@ -141,8 +144,16 @@ void applyStatisticsEvent(Battle& b, const Value& event) {
     Actor* v = presented(b, field(event, "actor_kind").resolved().text + ":" + std::to_string(actor));
     if (!v) return;
     auto& state = writable(v->presented.state);
-    if (has(event, "frags")) state.object["frags"].kind = Value::Kind::Integer, state.object["frags"].integer = integer(field(event, "frags"));
-    if (has(event, "team_killer")) state.object["team_killer"].kind = Value::Kind::Boolean, state.object["team_killer"].boolean = field(event, "team_killer").truth();
+    if (has(event, "frags")) {
+        state.object["frags"] = Value();
+        state.object["frags"].kind = Value::Kind::Integer;
+        state.object["frags"].integer = integer(field(event, "frags"));
+    }
+    if (has(event, "team_killer")) {
+        state.object["team_killer"] = Value();
+        state.object["team_killer"].kind = Value::Kind::Boolean;
+        state.object["team_killer"].boolean = field(event, "team_killer").truth();
+    }
     vehicles::applyStatistics(b, *v, v->presented.state);
 }
 

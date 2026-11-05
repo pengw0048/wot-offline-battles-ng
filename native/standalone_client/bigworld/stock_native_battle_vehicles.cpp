@@ -28,7 +28,7 @@ Value boolean(bool v) { Value x; x.kind = Value::Kind::Boolean; x.boolean = v; r
 Value number(std::int64_t v) { Value x; x.kind = Value::Kind::Integer; x.integer = v; return x; }
 // A writable copy of the presented state (accepted rows are shared and immutable).
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }

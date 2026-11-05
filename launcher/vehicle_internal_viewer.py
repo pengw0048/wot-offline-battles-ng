@@ -11,9 +11,10 @@ import zlib
 
 @functools.lru_cache(maxsize=1)
 def catalogue():
-    relative = Path('src/res/scripts/client/gui/mods/offline_lan_0922/internal_layout_console.py')
+    relative = Path('gui/mods/offline_lan_0922/internal_layout_console.py')
     base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-    path = base / ('servers/0.9.22' if getattr(sys, 'frozen', False) else '') / relative
+    path = base / ('launcher-contracts' if getattr(sys, 'frozen', False)
+                   else 'src/res/scripts/client') / relative
     tree = ast.parse(path.read_text(encoding='utf-8'))
     value = next((node.value for node in tree.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id == 'CONSOLE_LAYOUTS_0922'

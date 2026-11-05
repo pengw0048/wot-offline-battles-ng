@@ -21,7 +21,7 @@ except ImportError:
 
 # Source checkout and packaged source tree share the same pure-data contract.
 _source = Path(__file__).resolve().parents[1] / 'src/res/scripts/client'
-_bundled = Path(getattr(sys, '_MEIPASS', '')) / 'servers/0.9.22/src/res/scripts/client'
+_bundled = Path(getattr(sys, '_MEIPASS', '')) / 'launcher-contracts'
 for path in (_source, _bundled):
     if path.is_dir() and str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -52,7 +52,7 @@ def default_spg_positions(name, graph, profile=None):
     if baseline is not None:
         return [p for p in baseline if p['id'] not in deleted]
     if entry is None:
-        for path in (_source.parents[3]/'server',_bundled.parents[3]/'server'):
+        for path in (_source.parents[3]/'server',):
             if path.is_dir() and str(path) not in sys.path:sys.path.insert(0,str(path))
         from server_bot_ai import BotPlanner
         planner=BotPlanner()
