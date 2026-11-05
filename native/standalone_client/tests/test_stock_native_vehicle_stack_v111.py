@@ -48,7 +48,8 @@ int main() {
                     path.write_text(prefix+'#define hypot _hypot\n#include "'+str(unguarded)+'"\n'+consumer)
                     failed=subprocess.run(command,capture_output=True,text=True)
                     self.assertNotEqual(failed.returncode,0,'Macro regression negative control unexpectedly compiled')
-                    self.assertIn('_hypot',failed.stderr)
+                    # Toolchains diagnose the original, expanded or ABI-decorated name.
+                    self.assertRegex(failed.stderr,r'\b_*hypot\b')
 
 class VehicleStackV111(unittest.TestCase):
     @classmethod
