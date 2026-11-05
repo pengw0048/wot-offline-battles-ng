@@ -1,6 +1,7 @@
 #include "room_core.hpp"
 #include "room_inputs.hpp"
 #include "room_json.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cmath>

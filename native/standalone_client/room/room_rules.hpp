@@ -4,6 +4,7 @@
 #include <array>
 #include <functional>
 #include <set>
+#include <tuple>
 
 namespace wot::room {
 class Rules {
