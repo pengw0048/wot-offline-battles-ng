@@ -50,6 +50,7 @@ jobs:
       - name: Check the native room against pinned gameplay laws
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+          CXX: clang++
         run: python -B native/standalone_client/room/run_room_tests.py --jobs 2
 
   native-core:
@@ -70,6 +71,8 @@ jobs:
             os: windows-2022
             configure-args: -A Win32
     steps:
+      - name: Preserve source bytes for artifact integrity checks
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
       # These tests use synthetic data and require no proprietary client files.
       - name: Check application input and resource conversion

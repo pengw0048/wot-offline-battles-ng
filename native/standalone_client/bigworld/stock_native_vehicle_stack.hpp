@@ -76,7 +76,8 @@ inline std::optional<Surface> impact_surface(const std::vector<Point>&contacts,c
 struct Descent {
     bool active=false;std::uint64_t sequence=0;std::set<Identity> charged;
     void observe(bool before_airborne,double before_velocity,bool airborne,std::optional<double> impact,double dt) {
-        if(dt<=0.)return;if(before_velocity>=-10.)active=false;
+        if(dt<=0.)return;
+        if(before_velocity>=-10.)active=false;
         if(!active&&std::min(before_velocity,impact.value_or(0.))<-10.&&(before_airborne||airborne)) {
             active=true;++sequence;charged.clear();
         }

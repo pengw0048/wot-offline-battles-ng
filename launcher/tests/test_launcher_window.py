@@ -3216,24 +3216,19 @@ class WindowTest(unittest.TestCase):
         self.assertIn("Closing the game", self._log_text())
 
     def test_closing_the_window_stops_a_persistent_server(self):
-        stopped = []
-
-        class _Server(object):
-            pid = 1234
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                stopped.append("terminate")
-
-            def wait(self, timeout=None):
-                return 0
-
-        self.window._room_worker = _Server()
-        self.window._server_context = {"game_root": self.settings_dir}
+        game, unused_worker = self._ng_game()
+        stop_path = core.room_host_stop_path(game)
+        worker = _Process(exit_code=None)
+        def completed(timeout=None):
+            self.assertTrue(os.path.isfile(stop_path))
+            worker.exit_code = 0
+            return 0
+        worker.wait = completed
+        self.assertFalse(os.path.exists(stop_path))
+        self.window._room_worker = worker
+        self.window._server_context = {"game_root": game}
         self.window._server_persistent = True
-        self.window._room_vehicle_overlay_root = self.settings_dir
+        self.window._room_vehicle_overlay_root = game
         with mock.patch(
                 "core.wait_for_game_shutdown", return_value=True), \
                 mock.patch(
@@ -3241,9 +3236,10 @@ class WindowTest(unittest.TestCase):
                     return_value=1) as cleanup:
             self.window._on_close()
 
-        cleanup.assert_called_once_with(self.settings_dir)
-        self.assertEqual(stopped, [])
-        self.assertTrue(os.path.isfile(core.room_host_stop_path(self.settings_dir)))
+        cleanup.assert_called_once_with(game)
+        self.assertFalse(worker.terminated)
+        self.assertFalse(worker.killed)
+        self.assertTrue(os.path.isfile(stop_path))
         self.assertIsNone(self.window._room_vehicle_overlay_root)
         self.assertTrue(self.window.root.destroyed)
 

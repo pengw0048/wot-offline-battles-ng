@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORLD = ROOT / 'bigworld'
+CXX = os.environ.get('CXX', 'c++')
 
 
 def function(source, signature):
@@ -23,9 +24,9 @@ def function(source, signature):
 
 class WorkerSharedConsumers(unittest.TestCase):
     def test_batch_dispatch_stops_at_reentrant_lifecycle_edges(self):
-        if not shutil.which('c++'):
+        if not shutil.which(CXX):
             self.skipTest('A C++17 compiler is required')
-        source = (WORLD / 'stock_native_battle_link.cpp').read_text()
+        source = (WORLD / 'stock_native_battle_link.cpp').read_text(encoding='utf-8')
         helpers = '\n'.join(function(source, sig) for sig in (
             'const Value& at(', 'bool has(', 'Value integer(', 'Value number(',
             'Value text(', 'Value object(', 'Value array(', 'std::optional<std::int64_t> exact(',
@@ -35,8 +36,8 @@ class WorkerSharedConsumers(unittest.TestCase):
         code = BATCH_PREAMBLE + helpers + BATCH_DISPATCH + function(source, 'void dispatchBatch(') + BATCH_FIXTURE
         with tempfile.TemporaryDirectory(prefix='worker-shared-dispatch-') as directory:
             folder = Path(directory)
-            (folder / 'probe.cpp').write_text(code)
-            compiled = subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
+            (folder / 'probe.cpp').write_text(code, encoding='utf-8')
+            compiled = subprocess.run([CXX, '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
                                        '-I' + str(ROOT), str(folder / 'probe.cpp'),
                                        '-o', str(folder / 'probe')], capture_output=True, text=True)
             self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
@@ -46,13 +47,13 @@ class WorkerSharedConsumers(unittest.TestCase):
 
     def test_real_worker_session_accepts_owned_and_shared_message_classes(self):
         fork = os.environ.get('WOT_FORK_SOURCE')
-        if not fork or sys.platform != 'darwin' or not shutil.which('c++'):
+        if not fork or sys.platform != 'darwin' or not shutil.which(CXX):
             self.skipTest('The pinned native headers and macOS CPython 2.7 extension compiler are required')
         import test_stock_native_worker_session as session
         py27 = subprocess.check_output(['pyenv', 'which', 'python2.7'], text=True,
                                       env=dict(os.environ, PYENV_VERSION='2.7.18')).strip()
         prefix = subprocess.check_output([py27, '-c', 'import sys;print(sys.prefix)'], text=True).strip()
-        host = (ROOT / 'tests/stock_native_worker_session_host.cpp').read_text()
+        host = (ROOT / 'tests/stock_native_worker_session_host.cpp').read_text(encoding='utf-8')
         host = host.replace('#include "../bigworld/', '#include "' + str(WORLD) + '/')
         host = '#include "' + str(ROOT / 'room/room_value.hpp') + '"\n' + host
         original = 'worker::onEvent(kind, std::make_shared<const Value>(cs::read(raw)));'
@@ -76,13 +77,13 @@ class WorkerSharedConsumers(unittest.TestCase):
                             'b->round_id = message.get("round_id").resolved().integer;')
         with tempfile.TemporaryDirectory(prefix='worker-shared-session-') as directory:
             folder = Path(directory)
-            source = (WORLD / 'stock_native_battle_startup.cpp').read_text()
+            source = (WORLD / 'stock_native_battle_startup.cpp').read_text(encoding='utf-8')
             (folder / 'worker_session_startup.inc').write_text('\n'.join(function(source, sig) for sig in (
                 'void stop(Battle& b, bool restore_account)', 'void teardownAfterFailure(Battle& b)',
                 'void reportFailure(Battle& b, bool lobby_restored)',
-                'void scheduleLobbyRestore(Battle& b, bool report_failure, bool)')))
-            (folder / 'host.cpp').write_text(host)
-            command = ['c++', '-std=c++17', '-O1', '-DWOT_NATIVE_BATTLE_HOST_BUILD',
+                'void scheduleLobbyRestore(Battle& b, bool report_failure, bool)')), encoding='utf-8')
+            (folder / 'host.cpp').write_text(host, encoding='utf-8')
+            command = [CXX, '-std=c++17', '-O1', '-DWOT_NATIVE_BATTLE_HOST_BUILD',
                        '-DWOT_CLIENT_REPLICA_HOST_BUILD', '-Wno-register', '-bundle', '-undefined',
                        'dynamic_lookup', '-isystem', str(Path(prefix) / 'include/python2.7'),
                        '-I' + str(folder), '-I' + str(WORLD), '-I' + str(ROOT.parent),
@@ -91,7 +92,7 @@ class WorkerSharedConsumers(unittest.TestCase):
                        '-o', str(folder / 'worker_session_test.so')]
             compiled = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
-            (folder / 'fixture.py').write_text(session.FIXTURE + SESSION_MESSAGE_CLASSES)
+            (folder / 'fixture.py').write_text(session.FIXTURE + SESSION_MESSAGE_CLASSES, encoding='utf-8')
             for mode in ('0', '1', '2'):
                 with self.subTest(view=mode):
                     run = subprocess.run([py27, '-B', str(folder / 'fixture.py'), str(folder)], cwd=folder,
@@ -101,13 +102,13 @@ class WorkerSharedConsumers(unittest.TestCase):
                     self.assertIn('Consecutive production worker rounds', run.stdout)
 
     def test_mutable_consumers_and_runtime_rows_preserve_shared_sections(self):
-        if not shutil.which('c++'):
+        if not shutil.which(CXX):
             self.skipTest('A C++17 compiler is required')
-        link = (WORLD / 'stock_native_battle_link.cpp').read_text()
+        link = (WORLD / 'stock_native_battle_link.cpp').read_text(encoding='utf-8')
         sources = sorted(WORLD.glob('stock_native_battle*.cpp'))
         bodies, calls = [], []
         for source in sources:
-            text = source.read_text()
+            text = source.read_text(encoding='utf-8')
             signature = next((sig for sig in ('Value& writable(', 'V& writable(') if sig in text), None)
             if not signature:
                 continue
@@ -124,10 +125,10 @@ class WorkerSharedConsumers(unittest.TestCase):
             'std::optional<double> real(', 'double finite(', 'std::string safeText(', 'bool loadTiming(',
             'void restoreEquipment(',
             'Value canonicalRow(', 'std::pair<Value, long> canonicalRows('))
-        critical = (WORLD / 'stock_native_battle_vehicles_critical.cpp').read_text()
+        critical = (WORLD / 'stock_native_battle_vehicles_critical.cpp').read_text(encoding='utf-8')
         canonical = '\nnamespace critical_payload {\n' + function(critical, 'Value& writable(')
         canonical += '\n' + function(critical, 'std::optional<Value> canonicalOf(') + '\n}\n'
-        combat = (WORLD / 'stock_native_battle_events_combat.cpp').read_text()
+        combat = (WORLD / 'stock_native_battle_events_combat.cpp').read_text(encoding='utf-8')
         statistics = STATISTICS_PREAMBLE + '\n'.join(function(combat, sig) for sig in (
             'const Value& field(', 'bool has(', 'std::int64_t integer(', 'Value& writable(',
             'Actor* presented(', 'void applyStatisticsEvent(')) + '\n}\n'
@@ -135,8 +136,8 @@ class WorkerSharedConsumers(unittest.TestCase):
         code = code.replace('/* MUTATION_CALLS */', '\n'.join(calls))
         with tempfile.TemporaryDirectory(prefix='worker-shared-consumers-') as directory:
             folder = Path(directory)
-            (folder / 'probe.cpp').write_text(code)
-            compiled = subprocess.run(['c++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
+            (folder / 'probe.cpp').write_text(code, encoding='utf-8')
+            compiled = subprocess.run([CXX, '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
                                        '-I' + str(ROOT), str(folder / 'probe.cpp'),
                                        '-o', str(folder / 'probe')], capture_output=True, text=True)
             self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
@@ -210,7 +211,10 @@ namespace vehicles { void applyStatistics(Battle&,Actor&,const Value&) {} }
 
 BATCH_DISPATCH = r'''
 void dispatch(Value message,double) {
-    notify(safeText(at(message,"type")),wot::room::freeze(std::move(message)));
+    // C++17 does not prescribe argument evaluation order. Read the type
+    // before moving the message, as the production handle/notify path does.
+    const auto type=safeText(at(message,"type"));
+    notify(type,wot::room::freeze(std::move(message)));
 }
 '''
 

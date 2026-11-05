@@ -21,16 +21,45 @@ inline double scalar(const Value&v,double lo=-std::numeric_limits<double>::infin
 inline bool finite(const Value&v){const auto&r=resolved(v);if(r.kind==Kind::Number)return std::isfinite(r.number);for(const auto&c:r.array)if(!finite(c))return false;for(const auto&c:r.object)if(!finite(c.second))return false;return true;}
 // Integer-rational half-even rounding matches _projectile_wire_round across
 // CPython 2.7/3 and MSVC (where long double has only binary64 precision).
-inline double rounded(double n,int decimals=6){
- if(n==0.)return n;std::uint64_t scale=1;for(int i=0;i<decimals;++i)scale*=10;
- int exponent=0;const double fraction=std::frexp(std::abs(n),&exponent);const auto mantissa=static_cast<std::uint64_t>(std::ldexp(fraction,53));
- const auto low_product=(mantissa&0xffffffffULL)*scale,high_product=(mantissa>>32)*scale;
- const std::uint64_t low=low_product+(high_product<<32),high=(high_product>>32)+(low<low_product?1:0);
- const int shift=53-exponent;if(shift<=0)return n;std::uint64_t q=0;bool above=false,tie=false;
- if(shift<64){q=(low>>shift)|(high<<(64-shift));const auto mask=(std::uint64_t(1)<<shift)-1,rem=low&mask,half=std::uint64_t(1)<<(shift-1);above=rem>half;tie=rem==half;}
- else if(shift==64){q=high;const auto half=std::uint64_t(1)<<63;above=low>half;tie=low==half;}
- else if(shift<128){const auto bits=shift-64;const auto rem=high&((std::uint64_t(1)<<bits)-1),half=std::uint64_t(1)<<(bits-1);q=high>>bits;above=rem>half||(rem==half&&low!=0);tie=rem==half&&low==0;}
- if(above||(tie&&(q&1)))++q;return std::copysign(double(q)/double(scale),n);
+inline double rounded(double n, int decimals = 6) {
+    if (n == 0.) return n;
+    std::uint64_t scale = 1;
+    for (int i = 0; i < decimals; ++i) scale *= 10;
+
+    int exponent = 0;
+    const double fraction = std::frexp(std::abs(n), &exponent);
+    const auto mantissa = static_cast<std::uint64_t>(std::ldexp(fraction, 53));
+    const std::uint64_t low_product = (mantissa & std::uint64_t{0xffffffff}) * scale;
+    const std::uint64_t high_product = (mantissa >> 32) * scale;
+    const std::uint64_t low = low_product + (high_product << 32);
+    const std::uint64_t high = (high_product >> 32) + (low < low_product ? 1 : 0);
+    const int shift = 53 - exponent;
+    if (shift <= 0) return n;
+
+    std::uint64_t q = 0;
+    bool above = false, tie = false;
+    if (shift < 64) {
+        q = (low >> shift) | (high << (64 - shift));
+        const std::uint64_t mask = (std::uint64_t(1) << shift) - 1;
+        const std::uint64_t rem = low & mask;
+        const std::uint64_t half = std::uint64_t(1) << (shift - 1);
+        above = rem > half;
+        tie = rem == half;
+    } else if (shift == 64) {
+        q = high;
+        const std::uint64_t half = std::uint64_t(1) << 63;
+        above = low > half;
+        tie = low == half;
+    } else if (shift < 128) {
+        const int bits = shift - 64;
+        const std::uint64_t rem = high & ((std::uint64_t(1) << bits) - 1);
+        const std::uint64_t half = std::uint64_t(1) << (bits - 1);
+        q = high >> bits;
+        above = rem > half || (rem == half && low != 0);
+        tie = rem == half && low == 0;
+    }
+    if (above || (tie && (q & 1))) ++q;
+    return std::copysign(double(q) / double(scale), n);
 }
 inline std::set<std::string> keys(const Value&v){std::set<std::string> o;for(const auto&kv:resolved(v).object)o.insert(kv.first);return o;}
 inline void shape(const Value&v,std::initializer_list<const char*> required,std::initializer_list<const char*> optional={}){
