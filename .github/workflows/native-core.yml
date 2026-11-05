@@ -47,6 +47,10 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP/gameplay-runtime:/payload:ro"
           python:2.7.18 python -B -c
           "import os; paths = [os.path.join(base, name) for base, dirs, names in os.walk('/payload') for name in names if name.endswith('.py')]; assert paths, 'No shipped Python payload found'; [compile(open(path, 'rb').read(), path, 'exec') for path in paths]; print('Compiled %d shipped Python files' % len(paths))"
+      - name: Check the native room against pinned gameplay laws
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B native/standalone_client/room/run_room_tests.py --jobs 2
 
   native-core:
     name: Native core (${{ matrix.name }})

@@ -33,7 +33,7 @@ std::int64_t integer(const Value& v, std::int64_t fallback = 0) {
     return std::int64_t(r.numeric(double(fallback)));
 }
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }
@@ -120,6 +120,7 @@ void mergeShotState(Battle& b, const Value& event) {
         return;
     }
     auto& state = writable(knownState(b, *key));
+    state.object["shot_penalty_until"] = Value();
     state.object["shot_penalty_until"].kind = Value::Kind::Number;
     state.object["shot_penalty_until"].number = deadline;
 }
@@ -147,7 +148,8 @@ void combatState(Value& state, const Value& event, const std::string& target) {
     const auto& critical = field(event, "critical");
     if (critical.resolved().kind == Value::Kind::Object && target.rfind("bot:", 0) == 0) {
         Value canonical = critical.resolved();
-        writable(canonical).object["events"].kind = Value::Kind::Array;
+        writable(canonical).object["events"] = Value();
+        canonical.object["events"].kind = Value::Kind::Array;
         canonical.object["events"].array.clear();
         out.object["critical"] = std::move(canonical);
     }

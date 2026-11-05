@@ -1,5 +1,5 @@
-// The hidden worker's LAN link: the pinned AuthorityWorkerLANClient and the LANClient paths it uses, on native
-// values. The transport threads decode every frame; this file admits, projects and dispatches them.
+// The hidden worker's in-process room endpoint. The room owns shared rules on
+// its thread; this file applies frozen deliveries on the engine thread.
 #if !defined(WOT_NATIVE_BATTLE_HOST_BUILD)
 #include "pch.hpp"
 #endif
@@ -7,12 +7,13 @@
 #include "stock_native_battle_params.hpp"
 #include "stock_native_battle_subsystems.hpp"
 #include "stock_wire_codec.hpp"
-#include "stock_wire_net.hpp"
+#include "../room/room_host.hpp"
 #include "stock_native_worker_probe.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <set>
@@ -24,7 +25,7 @@ namespace {
 using K = Value::Kind;
 constexpr std::int64_t AUTHORITY_ID = -1, PROTOCOL = 5, MAX_ID = 2147483647, MAX_MOTION = 10000000000000000LL;
 constexpr double POLL_SECONDS = 1. / 60., PING_SECONDS = 1., WORKER_DUMMY_Y = -500.;
-constexpr std::size_t MAX_OUTBOUND_MESSAGES = 256, MAX_OUTBOUND_BYTES = 256u * 1024u * 4u, MAX_RECEIVE = 512;
+constexpr std::size_t MAX_RECEIVE = 512;
 constexpr std::size_t MAX_TURRETS = 12, MAX_COMPACT_BYTES = 64u * 1024u, MAX_OUTFIT_BYTES = 64u * 1024u;
 
 double clock() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -40,7 +41,7 @@ Value boolean(bool v) { Value x; x.kind = K::Boolean; x.boolean = v; return x; }
 Value object() { Value x; x.kind = K::Object; return x; }
 Value array() { Value x; x.kind = K::Array; return x; }
 Value shared(std::shared_ptr<const Value> v) { Value x; x.kind = K::Shared; x.reference = std::move(v); return x; }
-Value& writable(Value& v) { if (v.reference) { Value copy = *v.reference; v = std::move(copy); } return v; }
+Value& writable(Value& v) { if (v.reference) { Value copy = v.resolved(); v = std::move(copy); } return v; }
 
 // _exact_int: an int, or a float holding an integral value.
 std::optional<std::int64_t> exact(const Value& raw) {
@@ -147,7 +148,7 @@ struct Staged {
 };
 
 struct Link {
-    std::shared_ptr<stock_wire_net::Native> net;
+    std::shared_ptr<wot::room::Host> room;
     Handler handler;
     Object bigworld, poll_id;
     std::uint64_t generation = 0;
@@ -174,25 +175,18 @@ struct Link {
     std::size_t max_rx_pending=0,max_tx_pending=0,max_tx_bytes=0;
 };
 std::unique_ptr<Link> link;
+// Engine-thread lifetime tokens survive release of the active Link. Both
+// invalidation and connection consume a token, so deferred callbacks cannot
+// mistake a reconstructed owner for the one they captured.
+std::uint64_t lifetime_generation = 0;
 
 void fail(const std::string& why) {
     if (link->error.empty()) link->error = why;
     link->running = false;
 }
-bool sendWire(const Value& wire, const std::optional<std::string>& key = std::nullopt) {
-    if (!link->net || !link->connected || !link->running) return false;
-    std::string payload, error;
-    if (!stock_wire::encode_value(wire, payload, error)) {
-        log("worker link could not encode " + safeText(at(wire, "type")) + ": " + error);
-        return false;
-    }
-    const std::string type = safeText(at(wire, "type"));
-    // Worker combat and protocol edges get a doubled backlog; continuous state keeps the exact bound.
-    static const std::set<std::string> continuous = {"bot_state", "bot_observation", "projectile_progress", "simulation_progress",
-                                                     "player_environment"};
-    const std::size_t scale = key || continuous.count(type) ? 1 : 2;
-    return stock_wire_net::send(*link->net, std::move(payload), type, key, MAX_OUTBOUND_MESSAGES * scale, MAX_OUTBOUND_BYTES * scale) !=
-           stock_wire_net::Queued::refused;
+bool sendWire(Value wire, const std::optional<std::string>& key = std::nullopt) {
+    if (!link->room || !link->connected || !link->running) return false;
+    return link->room->send(wot::room::freeze(std::move(wire)), key) != wot::room::Channel::Admission::refused;
 }
 
 // Stage canonical static inputs for each row in place, restoring a lean row's cached outfits and effective parameters.
@@ -288,7 +282,7 @@ std::optional<Value> dummyPlayer(const Value& players) {
 // Bot equipment rows carry an index into the message's contract table, or reuse the previous row's contract.
 void restoreEquipment(Value& state, const Value& contracts, const Value* previous) {
     Value& items = state.object["equipment_states"];
-    if (!items.truth()) { if (items.kind == K::Null) state.object.erase("equipment_states"); return; }
+    if (!items.truth()) { if (items.resolved().kind == K::Null) state.object.erase("equipment_states"); return; }
     if (items.resolved().kind != K::Array) throw p::Error("Invalid equipment state list");
     writable(items);
     bool same = previous != nullptr;
@@ -397,7 +391,7 @@ std::pair<Value, long> canonicalRows(Value incoming, const char* field, const Va
         const auto id = exact(at(raw, "id"));
         const auto prior = id ? indexed.find(*id) : indexed.end();
         try {
-            Value row = raw.reference ? *raw.reference : std::move(raw);
+            Value row = raw.reference ? raw.resolved() : std::move(raw);
             if (std::string(field) == "bots") restoreEquipment(row, contracts, same_scope && prior != indexed.end() ? prior->second : nullptr);
             out.array.push_back(canonicalRow(std::move(row)));
         } catch (const std::exception&) {
@@ -562,7 +556,9 @@ void adoptTurrets(Value& message) {
 
 // ---- dispatch ------------------------------------------------------------------------------
 void notify(const std::string& kind, std::shared_ptr<const Value> message) {
-    if (link->handler) link->handler(kind, message);
+    // A synchronous startup/teardown callback may release its own link.
+    const auto handler = link ? link->handler : Handler();
+    if (handler) handler(kind, message);
 }
 void notify(const std::string& kind, Value message) { notify(kind, std::make_shared<const Value>(std::move(message))); }
 
@@ -863,9 +859,12 @@ void snapshot(Value m) {
     m.object.erase("bot_equipment_contracts");
     if (lean) m.object["bot_manifest"] = retained_manifest;
     else {
-        // Rows shared by later lean snapshots of this lineage.
+        // An immutable room section already owns every row. Detaching it
+        // would copy the entire static manifest on each worker snapshot.
+        // Owned wire manifests promote rows for later lean snapshots.
         Value& manifest = m.object["bot_manifest"];
-        for (auto& row : manifest.array) if (!row.reference) row = shared(std::make_shared<const Value>(std::move(row)));
+        if (!manifest.reference)
+            for (auto& row : manifest.array) if (!row.reference) row = shared(std::make_shared<const Value>(std::move(row)));
     }
     if (retained) log("degraded snapshot round=" + std::to_string(*round) + " tick=" + std::to_string(tick.value_or(-1)) +
                       " retained=" + std::to_string(retained));
@@ -994,54 +993,74 @@ void dispatch(Value m, double now) {
 }
 // One received batch: only the newest snapshot of a lineage is handled, except at manifest, turret and event barriers.
 void dispatchBatch(std::vector<Value>& batch, double now) {
+    if (!link || !link->running) return;
+    const auto generation = link->generation;
+    auto sameSession = [&] { return link && link->running && link->generation == generation; };
+    auto deliver = [&](Value message) {
+        if (!sameSession()) return false;
+        dispatch(std::move(message), now);
+        return sameSession();
+    };
     std::optional<Value> latest;
     for (auto& message : batch) {
-        if (!link->running) return;
+        if (!sameSession()) return;
         const std::string kind = safeText(at(message, "type"));
         if (kind == "snapshot") {
             if (latest && ((has(*latest, "bot_manifest") && !has(message, "bot_manifest")) ||
                            (at(*latest, "detached_turrets").truth() && at(*latest, "detached_turrets") != at(message, "detached_turrets")))) {
-                dispatch(std::move(*latest), now);
+                if (!deliver(std::move(*latest))) return;
                 latest.reset();
             }
             latest = mergeOrders(latest ? &*latest : nullptr, std::move(message));
         } else if (kind == "events" && latest && at(message, "round_id") == at(*latest, "round_id") &&
                    at(message, "server_tick") == at(*latest, "server_tick")) {
-            dispatch(std::move(message), now);
-            dispatch(std::move(*latest), now);
+            if (!deliver(std::move(message))) return;
+            if (!deliver(std::move(*latest))) return;
             latest.reset();
         } else {
-            if (latest) { dispatch(std::move(*latest), now); latest.reset(); }
-            dispatch(std::move(message), now);
+            if (latest) { if (!deliver(std::move(*latest))) return; latest.reset(); }
+            if (!deliver(std::move(message))) return;
         }
     }
-    if (latest && link->running) dispatch(std::move(*latest), now);
+    if (latest) deliver(std::move(*latest));
 }
 
 // Take received frames and dispatch them; the transport ending or a refused message reports one error.
 void drainReceived() {
-    if (!link || !link->net || link->dispatch_depth) return;
+    if (!link || !link->room || link->dispatch_depth) return;
+    auto room = link->room;
+    const auto generation = link->generation;
     ++link->dispatch_depth;
-    std::vector<stock_wire_net::Frame> frames;
-    const auto status = stock_wire_net::receive(*link->net, MAX_RECEIVE, frames);
-    link->max_rx_pending=std::max(link->max_rx_pending,status.received_pending+frames.size());
-    link->max_tx_pending=std::max(link->max_tx_pending,status.outgoing_pending);
-    link->max_tx_bytes=std::max(link->max_tx_bytes,status.outgoing_bytes);
+    auto frames = room->receive(MAX_RECEIVE);
+    const auto status = room->status();
+    const auto queues = room->metrics();
+    link->max_rx_pending=std::max(link->max_rx_pending,queues.second.pending+frames.size());
+    link->max_tx_pending=std::max(link->max_tx_pending,queues.first.pending);
+    link->max_tx_bytes=std::max(link->max_tx_bytes,queues.first.bytes);
     const double now = clock();
     std::vector<Value> batch;
     batch.reserve(frames.size());
     for (auto& frame : frames) {
-        if (!frame.message) { fail("invalid battle frame: " + frame.error); break; }
-        Value message = std::move(*frame.message);
-        message.object["_client_received_time"] = number(now - frame.age);
+        // Only the envelope is detached. Actors and static sections retain
+        // their immutable shared owners across the thread boundary.
+        Value message = wot::room::objectView(frame.message);
+        const auto age = std::chrono::duration<double>(wot::room::Channel::Clock::now() - frame.received).count();
+        message.object["_client_received_time"] = number(now - age);
         batch.push_back(std::move(message));
     }
     if (link->running) dispatchBatch(batch, now);
+    if (!link || link->generation != generation) return;
     --link->dispatch_depth;
-    if (status.state == "connected" && !link->connected && link->running) link->connected = true;
-    if ((status.state == "closed" || status.state == "failed") && link->running) {
+    if (status.ready && !link->connected && link->running) link->connected = true;
+    if (status.stopped && queues.second.pending == 0 && link->running) {
         link->connected = false;
-        fail(status.state == "closed" ? "server closed the connection" : (status.error.empty() ? "LAN transport failed" : status.error));
+        if (!status.error.empty()) fail("native room stopped: " + status.error);
+        else {
+            link->running = false;
+            // Controlled launcher shutdown is finalized by BigWorld on its
+            // own thread, after the room has persisted its terminal receipts.
+            py::call(link->bigworld.get(), "quit");
+        }
     }
 }
 
@@ -1066,6 +1085,7 @@ PyObject* pollEntry(PyObject* self, PyObject*) {
     link->poll_id = Object();
     try {
         drainReceived();
+        if (!link || !link->running) Py_RETURN_NONE;
         const double now = clock();
         if (link->connected && link->running && now - link->last_ping >= PING_SECONDS) {
             link->last_ping = now;
@@ -1087,24 +1107,29 @@ PyObject* pollEntry(PyObject* self, PyObject*) {
 
 // ---- session and battle entry points -------------------------------------------------------
 bool connect(PyObject* bigworld, const std::string& host, int port, Handler handler) {
-    const std::uint64_t generation = link ? link->generation + 1 : 1;
+    (void)host; (void)port;
     disconnect(false);
+    const std::uint64_t generation = ++lifetime_generation;
     link.reset(new Link);
     link->generation = generation;
     link->bigworld = borrow(bigworld);
     link->handler = std::move(handler);
     link->running = true;
-    link->net = stock_wire_net::open(host, port, 3.0);
-    // The server requires hello to be the first frame on the wire.
+    const char* configuration = std::getenv("OFFLINE_LAN_0922_ROOM_HOST_CONFIG");
+    if (!configuration || !*configuration) throw p::Error("Native room host configuration is missing");
+    wot::room::Codec codec;
+    codec.frameSize = stock_wire::frame_size;
+    codec.decode = stock_wire::decode_value;
+    codec.encode = stock_wire::encode_value;
+    link->room = std::make_shared<wot::room::Host>(configuration, std::move(codec), params::canonicalEffectiveParams);
+    // Admission remains an ordered hello, delivered as native data rather
+    // than encoded and sent through a loopback socket.
     Value hello = object();
     hello.object["type"] = text("hello");
     auto built = build(link->s, hello);
-    std::string payload, error;
-    if (!built || !stock_wire::encode_value(built->wire, payload, error) ||
-        stock_wire_net::send(*link->net, std::move(payload), "hello", std::nullopt, MAX_OUTBOUND_MESSAGES, MAX_OUTBOUND_BYTES) ==
-            stock_wire_net::Queued::refused) {
+    if (!built || link->room->send(wot::room::freeze(std::move(built->wire))) == wot::room::Channel::Admission::refused) {
         disconnect(false);
-        throw p::Error("worker hello could not be queued" + (error.empty() ? std::string() : ": " + error));
+        throw p::Error("Internal worker hello could not be admitted");
     }
     schedulePoll();
     return true;
@@ -1112,24 +1137,16 @@ bool connect(PyObject* bigworld, const std::string& host, int port, Handler hand
 
 namespace {
 void disconnectOwned(Link& owner, bool flush) {
-    ++owner.generation;
+    (void)flush;
+    owner.generation = ++lifetime_generation;
     if (owner.poll_id && owner.poll_id.get() != Py_None) {
         PyObject* done = PyObject_CallMethod(owner.bigworld.get(), const_cast<char*>("cancelCallback"), const_cast<char*>("O"), owner.poll_id.get());
         if (done) Py_DECREF(done); else PyErr_Clear();
     }
     owner.poll_id = Object();
     owner.handler = nullptr;
-    if (owner.net) {
-        if (owner.connected) {
-            Value leave = object();
-            leave.object["type"] = text("leave");
-            std::string payload, error;
-            if (stock_wire::encode_value(leave, payload, error))
-                stock_wire_net::send(*owner.net, std::move(payload), "leave", std::nullopt, MAX_OUTBOUND_MESSAGES * 2, MAX_OUTBOUND_BYTES * 2);
-        }
-        stock_wire_net::close(*owner.net, flush ? 0.5 : 0.);
-    }
-    owner.net.reset();
+    if (owner.room) owner.room->stop();
+    owner.room.reset();
     owner.connected = owner.running = false;
 }
 }
@@ -1146,7 +1163,7 @@ void releaseScriptOwners() {
     try { disconnectOwned(*owner, false); }
     catch (...) {
         // Stop transport before releasing script handles on the failure path too.
-        owner->net.reset();
+        owner->room.reset();
         throw;
     }
 }
@@ -1185,11 +1202,10 @@ void recordFrame(double seconds) {
 
 std::string takeProbeDiagnostics() {
     if(!link)return {};
-    if (link->net) for (const auto& line : stock_wire_net::takeSendDiagnostics(*link->net)) log(line);
     const std::string result=" probe_rx="+std::to_string(link->probe_rx)+" probe_last_seq="+std::to_string(link->probe_last_seq)+
         " probe_reply_queued="+std::to_string(link->probe_reply_queued)+" probe_reply_refused="+std::to_string(link->probe_reply_refused)+
         " probe_dispatch_max_ms="+std::to_string(link->probe_max_dispatch_age*1000.)+" probe_frame_ms="+std::to_string(link->probe_last_frame_ms)+
-        " net_rx_max="+std::to_string(link->max_rx_pending)+" net_tx_max="+std::to_string(link->max_tx_pending)+" net_tx_max_bytes="+std::to_string(link->max_tx_bytes);
+        " room_rx_max="+std::to_string(link->max_rx_pending)+" room_tx_max="+std::to_string(link->max_tx_pending)+" room_tx_max_bytes="+std::to_string(link->max_tx_bytes);
     link->probe_rx=link->probe_reply_queued=link->probe_reply_refused=0;link->probe_max_dispatch_age=0.;
     link->max_rx_pending=link->max_tx_pending=link->max_tx_bytes=0;return result;
 }
@@ -1197,7 +1213,15 @@ std::string takeProbeDiagnostics() {
 bool send(Battle&, const Value& message) {
     if (!link || !link->running) return false;
     auto built = build(link->s, message);
-    return built && sendWire(built->wire, built->coalesce);
+    return built && sendWire(std::move(built->wire), built->coalesce);
+}
+
+std::shared_ptr<const Value> roomResources() { return link && link->room ? link->room->resources() : nullptr; }
+bool configureRoomResources(Battle& battle, Value resources, std::shared_ptr<const wot::room::strategy::GraphData> graph) {
+    if (!link || !link->room || !battle.worker || !link->s.round_id || !link->s.authority_epoch) return false;
+    if (at(battle.start, "round_id") != integer(*link->s.round_id)) return false;
+    link->room->configureRound(*link->s.round_id, *link->s.authority_epoch, std::move(resources), std::move(graph));
+    return true;
 }
 
 bool authority() {

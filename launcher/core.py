@@ -52,7 +52,7 @@ COMMON_GAME_ROOTS = (
     "C:\\WOT", "D:\\", "D:\\Games", "D:\\Program Files",
     "E:\\", "E:\\Games",
 )
-SERVE_FLAG = "--serve"
+ROOM_HOST_CONFIG_ENV = "OFFLINE_LAN_0922_ROOM_HOST_CONFIG"
 
 _VERSION_PATTERN = re.compile(r"v\.(\d+(?:\.\d+)+)(?:\s+#(\d+))?")
 _SUPPORTED_0_9_22_PREFIX = (0, 9, 22)
@@ -81,14 +81,9 @@ BUILD_IDENTITY_RELATIVE_PATH_0922 = (
     "mods/configs/offline_lan_0922/" + BUILD_IDENTITY_FILENAME_0922)
 BUILD_SEMANTIC_VERSION_ENV = "WOT_OFFLINE_SEMANTIC_VERSION"
 BUILD_IDENTITY_ENV = "WOT_OFFLINE_BUILD_IDENTITY"
-WORKER_FAILURE_DRAIN_SECONDS_0922 = 0.5
 # The NG worker loads its first space and joins the room before it is ready.
 WORKER_READY_TIMEOUT_SECONDS_0922 = ng_client.WORKER_READY_TIMEOUT_SECONDS
 WORKER_SHUTDOWN_TIMEOUT_SECONDS_0922 = 10.0
-
-_BUNDLED_SERVER_ENTRY_0_9_22 = os.path.join(
-    "0.9.22", "server", "windows_server.py")
-_SOURCE_SERVER_ENTRY_0_9_22 = os.path.join("server", "windows_server.py")
 
 _SERVER_PROBES = {
     PORT_0_9_22: {
@@ -183,9 +178,11 @@ def worker_environment(game_root, host=LOCAL_HOST,
     """Build the endpoint inherited by the hidden simulation client."""
     environment = ng_client.worker_environment(
         worker_root(game_root), host, port, environment)
-    return server_environment(
+    environment = server_environment(
         PORT_0_9_22, game_root, environment, team_size=team_size,
         team1_size=team1_size, team2_size=team2_size)
+    environment[ROOM_HOST_CONFIG_ENV] = room_host_config_path(game_root)
+    return environment
 
 
 def read_client_identity(game_root):
@@ -719,16 +716,6 @@ def download_procdump(path=None, opener=None):
                 os.remove(temporary)
             except (IOError, OSError):
                 pass
-
-
-def server_root(base_dir=None):
-    """Return the directory that holds the bundled or checked-out servers."""
-    if base_dir is not None:
-        return base_dir
-    bundle_dir = getattr(sys, "_MEIPASS", None)
-    if bundle_dir:
-        return os.path.join(bundle_dir, SERVER_PAYLOAD_DIR)
-    return repository_root()
 
 
 def _normalize_payload_identity(value):
@@ -1363,22 +1350,6 @@ def factory_reset_offline(game_root, base_dir=None, is_running=None):
     return _maintenance_replace(targets, rebuild)
 
 
-def server_script(port_version, base_dir=None):
-    if port_version != PORT_0_9_22:
-        return None
-    if base_dir is None and not getattr(sys, "_MEIPASS", None):
-        return os.path.join(repository_root(), _SOURCE_SERVER_ENTRY_0_9_22)
-    return os.path.join(
-        server_root(base_dir), _BUNDLED_SERVER_ENTRY_0_9_22)
-
-
-def server_argv(port_version, base_dir=None):
-    script = server_script(port_version, base_dir)
-    if script is None:
-        return None
-    return [script]
-
-
 def server_environment(port_version, game_root, environment=None,
                        team_size=DEFAULT_TEAM_SIZE, loopback_only=False,
                        team1_size=None, team2_size=None, bot_lineup=None,
@@ -1409,39 +1380,64 @@ def server_environment(port_version, game_root, environment=None,
     return environment
 
 
-def server_child_command(port_version, launcher_script=None, executable=None,
-                         frozen=None):
-    """Build the command that runs one server in a child of this launcher."""
-    executable = executable or sys.executable
-    if frozen is None:
-        frozen = bool(getattr(sys, "frozen", False))
-    command = [executable]
-    if not frozen:
-        command.append(launcher_script or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "wot_launcher.py"))
-    command.extend([SERVE_FLAG, port_version])
-    return command
+def room_host_config_path(game_root):
+    return os.path.join(worker_root(game_root), "room-host.json")
 
 
-def run_server_payload(port_version, base_dir=None):
-    """Run one bundled server inside this process."""
-    import runpy
+def room_host_overlay_path(game_root):
+    return os.path.join(worker_root(game_root), "room-overlay.json")
 
-    # The packaged launcher carries the server sources as data, so their
-    # standard-library imports reach PyInstaller only through this module.
-    import server_imports  # noqa: F401
 
-    argv = server_argv(port_version, base_dir)
-    if argv is None:
-        raise LauncherError("Unknown client port: %s" % port_version)
-    script = argv[0]
-    if not os.path.isfile(script):
-        raise LauncherError("The bundled server is missing: %s" % script)
-    directory = os.path.dirname(script)
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    sys.argv = list(argv)
-    runpy.run_path(script, run_name="__main__")
+def room_host_stop_path(game_root):
+    return os.path.join(worker_root(game_root), "room-host.stop")
+
+
+def write_room_host_config(game_root, loopback_only=False, bot_lineup=None,
+                           bot_excluded_vehicles=None, log_path=None,
+                           team1_size=DEFAULT_TEAM_SIZE,
+                           team2_size=DEFAULT_TEAM_SIZE):
+    """Publish one immutable native host configuration before worker startup."""
+    identity = bundled_payload_identity(PORT_0_9_22) or {}
+    receipt_root = (launcher_directory() if getattr(sys, "frozen", False)
+                    else os.path.join(repository_root(), "server"))
+    value = {
+        "schema": 1,
+        "bind_address": LOCAL_HOST if loopback_only else "0.0.0.0",
+        "port": DEFAULT_SERVER_PORT,
+        "build_identity": identity.get("buildIdentity", ""),
+        "semantic_version": identity.get("semanticVersion", ""),
+        "loopback": bool(loopback_only),
+        "team1_size": parse_team_size(team1_size),
+        "team2_size": parse_team_size(team2_size),
+        "bot_lineup": list(bot_lineup or ()),
+        "bot_excluded_vehicles": sorted(set(bot_excluded_vehicles or ())),
+        "overlay_root": os.path.abspath(game_root),
+        "vehicle_overlay_path": room_host_overlay_path(game_root),
+        "receipts_path": os.path.join(receipt_root,
+            "unacked_battle_receipts-%d.json" % DEFAULT_SERVER_PORT),
+        "log_path": os.path.abspath(log_path or server_log_path()),
+        "stop_file": room_host_stop_path(game_root),
+        "resources_path": os.path.join(worker_root(game_root), "native-room-data.json"),
+    }
+    try:
+        from . import vehicle_overlays
+    except ImportError:
+        import vehicle_overlays
+    vehicle_overlays.export_room_overlay(game_root, value["vehicle_overlay_path"])
+    path = room_host_config_path(game_root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        os.unlink(value["stop_file"])
+    except FileNotFoundError:
+        pass
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return path
 
 
 def connection_report(mode, host, port, answered):
@@ -1492,20 +1488,27 @@ _WIRE_PROBE_REPLY_BYTES = 256 * 1024
 
 
 def _battle_wire_schema():
-    """Load the bundled server's battle wire schema.
-
-    The staged server speaks this framing from its first byte, including
-    the launcher probe; the schema and codec are stdlib-only server files.
-    """
-    import importlib
-
-    script = server_script(PORT_0_9_22)
-    directory = os.path.dirname(script) if script else ""
-    if not os.path.isfile(os.path.join(directory, "battle_wire_schema.py")):
-        raise LauncherError("The bundled battle wire schema is missing.")
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    return importlib.import_module("battle_wire_schema").SCHEMA
+    """Load the probe codec, independent of any Python battle server."""
+    try:
+        import battle_wire_schema
+        return battle_wire_schema.SCHEMA
+    except ImportError:
+        # Source checkouts use the same canonical schema that staging copies.
+        import importlib.util
+        cached = sys.modules.get("_launcher_wire_schema")
+        if cached is not None:
+            return cached.SCHEMA
+        directory = os.path.join(repository_root(), "native", "standalone_client", "wire")
+        try:
+            for name, filename in (("codec", "codec.py"), ("_launcher_wire_schema", "schema.py")):
+                spec = importlib.util.spec_from_file_location(name, os.path.join(directory, filename))
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[name] = module
+                spec.loader.exec_module(module)
+        except (OSError, ImportError) as error:
+            sys.modules.pop("_launcher_wire_schema", None)
+            raise LauncherError("The launcher battle wire schema is unavailable: %s" % error)
+        return module.SCHEMA
 
 
 def encode_wire_message(message, schema=None):

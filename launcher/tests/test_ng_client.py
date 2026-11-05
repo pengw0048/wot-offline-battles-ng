@@ -125,6 +125,113 @@ class SyncInstanceTest(unittest.TestCase):
                "mods/configs/offline_lan_0922/build_identity.json",
                json.dumps({"buildIdentity": value}).encode())
 
+    def test_read_only_package_metadata_can_be_installed_and_upgraded(self):
+        relative = "native-room-data.json"
+        _write(self.package, relative, b'{"version":1}')
+        source = os.path.join(self.package, relative)
+        os.chmod(source, 0o444)
+        self.addCleanup(os.chmod, source, 0o644)
+        ng_client.sync_instance(self.package, self.instance)
+        target = os.path.join(self.instance, relative)
+        self.assertTrue(os.stat(target).st_mode & 0o200)
+        # Also recover an instance installed by the earlier copy2 path.
+        os.chmod(target, 0o444)
+        self.addCleanup(os.chmod, target, 0o644)
+        self._identity("second")
+        ng_client.sync_instance(self.package, self.instance)
+        self.assertEqual(b'{"version":1}', _read(self.instance, relative))
+        self.assertTrue(os.stat(target).st_mode & 0o200)
+
+    def test_an_obsolete_read_only_package_member_is_removed_on_windows(self):
+        relative = "res/obsolete.bin"
+        _write(self.package, relative)
+        ng_client.sync_instance(self.package, self.instance)
+        os.unlink(os.path.join(self.package, *relative.split("/")))
+        target = os.path.join(self.instance, *relative.split("/"))
+        os.chmod(target, 0o444)
+        unlink = os.unlink
+        attempts = []
+        def windows_unlink(path):
+            if path == target:
+                attempts.append(path)
+                if not os.stat(path).st_mode & 0o200:
+                    raise PermissionError("read-only package member")
+            return unlink(path)
+        with patch.object(ng_client.os, "name", "nt"), \
+                patch.object(ng_client.os, "unlink", side_effect=windows_unlink):
+            unused_copied, removed = ng_client.sync_instance(
+                self.package, self.instance)
+        self.assertEqual(1, removed)
+        self.assertEqual(2, len(attempts))
+        self.assertFalse(os.path.exists(target))
+
+    def test_windows_upgrade_recovers_read_only_target_and_interrupted_temporary(self):
+        source = _write(self.package, "res/new.bin", b"new")
+        target = _write(self.instance, "res/member.bin", b"old")
+        temporary = _write(self.instance, "res/member.bin.ng-copy", b"interrupted")
+        for path in (source, target, temporary):
+            os.chmod(path, 0o444)
+        self.addCleanup(os.chmod, source, 0o644)
+        self.addCleanup(os.chmod, target, 0o644)
+        copy2, replace = ng_client.shutil.copy2, os.replace
+        def windows_copy2(origin, output):
+            self.assertTrue(os.stat(output).st_mode & 0o200)
+            return copy2(origin, output)
+        def windows_replace(origin, output):
+            if not os.stat(output).st_mode & 0o200:
+                raise PermissionError("read-only target")
+            return replace(origin, output)
+        with patch.object(ng_client.os, "name", "nt"), \
+                patch.object(ng_client.shutil, "copy2", side_effect=windows_copy2), \
+                patch.object(ng_client.os, "replace", side_effect=windows_replace) as attempts:
+            ng_client._copy_file(source, target)
+        self.assertEqual(2, attempts.call_count)
+        self.assertEqual(b"new", _read(self.instance, "res/member.bin"))
+        self.assertTrue(os.stat(target).st_mode & 0o200)
+        self.assertFalse(os.path.exists(temporary))
+
+    def test_read_only_removal_restores_mode_if_the_file_is_also_locked(self):
+        target = _write(self.instance, "res/obsolete.bin", b"preserved")
+        os.chmod(target, 0o444)
+        self.addCleanup(os.chmod, target, 0o644)
+        with patch.object(ng_client.os, "name", "nt"), \
+                patch.object(ng_client.os, "unlink",
+                             side_effect=PermissionError("locked")) as unlink:
+            with self.assertRaisesRegex(PermissionError, "locked"):
+                ng_client._unlink_owned_file(target)
+        self.assertEqual(2, unlink.call_count)
+        self.assertFalse(os.stat(target).st_mode & 0o200)
+        self.assertEqual(b"preserved", _read(self.instance, "res/obsolete.bin"))
+
+    def test_unrelated_removal_permission_errors_do_not_change_permissions(self):
+        target = _write(self.instance, "res/obsolete.bin")
+        for platform, mode in (("nt", 0o644), ("posix", 0o444)):
+            with self.subTest(platform=platform, mode=mode):
+                os.chmod(target, mode)
+                with patch.object(ng_client.os, "name", platform), \
+                        patch.object(ng_client.os, "chmod") as chmod, \
+                        patch.object(ng_client.os, "unlink",
+                                     side_effect=PermissionError("locked")) as unlink:
+                    with self.assertRaisesRegex(PermissionError, "locked"):
+                        ng_client._unlink_owned_file(target)
+                chmod.assert_not_called()
+                self.assertEqual(1, unlink.call_count)
+        os.chmod(target, 0o644)
+
+    def test_failed_read_only_replacement_preserves_original_file_and_mode(self):
+        source = _write(self.package, "res/new.bin", b"new")
+        target = _write(self.instance, "res/member.bin", b"old")
+        os.chmod(target, 0o444)
+        self.addCleanup(os.chmod, target, 0o644)
+        with patch.object(ng_client.os, "name", "nt"), \
+                patch.object(ng_client.os, "replace",
+                             side_effect=PermissionError("locked")) as replace:
+            with self.assertRaisesRegex(PermissionError, "locked"):
+                ng_client._copy_file(source, target)
+        self.assertEqual(2, replace.call_count)
+        self.assertEqual(b"old", _read(self.instance, "res/member.bin"))
+        self.assertFalse(os.stat(target).st_mode & 0o200)
+
     def test_package_content_is_copied_without_generated_files(self):
         copied, removed = ng_client.sync_instance(self.package, self.instance)
 
@@ -196,6 +303,12 @@ class SyncInstanceTest(unittest.TestCase):
         os.unlink(os.path.join(self.package, ng_client.EXECUTABLE))
         with self.assertRaises(ng_client.NGClientError):
             ng_client.sync_instance(self.package, self.instance)
+
+    def test_a_package_without_native_room_data_is_refused_before_installation(self):
+        os.unlink(os.path.join(self.package, "native-room-data.json"))
+        with self.assertRaisesRegex(ng_client.NGClientError, "native-room-data.json"):
+            ng_client.sync_instance(self.package, self.instance)
+        self.assertFalse(os.path.exists(self.instance))
         self.assertFalse(os.path.exists(self.instance))
 
 
@@ -281,6 +394,19 @@ class WorkerReadinessTest(unittest.TestCase):
         self.assertFalse(self._wait(_Process(exit_code=3), lambda: True))
         self.assertFalse(self._wait(
             _Process(), lambda: True, cancelled=lambda: True))
+
+    def test_a_listener_cannot_replace_internal_worker_readiness(self):
+        probe = unittest.mock.Mock(return_value=True)
+        self.assertFalse(self._wait(_Process(), probe))
+        probe.assert_not_called()
+
+    def test_a_worker_exiting_during_the_successful_probe_is_not_ready(self):
+        self._publish()
+        worker = _Process()
+        def probe():
+            worker.exit_code = 3
+            return True
+        self.assertFalse(self._wait(worker, probe))
 
     def test_markers_from_an_earlier_session_are_cleared(self):
         self._publish()

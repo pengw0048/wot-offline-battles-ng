@@ -1,5 +1,6 @@
 #include <Python.h>
 #include "stock_native_bot_planning_snapshot.hpp"
+#include "stock_native_room_resources.hpp"
 #include "stock_native_bot_descriptor.hpp"
 #include "stock_native_bot_motion_snapshot.hpp"
 #include "stock_native_bot_parking_snapshot.hpp"
@@ -186,7 +187,8 @@ offline_navigation::MapInput mapInput(const stock_native_bot::RoundSeed&seed){
     auto*bake=r.get(graph,"bake");m.max_grade=std::max(.05,PyDict_Check(bake)?number(r.get(bake,"max_grade"),.30):.30);m.heuristic_weight=1.70;return m;
 }
 }
-bool readMapInput(const stock_native_bot::RoundSeed&seed,offline_navigation::MapInput&result){try{result=mapInput(seed);return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readMapInput(const stock_native_bot::RoundSeed&seed,offline_navigation::MapInput&result){try{if(!seed.navigation_input)seed.navigation_input=std::make_shared<offline_navigation::MapInput>(mapInput(seed));result=*seed.navigation_input;return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
+bool readSharedMapInput(const stock_native_bot::RoundSeed&seed,std::shared_ptr<const offline_navigation::MapInput>&result){try{if(!seed.navigation_input)seed.navigation_input=std::make_shared<offline_navigation::MapInput>(mapInput(seed));result=seed.navigation_input;return true;}catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
 bool readNavigationMode(const stock_native_client_state::Value&state,PyObject*value,nav::ExactDescriptor&result){
     try{Read r;result=descriptor(r,value,state);return true;
     }catch(const std::exception&e){if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,e.what());return false;}}
@@ -195,7 +197,7 @@ bool readPlanningOrders(const std::map<std::int64_t,stock_native_client_state::V
 bool readPlanningSnapshot(const stock_native_bot::RoundSeed&seed,const stock_native_bot::ServerOrders&orders,PlanningSnapshot&result){try{Read r;PlanningSnapshot out;out.order_revision=orders.revision;
     auto*objectives=r.get(seed.graph.get(),"objective_bases"),*radii=r.get(seed.graph.get(),"objective_base_radii");
     if(r.size(objectives)==2)for(int team=1;team<=2;++team){auto*base=r.item(objectives,team-1);out.objective_bases[team]={{number(r.item(base,0)),0.,number(r.item(base,1))},r.size(radii)==2?number(r.item(radii,team-1)):30.};}
-    out.map=mapInput(seed);out.grade_up=out.grade_down=std::tan(25.*3.14159265358979323846/180.);
+    auto prepared=native_battle::room_resources::takeMapInput(seed.navigation_input);out.map=prepared?std::move(*prepared):mapInput(seed);out.grade_up=out.grade_down=std::tan(25.*3.14159265358979323846/180.);
     auto*bake=r.get(seed.graph.get(),"bake");if(PyDict_Check(bake)){out.bake.present=true;out.bake.vehicle_half_width=number(r.get(bake,"vehicle_half_width"));auto*radii=r.get(bake,"edge_clearance_radii");for(Py_ssize_t i=0;i<r.size(radii);++i)out.bake.maximum_clearance_radius=std::max(out.bake.maximum_clearance_radius,number(r.item(radii,i)));}
     auto*directions=r.get(seed.graph.get(),"directions",true);if(r.size(directions)!=8)throw Invalid("Planning parking directions width is invalid");std::set<nav::Cell> unique;
     for(int i=0;i<8;++i){auto d=cell(r,r.item(directions,i));if((d[0]==0&&d[1]==0)||std::abs(d[0])>1||std::abs(d[1])>1||!unique.insert(d).second)throw Invalid("Planning parking direction is invalid");out.directions[i]=d;}

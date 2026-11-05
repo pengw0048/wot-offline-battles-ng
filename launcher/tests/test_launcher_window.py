@@ -694,7 +694,7 @@ class WindowTest(unittest.TestCase):
     def test_stopping_lan_room_restores_vehicle_data_after_processes(self):
         game_root = self._game("0.9.22.0.1", "1513")
         self.window.mode.set(core.MODE_JOIN)
-        self.window._server = _Process(exit_code=None)
+        self.window._room_worker = _Process(exit_code=None)
         self.window._room_vehicle_overlay_root = game_root
         order = []
         with mock.patch.object(
@@ -720,13 +720,6 @@ class WindowTest(unittest.TestCase):
              "profile_cleanup"], order)
         self.assertIsNone(self.window._room_vehicle_overlay_root)
 
-    def test_hidden_server_entry_rejects_an_unsupported_client(self):
-        with mock.patch("builtins.print") as output:
-            self.assertEqual(
-                2, wot_launcher._serve(
-                    [core.SERVE_FLAG, "1.0.0"]))
-
-        self.assertIn("Unsupported client version", output.call_args.args[0])
 
     def test_an_empty_folder_asks_for_the_game_executable(self):
         self.window.game_root.set("")
@@ -886,19 +879,13 @@ class WindowTest(unittest.TestCase):
 
     def test_single_player_does_not_refresh_a_running_room(self):
         self._game("0.9.22.0.1", "1513")
-        for role in ("server", "worker"):
-            with self.subTest(role=role), \
-                    mock.patch("core.plan_session") as plan, \
-                    mock.patch("wot_launcher.threading.Thread") as thread:
-                self.window._server = (
-                    _Process() if role == "server" else None)
-                self.window._room_worker = (
-                    _Process() if role == "worker" else None)
-                self.window._start_single()
-
-                plan.assert_not_called()
-                thread.assert_not_called()
-                self.assertFalse(self.window._busy)
+        with mock.patch("core.plan_session") as plan, \
+                mock.patch("wot_launcher.threading.Thread") as thread:
+            self.window._room_worker = _Process()
+            self.window._start_single()
+            plan.assert_not_called()
+            thread.assert_not_called()
+            self.assertFalse(self.window._busy)
         self.assertIn("Stop the LAN room before starting single player",
                       self._log_text())
 
@@ -2207,46 +2194,7 @@ class WindowTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertIn("exact Bot lineup", self._log_text())
 
-    def test_launcher_owned_server_receives_the_exact_lineup(self):
-        server = _Process()
-        lineup = [{
-            "team": 2, "slot": 0,
-            "vehicle": "germany:G12_Ltraktor",
-        }]
-        with mock.patch("core.listener_status",
-                        return_value=core.LISTENER_FREE), \
-                mock.patch("core.wait_for_server", return_value=True), \
-                mock.patch("core.local_addresses", return_value=[]), \
-                mock.patch("wot_launcher.subprocess.Popen",
-                           return_value=server) as popen:
-            self.assertTrue(self.window._start_server(
-                self.settings_dir, core.PORT_0_9_22,
-                bot_lineup=lineup))
 
-        environment = popen.call_args.kwargs["env"]
-        self.assertEqual(
-            '[{"team":2,"slot":0,"vehicle":"germany:G12_Ltraktor"}]',
-            environment[core.SERVER_BOT_LINEUP_ENV_0922])
-        self.window._stop_server(force=True)
-
-    def test_launcher_owned_server_starts_ng_rounds_without_bot_tactics(self):
-        server = _Process()
-        with mock.patch.dict(os.environ, {
-                    "WOT_0922_BOT_TACTICS_PATH": "inherited-active.json"}), \
-                mock.patch("bot_tactics_store.Store.ensure_active",
-                           side_effect=AssertionError("tactics staged")), \
-                mock.patch("core.listener_status",
-                           return_value=core.LISTENER_FREE), \
-                mock.patch("core.wait_for_server", return_value=True), \
-                mock.patch("core.local_addresses", return_value=[]), \
-                mock.patch("wot_launcher.subprocess.Popen",
-                           return_value=server) as popen:
-            self.assertTrue(self.window._start_server(
-                self.settings_dir, core.PORT_0_9_22))
-
-        self.assertNotIn("WOT_0922_BOT_TACTICS_PATH",
-                         popen.call_args.kwargs["env"])
-        self.window._stop_server(force=True)
 
     def test_launcher_owned_server_reuse_requires_game_and_visibility_context(self):
         server = _Process()
@@ -2268,66 +2216,30 @@ class WindowTest(unittest.TestCase):
         listener.assert_not_called()
         self.assertIn("different game or visibility", self._log_text())
 
-    def test_persistent_server_survives_session_cleanup_until_stopped(self):
-        server = _Process()
-        with mock.patch("core.listener_status",
-                        return_value=core.LISTENER_FREE), \
-                mock.patch("core.wait_for_server", return_value=True), \
-                mock.patch("core.local_addresses", return_value=[]), \
-                mock.patch("wot_launcher.subprocess.Popen",
-                           return_value=server) as popen:
+    def test_persistent_room_configuration_survives_session_cleanup(self):
+        with mock.patch("core.listener_status", return_value=core.LISTENER_FREE), \
+                mock.patch("wot_launcher.subprocess.Popen") as popen:
             self.assertTrue(self.window._start_server(
                 self.settings_dir, core.PORT_0_9_22, persistent=True))
-
-        self.assertEqual(
-            wot_launcher._no_console_flags(),
-            popen.call_args.kwargs["creationflags"])
+        popen.assert_not_called()
         self.assertTrue(self.window._server_persistent)
-        self.assertIn(
-            "Server log: %s" % core.server_log_path(), self._log_text())
         self.assertFalse(self.window._stop_server())
-        self.assertFalse(server.terminated)
         self.assertTrue(self.window._stop_server(force=True))
-        self.assertTrue(server.terminated)
+        self.assertIsNone(self.window._server_context)
 
-    def test_new_session_server_uses_its_dedicated_log(self):
-        server = _Process()
-        boundary = {"id": "20260823T120000Z-111111111111"}
-        dedicated = os.path.join(self.settings_dir, "session-server.log")
+    def test_room_config_carries_exact_roster_and_diagnostic_log(self):
+        boundary = {"id": "session-id"}
         self.window._active_report_session = boundary
-        with mock.patch("core.listener_status",
-                        return_value=core.LISTENER_FREE), \
-                mock.patch("core.wait_for_server", return_value=True), \
-                mock.patch("core.local_addresses", return_value=[]), \
-                mock.patch.object(
-                    wot_launcher.error_reports, "attach_server",
-                    return_value=dedicated) as attach, \
-                mock.patch("wot_launcher.subprocess.Popen",
-                           return_value=server) as popen:
-            self.assertTrue(self.window._start_server(
-                self.settings_dir, core.PORT_0_9_22))
-
-        attach.assert_called_once_with(boundary, dedicated=True)
-        environment = popen.call_args.kwargs["env"]
-        self.assertEqual(
-            boundary["id"],
-            environment[wot_launcher.error_reports.SERVER_SESSION_ENV])
-        self.assertIn("Server log: %s" % dedicated, self._log_text())
-        self.window._stop_server(force=True)
-
-    def test_server_entry_uses_the_session_log_selected_by_environment(self):
-        selected = os.path.join(self.settings_dir, "selected-server.log")
-        with mock.patch.object(
-                wot_launcher.error_reports, "server_log_for_environment",
-                return_value=selected), mock.patch.object(
-                    wot_launcher, "_open_server_log") as open_log, \
-                mock.patch("core.server_root", return_value="/server"), \
-                mock.patch("core.run_server_payload") as run:
-            self.assertEqual(0, wot_launcher._serve(
-                [core.SERVE_FLAG, core.PORT_0_9_22]))
-
-        open_log.assert_called_once_with(selected)
-        run.assert_called_once_with(core.PORT_0_9_22)
+        lineup = [{"team": 2, "slot": 0, "vehicle": "germany:G12_Ltraktor"}]
+        dedicated = os.path.join(self.settings_dir, "room.log")
+        with mock.patch("core.listener_status", return_value=core.LISTENER_FREE), \
+                mock.patch.object(wot_launcher.error_reports, "attach_server",
+                    return_value=dedicated), mock.patch("core.write_room_host_config") as config:
+            self.assertTrue(self.window._start_server(self.settings_dir,
+                core.PORT_0_9_22, bot_lineup=lineup, bot_excluded_vehicles=["other"]))
+        self.assertEqual(lineup, config.call_args.kwargs["bot_lineup"])
+        self.assertEqual(["other"], config.call_args.kwargs["bot_excluded_vehicles"])
+        self.assertEqual(dedicated, config.call_args.kwargs["log_path"])
 
     def test_server_process_output_is_teed_to_the_live_pipe_and_log_file(self):
         stdout = io.StringIO()
@@ -2493,13 +2405,28 @@ class WindowTest(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
         self.assertIn("worker_exited_before_ready", self._log_text())
 
-    def test_worker_server_admission_comes_from_the_server_log(self):
-        self.window._worker_joined.clear()
-        server = _Process(exit_code=None, stdout=io.BytesIO(
-            b"[12:00:00] WORKER JOIN id=1 name=Simulation\n"))
-        self.window._server = server
-        self.window._pump_server_output(server)
-        self.assertTrue(self.window._worker_joined.is_set())
+
+    def test_a_restarted_worker_does_not_inherit_the_previous_forced_stop(self):
+        game, unused_worker = self._ng_game()
+        role = wot_launcher.error_reports.ROLE_HIDDEN_WORKER
+        visible_role = wot_launcher.error_reports.ROLE_VISIBLE_CLIENT
+        self.window._forced_stop_roles.update((role, visible_role))
+        self.window._stop_requested_roles.add(role)
+        worker = _Process(exit_code=None, pid=42)
+        with mock.patch.object(ng_client, "wait_for_worker_ready", return_value=True), \
+                mock.patch("wot_launcher.subprocess.Popen", return_value=worker):
+            self.assertTrue(self.window._start_worker(game, "127.0.0.1", 28792))
+        self.assertNotIn(role, self.window._forced_stop_roles)
+        self.assertNotIn(role, self.window._stop_requested_roles)
+        self.assertIn(visible_role, self.window._forced_stop_roles)
+        worker.exit_code = 3
+        with mock.patch.object(
+                wot_launcher.error_reports, "minidump_evidence",
+                return_value=wot_launcher.error_reports.MINIDUMP_EVIDENCE_TERMINATION), \
+                mock.patch.object(wot_launcher.error_reports, "client_exited_cleanly",
+                                  return_value=False):
+            self.window._observe_process_exit(worker, role)
+        self.assertIn(role, self.window._observed_crash_roles)
 
     def test_worker_receives_its_trail_and_a_session_dump_monitor(self):
         game, unused_worker = self._ng_game()
@@ -2580,6 +2507,34 @@ class WindowTest(unittest.TestCase):
 
         self.assertEqual({"KEEP": "1"}, environment)
 
+    def test_worker_host_shutdown_waits_for_receipt_flush_before_exit(self):
+        game, unused_worker = self._ng_game()
+        core.write_room_host_config(game)
+        worker = _Process(exit_code=None)
+        self.window._worker = worker
+        self.window._server_context = {"game_root": game}
+        def completed(timeout=None):
+            self.assertTrue(os.path.isfile(core.room_host_stop_path(game)))
+            worker.exit_code = 0
+            return 0
+        worker.wait = completed
+        self.window._stop_worker()
+        self.assertFalse(worker.terminated)
+        self.assertFalse(worker.killed)
+
+    def test_worker_host_shutdown_has_a_bounded_termination_fallback(self):
+        game, unused_worker = self._ng_game()
+        core.write_room_host_config(game)
+        worker = _Process(exit_code=None)
+        worker.wait = mock.Mock(side_effect=[
+            wot_launcher.subprocess.TimeoutExpired("worker", 10), 0])
+        self.window._worker = worker
+        self.window._server_context = {"game_root": game}
+        self.window._stop_worker()
+        self.assertTrue(os.path.isfile(core.room_host_stop_path(game)))
+        self.assertTrue(worker.terminated)
+        self.assertFalse(worker.killed)
+
     def test_worker_stop_detaches_the_dump_monitor_then_terminates(self):
         worker = _Process(exit_code=None, pid=42)
         self.window._worker = worker
@@ -2597,6 +2552,172 @@ class WindowTest(unittest.TestCase):
         self.assertNotIn(
             wot_launcher.error_reports.ROLE_HIDDEN_WORKER,
             self.window._observed_crash_roles)
+
+    def test_worker_kill_fallback_waits_for_a_confirmed_terminal_exit(self):
+        game, unused_worker = self._ng_game()
+        worker = _Process(exit_code=None)
+        worker.terminate = mock.Mock()
+        worker.kill = mock.Mock()
+        def terminal(timeout=None):
+            worker.exit_code = -9
+            return -9
+        waits = []
+        def wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) < 3:
+                raise wot_launcher.subprocess.TimeoutExpired("worker", timeout)
+            return terminal(timeout)
+        worker.wait = wait
+        self.window._worker = worker
+        self.window._server_context = {"game_root": game}
+        with mock.patch.object(self.window, "_remember_process_exit",
+                               wraps=self.window._remember_process_exit) as remember:
+            self.assertIsNone(self.window._stop_worker())
+        self.assertEqual([core.WORKER_SHUTDOWN_TIMEOUT_SECONDS_0922, 10, 10], waits)
+        worker.kill.assert_called_once_with()
+        self.assertIsNone(self.window._worker)
+        remember.assert_any_call(-9, wot_launcher.error_reports.ROLE_HIDDEN_WORKER)
+
+    def test_worker_still_alive_after_kill_remains_owned_and_can_be_retried(self):
+        game, unused_worker = self._ng_game()
+        for room_owned in (False, True):
+            timeout = wot_launcher.subprocess.TimeoutExpired("worker", 10)
+            for kill_error, wait_error in ((None, timeout),
+                                           (OSError("kill refused"), timeout),
+                                           (None, OSError("wait failed"))):
+                with self.subTest(room_owned=room_owned, kill_error=kill_error,
+                                  wait_error=wait_error):
+                    attribute = "_room_worker" if room_owned else "_worker"
+                    worker = _Process(exit_code=None)
+                    worker.terminate = mock.Mock()
+                    worker.kill = mock.Mock(side_effect=kill_error)
+                    worker.wait = mock.Mock(side_effect=wait_error)
+                    setattr(self.window, attribute, worker)
+                    self.window._server_context = {"game_root": game}
+                    self.assertIs(self.window._stop_worker(room_owned=room_owned), False)
+                    self.assertIs(worker, getattr(self.window, attribute))
+                    self.assertEqual(3, worker.wait.call_count)
+                    self.assertIn("its room remains owned", self._log_text())
+                    worker.exit_code = 0
+                    result = self.window._stop_worker(room_owned=room_owned)
+                    self.assertEqual(0, result)
+                    self.assertIsNot(result, False)
+                    self.assertIsNone(getattr(self.window, attribute))
+
+    def test_a_late_exit_after_the_last_wait_timeout_is_still_terminal(self):
+        game, unused_worker = self._ng_game()
+        worker = _Process(exit_code=None)
+        worker.terminate = mock.Mock()
+        worker.kill = mock.Mock()
+        waits = []
+        def wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) == 3:
+                worker.exit_code = -9
+            raise wot_launcher.subprocess.TimeoutExpired("worker", timeout)
+        worker.wait = wait
+        self.window._worker = worker
+        self.window._server_context = {"game_root": game}
+        self.assertIsNone(self.window._stop_worker())
+        self.assertEqual(3, len(waits))
+        self.assertIsNone(self.window._worker)
+
+    def test_failed_room_shutdown_preserves_context_overlay_and_close_ownership(self):
+        game, unused_worker = self._ng_game()
+        worker = _Process(exit_code=None)
+        self.window._room_worker = worker
+        self.window._server_persistent = True
+        context = {"game_root": game}
+        self.window._server_context = context
+        self.window._room_vehicle_overlay_root = game
+        with mock.patch.object(self.window, "_stop_worker", return_value=False), \
+                mock.patch.object(self.window, "_restore_original_vehicle_data") as restore:
+            self.assertIs(self.window._stop_server(force=True), False)
+            self.assertIs(context, self.window._server_context)
+            self.assertTrue(self.window._server_persistent)
+            self.assertIs(self.window._stop_lan_room(), False)
+            self.assertEqual(game, self.window._room_vehicle_overlay_root)
+            restore.assert_not_called()
+            with mock.patch.object(self.window.root, "destroy") as destroy:
+                self.assertIs(self.window._finish_close(), False)
+            destroy.assert_not_called()
+
+    def test_persistent_room_that_cannot_stop_keeps_the_window_open(self):
+        self.window._room_worker = _Process(exit_code=None)
+        with mock.patch.object(self.window, "_stop_worker", return_value=None), \
+                mock.patch.object(self.window, "_stop_lan_room", return_value=False), \
+                mock.patch.object(self.window.root, "destroy") as destroy:
+            self.assertIs(self.window._finish_close(), False)
+        destroy.assert_not_called()
+
+    def test_lan_room_cleanup_does_not_restore_overlay_after_regular_worker_stop_fails(self):
+        self.window._server_context = {"game_root": self.settings_dir}
+        self.window._room_vehicle_overlay_root = self.settings_dir
+        with mock.patch.object(self.window, "_stop_worker", return_value=None), \
+                mock.patch.object(self.window, "_stop_server", return_value=False), \
+                mock.patch.object(self.window, "_restore_original_vehicle_data") as restore:
+            self.assertIs(self.window._stop_lan_room(), False)
+        restore.assert_not_called()
+        self.assertEqual(self.settings_dir, self.window._room_vehicle_overlay_root)
+
+    def test_session_cleanup_keeps_live_worker_stop_tags_and_blocks_a_new_session(self):
+        role = wot_launcher.error_reports.ROLE_HIDDEN_WORKER
+        visible = wot_launcher.error_reports.ROLE_VISIBLE_CLIENT
+        self.window._worker = _Process(exit_code=None)
+        self.window._server_context = {"game_root": self.settings_dir}
+        self.window._forced_stop_roles.update((role, visible))
+        self.window._stop_requested_roles.update((role, visible))
+        session = {"client": core.PORT_0_9_22, "host": core.LOCAL_HOST,
+                   "tcp_port": core.DEFAULT_SERVER_PORT,
+                   "needs_server": True, "mode": core.MODE_SINGLE}
+        with mock.patch.object(wot_launcher.error_reports, "begin_session", return_value=None), \
+                mock.patch.object(self.window, "_enable_crash_capture"), \
+                mock.patch.object(core, "install_client_mod",
+                                  side_effect=core.LauncherError("stop pending")), \
+                mock.patch.object(self.window, "_stop_worker", return_value=False), \
+                mock.patch.object(self.window, "_stop_server", return_value=False) as stop_server, \
+                mock.patch.object(self.window, "_restore_original_vehicle_data") as restore:
+            self.window._run_session(self.settings_dir, session, "PlayerOne")
+        stop_server.assert_not_called()
+        restore.assert_not_called()
+        self.assertEqual({role}, self.window._forced_stop_roles)
+        self.assertEqual({role}, self.window._stop_requested_roles)
+        self.window.mode.set(core.MODE_JOIN)
+        with mock.patch.object(self.window, "_refresh_client") as refresh:
+            self.window._start()
+        refresh.assert_not_called()
+        self.assertIn("retry stopping it before starting another session", self._log_text())
+
+    def test_zero_exit_code_does_not_block_room_context_cleanup(self):
+        self.window._server_context = {"game_root": self.settings_dir}
+        with mock.patch.object(self.window, "_stop_worker", return_value=0):
+            self.assertTrue(self.window._stop_server(force=True))
+        self.assertIsNone(self.window._server_context)
+
+    def test_a_live_worker_owner_blocks_replacement_before_marker_cleanup(self):
+        for attribute in ("_worker", "_room_worker"):
+            with self.subTest(attribute=attribute):
+                worker = _Process(exit_code=None)
+                setattr(self.window, attribute, worker)
+                with mock.patch.object(ng_client, "clear_markers") as clear, \
+                        mock.patch("wot_launcher.subprocess.Popen") as spawn:
+                    self.assertFalse(self.window._start_worker(
+                        self.settings_dir, "127.0.0.1", 28792))
+                spawn.assert_not_called()
+                clear.assert_not_called()
+                self.assertIs(worker, getattr(self.window, attribute))
+                setattr(self.window, attribute, None)
+
+    def test_failed_stop_is_reported_by_room_toggle_and_game_stop(self):
+        worker = _Process(exit_code=None)
+        self.window._worker = worker
+        self.window._server_context = {"game_root": self.settings_dir}
+        with mock.patch.object(self.window, "_stop_worker", return_value=False), \
+                mock.patch.object(self.window, "_stop_lan_room", return_value=False), \
+                mock.patch.object(self.window, "_stop_server", return_value=False), \
+                mock.patch.object(core, "kill_game"):
+            self.assertIs(self.window._toggle_lan_server(), False)
+            self.assertIs(self.window._kill_game(), False)
 
     def test_worker_crash_wins_a_simultaneous_stop(self):
         worker = _Process(exit_code=None, pid=42)
@@ -3023,7 +3144,7 @@ class WindowTest(unittest.TestCase):
         self.assertIn(
             "worker stopped with exit code 9", self._log_text())
 
-    def test_worker_failure_gives_owned_server_a_bounded_delivery_grace(self):
+    def test_worker_host_failure_has_no_second_server_outbox_to_drain(self):
         game = _Process(exit_code=None)
         worker = _Process(exit_code=9)
         self.window._worker = worker
@@ -3040,8 +3161,7 @@ class WindowTest(unittest.TestCase):
                 self.settings_dir, core.PORT_0_9_22, core.LOCAL_HOST,
                 core.DEFAULT_SERVER_PORT, paired_worker=True)
 
-        sleep.assert_called_once_with(
-            core.WORKER_FAILURE_DRAIN_SECONDS_0922)
+        sleep.assert_not_called()
 
     def test_join_blocks_unavailable_and_incompatible_endpoints(self):
         session = {
@@ -3099,6 +3219,8 @@ class WindowTest(unittest.TestCase):
         stopped = []
 
         class _Server(object):
+            pid = 1234
+
             def poll(self):
                 return None
 
@@ -3108,7 +3230,8 @@ class WindowTest(unittest.TestCase):
             def wait(self, timeout=None):
                 return 0
 
-        self.window._server = _Server()
+        self.window._room_worker = _Server()
+        self.window._server_context = {"game_root": self.settings_dir}
         self.window._server_persistent = True
         self.window._room_vehicle_overlay_root = self.settings_dir
         with mock.patch(
@@ -3119,7 +3242,8 @@ class WindowTest(unittest.TestCase):
             self.window._on_close()
 
         cleanup.assert_called_once_with(self.settings_dir)
-        self.assertEqual(stopped, ["terminate"])
+        self.assertEqual(stopped, [])
+        self.assertTrue(os.path.isfile(core.room_host_stop_path(self.settings_dir)))
         self.assertIsNone(self.window._room_vehicle_overlay_root)
         self.assertTrue(self.window.root.destroyed)
 

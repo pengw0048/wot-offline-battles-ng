@@ -14,7 +14,6 @@ from unittest import mock
 
 import core
 import ng_client
-import server_imports
 import stage_payload
 import save_slots
 
@@ -532,30 +531,9 @@ class ServerPayloadTest(unittest.TestCase):
             os.path.join(os.path.dirname(core.__file__), "server.log"),
             core.server_log_path(frozen=False))
 
-    def test_repository_layout_resolves_the_server(self):
-        script = core.server_script(core.PORT_0_9_22)
-        self.assertTrue(os.path.isfile(script))
-        self.assertEqual(
-            os.path.join(core.repository_root(), "server", "windows_server.py"),
-            script)
 
-    def test_0_9_22_server_binds_without_arguments(self):
-        argv = core.server_argv(core.PORT_0_9_22, "/payload")
-        self.assertEqual(argv[1:], [])
 
-    def test_frozen_command_reruns_the_launcher_executable(self):
-        command = core.server_child_command(
-            core.PORT_0_9_22, executable="C:\\launcher.exe", frozen=True)
-        self.assertEqual(command, ["C:\\launcher.exe", core.SERVE_FLAG,
-                                   core.PORT_0_9_22])
 
-    def test_source_command_passes_the_launcher_script(self):
-        command = core.server_child_command(
-            core.PORT_0_9_22, launcher_script="/repo/launcher/wot_launcher.py",
-            executable="/usr/bin/python3", frozen=False)
-        self.assertEqual(command, ["/usr/bin/python3",
-                                   "/repo/launcher/wot_launcher.py",
-                                   core.SERVE_FLAG, core.PORT_0_9_22])
 
     def test_server_environment_keeps_only_live_server_inputs(self):
         environment = core.server_environment(core.PORT_0_9_22, "/game", {})
@@ -706,9 +684,6 @@ class ServerPayloadTest(unittest.TestCase):
         self.assertEqual(
             "2", environment[core.CLIENT_PREFERRED_TEAM_ENV_0922])
 
-    def test_missing_payload_reports_a_launcher_error(self):
-        self.assertRaises(core.LauncherError, core.run_server_payload,
-                          core.PORT_0_9_22, tempfile.mkdtemp())
 
 
 class ClientInstallTest(unittest.TestCase):
@@ -755,6 +730,7 @@ class ClientInstallTest(unittest.TestCase):
         self._write(self.package, ng_client.EXECUTABLE, content)
         self._write(self.package, "offline-res.json",
                     json.dumps({"revision": "pinned"}))
+        self._write(self.package, "native-room-data.json", '{"schema": 1}')
         self._write(
             self.package, "tools/prepare_native_client.py",
             "import os\n"
@@ -1263,13 +1239,22 @@ class PayloadStagingTest(unittest.TestCase):
         self.root = os.path.join(tempfile.mkdtemp(), "payload")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.root), True)
         self.written = stage_payload.stage(self.root, include_clients=False)
-        self.target = os.path.join(self.root, stage_payload.SERVER_DIR)
+        self.target = self.root
         self.source = os.path.join(os.path.dirname(self.root), "source")
         os.makedirs(os.path.join(self.source, "launcher"))
         with open(os.path.join(self.source, "ng-launcher-source.json"), "w") as stream:
             json.dump({"fork_revision": "a" * 40}, stream)
+        with open(os.path.join(self.source, "native-room-data.json"), "w") as stream:
+            json.dump({"schema": 1, "gameplay_revision": "a" * 40}, stream)
         with open(os.path.join(self.source, "launcher", "wot_launcher.py"), "w") as stream:
             stream.write('LAUNCHER_VERSION = "%s"\n' % stage_payload.launcher_version())
+        for relative in stage_payload.LAUNCHER_CONTRACTS:
+            path = os.path.join(self.source, "src", "res", "scripts", "client",
+                                *stage_payload.LAUNCHER_CONTRACTS_RELATIVE.split("/"),
+                                *relative.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as stream:
+                stream.write("# Launcher contract fixture.\n")
 
     @staticmethod
     def _write_ng_client(package):
@@ -1281,31 +1266,7 @@ class PayloadStagingTest(unittest.TestCase):
             with open(path, "w") as stream:
                 stream.write(json.dumps({"revision": "a" * 40}) if relative == "offline-res.json" else "x")
 
-    def test_supported_server_entry_points_are_staged(self):
-        expected_ports = {core.PORT_0_9_22}
-        self.assertEqual(expected_ports, set(stage_payload.PAYLOAD_FILES))
-        self.assertEqual(expected_ports, set(stage_payload.PAYLOAD_TREES))
-        for port_version in core.SUPPORTED_PORTS:
-            self.assertTrue(
-                os.path.isfile(core.server_script(port_version, self.target)),
-                port_version)
-            self.assertTrue(os.path.isfile(os.path.join(
-                os.path.dirname(core.server_script(port_version,self.target)),
-                'server_route_recovery.py')))
-            self.assertTrue(os.path.isfile(os.path.join(
-                os.path.dirname(core.server_script(port_version,self.target)),
-                'server_empty_ammo.py')))
 
-    def test_staged_server_imports_without_the_repository_on_its_path(self):
-        import subprocess
-        import sys
-        source=os.path.dirname(core.server_script(core.PORT_0_9_22,self.target))
-        result=subprocess.run([sys.executable,'-I','-S','-c',
-            "import sys;sys.path.insert(0,sys.argv[1]);from server_bot_ai import BotPlanner;"
-            "from server_empty_ammo import EmptyAmmoMixin;"
-            "assert isinstance(BotPlanner(),EmptyAmmoMixin)",source],
-            cwd=self.target,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-        self.assertEqual(0,result.returncode,result.stderr)
 
     def test_windows_distribution_guard_rejects_map_studio_paths(self):
         script_path = os.path.join(
@@ -1344,30 +1305,14 @@ class PayloadStagingTest(unittest.TestCase):
         self.assertNotIn("procdump.exe", script.lower())
         self.assertNotIn('"_internal\\tools\\Eula.txt"', script)
 
-    def test_the_0_9_22_server_finds_its_client_modules(self):
-        self.assertTrue(os.path.isfile(os.path.join(
-            self.target, "0.9.22", "src", "res", "scripts", "client", "gui",
-            "mods", "offline_lan_0922", "ai", "maps.py")))
 
-    def test_the_0_9_22_server_stages_its_reward_module(self):
-        self.assertTrue(os.path.isfile(os.path.join(
-            self.target, "0.9.22", "server", "offline_rewards.py")))
 
-    def test_the_0_9_22_server_stages_its_vehicle_overlay_store(self):
-        self.assertTrue(os.path.isfile(os.path.join(
-            self.target, "0.9.22", "server", "vehicle_overlay_store.py")))
 
     def test_the_navigation_graphs_stay_out_of_the_bundle(self):
         self.assertFalse(any(
             os.path.sep + "navgraphs" + os.path.sep in path
             for path in self.written))
 
-    def test_the_server_stages_its_binary_wire_modules(self):
-        for name in ("battle_wire_codec.py", "battle_wire_schema.py",
-                     "battle_wire_replica.py", "battle_wire_ram_motion.py",
-                     "battle_wire_bot_state_codec.py"):
-            self.assertTrue(os.path.isfile(os.path.join(
-                self.target, "0.9.22", "server", name)), name)
 
     def test_ng_client_staging_carries_the_package_and_its_identity(self):
         source = tempfile.mkdtemp()
@@ -1380,7 +1325,8 @@ class PayloadStagingTest(unittest.TestCase):
             target, package, source_root=self.source, identity="test-staging")
 
         for relative in stage_payload.NG_CLIENT_REQUIRED + (
-                "offline-res/scripts/client/gui/mods/mod_offline.pyc",):
+                "offline-res/scripts/client/gui/mods/mod_offline.pyc",
+                "native-room-data.json"):
             self.assertTrue(os.path.isfile(
                 os.path.join(target, *relative.split("/"))), relative)
         with open(os.path.join(target, *core.BUILD_IDENTITY_RELATIVE_PATH_0922
@@ -1390,6 +1336,43 @@ class PayloadStagingTest(unittest.TestCase):
         self.assertEqual(
             stage_payload.launcher_version(), identity["semanticVersion"])
         self.assertIsNotNone(core._normalize_payload_identity(identity))
+
+    def test_ng_client_staging_replaces_read_only_generated_metadata(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "client")
+        self._write_ng_client(package)
+        metadata = ("native-room-data.json", stage_payload.BUILD_IDENTITY_RELATIVE)
+        for relative in metadata:
+            path = os.path.join(package, *relative.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as stream:
+                stream.write("old generated metadata")
+            os.chmod(path, 0o444)
+            self.addCleanup(os.chmod, path, 0o644)
+        target = os.path.join(source, "staged")
+        stage_payload.stage_ng_client(target, package, self.source, identity="fresh")
+        with open(os.path.join(target, "native-room-data.json")) as stream:
+            self.assertEqual(1, json.load(stream)["schema"])
+        with open(os.path.join(target, *stage_payload.BUILD_IDENTITY_RELATIVE.split("/"))) as stream:
+            self.assertEqual("fresh", json.load(stream)["buildIdentity"])
+
+    def test_staged_native_room_data_reaches_both_installed_instances(self):
+        source = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, source, True)
+        package = os.path.join(source, "client")
+        self._write_ng_client(package)
+        target = os.path.join(source, "payload")
+        stage_payload.stage(target, self.source, ng_client=package, identity="native-host")
+        with open(os.path.join(self.source, "native-room-data.json"), "rb") as stream:
+            expected = stream.read()
+        for role in ng_client.ROLES:
+            instance = os.path.join(source, "instances", role)
+            ng_client.sync_instance(os.path.join(target, "ng-client"), instance)
+            with open(os.path.join(instance, "native-room-data.json"), "rb") as stream:
+                self.assertEqual(expected, stream.read())
+            self.assertFalse(os.path.exists(os.path.join(instance, "servers")))
+        self.assertFalse(os.path.exists(os.path.join(target, "servers")))
 
     def test_ng_client_debug_symbols_stay_out_of_the_payload(self):
         source = tempfile.mkdtemp()
@@ -1559,85 +1542,6 @@ class PayloadStagingTest(unittest.TestCase):
 
 
 
-class ServerImportTest(unittest.TestCase):
-    """The bundle must carry every module the servers import.
-
-    PyInstaller cannot see through ``runpy``, so a server import that is not
-    declared in ``server_imports`` is missing from the packaged launcher.
-    """
-
-    ENTRY_POINTS = {
-        core.PORT_0_9_22: ('server/windows_server.py',),
-    }
-
-    def setUp(self):
-        root = os.path.join(tempfile.mkdtemp(), "payload")
-        self.addCleanup(shutil.rmtree, os.path.dirname(root), True)
-        stage_payload.stage(root, include_clients=False)
-        self.payload = os.path.join(root, stage_payload.SERVER_DIR)
-
-    def _module_file(self, root, name):
-        relative = name.replace('.', os.path.sep)
-        for candidate in (relative + '.py',
-                          os.path.join(relative, '__init__.py')):
-            path = os.path.join(root, candidate)
-            if os.path.isfile(path):
-                return path
-        return None
-
-    def _imports(self, path):
-        with open(path, 'rb') as stream:
-            tree = ast.parse(stream.read())
-        names = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    names.add(alias.name)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                if node.module:
-                    names.add(node.module)
-        return names
-
-    def _closure(self, port_version):
-        port_root = os.path.join(self.payload, port_version)
-        search_roots = [port_root]
-        if port_version == core.PORT_0_9_22:
-            search_roots.append(os.path.join(port_root, 'server'))
-            search_roots.append(os.path.join(
-                port_root, 'src', 'res', 'scripts', 'client'))
-        pending = [os.path.join(port_root, *entry.split('/'))
-                   for entry in self.ENTRY_POINTS[port_version]]
-        seen = set()
-        external = set()
-        while pending:
-            path = pending.pop()
-            if path in seen:
-                continue
-            seen.add(path)
-            for name in self._imports(path):
-                local = None
-                for root in search_roots:
-                    local = self._module_file(root, name)
-                    if local is not None:
-                        break
-                if local is None:
-                    external.add(name.split('.')[0])
-                else:
-                    pending.append(local)
-        return external
-
-    def test_every_server_import_is_declared(self):
-        declared = set(server_imports.SERVER_STDLIB_MODULES)
-        for port_version in core.SUPPORTED_PORTS:
-            external = self._closure(port_version)
-            required = {name for name in external
-                        if name in sys.stdlib_module_names and
-                        name != '__future__'}
-            self.assertLessEqual(required, declared, port_version)
-
-    def test_the_declared_modules_all_import(self):
-        for name in server_imports.SERVER_STDLIB_MODULES:
-            self.assertIn(name, sys.modules, name)
 
 
 class ListenerTest(unittest.TestCase):
@@ -1808,7 +1712,7 @@ class ListenerTest(unittest.TestCase):
             sleep=lambda seconds: None))
         self.assertEqual(3, len(attempts))
 
-    def test_probe_contracts_match_the_bundled_servers(self):
+    def test_probe_contract_matches_the_pinned_source_oracle(self):
         def constants(path):
             with open(path, "rb") as stream:
                 tree = ast.parse(stream.read())
@@ -2207,9 +2111,11 @@ class WorkerClientPathsTest(unittest.TestCase):
         for ready in (True, False):
             with self.subTest(ready=ready):
                 window = object.__new__(wot_launcher.LauncherWindow)
+                window._server_context = None
                 window._active_report_session = None
                 window._stop_requested = False
                 window._stop_requested_roles = set()
+                window._forced_stop_roles = set()
                 window._worker_joined = threading.Event()
                 window._log = mock.Mock()
                 window._log_worker_failure = mock.Mock()
@@ -2230,8 +2136,9 @@ class WorkerClientPathsTest(unittest.TestCase):
                     spawn.call_args.args[0])
                 clear.assert_called_once_with(worker_root)
                 self.assertEqual(worker_root, wait.call_args.args[1])
-                self.assertEqual(window._worker_joined.is_set,
-                                 wait.call_args.args[2])
+                self.assertTrue(callable(wait.call_args.args[2]))
+                self.assertEqual(core.room_host_config_path(self.game),
+                    spawn.call_args.kwargs["env"][core.ROOM_HOST_CONFIG_ENV])
                 if ready:
                     window._stop_worker.assert_not_called()
                 else:

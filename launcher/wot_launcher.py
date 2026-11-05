@@ -1508,7 +1508,9 @@ class LauncherWindow(object):
         return status
 
     def _server_is_running(self):
-        return self._server is not None and self._server.poll() is None
+        return bool(self._server_context and (
+            (self._worker is not None and self._worker.poll() is None) or
+            self._room_worker_is_running()))
 
     def _room_worker_is_running(self):
         return (self._room_worker is not None and
@@ -2729,6 +2731,10 @@ class LauncherWindow(object):
             self._stop_lan_room()
         else:
             self._stop_server()
+        if self._worker is not None and self._worker.poll() is None:
+            return False
+        if stop_persistent_server and self._room_worker_is_running():
+            return False
         return True
 
     def _save_settings(self):
@@ -3111,10 +3117,10 @@ class LauncherWindow(object):
             self._log("Wait for the current launcher operation to finish.")
             return False
         if self._server_is_running() or self._room_worker_is_running():
-            self._stop_lan_room()
+            stopped = self._stop_lan_room()
             self._update_action_controls()
-            return True
-        if self._server is not None:
+            return stopped
+        if self._server_context is not None:
             self._stop_server(force=True)
         status = self._refresh_client()
         if (status.get("client") not in core.SUPPORTED_PORTS or
@@ -3191,6 +3197,12 @@ class LauncherWindow(object):
             return
         if self._busy:
             self._kill_game()
+            return
+        if (error_reports.ROLE_HIDDEN_WORKER in self._forced_stop_roles and
+                ((self._worker is not None and self._worker.poll() is None) or
+                 self._room_worker_is_running())):
+            self._log("The previous hidden simulation worker has not confirmed "
+                      "its stop; retry stopping it before starting another session.")
             return
         if (not replay_path and self.mode.get() == core.MODE_SINGLE and
                 (self._server_is_running() or self._room_worker_is_running())):
@@ -3392,15 +3404,16 @@ class LauncherWindow(object):
             if needs_worker and self._worker is not None:
                 self._observe_process_exit(
                     self._worker, error_reports.ROLE_HIDDEN_WORKER)
-            self._stop_worker()
+            worker_stopped = self._stop_worker()
             if (self._worker_exited_unexpectedly or
                     error_reports.ROLE_HIDDEN_WORKER in
                     self._observed_crash_roles):
                 crash_roles.add(error_reports.ROLE_HIDDEN_WORKER)
             crash_roles.update(self._observed_crash_roles)
-            self._stop_server()
+            if worker_stopped is not False:
+                self._stop_server()
             if session.get("client") == core.PORT_0_9_22:
-                if not owned_room:
+                if not owned_room and worker_stopped is not False:
                     self._restore_original_vehicle_data(game_root)
             report_finalized = False
             if report_session is not None and self._crash_capture_enabled:
@@ -3444,8 +3457,15 @@ class LauncherWindow(object):
             self._procdump_path = None
             self._worker_exited_unexpectedly = False
             self._observed_crash_roles = set()
-            self._forced_stop_roles = set()
-            self._stop_requested_roles = set()
+            if ((self._worker is not None and self._worker.poll() is None) or
+                    self._room_worker_is_running()):
+                self._forced_stop_roles.intersection_update(
+                    (error_reports.ROLE_HIDDEN_WORKER,))
+                self._stop_requested_roles.intersection_update(
+                    (error_reports.ROLE_HIDDEN_WORKER,))
+            else:
+                self._forced_stop_roles = set()
+                self._stop_requested_roles = set()
             self._active_replay_path = None
             self._set_busy(False)
             if automatic_report_path is not None:
@@ -3475,7 +3495,7 @@ class LauncherWindow(object):
             "bot_lineup": list(bot_lineup or ()),
             "bot_excluded_vehicles": sorted(set(bot_excluded_vehicles or ())),
         }
-        if self._server_is_running():
+        if self._server_context is not None:
             current_context = dict(self._server_context or {})
             current_context.setdefault("bot_lineup", [])
             current_context.setdefault("bot_excluded_vehicles", [])
@@ -3488,8 +3508,6 @@ class LauncherWindow(object):
             self._log("Reusing the launcher-owned %s LAN server." %
                       port_version)
             return True
-        if self._server is not None:
-            self._stop_server(force=True)
         status = core.listener_status(
             port_version, core.LOCAL_HOST, core.DEFAULT_SERVER_PORT)
         if status == core.LISTENER_COMPATIBLE:
@@ -3514,80 +3532,31 @@ class LauncherWindow(object):
                       "%s LAN protocol. Close it before starting the game." %
                       (core.DEFAULT_SERVER_PORT, port_version))
             return False
-        command = core.server_child_command(port_version)
-        environment = core.server_environment(
-            port_version, game_root, loopback_only=loopback_only,
-            bot_lineup=bot_lineup,
-            bot_excluded_vehicles=bot_excluded_vehicles)
-        # The NG worker's round start accepts only the empty tactics profile,
-        # which the server uses when no WOT_0922_BOT_TACTICS_PATH is given.
-        environment.pop("WOT_0922_BOT_TACTICS_PATH", None)
-        server_log_path = core.server_log_path()
-        report_session = self._active_report_session
-        if report_session is not None:
+        log_path = core.server_log_path()
+        if self._active_report_session is not None:
             try:
-                attached_path = error_reports.attach_server(
-                    report_session, dedicated=True)
-                if attached_path is not None:
-                    server_log_path = attached_path
-                    environment[error_reports.SERVER_SESSION_ENV] = (
-                        report_session["id"])
+                attached = error_reports.attach_server(
+                    self._active_report_session, dedicated=True)
+                if attached is not None:
+                    log_path = attached
             except Exception as error:
-                self._log(
-                    "This session's server log could not be isolated: %s" %
-                    error)
-        self._log("Starting the %s LAN server..." % port_version)
-        self._log("Server log: %s" % server_log_path)
-        self._server = subprocess.Popen(
-            command, env=environment, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, creationflags=_no_console_flags())
+                self._log("This session's room log could not be isolated: %s" % error)
+        self._log("Room log: %s" % log_path)
+        core.write_room_host_config(
+            game_root, loopback_only=loopback_only, bot_lineup=bot_lineup,
+            bot_excluded_vehicles=bot_excluded_vehicles, log_path=log_path)
         self._server_persistent = bool(persistent)
         self._server_context = requested_context
-        pump = threading.Thread(
-            target=self._pump_server_output, args=(self._server,))
-        pump.daemon = True
-        pump.start()
-        if not core.wait_for_server(
-                port_version, core.LOCAL_HOST, core.DEFAULT_SERVER_PORT,
-                cancelled=(None if persistent else
-                           lambda: self._stop_requested)):
-            if not self._stop_requested:
-                self._log(
-                    "The LAN server did not answer the %s protocol on port "
-                    "%d." % (port_version, core.DEFAULT_SERVER_PORT))
-            self._stop_server(force=True)
-            return False
-        self._log("The LAN server listens on port %d." %
-                  core.DEFAULT_SERVER_PORT)
-        if not loopback_only:
-            for address in core.local_addresses():
-                self._log("Other players join with %s:%d" %
-                          (address, core.DEFAULT_SERVER_PORT))
-        self.root.after(0, self._update_action_controls)
         return True
-
-    def _pump_server_output(self, server=None):
-        server = server or self._server
-        if server is None or server.stdout is None:
-            return
-        for line in iter(server.stdout.readline, b""):
-            text = line.decode("utf-8", "replace").rstrip()
-            if ng_client.WORKER_JOIN_LOG in text:
-                self._worker_joined.set()
-            self._log("[server] " + text)
-        if server is self._server:
-            exit_code = server.poll()
-            if self._room_worker_is_running():
-                self._log(
-                    "Stopping the LAN room worker because its server closed.")
-                self._stop_worker(room_owned=True)
-            if exit_code not in (None, 0):
-                self._log("The LAN server stopped with exit code %s." %
-                          exit_code)
-        self.root.after(0, self._update_action_controls)
 
     def _start_worker(self, game_root, host, port, room_owned=False):
         """Start the hidden NG worker from its own instance and user data."""
+        for active in (getattr(self, "_worker", None),
+                       getattr(self, "_room_worker", None)):
+            if active is not None and active.poll() is None:
+                self._log("The previous hidden simulation worker is still running; "
+                          "stop it before starting another room.")
+                return False
         self._worker_exited_unexpectedly = False
         worker_root = core.worker_root(game_root)
         if not os.path.isfile(ng_client.executable(worker_root)):
@@ -3595,7 +3564,6 @@ class LauncherWindow(object):
                 "The hidden simulation worker client is missing: %s" %
                 ng_client.executable(worker_root))
         ng_client.clear_markers(worker_root)
-        self._worker_joined.clear()
         self._log("Starting the hidden simulation worker...")
         environment = core.worker_environment(game_root, host, port)
         environment = self._crash_capture_environment(
@@ -3603,6 +3571,7 @@ class LauncherWindow(object):
         self._log("Hidden worker instance: %s" % worker_root)
         # Stop intent belongs to the previous worker, not its replacement.
         self._stop_requested_roles.discard(error_reports.ROLE_HIDDEN_WORKER)
+        self._forced_stop_roles.discard(error_reports.ROLE_HIDDEN_WORKER)
         worker = subprocess.Popen(
             core.worker_child_command(game_root), cwd=worker_root,
             env=environment, stdout=subprocess.DEVNULL,
@@ -3613,9 +3582,13 @@ class LauncherWindow(object):
         else:
             self._worker = worker
         if ng_client.wait_for_worker_ready(
-                worker, worker_root, self._worker_joined.is_set,
+                worker, worker_root, lambda: core.probe_server_protocol(
+                    core.PORT_0_9_22, host, port),
                 cancelled=lambda: self._stop_requested):
-            self._log("The hidden simulation worker is ready.")
+            self._log("The hidden simulation worker and room listener are ready.")
+            if not (self._server_context or {}).get("loopback_only", True):
+                for address in core.local_addresses():
+                    self._log("Other players join with %s:%d" % (address, port))
             if room_owned:
                 watcher = threading.Thread(
                     target=self._watch_room_worker, args=(worker,))
@@ -3674,6 +3647,7 @@ class LauncherWindow(object):
             return self._stop_worker_locked(room_owned=room_owned)
 
     def _stop_worker_locked(self, room_owned=False):
+        """Return False only when the worker remains alive after bounded stops."""
         if room_owned:
             worker = self._room_worker
             self._room_worker = None
@@ -3689,12 +3663,17 @@ class LauncherWindow(object):
             return exit_code
         self._log("Stopping the hidden simulation worker...")
         self._stop_requested_roles.add(error_reports.ROLE_HIDDEN_WORKER)
-        # The worker has no graceful stop channel. Detach its dump monitor,
-        # then terminate it as the pinned native starter did.
         stopped = self._release_dump_monitor(worker)
-        if not stopped:
-            self._forced_stop_roles.add(
-                error_reports.ROLE_HIDDEN_WORKER)
+        context = self._server_context or {}
+        game_root = context.get("game_root")
+        if game_root:
+            try:
+                with open(core.room_host_stop_path(game_root), "w") as stream:
+                    stream.write("stop\n")
+            except OSError as error:
+                self._log("The room shutdown request could not be written: %s" % error)
+        elif not stopped:
+            self._forced_stop_roles.add(error_reports.ROLE_HIDDEN_WORKER)
             try:
                 worker.terminate()
             except OSError:
@@ -3702,8 +3681,8 @@ class LauncherWindow(object):
         try:
             exit_code = worker.wait(
                 timeout=core.WORKER_SHUTDOWN_TIMEOUT_SECONDS_0922)
-        except subprocess.TimeoutExpired:
-            self._log("The hidden simulation worker did not stop in time.")
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self._log("The hidden simulation worker did not confirm its exit: %s" % error)
             self._forced_stop_roles.add(
                 error_reports.ROLE_HIDDEN_WORKER)
             try:
@@ -3711,13 +3690,25 @@ class LauncherWindow(object):
             except OSError:
                 pass
             try:
-                worker.wait(timeout=10)
-            except subprocess.TimeoutExpired:
+                exit_code = worker.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
                 try:
                     worker.kill()
                 except OSError:
                     pass
-            return None
+                try:
+                    exit_code = worker.wait(timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    exit_code = worker.poll()
+                    if exit_code is None:
+                        if room_owned:
+                            self._room_worker = worker
+                        else:
+                            self._worker = worker
+                        self._log("The hidden simulation worker is still running "
+                                  "after the kill request; its room remains owned "
+                                  "so stopping it can be retried.")
+                        return False
         self._remember_process_exit(
             exit_code, error_reports.ROLE_HIDDEN_WORKER)
         if stopped and exit_code not in (None, 0):
@@ -3850,13 +3841,6 @@ class LauncherWindow(object):
                         "%s; the game was closed." %
                         core.describe_exit_code(worker_exit))
                     self._log_worker_failure(game_root)
-                    if (self._server is not None and
-                            not self._server_persistent):
-                        # The server has already fenced the worker and queued
-                        # the terminal roster/result. Give its async outboxes a
-                        # short bounded chance to hand those frames to remote
-                        # peers before cleanup terminates the local server.
-                        time.sleep(core.WORKER_FAILURE_DRAIN_SECONDS_0922)
                 else:
                     self._log(
                         "The hidden simulation worker exited normally with "
@@ -3878,19 +3862,14 @@ class LauncherWindow(object):
     def _stop_server(self, force=False):
         if self._server_persistent and not force:
             return False
-        server = self._server
+        owned = self._server_context is not None
+        if self._stop_worker(room_owned=self._server_persistent) is False:
+            return False
         self._server = None
         self._server_persistent = False
         self._server_context = None
-        if server is not None and server.poll() is None:
-            self._log("Stopping the LAN server...")
-            server.terminate()
-            try:
-                server.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                server.kill()
         self.root.after(0, self._update_action_controls)
-        return server is not None
+        return owned
 
     def _restore_original_vehicle_data(self, game_root):
         try:
@@ -3912,8 +3891,11 @@ class LauncherWindow(object):
 
     def _stop_lan_room(self):
         game_root = self._room_vehicle_overlay_root
-        self._stop_worker(room_owned=True)
+        if self._stop_worker(room_owned=True) is False:
+            return False
         stopped = self._stop_server(force=True)
+        if stopped is False and self._server_context is not None:
+            return False
         if (game_root is not None and
                 self._restore_original_vehicle_data(game_root)):
             self._room_vehicle_overlay_root = None
@@ -3935,8 +3917,11 @@ class LauncherWindow(object):
         if self._busy or self._maintenance_busy:
             return False
         self._save_settings()
-        self._stop_worker()
+        if self._stop_worker() is False:
+            return False
         self._stop_lan_room()
+        if self._room_worker_is_running():
+            return False
         self.root.destroy()
         return True
 
@@ -3986,41 +3971,12 @@ def _open_server_log(path=None):
     return path
 
 
-def _serve(argv):
-    index = argv.index(core.SERVE_FLAG)
-    if index + 1 >= len(argv):
-        print("--serve needs a client version.")
-        return 2
-    port_version = argv[index + 1]
-    if port_version not in core.SUPPORTED_PORTS:
-        print("Unsupported client version: %s" % port_version)
-        return 2
-    _open_server_log(error_reports.server_log_for_environment())
-    print("Server session: version=%s build=%s role=server" % (
-        os.environ.get(core.BUILD_SEMANTIC_VERSION_ENV, "unknown"),
-        os.environ.get(core.BUILD_IDENTITY_ENV, "unknown")))
-    print("Starting the %s LAN server from %s" %
-          (port_version, core.server_root()))
-    try:
-        core.run_server_payload(port_version)
-    except Exception:
-        # A windowed build turns an unhandled exception into a dialog that
-        # waits for a user who is not there. Report it and exit instead.
-        import traceback
-
-        print("The %s LAN server stopped: %s" %
-              (port_version, traceback.format_exc()))
-        return 1
-    return 0
-
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     ng_client.isolate_environment()
     # Choose once per launcher process; child environments inherit this mode.
     # A normal entry must not inherit a stale diagnostic setting from a shell.
-    if core.SERVE_FLAG not in argv:
-        os.environ['WOT_OFFLINE_DIAGNOSTICS'] = ('1' if '--diagnostics' in argv else '0')
+    os.environ['WOT_OFFLINE_DIAGNOSTICS'] = ('1' if '--diagnostics' in argv else '0')
     if '--verify-style-editor' in argv:
         index = argv.index('--verify-style-editor')
         if index + 2 >= len(argv):
@@ -4031,8 +3987,8 @@ def main(argv=None):
             from . import styles_smoke
         return styles_smoke.run(argv[index + 1], argv[index + 2],
                                 lambda text: _CHINESE.get(text, text))
-    if core.SERVE_FLAG in argv:
-        return _serve(argv)
+    if "--serve" in argv:
+        return 2
     if '--verify-bot-editor' in argv:
         index = argv.index('--verify-bot-editor')
         if index + 1 >= len(argv):

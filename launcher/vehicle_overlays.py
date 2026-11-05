@@ -10,6 +10,7 @@ exits. An existing overlay from another tool is always a conflict.
 from __future__ import annotations
 
 import copy
+import base64
 import datetime
 import errno
 import gettext
@@ -62,6 +63,8 @@ ORIGINAL_PROFILE_LABEL = "Original vehicle values"
 MAX_PROFILE_NAME_LENGTH = 64
 MAX_OVERLAY_MEMBERS = 1024
 MAX_OVERLAY_MANIFEST_BYTES = 32 * 1024 * 1024
+MAX_SHARED_OVERLAY_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_SHARED_OVERLAY_TOTAL_BYTES = 64 * 1024 * 1024
 
 _COMPONENT_MEMBER = re.compile(
     r"^scripts/item_defs/vehicles/([a-z][a-z0-9_]*)/components/"
@@ -3342,6 +3345,94 @@ def active_vehicle_overlay(game_root, is_running=None):
         payload[member] = data
     digest = _sha256(_read_file(manifest_path(status["path"])))
     return manifest, payload, digest
+
+
+def room_overlay_payload(game_root):
+    """Freeze the installed overlay's original query/member wire replies.
+
+    The launcher owns validation before native worker startup. The room only
+    serves this immutable data; it never opens or hashes client files.
+    """
+    result = {"schema": 1, "manifest": {
+        "type": "vehicle_overlay_manifest", "present": False,
+        "digest": "", "profile": "", "manifest": None, "members": []},
+        "members": {}}
+    path = manifest_path(game_root)
+    if not os.path.lexists(path):
+        return result
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise VehicleOverlayError(
+            "vehicle_overlays.json is not a regular file.")
+    try:
+        raw = _read_file(path)
+    except (IOError, OSError) as error:
+        raise VehicleOverlayError(
+            "vehicle_overlays.json is unreadable: %s" % error)
+    if len(raw) > MAX_OVERLAY_MANIFEST_BYTES:
+        raise VehicleOverlayError(
+            "The overlay manifest is larger than %d MiB." %
+            (MAX_OVERLAY_MANIFEST_BYTES // (1024 * 1024)))
+    try:
+        manifest = _validate_manifest(json.loads(raw.decode("utf-8")))
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise VehicleOverlayError(
+            "vehicle_overlays.json is unreadable: %s" % error)
+    entries = []
+    total = 0
+    for entry in manifest["members"]:
+        member = entry["sourceMember"]
+        installed = _overlay_path(game_root, member)
+        if os.path.islink(installed) or not os.path.isfile(installed):
+            raise VehicleOverlayError(
+                "The installed overlay member is missing: %s" % member)
+        try:
+            data = _read_file(installed)
+        except (IOError, OSError) as error:
+            raise VehicleOverlayError(
+                "The installed overlay member is unreadable: %s (%s)" %
+                (member, error))
+        if not data or len(data) > MAX_SHARED_OVERLAY_MEMBER_BYTES:
+            raise VehicleOverlayError(
+                "The installed overlay member size is invalid: %s" % member)
+        total += len(data)
+        if total > MAX_SHARED_OVERLAY_TOTAL_BYTES:
+            raise VehicleOverlayError("The overlay is too large to share.")
+        checksum = _sha256(data)
+        if checksum != entry["overlaySha256"]:
+            raise VehicleOverlayError(
+                "The installed overlay member was changed: %s" % member)
+        entries.append({"sourceMember": member,
+                        "overlaySha256": checksum, "size": len(data)})
+        result["members"][member] = {
+            "type": "vehicle_overlay_member_data", "sourceMember": member,
+            "size": len(data), "sha256": checksum,
+            "data_b64": base64.b64encode(data).decode("ascii")}
+    result["manifest"].update(
+        present=True, digest=_sha256(raw),
+        profile=str(manifest.get("activeProfile") or ""),
+        manifest=manifest, members=entries)
+    return result
+
+
+def export_room_overlay(game_root, output_path):
+    """Atomically publish one room's already validated overlay replies."""
+    payload = room_overlay_payload(game_root)
+    directory = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".room-overlay-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, allow_nan=False,
+                      sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, output_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return output_path
 
 
 def install_vehicle_overlay(game_root, manifest, members, is_running=None):

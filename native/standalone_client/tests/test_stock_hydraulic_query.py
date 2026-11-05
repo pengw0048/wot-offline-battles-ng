@@ -76,27 +76,27 @@ print('Historical RAM compact publication, staged server validation/full/replica
 
 @unittest.skipUnless(FORK, 'Pinned gameplay source is required')
 class HydraulicQuery(unittest.TestCase):
-    def test_final_payload_imports_without_checkout_or_missing_wire_helpers(self):
-        spec = importlib.util.spec_from_file_location(
-            'hydraulic_payload_stage', ROOT.parents[1] / 'launcher/stage_payload.py')
-        payload_stage = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(payload_stage)
-        with tempfile.TemporaryDirectory(prefix='hydraulic-server-payload-') as temporary:
+    def test_source_oracle_imports_in_isolation_without_missing_wire_helpers(self):
+        # The source oracle remains a test tool; production ships a native host.
+        with tempfile.TemporaryDirectory(prefix='hydraulic-server-oracle-') as temporary:
             folder = Path(temporary)
-            source = folder / 'source'
-            source.mkdir()
-            stage_server.stage(str(Path(FORK) / 'server'), str(source / 'server'))
-            shutil.copytree(Path(FORK) / 'src/res/scripts/client/gui/mods/offline_lan_0922',
-                            source / 'src/res/scripts/client/gui/mods/offline_lan_0922')
-            payload = folder / 'payload'
-            payload_stage.stage_servers(str(payload), str(source))
-            payload_stage.verify_servers(str(payload))
+            stage_server.stage(str(Path(FORK) / 'server'), str(folder / 'server'))
+            def verify():
+                result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
+                    'import sys;sys.path[:0]=sys.argv[1:];import lan_battle_server',
+                    str(folder / 'server'), str(Path(FORK) / 'src/res/scripts/client')],
+                    cwd=str(folder), capture_output=True, text=True)
+                return result
+            result = verify()
+            self.assertEqual(0, result.returncode, result.stderr)
             for name in ('battle_wire_ram_motion', 'battle_wire_bot_state_codec'):
-                member = payload / '0.9.22/server' / (name + '.py')
+                member = folder / 'server' / (name + '.py')
                 original = member.read_bytes()
                 member.unlink()
-                with self.subTest(module=name), self.assertRaisesRegex(ValueError, name):
-                    payload_stage.verify_servers(str(payload))
+                with self.subTest(module=name):
+                    result = verify()
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(name, result.stderr)
                 member.write_bytes(original)
 
     def test_staging_rejects_missing_duplicate_and_disconnected_receipt_seams(self):

@@ -23,7 +23,7 @@ std::int64_t integer(const Value& v, std::int64_t fallback = 0) {
     return std::int64_t(r.numeric(double(fallback)));
 }
 Value& writable(Value& state) {
-    if (state.reference) { Value copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { Value copy = state.resolved(); state = std::move(copy); }
     if (state.kind != Value::Kind::Object) state.kind = Value::Kind::Object;
     return state;
 }
@@ -31,7 +31,8 @@ Value& writable(Value& state) {
 std::optional<Value> canonicalOf(const Value& payload) {
     if (payload.resolved().kind != Value::Kind::Object) return {};
     Value result = payload.resolved();
-    writable(result).object["events"].kind = Value::Kind::Array;
+    writable(result).object["events"] = Value();
+    result.object["events"].kind = Value::Kind::Array;
     result.object["events"].array.clear();
     return result;
 }

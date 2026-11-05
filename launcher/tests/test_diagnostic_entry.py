@@ -1,4 +1,4 @@
-"""Entry modes are explicit, process-local, and inherited by server children."""
+"""Entry modes are explicit, process-local, and inherited by native worker children."""
 import os
 import sys
 import types
@@ -24,11 +24,11 @@ class DiagnosticEntryTests(unittest.TestCase):
             self.assertEqual('0', os.environ['WOT_OFFLINE_DIAGNOSTICS'])
             self.assertEqual(3, window.return_value.run.call_count)
 
-    def test_server_child_preserves_parent_mode(self):
-        with mock.patch.dict(os.environ, {'WOT_OFFLINE_DIAGNOSTICS':'1'}), mock.patch.object(
-                launcher, '_serve', return_value=0):
-            self.assertEqual(0, launcher.main([launcher.core.SERVE_FLAG, '0.9.22']))
-            self.assertEqual('1', os.environ['WOT_OFFLINE_DIAGNOSTICS'])
+
+    def test_removed_server_entry_cannot_start_a_python_server(self):
+        with mock.patch.object(launcher, 'LauncherWindow') as window:
+            self.assertEqual(2, launcher.main(['--serve', '0.9.22']))
+            window.assert_not_called()
 
 
 if __name__ == '__main__':

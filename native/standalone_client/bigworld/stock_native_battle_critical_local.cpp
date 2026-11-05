@@ -54,7 +54,7 @@ V array() { V v; v.kind = V::Kind::Array; return v; }
 bool has(const V& v, const char* name) { const auto& r = v.resolved(); return r.kind == V::Kind::Object && r.object.count(name); }
 bool track(const std::string& name) { return name == "leftTrackHealth" || name == "rightTrackHealth"; }
 V& writable(V& state) {
-    if (state.reference) { V copy = *state.reference; state = std::move(copy); }
+    if (state.reference) { V copy = state.resolved(); state = std::move(copy); }
     if (state.kind != V::Kind::Object) state.kind = V::Kind::Object;
     return state;
 }

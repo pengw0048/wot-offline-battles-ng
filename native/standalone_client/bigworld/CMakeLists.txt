@@ -369,6 +369,9 @@ list(APPEND WOT_STOCK_ADAPTER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_world_events.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/stock_native_world_pipeline.cpp"
 )
+include("${CMAKE_CURRENT_LIST_DIR}/../room/room_sources.cmake")
+list(APPEND WOT_STOCK_ADAPTER_SOURCES ${WOT_ROOM_SOURCES}
+    "${CMAKE_CURRENT_LIST_DIR}/stock_native_room_resources.cpp")
 target_sources(bwclient PRIVATE "${CMAKE_CURRENT_LIST_DIR}/standalone_app.cpp"
     ${WOT_NUMERICAL_SOURCES} ${WOT_STOCK_ADAPTER_SOURCES})
 include("${CMAKE_CURRENT_LIST_DIR}/offline_fork.cmake")

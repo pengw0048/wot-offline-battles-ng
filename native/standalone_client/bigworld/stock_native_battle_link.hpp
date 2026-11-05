@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+namespace wot { namespace room { namespace strategy { struct GraphData; } } }
 namespace native_battle {
 namespace link {
 // One outgoing worker message, shaped as the former LAN client sender's arguments plus its "type":
@@ -41,6 +42,10 @@ void drain(Battle& b);
 // battle_live, snapshot, events, bot_observation, player_destructible_contact, and error when the link ends.
 using Handler = std::function<void(const std::string& kind, const std::shared_ptr<const Value>& message)>;
 bool connect(PyObject* bigworld, const std::string& host, int port, Handler handler);
+// Cold map/fitting metadata shared with this process's room owner. No socket,
+// serialization, or Python object crosses this boundary.
+std::shared_ptr<const Value> roomResources();
+bool configureRoomResources(Battle&, Value, std::shared_ptr<const wot::room::strategy::GraphData>);
 // Sends leave and closes; `flush` lets queued frames drain briefly first. Idempotent.
 void disconnect(bool flush);
 // Process shutdown: close transport and drop the process-held script owner, even after disconnect fails.

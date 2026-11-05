@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -56,7 +57,6 @@ WORKER_READY_MARKER = "worker-internal.ready"
 PLAYER_READY_MARKER = "player.ready"
 PLAYER_FINISHED_MARKER = "player.finished"
 PYTHON_LOG = "python.log"
-WORKER_JOIN_LOG = "WORKER JOIN"
 WORKER_READY_TIMEOUT_SECONDS = 180.0
 PROCDUMP_ATTACH_SECONDS = 10.0
 
@@ -75,7 +75,7 @@ _GENERATED = frozenset((
     "paths.xml", "app_type.xml", "original-client.json", "prepare.log",
     "standalone.log", PYTHON_LOG, INSTANCE_MANIFEST, ORIGINAL_BINDING,
     WORKER_READY_MARKER, PLAYER_READY_MARKER, PLAYER_FINISHED_MARKER,
-    "preferences.xml"))
+    "preferences.xml", "room-host.json", "room-host.json.tmp", "room-host.stop"))
 _GENERATED_DIRS = frozenset(("logs", "replays", "res_mods", "ui-mods", "user-data"))
 CONFIG_RELATIVE = "mods/configs/offline_lan_0922/config.json"
 # The client fills every absent key from its own defaults. Seeding only the
@@ -84,7 +84,8 @@ CONFIG_RELATIVE = "mods/configs/offline_lan_0922/config.json"
 _SEEDED_CONFIG = {"schema": 3}
 # The user's own copy wins once it exists.
 _KEEP_IF_PRESENT = frozenset((CONFIG_RELATIVE,))
-_REQUIRED = (EXECUTABLE, "offline-res.json", "tools/prepare_native_client.py")
+_REQUIRED = (EXECUTABLE, "offline-res.json", "native-room-data.json",
+             "tools/prepare_native_client.py")
 
 
 class NGClientError(Exception):
@@ -261,8 +262,50 @@ def _package_files(package):
 def _copy_file(source, target):
     os.makedirs(os.path.dirname(target), exist_ok=True)
     temporary = target + ".ng-copy"
+    if os.path.isfile(temporary) and not os.path.islink(temporary):
+        os.chmod(temporary, os.stat(temporary).st_mode | stat.S_IWUSR)
     shutil.copy2(source, temporary)
-    os.replace(temporary, target)
+    # Installed files belong to this writable instance. A source ZIP or
+    # shared folder's read-only bit must not block the next owned upgrade.
+    os.chmod(temporary, os.stat(temporary).st_mode | stat.S_IWUSR)
+    try:
+        os.replace(temporary, target)
+    except PermissionError:
+        if os.name != "nt" or os.path.islink(target) or not os.path.isfile(target):
+            raise
+        mode = os.stat(target).st_mode
+        if mode & stat.S_IWUSR:
+            raise
+        os.chmod(target, mode | stat.S_IWUSR)
+        try:
+            os.replace(temporary, target)
+        except OSError:
+            try:
+                os.chmod(target, mode)
+            except OSError:
+                pass
+            raise
+
+
+def _unlink_owned_file(target):
+    """Remove an obsolete package member, including earlier read-only copies."""
+    try:
+        os.unlink(target)
+    except PermissionError:
+        if os.name != "nt" or os.path.islink(target) or not os.path.isfile(target):
+            raise
+        mode = os.stat(target).st_mode
+        if mode & stat.S_IWUSR:
+            raise
+        os.chmod(target, mode | stat.S_IWUSR)
+        try:
+            os.unlink(target)
+        except OSError:
+            try:
+                os.chmod(target, mode)
+            except OSError:
+                pass
+            raise
 
 
 def sync_instance(package, instance):
@@ -304,7 +347,7 @@ def sync_instance(package, instance):
             continue
         target = os.path.join(instance, *relative.split("/"))
         if os.path.isfile(target) and not os.path.islink(target):
-            os.unlink(target)
+            _unlink_owned_file(target)
             removed += 1
     config = os.path.join(instance, *CONFIG_RELATIVE.split("/"))
     if not os.path.exists(config):

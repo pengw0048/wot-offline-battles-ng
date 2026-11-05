@@ -5,6 +5,8 @@
 #include "pch.hpp"
 #endif
 #include "stock_native_battle_bots.hpp"
+#include "stock_native_battle_link.hpp"
+#include "stock_native_room_resources.hpp"
 #include "stock_native_battle_bots_random.hpp"
 #include "stock_native_battle_params.hpp"
 #include "stock_native_battle_startup.hpp"
@@ -1375,6 +1377,21 @@ std::vector<Value> buildManifest(Battle& b, BotAuthority& a, const Value& messag
     Value graph_value = object();
     for (const char* key : {"map", "game_version", "directions", "bounds", "bases"}) graph_value.object[key] = cs::read(p::value(graph, key).get());
     stage("SPG positions", [&] { prepareSpgPositions(*seed, map_name, graph_value, allocation_seed); });
+    if (b.worker) stage("room resources", [&] {
+        // This is the main-thread cold boundary. Only compact owned C++ data
+        // enters the room thread, before its matching manifest is admitted.
+        const auto archive = link::roomResources();
+        if (!archive) throw p::Error("native room resource archive is unavailable");
+        std::shared_ptr<const offline_navigation::MapInput> navigation;
+        if (!stock_native_bot_planning::readSharedMapInput(*seed, navigation))
+            throw p::Error("native room navigation snapshot is unavailable");
+        auto metadata = graph_value;
+        for (const char* key : {"objective_bases", "objective_base_radii"})
+            metadata.object[key] = cs::read(p::value(graph, key).get());
+        auto prepared = room_resources::prepare(seed->map, seed->routes, *navigation, metadata, at(message, "bot_tactics"), *archive);
+        if (!link::configureRoomResources(b, std::move(prepared.resources), std::move(prepared.graph)))
+            throw p::Error("native room refused the current round resources");
+    });
     // _ensure_native_simulation: a new generation retires the previous native owner.
     seed->generation = ++a.generation;
     if (a.owner) {
