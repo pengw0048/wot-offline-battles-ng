@@ -27,10 +27,10 @@ symlink target. Read this file before investigating or changing the repository.
   ambiguous; inspect the exact map, client data, logs, and lifecycle.
 - Fix an in-scope bug directly rather than handing it to an imaginary future
   owner. Preserve unrelated user changes in a dirty worktree.
-- Land a change on a branch and open a pull request. That is the default even
-  for a fix Peng asked for directly, because he reads the change there before
-  it reaches `main`. Push `main` directly only when he asks for it in that
-  task; then say so in the handoff. Never force-push. Create a tag or publish
+- Commit and push changes directly to `main` by default. Open a pull request
+  only when Peng explicitly asks for one. Verify the target repository before
+  pushing; a shared checkout may contain both original-mod and NG remotes.
+  Never force-push. Create a tag or publish
   a release only when Peng explicitly requests it. Keep validation
   proportional to his instruction: report missing Windows evidence honestly,
   but do not invent an extra review, full-CI, or native-acceptance gate after
@@ -356,9 +356,9 @@ source hash in this instruction file.
   not use a small fixed sleep as proof that a handler or worker consumed a
   message.
 - Unless Peng explicitly asks to skip them, inspect the staged diff, run the
-  proportional checks, commit one coherent change, open its pull request, and
-  verify the exact pushed commit's relevant CI for runtime, packaging, CI, or
-  release behavior.
+  proportional checks, commit one coherent change, push it directly to `main`,
+  and verify the exact pushed commit's relevant CI for runtime, packaging, CI,
+  or release behavior. Use a pull request only when explicitly requested.
 
 A useful final handoff records:
 
